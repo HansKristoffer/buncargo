@@ -4,7 +4,7 @@ import {
 	containerRuntimeForEnv,
 	replaceStaleStacksOn,
 } from "../container-runtime";
-import { describeLeaseRefusal, type SkippedLeaseApp } from "../core/app-leases";
+import { describeLeaseRefusal } from "../core/app-leases";
 import { withSignal } from "../core/deadline";
 import {
 	getRoutesPath,
@@ -14,14 +14,11 @@ import {
 import { releaseLeases } from "../core/leases";
 import { askConfirm, PromptInterruptedError } from "../core/prompt";
 import {
-	appRowEvents,
 	flushRunPatches,
-	publishCurrentRun,
 	recordAppUrls,
 	recordRunCapture,
 } from "../core/run-publish";
 import { detachedRunMode, isCI } from "../core/runtime-flags";
-import { ensureSecretsSession } from "../core/secrets/index";
 import { formatStep, formatWarn, joinColoredNames } from "../core/style";
 import {
 	createNoopPhaseTimer,
@@ -33,20 +30,24 @@ import {
 	startPublicTunnels,
 	stopPublicTunnels,
 } from "../core/tunnel";
-import { ensureWatchdog } from "../core/watchdog";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../core/watchdog-constants";
+import {
+	internalsOf,
+	type PreparedSeed,
+	type PrepareOptions,
+} from "../environment";
 import {
 	assertSeedSucceeded,
 	SeedFailedError,
-	seedCanOverlap,
 } from "../environment/seed-startup";
-import { startServerSession } from "../environment/server-session";
 import { planStart } from "../planning";
 import type {
 	AnyDevEnvironment,
 	AppConfig,
 	CliOptions,
 	DevEnvironment,
+	ResolvedApp,
+	SeedOutcome,
 	ServiceConfig,
 } from "../types";
 import { checkMenuBarAppUpdate, offerMenuBarApp } from "./bar-offer";
@@ -72,7 +73,7 @@ import {
 } from "./dev-hosts";
 import { listenForInterrupts } from "./dev-interrupts";
 import {
-	acquireAppLeases,
+	cliLeasePolicy,
 	leaseSkipLines,
 	leaseTakeoverHints,
 	warnSkippedLeaseApps,
@@ -102,8 +103,8 @@ import {
 	describeAppFailure,
 	describeDevFailure,
 	formatRunFailure,
+	type RunFailure,
 } from "./run-failure";
-import { configSecretScopes } from "./secrets-scopes";
 import {
 	isInteractive,
 	promptTakeover,
@@ -196,7 +197,8 @@ function waitForShutdownSignal(signal: AbortSignal): Promise<void> {
 }
 
 /**
- * Run the CLI for a dev environment.
+ * Run the CLI for a dev environment. Exits the process with the run's code
+ * once it ends, unless it ended because its apps did.
  */
 export async function runCli<
 	TServices extends Record<string, ServiceConfig>,
@@ -209,6 +211,22 @@ export async function runCli<
 		timer?: PhaseTimer;
 	} = {},
 ): Promise<void> {
+	const code = await runDevCommand(env, options);
+	if (code !== undefined) process.exit(code);
+}
+
+/**
+ * The dev command, from argv to the exit code. Every path out passes one
+ * `finally`, which reports the timing, tears the run down once and prints a
+ * failure last.
+ */
+async function runDevCommand<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+>(
+	env: DevEnvironment<TServices, TApps>,
+	options: CliOptions & { cliTestTunnel?: TunnelApi; timer?: PhaseTimer },
+): Promise<DevFlowExit> {
 	const {
 		args: rawArgs = process.argv.slice(2),
 		watchdog = true,
@@ -218,7 +236,7 @@ export async function runCli<
 
 	if (args.help) {
 		printDevHelp();
-		process.exit(0);
+		return 0;
 	}
 
 	exitOnDevArgErrors(args);
@@ -229,18 +247,16 @@ export async function runCli<
 		log.error(
 			"--detach reached a run that is already in the background; it was not started again.",
 		);
-		process.exit(1);
+		return 1;
 	}
 	if (args.detach) {
 		const { DETACH_TIMEOUT_MS, runDetached } = await import("./dev-detach");
-		process.exit(
-			await runDetached({
-				root: env.root,
-				keep: args.keep,
-				argv: process.argv,
-				timeoutMs: DETACH_TIMEOUT_MS,
-			}),
-		);
+		return runDetached({
+			root: env.root,
+			keep: args.keep,
+			argv: process.argv,
+			timeoutMs: DETACH_TIMEOUT_MS,
+		});
 	}
 
 	// The apps whose processes are running: a second signal waits for them.
@@ -300,14 +316,8 @@ export async function runCli<
 			: createNoopPhaseTimer());
 
 	let connect: DevConnect | undefined;
-	// Every path ends here once, whichever reaches it first: the one-shot
-	// modes, "nothing to start", the end of the run, and a failure.
-	let tearingDown: Promise<void> | undefined;
-	const teardownOnce = () => {
-		tearingDown ??= teardown(env, tunnels, connect);
-		return tearingDown;
-	};
 	let exitCode: DevFlowExit;
+	let failure: RunFailure | undefined;
 	const failureContext: DevFailureContext = { setupHints: [] };
 	try {
 		if (!args.oneShot && !args.down && !args.reset)
@@ -318,7 +328,6 @@ export async function runCli<
 			timer,
 			signal: controller.signal,
 			failureContext,
-			teardown: teardownOnce,
 			runningApps,
 		});
 		// A run that only held services returns normally from the abort.
@@ -326,43 +335,40 @@ export async function runCli<
 	} catch (thrown) {
 		const error = crash ? crash.error : thrown;
 		controller.abort(error);
-		timer.report();
+		exitCode = 1;
 		// The prompt re-raises SIGINT, which arrives after this.
 		if (error instanceof PromptInterruptedError) interrupts.promptInterrupted();
-		const failure =
-			interrupts.exitCode() === undefined
-				? describeDevFailure(error, failureContext)
-				: undefined;
+		if (interrupts.exitCode() === undefined)
+			failure = describeDevFailure(error, failureContext);
 		if (failure && detachedRunMode() !== undefined) {
 			const { recordDetachedReport } = await import("./dev-detach");
+			const reported = failure;
 			recordDetachedReport(env.root, (report) => ({
 				...report,
-				failures: [...report.failures, failure],
+				failures: [...report.failures, reported],
 			}));
 		}
+	} finally {
+		// A run interrupted before it was ready ends here too; its breakdown
+		// is the one `--timing` was asked for.
+		timer.report();
 		try {
-			await teardownOnce();
+			await teardown(env, tunnels, connect);
 		} finally {
 			// Last, after teardown's own messages: agents read `dev | tail`.
 			if (failure) {
 				const { message, hints } = formatRunFailure(failure);
 				log.errorNow(message, hints);
 			}
+			interrupts.dispose();
+			process.off("uncaughtException", onCrash);
+			process.off("unhandledRejection", onCrash);
 		}
-		process.exit(interrupts.exitCode() ?? 1);
-	} finally {
-		interrupts.dispose();
-		process.off("uncaughtException", onCrash);
-		process.off("unhandledRejection", onCrash);
 	}
 
 	// 128 + the signal however an interrupted run ended: one that only held
 	// services or tunnels returns normally from the signal.
-	const interrupted = interrupts.exitCode();
-	if (interrupted !== undefined) process.exit(interrupted);
-	if (exitCode !== undefined) {
-		process.exit(exitCode);
-	}
+	return interrupts.exitCode() ?? exitCode;
 }
 
 async function teardown<
@@ -423,12 +429,64 @@ async function confirmDestructiveMode(
 	});
 }
 
+/** How the apps a run selected divide: started here, or reused from another process. */
+export interface ClassifiedApps {
+	readonly startApps: Record<string, ResolvedApp>;
+	readonly reusedApps: Record<string, ResolvedApp>;
+	readonly startNames: string[];
+	readonly reusedNames: string[];
+	readonly inferredReuseNames: string[];
+	readonly unhealthy: UnhealthyApp[];
+}
+
+/** The classification once the takeover moved `taken` here: started, no longer reused. */
+export function withTakenOver(
+	classified: ClassifiedApps,
+	taken: { names: readonly string[]; apps: Record<string, ResolvedApp> },
+): ClassifiedApps {
+	const moved = new Set(taken.names);
+	return {
+		startApps: { ...classified.startApps, ...taken.apps },
+		startNames: [...classified.startNames, ...taken.names],
+		reusedApps: Object.fromEntries(
+			Object.entries(classified.reusedApps).filter(
+				([name]) => !moved.has(name),
+			),
+		),
+		reusedNames: classified.reusedNames.filter((name) => !moved.has(name)),
+		inferredReuseNames: classified.inferredReuseNames.filter(
+			(name) => !moved.has(name),
+		),
+		unhealthy: classified.unhealthy.filter((app) => !moved.has(app.name)),
+	};
+}
+
+/**
+ * What a run does once its leases are taken: spawn its apps, `hold` what it
+ * has (services, tunnels it opens, sharing) until it is told to stop, end
+ * because every selected app already runs elsewhere, or refuse because a
+ * lease held elsewhere left it with nothing at all.
+ */
+export function decideSpawn(input: {
+	startNames: readonly string[];
+	reusedNames: readonly string[];
+	leaseSkips: number;
+	servicesOnly: boolean;
+	pendingTunnels: boolean;
+	sharing: boolean;
+}): "spawn" | "hold" | "already-running" | "refuse" {
+	if (input.startNames.length > 0) return "spawn";
+	const keepsOpen = input.pendingTunnels || input.sharing;
+	if (input.leaseSkips > 0 && input.reusedNames.length === 0 && !keepsOpen)
+		return "refuse";
+	if (input.servicesOnly || keepsOpen) return "hold";
+	return "already-running";
+}
+
 /**
  * The dev command flow. Returns an exit code for the one-shot modes and
- * `undefined` when the caller should simply return.
- *
- * Every exit path tears down tunnels, host routes and the terminal first;
- * failures throw `CliError` and are reported by `runCli`.
+ * `undefined` when the caller should simply return. Failures throw
+ * `CliError`; the caller reports them and tears the run down.
  */
 async function runDevFlow<
 	TServices extends Record<string, ServiceConfig>,
@@ -444,30 +502,22 @@ async function runDevFlow<
 		connect?: DevConnect;
 		/** Filled in as the run goes, for the block a failure ends on. */
 		failureContext: DevFailureContext;
-		/** The run's one teardown; every path calls it, it runs once. */
-		teardown: () => Promise<void>;
 		/** Kept to the apps whose processes are running, for the run's signals. */
 		runningApps: Set<string>;
 	},
 ): Promise<DevFlowExit> {
-	const { timer, signal, connect, failureContext, teardown } = options;
+	const { timer, signal, connect, failureContext } = options;
+	const pipeline = internalsOf(env);
 	// Loaded only in the background run that reports to `dev --detach`.
 	const detached =
 		detachedRunMode() !== undefined ? await import("./dev-detach") : undefined;
-	async function exitWith(code: number): Promise<number> {
-		// The one-shot modes end here, and `--up-only` is exactly the kind of
-		// run someone times.
-		timer.report();
-		await teardown();
-		return code;
-	}
 
 	await confirmDestructiveMode(env, args);
 
 	if (args.down && args.all) {
 		const { stopAllBuncargoEnvironments } = await import("./commands/inspect");
 		await stopAllBuncargoEnvironments();
-		return exitWith(0);
+		return 0;
 	}
 
 	if (args.down || args.reset) {
@@ -480,8 +530,10 @@ async function runDevFlow<
 			const message = `Left this checkout's service routes in ${getRoutesPath()}: ${getErrorMessage(error)}`;
 			log.warn(message);
 		}
-		await env.stop({ removeVolumes: args.reset, signal });
-		return exitWith(0);
+		// `--reset` was confirmed for exactly this; `--down` keeps services
+		// another live run uses, and says so.
+		await env.stop({ removeVolumes: args.reset, force: args.reset, signal });
+		return 0;
 	}
 
 	// ── App selection ────────────────────────────────────────────────────────
@@ -501,20 +553,34 @@ async function runDevFlow<
 		),
 	}));
 
+	const prepareOptions: PrepareOptions = {
+		watchdog: options.watchdog,
+		signal,
+		wait: true,
+		// The seed overlaps the apps only in a run that spawns them.
+		startServers: !args.oneShot,
+		seed: args.seed ? "force" : args.oneShot ? "skip" : "auto",
+		prepare: args.upOnly ? "containers" : args.migrate ? "migrate" : "all",
+		onPhase: timer.record,
+		onlyApps: selectedAppNames,
+		autoStartDocker: args.dockerAutostart ? undefined : false,
+		// The dev servers below run their dev commands in CI too.
+		productionBuild: false,
+		// Only the CLI knows the hold its flags ask for. Claimed whether or
+		// not a watchdog is wanted: the claim is what says the containers are
+		// somebody's, and the registry has to say so either way.
+		claim: {
+			idleTimeoutMs: resolveIdleTimeout(args),
+			defaultIdleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS,
+		},
+	};
+
 	// Fired now, awaited before named hosts and the claim: an expired
 	// Infisical session stops the run before any container or app starts, with
-	// the login to run, instead of hanging inside every app's own loader. The
-	// selected apps' scopes and the config-level one (migrations, the seed).
-	// It overlaps the checks and preflight; `start()` and the apps reuse its
+	// the login to run, instead of hanging inside every app's own loader. It
+	// overlaps the checks and preflight; `prepare()` and the apps reuse its
 	// token.
-	const secretsSession = args.upOnly
-		? Promise.resolve()
-		: ensureSecretsSession(
-				configSecretScopes({ secrets: env.secrets, apps: appsForDev }).map(
-					({ scope }) => scope,
-				),
-				{ signal },
-			);
+	const secretsSession = pipeline.secretsSession(prepareOptions);
 	void secretsSession.catch(() => {});
 
 	// Before anything is started: a missing generated file fails here with its
@@ -566,10 +632,6 @@ async function runDevFlow<
 	}
 	await env.prepareStartAsync(selectedAppNames, undefined, signal);
 	const hasServices = plan.requiredServiceKeys.length > 0;
-	const overlapSeed =
-		!args.oneShot &&
-		Object.keys(appsForDev).length > 0 &&
-		seedCanOverlap(env.seed, env.services, plan.requiredServiceKeys);
 
 	await timer.measure("secrets session", () => secretsSession);
 
@@ -595,41 +657,19 @@ async function runDevFlow<
 		printedHostsWarnings.push(...hostsWarnings);
 		hostsWarnings = [];
 	};
-	// Claimed here rather than left to `start()`, because only the CLI knows
-	// the hold its flags ask for; `start()` claims too, and keeps this one.
-	// Claimed whether or not a watchdog is wanted: the claim is what says the
-	// containers are somebody's, and the registry has to say so either way.
 	signal.throwIfAborted();
-	// What `start()` says about the run before its output opens (the watchdog
-	// not starting): printed now, and kept for the run's log and the TUI.
+	// What preparation says about the run before its output opens (the
+	// watchdog not starting): printed now, and kept for the run's log and the
+	// TUI.
 	const earlyReports: { message: string; problem: boolean }[] = [];
-	env.reportServiceChanges((message, problem) => {
+	pipeline.notify((message, problem) => {
 		earlyReports.push({ message, problem });
 		(problem ? log.warn : log.info)(message);
 	});
-	if (hasServices)
-		await env.claimRun({
-			idleTimeoutMs: resolveIdleTimeout(args),
-			defaultIdleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS,
-		});
-	await env.start({
-		watchdog: options.watchdog,
-		signal,
-		startServers: false,
-		wait: true,
-		skipSeed: args.seed || args.migrate || args.upOnly || overlapSeed,
-		// `--seed` runs the seed next: fetch its scope beside the containers.
-		prefetchSeed: overlapSeed || args.seed,
-		prepare: args.upOnly ? "containers" : args.migrate ? "migrate" : "all",
-		onPhase: timer.record,
-		skipEnvironmentLog: true,
-		onlyApps: selectedAppNames,
-		autoStartDocker: args.dockerAutostart ? undefined : false,
-		// The dev servers below run their dev commands in CI too.
-		productionBuild: false,
-	});
+	const prepared = await pipeline.prepare(prepareOptions);
+	const overlapSeed = prepared.seed.kind === "overlap";
 
-	let classifiedApps = args.oneShot
+	let classifiedApps: ClassifiedApps = args.oneShot
 		? {
 				startApps: {},
 				reusedApps: {},
@@ -670,24 +710,7 @@ async function runDevFlow<
 			signal,
 			takeover: candidates.names,
 		});
-		classifiedApps = {
-			startApps: { ...classifiedApps.startApps, ...candidates.apps },
-			startNames: [...classifiedApps.startNames, ...candidates.names],
-			reusedApps: Object.fromEntries(
-				Object.entries(classifiedApps.reusedApps).filter(
-					([name]) => !candidates.names.includes(name),
-				),
-			),
-			reusedNames: classifiedApps.reusedNames.filter(
-				(name) => !candidates.names.includes(name),
-			),
-			inferredReuseNames: classifiedApps.inferredReuseNames.filter(
-				(name) => !candidates.names.includes(name),
-			),
-			unhealthy: classifiedApps.unhealthy.filter(
-				(app) => !candidates.names.includes(app.name),
-			),
-		};
+		classifiedApps = withTakenOver(classifiedApps, candidates);
 	}
 	// Explicit takeover precedes public URL inheritance as well as private URL acquisition.
 	if (takeover.kind === "all") {
@@ -698,7 +721,8 @@ async function runDevFlow<
 	// A sibling run's server failing its health check is not worth reusing:
 	// replace it through the takeover, which also reclaims its named hosts.
 	// A detached run has no terminal to ask, as with `stop`.
-	if (classifiedApps.unhealthy.length > 0) {
+	const [firstUnhealthy] = classifiedApps.unhealthy;
+	if (firstUnhealthy) {
 		const unhealthy = classifiedApps.unhealthy;
 		const candidates = takeoverCandidates(
 			Object.fromEntries(
@@ -717,7 +741,7 @@ async function runDevFlow<
 				(isInteractive() && (await promptUnhealthyTakeover(candidates.names))));
 		if (!accepted) {
 			throw new CliError(
-				unhealthyAppMessage(unhealthy[0] as UnhealthyApp),
+				unhealthyAppMessage(firstUnhealthy),
 				replaceable
 					? ["Pass --takeover to stop it and run here instead."]
 					: ["Stop the existing process or free the port."],
@@ -748,11 +772,11 @@ async function runDevFlow<
 		env.logInfo(undefined, undefined, plan);
 		log.line();
 		log.success("Migrations applied successfully");
-		return exitWith(0);
+		return 0;
 	}
 
 	if (args.seed) {
-		return exitWith(await runCliSeed(env, plan.requiredServiceKeys, signal));
+		return reportCliSeed(env, prepared.seed, plan.requiredServiceKeys);
 	}
 
 	if (args.upOnly) {
@@ -760,7 +784,7 @@ async function runDevFlow<
 		log.line();
 		log.success("Containers started. Environment ready.");
 		log.line();
-		return exitWith(0);
+		return 0;
 	}
 
 	// ── Dev servers ──────────────────────────────────────────────────────────
@@ -783,11 +807,10 @@ async function runDevFlow<
 
 	// Decided before the summary and the banner, so both describe what this run
 	// ends up doing rather than a reuse the takeover is about to undo.
-	let nothingToSpawn = classifiedApps.startNames.length === 0;
 	const running = takeoverCandidates(classifiedApps.reusedApps, env.ports);
 	const offerTakeover = shouldOfferTakeover({
 		decision: takeover,
-		nothingToSpawn,
+		nothingToSpawn: classifiedApps.startNames.length === 0,
 		candidates: running.names.length,
 		pendingTunnels: tunnels.hasPendingTargets(),
 		inheritsPublicUrls: tunnels.inheritsPublicUrls(),
@@ -796,60 +819,49 @@ async function runDevFlow<
 	const askTakeover = offerTakeover && isInteractive();
 	if (askTakeover && (await promptTakeover(running.names))) {
 		await takeOver(running);
-		nothingToSpawn = false;
 	}
 
 	flushHostsWarnings();
 
-	// Leases before anything spawns and before the run is published: a refused
-	// lease ends this run, and the registry should never show it as starting.
-	// A skipped one (an `essential: false` app, the Shopify CLI) leaves the
-	// spawn set here, so the summary, the banner and the registry describe the
-	// run that actually happens, and says why where it can be seen.
-	const { skipped: leaseSkips } = await acquireAppLeases(
-		env,
-		classifiedApps.startApps,
-		{ signal, takeover },
-	);
-	if (leaseSkips.length > 0) {
-		const skippedNames = new Set(leaseSkips.map((skip) => skip.app));
-		const startApps = Object.fromEntries(
-			Object.entries(classifiedApps.startApps).filter(
-				([name]) => !skippedNames.has(name),
-			),
-		);
-		classifiedApps = {
-			...classifiedApps,
-			startApps,
-			startNames: Object.keys(startApps),
-		};
-		nothingToSpawn = classifiedApps.startNames.length === 0;
-		if (
-			nothingToSpawn &&
-			classifiedApps.reusedNames.length === 0 &&
-			!tunnels.hasPendingTargets() &&
-			!connect?.active
-		) {
-			const [skip] = leaseSkips as [SkippedLeaseApp];
-			throw new CliError(
-				`Nothing to start: ${skip.key} is in use by another run.`,
-				[...describeLeaseRefusal(skip), ...leaseTakeoverHints(skip)],
-			);
-		}
-		warnSkippedLeaseApps(leaseSkips);
-	}
-
-	// Published here, after the takeover has been decided: before it, the app
-	// classification still describes a reuse the takeover is about to undo, and
-	// `env.urls` may still hold the localhost fallback from the refused first
-	// activation. It lands on the entry the environment claimed, by session.
+	// Leases before anything spawns, then the run's entry: a refused lease
+	// ends this run, and the registry should never show it as starting. A
+	// skipped one (an `essential: false` app, the Shopify CLI) leaves the
+	// spawn set here, so the summary, the banner and the registry describe
+	// the run that actually happens, and says why where it can be seen.
+	// Published after the takeover has been decided: before it, the app
+	// classification still describes a reuse the takeover is about to undo,
+	// and `env.urls` may still hold the localhost fallback from the refused
+	// first activation.
 	signal.throwIfAborted();
-	await publishCurrentRun(env, {
-		apps: { ...classifiedApps.startApps, ...classifiedApps.reusedApps },
-		reusedNames: classifiedApps.reusedNames,
-		serviceNames: plan.requiredServiceKeys,
+	const claimed = await pipeline.claimApps(prepared, {
+		apps: classifiedApps.startApps,
+		reused: classifiedApps.reusedApps,
 		attached: args.attach,
+		leasePolicy: cliLeasePolicy({ takeover: () => takeover }),
+		signal,
 	});
+	const leaseSkips = claimed.skipped;
+	classifiedApps = {
+		...classifiedApps,
+		startApps: claimed.apps,
+		startNames: Object.keys(claimed.apps),
+	};
+	const next = decideSpawn({
+		startNames: classifiedApps.startNames,
+		reusedNames: classifiedApps.reusedNames,
+		leaseSkips: leaseSkips.length,
+		servicesOnly,
+		pendingTunnels: tunnels.hasPendingTargets(),
+		sharing: connect?.active === true,
+	});
+	const [firstSkip] = leaseSkips;
+	if (next === "refuse" && firstSkip) {
+		throw new CliError(
+			`Nothing to start: ${firstSkip.key} is in use by another run.`,
+			[...describeLeaseRefusal(firstSkip), ...leaseTakeoverHints(firstSkip)],
+		);
+	}
+	warnSkippedLeaseApps(leaseSkips);
 
 	connect?.start(env.sessionId);
 
@@ -873,50 +885,33 @@ async function runDevFlow<
 		});
 	}
 
-	if (
-		nothingToSpawn &&
-		!servicesOnly &&
-		!tunnels.hasPendingTargets() &&
-		!connect?.active
-	) {
+	if (next === "already-running") {
 		if (overlapSeed)
 			assertSeedSucceeded(
 				await timer.measure("seed", () => env.runSeed({ signal })),
 			);
-		timer.report();
 		log.success("Selected apps are already running. Nothing to start.");
 		if (running.names.length > 0 && !askTakeover) {
 			log.hint("Pass --takeover to stop them and run here instead.");
 		}
-		await teardown();
 		return undefined;
 	}
 
+	const holds = next === "hold";
 	const appsElapsed = startTimer();
 	let firstSpawn = false;
 	const view = openDevOutput(env, classifiedApps.startApps, { tui: args.tui });
 	failureContext.output = view.output;
-	// The app rows, recorded by the rule a library `start()` uses too.
-	const rows = appRowEvents(env);
 	// A service container stopping under the run: in the run's log, the TUI's
 	// Overview, and on the terminal in stream mode, where events are not printed.
 	// Events are not printed in stream mode, so the early ones are not repeated.
 	for (const { message, problem } of earlyReports)
 		view.output.event("buncargo", message, problem ? "error" : undefined);
-	env.reportServiceChanges((message, problem) => {
+	pipeline.notify((message, problem) => {
 		const raw = problem ? formatWarn(message) : formatStep(message);
 		const level = problem ? "error" : undefined;
 		view.output.announce("buncargo", message, { raw, level });
 	});
-	// Where the watchdog's failure stays, as a service change does: nothing
-	// sweeps the machine's ended runs until it is up again.
-	const reportWatchdogFailure = (error: unknown) => {
-		const message = `The watchdog did not start: ${String(error)}. Ended runs' containers stay until \`buncargo ls\` or \`buncargo doctor\` sweeps; the next \`buncargo dev\` tries again.`;
-		view.output.announce("buncargo", message, {
-			raw: formatWarn(message),
-			level: "warn",
-		});
-	};
 	// An app that falls over is often the first sign its database was removed
 	// under it; say who did, once, rather than leave a refused connection.
 	let lossExplained = !hasServices;
@@ -941,163 +936,103 @@ async function runDevFlow<
 		for (const skip of leaseSkips)
 			for (const line of leaseSkipLines(skip))
 				view.output.event(skip.app, line, "warn");
-		await startServerSession(
-			{
-				root: env.root,
-				prepare: nothingToSpawn
-					? async (sessionSignal) => {
-							await tunnels.openOwnedTunnels(sessionSignal);
-							void recordAppUrls(env, Object.keys(appsForDev));
-						}
-					: undefined,
-				onSeedReady: () => {
-					if (!nothingToSpawn) log.success("All servers ready");
-				},
-				ports: env.ports as Record<string, number>,
-				appEnv: (name) =>
-					env.buildAppEnvVars(name as Extract<keyof TApps, string>),
-				runHook: async (phase, hookSignal) => {
-					await env.runServerHook?.(phase, hookSignal);
-				},
-				// One app at a time, quietly: the spawner reports readiness.
-				waitForHealth: (app, healthSignal) =>
-					env.waitForServers({
-						onlyApps: Object.keys(app) as Extract<keyof TApps, string>[],
-						expandRequired: false,
-						verbose: false,
-						logReady: false,
-						signal: healthSignal,
-					}),
-				recordCapture: (app, captured) => env.recordCapture(app, captured),
-				afterWave: () => {
-					for (const path of env.renderGeneratedFiles())
-						log.done(`Updated ${path}`);
-				},
+		await pipeline.spawn(claimed, {
+			signal,
+			prepare: holds
+				? async (sessionSignal) => {
+						await tunnels.openOwnedTunnels(sessionSignal);
+						void recordAppUrls(env, Object.keys(appsForDev));
+					}
+				: undefined,
+			onSeedReady: () => {
+				if (!holds) log.success("All servers ready");
 			},
-			classifiedApps.startApps,
-			{
-				signal,
-				seed: overlapSeed
-					? (seedSignal) =>
-							timer.measure("seed", () =>
-								// Through the run's output, so stream mode and the TUI
-								// both show it and write it to the run's `seed.log`.
-								env.runSeed({
-									signal: seedSignal,
-									onOutputLine: (line) => view.output.line("seed", line),
-								}),
-							)
-					: undefined,
-				stayOpen: nothingToSpawn ? waitForShutdownSignal : undefined,
-				projectName: env.projectName,
-				runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
-				skipContainers: !hasServices,
-				onPhase: timer.record,
-				onReady: async () => {
-					if (!nothingToSpawn) timer.record("app readiness", appsElapsed());
-					timer.report();
-					// `start()` ensures the watchdog only for a run with containers,
-					// but the watchdog is also what lists live runs to BuncargoBar
-					// on the tailnet, and it stays while a run is live. Once the
-					// apps are up and not awaited, so startup pays nothing; quiet,
-					// because the TUI may own the screen.
-					if (!hasServices && options.watchdog)
-						void ensureWatchdog({ verbose: false }).catch((error) =>
-							reportWatchdogFailure(error),
-						);
-					if (servicesOnly)
-						log.success("Services ready. Press Ctrl-C to end the run.");
-				},
-				attach: args.attach,
-				extraArgs: args.passthrough,
-				output: view.output,
-				waitForExit: true,
-				onSignal: () => {
-					// Teardown releases again and reports a failure that stays.
-					void env
-						.releaseRun()
-						.catch((error) =>
-							log.warn(
-								`Could not release this run in ~/.buncargo/runs.json: ${String(error)}. Retrying as the run ends.`,
-							),
-						);
-				},
-				// A developer's other apps should not go down with one that
-				// never came up; `ci` and library starts keep failing the run.
-				keepOthersOnFailure: env.onAppFailure !== "stop-run",
-				watch: args.watch,
-				onAppPhase: async (name, life, previous) => {
-					const spawned = life.pid !== undefined && life.pid !== previous.pid;
-					if (spawned) {
-						options.runningApps.add(name);
-						if (!firstSpawn) {
-							firstSpawn = true;
-							timer.record("entry to first app spawn", timer.elapsedMs());
-						}
-					}
-					const failure = life.end?.failure;
-					const newFailure = failure !== previous.end?.failure;
-					// Never came up while the rest goes on: recorded before the
-					// registry says it failed, which `dev --detach` waits on.
-					const sparedFailure =
-						newFailure &&
-						failure?.kind === "not-ready" &&
-						life.standing !== "essential";
-					if (sparedFailure)
-						detached?.recordDetachedReport(env.root, (report) => ({
-							...report,
-							failures: [
-								...report.failures,
-								describeAppFailure({
-									app: name,
-									reason: failure.message,
-									tail: view.output.tail(name),
-									setupHints: failureContext.setupHints,
-								}),
-							],
-						}));
-					// A non-zero code is the app falling over, often the first
-					// sign its database was removed under it.
-					const exit = life.end?.exit;
-					if (life.phase === "down" && exit !== previous.end?.exit) {
-						options.runningApps.delete(name);
-						if (exit && exit.code !== null && exit.code !== 0) explainLoss();
-					}
-					// Ready as each app comes up, not when its whole wave has; a
-					// restart (`r`, `buncargo restart`, a watch, a capture's
-					// `restartOn`) says `starting` before its new process spawns.
-					rows.onAppPhase(name, life, previous);
-					// Activation claimed the first spawn's route; a restart claims
-					// it again in case a takeover moved it away and its run ended.
-					// Done before the new process spawns: its config reads its URL
-					// from the registry as it loads (`getEnvVar`).
-					if (life.phase === "restarting" && previous.phase !== "restarting") {
-						const warning = await reclaimAppRoute(env, name);
-						if (warning) view.output.event(name, warning, "warn");
-					}
-				},
-				onAfterWave1: async (signal) => {
-					await timer.measure("tunnels", () =>
-						tunnels.openOwnedTunnels(signal),
+			stayOpen: holds ? waitForShutdownSignal : undefined,
+			onReady: async () => {
+				if (!holds) timer.record("app readiness", appsElapsed());
+				timer.report();
+				if (servicesOnly)
+					log.success("Services ready. Press Ctrl-C to end the run.");
+			},
+			attach: args.attach,
+			extraArgs: args.passthrough,
+			output: view.output,
+			waitForExit: true,
+			onSignal: () => {
+				// Teardown releases again and reports a failure that stays.
+				void env
+					.releaseRun()
+					.catch((error) =>
+						log.warn(
+							`Could not release this run in ~/.buncargo/runs.json: ${String(error)}. Retrying as the run ends.`,
+						),
 					);
-					void recordAppUrls(env, Object.keys(appsForDev));
-				},
-				onCapture: async (app, captured) => {
-					void recordRunCapture(env, app, captured);
-				},
-				// Nothing to wait for without --expose, so needsPublicUrls apps
-				// join wave 1 and get health-checked like everything else.
-				deferPublicUrlApps: args.exposeRequested,
 			},
-		);
+			// A developer's other apps should not go down with one that
+			// never came up; `ci` and library starts keep failing the run.
+			keepOthersOnFailure: env.onAppFailure !== "stop-run",
+			watch: args.watch,
+			onAppPhase: async (name, life, previous) => {
+				const spawned = life.pid !== undefined && life.pid !== previous.pid;
+				if (spawned) {
+					options.runningApps.add(name);
+					if (!firstSpawn) {
+						firstSpawn = true;
+						timer.record("entry to first app spawn", timer.elapsedMs());
+					}
+				}
+				const failure = life.end?.failure;
+				const newFailure = failure !== previous.end?.failure;
+				// Never came up while the rest goes on: recorded before the
+				// registry says it failed, which `dev --detach` waits on.
+				const sparedFailure =
+					newFailure &&
+					failure?.kind === "not-ready" &&
+					life.standing !== "essential";
+				if (sparedFailure)
+					detached?.recordDetachedReport(env.root, (report) => ({
+						...report,
+						failures: [
+							...report.failures,
+							describeAppFailure({
+								app: name,
+								reason: failure.message,
+								tail: view.output.tail(name),
+								setupHints: failureContext.setupHints,
+							}),
+						],
+					}));
+				// A non-zero code is the app falling over, often the first
+				// sign its database was removed under it.
+				const exit = life.end?.exit;
+				if (life.phase === "down" && exit !== previous.end?.exit) {
+					options.runningApps.delete(name);
+					if (exit && exit.code !== null && exit.code !== 0) explainLoss();
+				}
+				// Activation claimed the first spawn's route; a restart claims
+				// it again in case a takeover moved it away and its run ended.
+				// Done before the new process spawns: its config reads its URL
+				// from the registry as it loads (`getEnvVar`).
+				if (life.phase === "restarting" && previous.phase !== "restarting") {
+					const warning = await reclaimAppRoute(env, name);
+					if (warning) view.output.event(name, warning, "warn");
+				}
+			},
+			onAfterWave1: async (signal) => {
+				await timer.measure("tunnels", () => tunnels.openOwnedTunnels(signal));
+				void recordAppUrls(env, Object.keys(appsForDev));
+			},
+			onCapture: async (app, captured) => {
+				void recordRunCapture(env, app, captured);
+			},
+			// Nothing to wait for without --expose, so needsPublicUrls apps
+			// join wave 1 and get health-checked like everything else.
+			deferPublicUrlApps: args.exposeRequested,
+		});
 		return undefined;
 	} finally {
 		// First, so teardown's messages land on the user's own screen.
 		await view.stop();
-		// A run interrupted before it was ready returns here rather than
-		// throwing; its breakdown is the one `--timing` was asked for.
-		timer.report();
-		await teardown();
 	}
 }
 
@@ -1145,19 +1080,17 @@ export function selectProfileApps<TApps extends Record<string, AppConfig>>(
 }
 
 /**
- * `--seed` runs the environment's seed path with `force`, so an explicit seed
- * request ignores `seed.check` and "not needed" can only mean the selection
- * left out its services. Exits 1 on failure, like every other flow.
+ * `--seed` forces the seed in preparation, so an explicit seed request
+ * ignores `seed.check` and "not needed" can only mean the selection left out
+ * its services. Exits 1 on failure, like every other flow.
  */
-async function runCliSeed<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
->(
-	env: DevEnvironment<TServices, TApps>,
+function reportCliSeed(
+	env: Pick<AnyDevEnvironment, "seed" | "services" | "apps">,
+	seed: PreparedSeed,
 	selectedServices: readonly string[],
-	signal?: AbortSignal,
-): Promise<number> {
-	const outcome = await env.runSeed({ force: true, signal });
+): number {
+	const outcome: SeedOutcome =
+		seed.kind === "ran" ? seed.outcome : { status: "not-needed" };
 
 	return typedSwitch(outcome, "status", {
 		"not-configured": () => {

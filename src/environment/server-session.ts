@@ -6,7 +6,7 @@ import {
 	startDevServers,
 } from "../core/process/dev-servers";
 import type { CapturedValue } from "../core/process/output-capture";
-import type { DevServerPids, ResolvedApp, SeedOutcome } from "../types";
+import type { ResolvedApp, SeedOutcome } from "../types";
 import { assertSeedSucceeded } from "./seed-startup";
 
 /** Shared lifecycle; callers supply UI, registry and tunnel observers. */
@@ -43,7 +43,7 @@ export async function startServerSession(
 	source: ServerSessionSource,
 	apps: Record<string, ResolvedApp>,
 	options: ServerSessionOptions,
-): Promise<DevServerPids> {
+): Promise<Record<string, number>> {
 	options.signal?.throwIfAborted();
 	const seed = options.seed
 		? startSeedTask(options.seed, options.signal)

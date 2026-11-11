@@ -7,7 +7,7 @@ import { formatCheckSlotWait, withCheckSlot } from "../../core/check-slots";
 import { CI_PROJECT_SUFFIX } from "../../core/ports";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import { loadDevEnv } from "../../loader";
-import type { AnyDevEnvironment, ExecResult, PrismaRunner } from "../../types";
+import type { AnyDevEnvironment, ExecResult, SeedOutcome } from "../../types";
 import {
 	type CommandSpec,
 	enumValidator,
@@ -230,80 +230,57 @@ async function runCi(parsed: ReturnType<typeof parseCiArgs>): Promise<number> {
 	const run = () =>
 		runForwardingSignals(async (signal) => {
 			try {
-				// Claimed with a hold, unlike a library run's keep-forever default:
-				// a run killed outright (`SIGKILL`) cannot tear down, and with no
-				// hold the sweep keeps its stack for as long as the checkout exists.
-				// Explicit, so a config's `autoShutdown: false`, which is about dev
-				// containers, does not keep a ci stack. Prepared first: the claim
-				// names the selection's services.
-				await env.prepareStartAsync(undefined, services, signal);
-				await env.claimRun({ idleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS, signal });
-				await env.start({
-					onlyServices: services,
-					startServers: false,
-					prepare:
-						(parsed.migrate || parsed.seed) && !parsed.schemaPush
-							? "all"
-							: "containers",
-					// Explicit, below: `seed.check` is for skipping a seed on a warm
-					// local database, and a CI database is never warm.
-					skipSeed: true,
-					// This process tears the containers down itself, and a CI runner
-					// is thrown away after the job anyway.
-					watchdog: false,
-					signal,
-				});
+				return await env.withServices(
+					services,
+					{
+						// A hold, unlike a library run's keep-forever default: a run
+						// killed outright (`SIGKILL`) cannot tear down, and with no
+						// hold the sweep keeps its stack for as long as the checkout
+						// exists. Explicit, so a config's `autoShutdown: false`, which
+						// is about dev containers, does not keep a ci stack.
+						claim: { idleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS },
+						prepare:
+							parsed.migrate || parsed.seed || parsed.schemaPush
+								? "all"
+								: "containers",
+						schema: parsed.schemaPush ? "push" : "migrate",
+						// Forced: `seed.check` is for skipping a seed on a warm local
+						// database, and a CI database is never warm.
+						seed: parsed.seed ? "force" : "skip",
+						// This process tears the containers down itself, and a CI
+						// runner is thrown away after the job anyway.
+						watchdog: false,
+						after: { stop: { removeVolumes: true } },
+						signal,
+					},
+					async ({ seed }) => {
+						const failedSeed = seed && seedFailure(seed);
+						if (failedSeed) {
+							reportContainerLoss(env);
+							return exited(failedSeed.exitCode || 1);
+						}
 
-				if (prisma && parsed.schemaPush) {
-					const failed = await pushSchema(prisma);
-					if (failed) {
-						reportContainerLoss(env);
-						return exited(failed);
-					}
-				}
+						if (parsed.command.length === 0) return exited(0);
 
-				if (parsed.seed) {
-					const outcome = await env.runSeed({ force: true, signal });
-					const failedSeed = typedSwitch(outcome, "status", {
-						"not-configured": () => {
-							throw new CliError(
-								"--seed needs a seed block in your dev config.",
-							);
-						},
-						...typedSwitchGroup(
-							outcome,
-							"status",
-							["not-needed", "succeeded"],
-							() => undefined,
-						),
-						failed: (failed) => failed.result,
-					});
-					if (failedSeed) {
-						reportContainerLoss(env);
-						return exited(failedSeed.exitCode || 1);
-					}
-				}
-
-				if (parsed.command.length === 0) return exited(0);
-
-				// The command gets no shared scope: a CI job should not need
-				// Infisical access for its tests. Migrations and the seed still get
-				// their own scopes.
-				const result = await env.exec(parsed.command, {
-					secrets: false,
-					verbose: true,
-					throwOnError: false,
-					signal,
-				});
-				if (result.exitCode !== 0 && !signal.aborted) reportContainerLoss(env);
-				return result;
+						// The command gets no shared scope: a CI job should not need
+						// Infisical access for its tests. Migrations and the seed
+						// still get their own scopes.
+						const result = await env.exec(parsed.command, {
+							secrets: false,
+							verbose: true,
+							throwOnError: false,
+							signal,
+						});
+						if (result.exitCode !== 0 && !signal.aborted)
+							reportContainerLoss(env);
+						return result;
+					},
+				);
 			} catch (error) {
 				// Interrupted before the command: the signal's exit code says so.
 				if (signal.aborted) return exited(1);
-				reportContainerLoss(env);
 				throw error;
 			} finally {
-				await env.stop({ removeVolumes: true });
 				if (ownComposeFile) rmSync(ownComposeFile, { force: true });
 			}
 		});
@@ -318,13 +295,18 @@ function exited(exitCode: number): ExecResult {
 	return { exitCode, stdout: "", stderr: "" };
 }
 
-/**
- * `prisma db push` in place of the migrations, then `prisma.generate` as
- * `--migrate` runs it. Returns the failing step's exit code, or 0.
- */
-async function pushSchema(prisma: PrismaRunner): Promise<number> {
-	log.info("Pushing the Prisma schema...");
-	const pushed = await prisma.run(["db", "push"]);
-	if (pushed !== 0 || !prisma.generateCommand) return pushed;
-	return prisma.generate();
+/** The seed's failed run, or undefined when it succeeded or had nothing to do. */
+function seedFailure(outcome: SeedOutcome): ExecResult | undefined {
+	return typedSwitch(outcome, "status", {
+		"not-configured": () => {
+			throw new CliError("--seed needs a seed block in your dev config.");
+		},
+		...typedSwitchGroup(
+			outcome,
+			"status",
+			["not-needed", "succeeded"],
+			() => undefined,
+		),
+		failed: (failed) => failed.result,
+	});
 }

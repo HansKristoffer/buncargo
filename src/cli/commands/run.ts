@@ -102,38 +102,29 @@ async function runTask(
 	extraArgs: readonly string[],
 ): Promise<number> {
 	const services = task.requiredServices ?? [];
-	try {
-		return await runForwardingSignals(async (signal) => {
-			if (services.length > 0) {
-				// Before the services: an expired Infisical session stops here, not
-				// once they are up. The task's own fetch reuses this token.
-				await ensureSecretsSession(commandSecretScopes(env, task.app), {
-					signal,
-				});
-				// Prepared before claiming: the claim names the selection's
-				// services. The CLI's idle hold, not the library's keep-forever
-				// default, so a task that started a database leaves it on the
-				// same timer as a `dev` run would.
-				await env.prepareStartAsync(undefined, services, signal);
-				await env.claimRun({ defaultIdleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS });
-				await env.start({
-					onlyServices: services,
-					startServers: false,
-					prepare: "containers",
-					skipEnvironmentLog: true,
-					signal,
-				});
-			}
-
-			return env.exec(withAppendedArgs(task.command, extraArgs), {
+	return runForwardingSignals(async (signal) => {
+		const command = () =>
+			env.exec(withAppendedArgs(task.command, extraArgs), {
 				app: task.app,
 				cwd: task.cwd,
 				verbose: true,
 				throwOnError: false,
 				signal,
 			});
+		if (services.length === 0) return command();
+
+		// Before the services: an expired Infisical session stops here, not
+		// once they are up. The task's own fetch reuses this token.
+		await ensureSecretsSession(commandSecretScopes(env, task.app), {
+			signal,
 		});
-	} finally {
-		if (services.length > 0) await env.releaseRun();
-	}
+		// The CLI's idle hold, not the library's keep-forever default, so a
+		// task that started a database leaves it on the same timer as a `dev`
+		// run would.
+		return env.withServices(
+			services,
+			{ claim: { defaultIdleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS }, signal },
+			command,
+		);
+	});
 }

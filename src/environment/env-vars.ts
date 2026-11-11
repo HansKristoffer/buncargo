@@ -285,6 +285,7 @@ export function createEnvVarsApi<
 			cwd:
 				options?.cwd ??
 				(options?.app === undefined ? undefined : apps[options.app]?.cwd),
+			unsetEnv: ctx.config.unsetEnv,
 		});
 	}
 

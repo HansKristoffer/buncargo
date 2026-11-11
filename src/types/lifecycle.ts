@@ -1,4 +1,5 @@
 import type { AppConfig } from "./app";
+import type { SeedOutcome } from "./preparation";
 import type { ServiceConfig } from "./service";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -33,12 +34,30 @@ export interface StartOptions<
 	prepare?: "all" | "containers" | "migrate";
 	/** Report completed startup phases without coupling the library to CLI output. */
 	onPhase?: (name: string, durationMs: number) => void;
-	/** Skip automatic seeding (useful when CLI handles seeding separately). Default: false */
-	skipSeed?: boolean;
-	/** Prefetch seed secrets when the caller will run seed separately. */
-	prefetchSeed?: boolean;
-	/** Skip the initial `logInfo` banner (CLI uses this with `--expose`, then logs once with tunnel URLs). Default: false */
-	skipEnvironmentLog?: boolean;
+	/**
+	 * The seed. `"auto"` (default) runs it when `seed.check` says so, beside
+	 * the apps with `seed.beforeApps: false`. `"force"` runs it before the
+	 * apps whatever `seed.check` says. `"skip"` leaves it out.
+	 */
+	seed?: "auto" | "force" | "skip";
+	/**
+	 * How the Prisma schema reaches the database: `"migrate"` (default) runs
+	 * `prisma migrate deploy`, `"push"` runs `prisma db push` in its place, for
+	 * a throwaway database (`buncargo ci --schema=push`). The other
+	 * `migrations` and the hooks run either way.
+	 */
+	schema?: "migrate" | "push";
+	/**
+	 * The hold the run claims its containers with: how long they outlive it.
+	 * `idleTimeoutMs: false` keeps them as long as the checkout exists.
+	 * Default: kept, unless `options.autoShutdown` or `defaultIdleTimeoutMs`
+	 * gives a hold.
+	 */
+	claim?: {
+		idleTimeoutMs?: number | false;
+		/** The hold when neither `idleTimeoutMs` nor `options.autoShutdown` gives one. */
+		defaultIdleTimeoutMs?: number | false;
+	};
 	/** If set, start and wait for only these app names plus any transitive `requiredApps`. */
 	onlyApps?: Extract<keyof TApps, string>[];
 	/**
@@ -73,4 +92,41 @@ export interface StopOptions {
 	verbose?: boolean;
 	/** Remove Docker volumes (destroys data). Default: false */
 	removeVolumes?: boolean;
+	/**
+	 * Tear the services down even while another live run of this project
+	 * uses them. Default: false, which stops this environment's apps and
+	 * releases its claim, leaving the services to that run.
+	 */
+	force?: boolean;
+}
+
+/** Options for {@link DevEnvironment.withServices}. */
+export interface WithServicesOptions extends Pick<
+	StartOptions,
+	| "signal"
+	| "verbose"
+	| "wait"
+	| "seed"
+	| "schema"
+	| "claim"
+	| "watchdog"
+	| "onPhase"
+> {
+	/**
+	 * What the services get ready for: `"containers"` (default) only starts
+	 * them; `"all"` also runs the migrations, generation and the seed.
+	 */
+	prepare?: "containers" | "all";
+	/**
+	 * What happens to the services once the command ends. `"release"`
+	 * (default) hands them to the claim's idle hold; `"stop"` tears them
+	 * down, as {@link StopOptions} `removeVolumes` says.
+	 */
+	after?: "release" | { stop: Pick<StopOptions, "removeVolumes"> };
+}
+
+/** What {@link DevEnvironment.withServices} hands its command. */
+export interface ServicesStarted {
+	/** The seed's outcome, when `seed: "force"` ran it. */
+	readonly seed?: SeedOutcome;
 }

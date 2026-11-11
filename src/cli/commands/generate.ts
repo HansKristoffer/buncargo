@@ -1,4 +1,5 @@
 import { adoptLiveCaptures } from "../../core/run-publish";
+import { internalsOf } from "../../environment";
 import { loadDevEnv } from "../../loader";
 import {
 	type CommandSpec,
@@ -59,7 +60,7 @@ export async function handleGenerate(args: string[]): Promise<number> {
 	}
 
 	await adoptLiveCaptures(env);
-	const changed = new Set(env.renderGeneratedFiles());
+	const changed = new Set(internalsOf(env).renderGeneratedFiles());
 	for (const file of files) {
 		if (changed.has(file.path)) log.done(`Wrote ${file.path}`);
 		else log.line(`  ${file.path} is up to date`);

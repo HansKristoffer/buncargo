@@ -41,11 +41,15 @@ export function shellExitCode(
 	return signal ? 128 + constants.signals[signal] : 1;
 }
 
+/** The config's `unsetEnv`, which the environment running the command passes. */
+type UnsetEnvOption = { unsetEnv?: readonly string[] };
+
 function resolveCommandEnv(
 	envVars: Record<string, string>,
 	env: Record<string, string>,
+	unsetEnv: readonly string[] | undefined,
 ): NodeJS.ProcessEnv {
-	return childProcessEnv({ ...process.env, ...envVars, ...env });
+	return childProcessEnv({ ...process.env, ...envVars, ...env }, unsetEnv);
 }
 
 function commandFailure(cmd: string, result: ExecResult): Error {
@@ -61,7 +65,7 @@ export function exec(
 	cmd: string,
 	root: string,
 	envVars: Record<string, string>,
-	options: ExecOptions = {},
+	options: ExecOptions & UnsetEnvOption = {},
 ): ExecResult {
 	const { cwd, verbose = false, env = {}, throwOnError = true } = options;
 
@@ -71,7 +75,7 @@ export function exec(
 		const stdout = execSync(cmd, {
 			timeout: options.timeoutMs,
 			cwd: cwd ? resolve(root, cwd) : root,
-			env: resolveCommandEnv(envVars, env),
+			env: resolveCommandEnv(envVars, env, options.unsetEnv),
 			encoding: "utf-8",
 			stdio: verbose ? "inherit" : ["pipe", "pipe", "pipe"],
 		});
@@ -109,7 +113,8 @@ export async function execAsync(
 	cmd: string | readonly string[],
 	root: string,
 	envVars: Record<string, string>,
-	options: ExecOptions & { onOutputLine?: (line: string) => void } = {},
+	options: ExecOptions &
+		UnsetEnvOption & { onOutputLine?: (line: string) => void } = {},
 ): Promise<CommandResult> {
 	const {
 		cwd,
@@ -134,7 +139,7 @@ export async function execAsync(
 			typeof cmd === "string" ? [] : [...cmd.slice(1)],
 			{
 				cwd: cwd ? resolve(root, cwd) : root,
-				env: resolveCommandEnv(envVars, env),
+				env: resolveCommandEnv(envVars, env, options.unsetEnv),
 				shell: typeof cmd === "string",
 				detached: true,
 				stdio:

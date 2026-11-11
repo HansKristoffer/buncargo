@@ -559,3 +559,35 @@ describe("createDevEnvironment integrations", () => {
 		}
 	});
 });
+
+// `unsetEnv` was module state: the environment built last decided for every
+// environment in the process.
+it("keeps each environment's own unsetEnv from the commands it runs", async () => {
+	const root = createWorktreeRoot("unset-env");
+	process.env.BUNCARGO_TEST_FIRST = "first";
+	process.env.BUNCARGO_TEST_SECOND = "second";
+	const environment = (unsetEnv: string[]) =>
+		createDevEnvironment(
+			{ projectPrefix: "unset", services: {}, apps: {}, unsetEnv },
+			{ root },
+		);
+	const seen = async (env: ReturnType<typeof environment>) =>
+		(
+			await env.exec(
+				// biome-ignore lint/suspicious/noTemplateCurlyInString: shell expansions
+				'printf "%s %s" "${BUNCARGO_TEST_FIRST:-unset}" "${BUNCARGO_TEST_SECOND:-unset}"',
+				{ secrets: false },
+			)
+		).stdout;
+	try {
+		const first = environment(["BUNCARGO_TEST_FIRST"]);
+		const second = environment(["BUNCARGO_TEST_SECOND"]);
+
+		expect(await seen(first)).toBe("unset second");
+		expect(await seen(second)).toBe("first unset");
+	} finally {
+		delete process.env.BUNCARGO_TEST_FIRST;
+		delete process.env.BUNCARGO_TEST_SECOND;
+		rmSync(root, { recursive: true, force: true });
+	}
+});

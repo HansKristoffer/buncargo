@@ -26,9 +26,13 @@ sweep, which compares identities, finds it gone; the prune never drops an entry 
   so does each finished session of the project whose containers were all on the runtimes it
   downed (`heldOnlyOn`, the rule `stop` applies too). It used to retire every finished session,
   so a library `stop()` on Docker dropped the only record of a stack held on Apple's runtime.
+  While another live run of the project uses the services, `stop()` keeps them and releases
+  instead (`environment/run-keep.ts`, the rule `stop` applies to a sibling session): two `ci`
+  runs once shared one project, and the first to finish removed the other's database mid-test.
 - Every write addresses an entry by `sessionId`, which is required; entries without one are dropped
   on read.
-- A library run with no hold asked for through `claimRun` keeps its containers after it exits.
+- A library run with no hold asked for (`start({ claim })` or `claimRun`) keeps its containers
+  after it exits.
   `options.autoShutdown` is the CLI's, applied only on top of the default the CLI passes: a script
   that brings a stack up and ends is indistinguishable from a crash, and "no hold" means "as long
   as the checkout" however the run ended. The CLI passes its three-minute default explicitly.

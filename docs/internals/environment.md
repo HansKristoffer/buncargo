@@ -21,12 +21,28 @@ CLI, and why, is in [what only `buncargo dev` does](./overview.md#what-only-bunc
 (which `buncargo dev --seed` calls with `force: true`). A failed seed fails `start()`; it does not
 log and continue. `seed-startup.ts` shares selection for `seed.beforeApps: false`; any selected
 `afterPreparation` service forces the serial path. `server-session.ts` owns the concurrent seed
-task, cancellation and draining across CLI and library, including production builds and empty
-sessions kept open for tunnels. The CLI defers the automatic seed through
-`skipSeed`/`prefetchSeed`, and `server-session.ts` joins the seed before `afterServers` and
-readiness. Concurrent output is prefixed by `exec`'s `outputPrefix` in the library; the CLI passes
-`onOutputLine` and feeds it to the run's output as `seed`, so stream mode and the TUI both show it
-and log it to `seed.log`.
+task, cancellation and draining, including production builds and empty sessions kept open for
+tunnels, and joins the seed before `afterServers` and readiness. Concurrent output is prefixed by
+`exec`'s `outputPrefix` without an output sink; with one (the CLI's run output) it goes there as
+`seed`, so stream mode and the TUI both show it and log it to `seed.log`.
+
+## One pipeline
+
+`start()` and `buncargo dev` are the same three phases, so claims, leases, app rows, hooks and the
+seed decision cannot drift between them (a parity test in `run-cli.test.ts` compares the two).
+`prepare()` (`lifecycle.ts`) claims the run, prepares the services and returns a `Prepared`,
+including the seed's place: run, overlapping the apps, or left out. `claimApps()` and `spawn()`
+(`pipeline.ts`) take the leases through a `LeasePolicy` (the library's never asks; `dev`'s asks or
+takes over), publish the rows, then run the session with the environment's own hooks, health,
+captures and the app-only watchdog. The CLI reaches the phases through `internalsOf(env)`
+(`internals.ts`), kept off `DevEnvironment`, and adds only terminal concerns between them:
+classification, takeover, prompts, the banner, the output sink. Which steps a selection gets is
+`planPreparation` (`plan-preparation.ts`), pure. `withServices` is the one way a command starts
+services for itself (`run`, `sql`, `prisma`, `ci`).
+
+A `stop()` reads the registry under the project's lifecycle lock, which every start takes before
+its containers, and keeps the services when another live run of the project uses them
+(`run-keep.ts`, shared with `buncargo stop`). `force` is the way past it.
 
 ## Secrets prefetch
 
