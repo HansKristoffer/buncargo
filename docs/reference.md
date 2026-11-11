@@ -1452,14 +1452,14 @@ Next is not a dependency of buncargo, and the wrapper imports nothing from it.
 | `BUNCARGO_HOSTS` | `0` forces `http://localhost:port` even when `options.hosts` is on; `tailscale` serves each app's named URL through Tailscale Serve instead of the loopback daemon ([Named URLs over Tailscale](#named-urls-over-tailscale)) |
 | `BUNCARGO_HOSTS_PORT` | HTTPS port the loopback proxy daemon binds (default `443`; plain HTTP on `:80` only when the default is used) |
 | `BUNCARGO_MKCERT_PATH` | Absolute `mkcert` binary; skips PATH lookup and download |
-| `BUNCARGO_MKCERT_VERSION` | GitHub release tag for the bundled `mkcert` download (default `v1.4.4`) |
+| `BUNCARGO_MKCERT_VERSION` | GitHub release tag for the bundled `mkcert` download (default `v1.4.4`). Another tag installs only when its GitHub release publishes the asset's sha256; otherwise point `BUNCARGO_MKCERT_PATH` at an mkcert you installed |
 | `BUNCARGO_SYNC_HOSTS` | `0` skips writing the `# buncargo-start` / `# buncargo-end` block in `/etc/hosts` |
 | `BUNCARGO_INFISICAL_PATH` | Absolute `infisical` binary; skips the PATH lookup |
 | `SECRETS_ENV` | Infisical environment slug when an app's `secrets` scope does not name one (default `dev`) |
 | `BUNCARGO_TYPECHECK_CONCURRENCY` | Max overlapping workspace typecheck processes (positive integer) |
 | `BUNCARGO_CHECK_SLOTS` | Typechecks, `slot` and `exec --slot` commands that may run at once across every checkout on the machine (default `3`, `0` turns the cap off) |
 | `BUNCARGO_TIMING` | `1` prints a per-phase breakdown of `dev` startup (same as `--timing`) |
-| `CLOUDFLARED_VERSION` | GitHub release tag for the bundled download |
+| `CLOUDFLARED_VERSION` | GitHub release tag for the bundled download (default `2026.3.0`). Another tag installs only when its GitHub release publishes the asset's sha256 |
 | `CI` | Skips Docker auto-start; also disables named hosts. Detected from `CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL` |
 
 Every variable above is read through [`src/core/runtime-flags.ts`](../src/core/runtime-flags.ts) on each call, so a flag exported mid-session applies to the next command without a restart.
