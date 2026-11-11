@@ -234,16 +234,10 @@ export async function runCli<
 	}
 	if (args.detach) {
 		const { DETACH_TIMEOUT_MS, runDetached } = await import("./dev-detach");
-		const plan = planStart(env.apps, env.services, {
-			onlyApps: selectDevApps(env, args),
-		});
 		process.exit(
 			await runDetached({
 				root: env.root,
 				keep: args.keep,
-				expectApps: Object.values(plan.apps).some(
-					(app) => app.devCommand !== false,
-				),
 				argv: process.argv,
 				timeoutMs: DETACH_TIMEOUT_MS,
 			}),
@@ -499,6 +493,14 @@ async function runDevFlow<
 	});
 	const appsForDev = plan.apps;
 	validateDevStart(env, args, appsForDev, plan.requiredServiceKeys);
+	// What `dev --detach` waits for, which only this run knows: it never
+	// loads the config itself.
+	detached?.recordDetachedReport(env.root, (report) => ({
+		...report,
+		expectApps: Object.values(appsForDev).some(
+			(app) => app.devCommand !== false,
+		),
+	}));
 
 	// Fired now, awaited before named hosts and the claim: an expired
 	// Infisical session stops the run before any container or app starts, with

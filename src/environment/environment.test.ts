@@ -460,14 +460,19 @@ describe("suffixed environments", () => {
 		}
 	});
 
-	it("keeps an explicitly configured compose path", () => {
+	// Sharing a configured file, `ci` overwrote the dev stack's model with
+	// its tmpfs one, and threw with `writeStrategy: "if-missing"`.
+	it("puts its compose file beside an explicitly configured one", () => {
 		const root = createWorktreeRoot("explicit");
 		try {
-			const env = createDevEnvironment(
-				{ ...createBaseConfig(), docker: { generatedFile: "compose.yml" } },
-				{ root, suffix: "ci" },
-			);
-			expect(env.composeFile).toBe("compose.yml");
+			const config = {
+				...createBaseConfig(),
+				docker: { generatedFile: "docker/compose.yml" },
+			};
+			const dev = createDevEnvironment(config, { root });
+			const ci = createDevEnvironment(config, { root, suffix: "ci" });
+			expect(dev.composeFile).toBe("docker/compose.yml");
+			expect(ci.composeFile).toBe("docker/compose.ci.yml");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

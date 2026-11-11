@@ -11,8 +11,9 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { RunEntry } from "../core/run-registry";
+import { standInForWatchdog } from "../core/watchdog.testing";
 import {
 	detachedArgv,
 	detachedLogPath,
@@ -146,7 +147,6 @@ describe("runDetached", () => {
 				writeFileSync(runScript, body);
 				code = await runDetached({
 					root,
-					expectApps: true,
 					keep: false,
 					argv: ["bun", runScript],
 					timeoutMs: options.timeoutMs ?? 10_000,
@@ -335,7 +335,6 @@ function detachInProcess(script: (root: string) => string) {
 			`import { runDetached } from ${JSON.stringify(detach)};
 process.exitCode = await runDetached({
 	root: ${JSON.stringify(root)},
-	expectApps: true,
 	keep: false,
 	argv: ["bun", ${JSON.stringify(join(root, "run.ts"))}],
 	timeoutMs: 10_000,
@@ -424,6 +423,7 @@ const entry = buildRunEntry({
 	root: ${JSON.stringify(root)},
 	isWorktree: false,
 });
+recordDetachedReport(${JSON.stringify(root)}, (report) => ({ ...report, expectApps: true }));
 await publishRun({
 	...entry,
 	apps: [{ name: "api", port: 3000, url: "", loopbackUrl: "", status: "stopped" }],
@@ -449,3 +449,64 @@ setTimeout(() => {}, 30_000);
 	expect(code).toBe(1);
 	expect(stderr).toContain("the real cause");
 });
+
+// The parent built the whole environment to learn whether the selection has
+// apps, and the background run built it again: twice the config load and
+// port reads on every `dev --detach`.
+it("loads the config once, in the background run", async () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-detach-")));
+	const loads = join(root, "loads");
+	const probe = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+	const port = Number(probe.port);
+	probe.stop(true);
+	writeFileSync(join(root, "package.json"), "{}");
+	writeFileSync(
+		join(root, "serve.ts"),
+		'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("ok") });',
+	);
+	const config = {
+		projectPrefix: "detach-once",
+		services: {},
+		apps: { app: { port, devCommand: `${process.execPath} serve.ts` } },
+		options: { worktreeIsolation: false, hosts: false },
+	};
+	writeFileSync(
+		join(root, "dev.config.ts"),
+		`import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(loads)}, \`\${process.pid}\\n\`);
+export default ${JSON.stringify(config)};`,
+	);
+	await standInForWatchdog(root);
+	const cli = [process.execPath, resolve(import.meta.dir, "bin.ts")];
+	const env = {
+		...process.env,
+		HOME: root,
+		CI: "1",
+		BUNCARGO_PORT_OFFSET: "0",
+		BUNCARGO_HOSTS: "0",
+		BUNCARGO_SYSTEMD_SCOPE: "0",
+	};
+	const run = (args: string[]) =>
+		Bun.spawn([...cli, ...args], {
+			cwd: root,
+			env,
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+	try {
+		const detach = run(["dev", "--detach"]);
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(detach.stdout).text(),
+			new Response(detach.stderr).text(),
+			detach.exited,
+		]);
+		expect({ exitCode, stdout, stderr }).toMatchObject({ exitCode: 0 });
+		const loaders = readFileSync(loads, "utf8").trim().split("\n");
+		expect(loaders).toHaveLength(1);
+		expect(loaders[0]).not.toBe(String(detach.pid));
+	} finally {
+		await run(["stop", "--all"]).exited;
+		rmSync(root, { recursive: true, force: true });
+	}
+}, 60_000);

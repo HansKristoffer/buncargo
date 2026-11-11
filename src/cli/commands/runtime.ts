@@ -4,7 +4,7 @@ import { readEnvOverrides } from "../../core/env-overrides";
 import { unallocatedPortsMessage } from "../../core/port-exhaustion";
 import { CommandSignalError, shellExitCode } from "../../core/process/exec";
 import { isInteractive } from "../../core/prompt";
-import { hostsMode, isCI } from "../../core/runtime-flags";
+import { detachedRunMode, isCI } from "../../core/runtime-flags";
 import { createNoopPhaseTimer, createPhaseTimer } from "../../core/timing";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import type { AnyDevEnvironment, PrismaRunner } from "../../types";
@@ -72,6 +72,27 @@ export async function handleDev(args: string[]): Promise<void> {
 		return;
 	}
 	exitOnDevArgErrors(parsed);
+	// The background run loads the config and builds the environment; this
+	// process only starts it and waits. One already in the background is
+	// refused by `runCli`.
+	if (parsed.detach && detachedRunMode() === undefined) {
+		const { findCheckoutRoot } = await import("../../loader/find-config-file");
+		const root = findCheckoutRoot(process.cwd());
+		if (root === undefined)
+			log.fail(
+				"No config file found. Create dev.config.ts with: export default defineDevConfig({ ... })",
+			);
+		for (const warning of parsed.ignoredFlags) log.warn(warning);
+		const { DETACH_TIMEOUT_MS, runDetached } = await import("../dev-detach");
+		process.exit(
+			await runDetached({
+				root,
+				keep: parsed.keep,
+				argv: process.argv,
+				timeoutMs: DETACH_TIMEOUT_MS,
+			}),
+		);
+	}
 	// The runtime has to be known before the environment is built, so it is read
 	// here rather than inside runCli, which is handed a finished env.
 	const timer = parsed.timing
@@ -345,47 +366,26 @@ function parseMigrateCheckArgs(args: string[]) {
 }
 
 /**
- * The environment as this checkout's live run sees it: the named URLs the
- * daemon is actually serving, and what the run's apps printed.
+ * The environment as this checkout's live run sees it: the named URLs a run
+ * of it serves, entry by entry as `getEnvVar` reads them, and what the run's
+ * apps printed.
  */
 export async function loadLiveEnv() {
-	const { getCaPath, waitForDaemonRoutes } = await import("../../core/hosts");
-	const { readLiveNamedHostsSync } =
-		await import("../../core/hosts/route-owners");
-	const { readServedTailscaleUrls } =
-		await import("../../core/hosts/tailscale-serve");
+	const { readLiveNamedUrls } = await import("../../core/checkout-view");
 	const { adoptLiveCaptures } = await import("../../core/run-publish");
 	const env = await loadEnv({ readOnly: true });
 	// Answered all the same (`portOffsetProvenance: "unallocated"`): these
 	// commands are how an agent finds its way out of a full range.
 	if (env.portOffsetProvenance === "unallocated")
 		log.warn(unallocatedPortsMessage(env.root));
-	const mode = hostsMode();
-	// What the run recorded Tailscale answering for, never a request of our own.
-	if (env.hosts && mode === "tailscale") {
-		const tailscaleUrls = await readServedTailscaleUrls(
-			env.root,
-			env.ports as Record<string, number>,
-		);
-		if (Object.keys(tailscaleUrls).length > 0)
-			env.setNamedHostsActive(true, { tailscaleUrls });
-	}
-	// Named while a run of this checkout serves them: registered by a live
-	// run, as `getEnvVar` reads it, and the daemon answering for them, which
-	// only an async reader can also confirm. A healthy daemon alone is not a
-	// daemon serving this project. Zero wait — this only reports state, so an
-	// unpicked-up route reads as localhost rather than blocking the command.
-	if (env.hosts && mode === "loopback") {
-		const hostnames = readLiveNamedHostsSync(env.root, env.hosts.plan).map(
-			(entry) => entry.hostname,
-		);
-		const serving =
-			hostnames.length > 0 &&
-			(await waitForDaemonRoutes(hostnames, { timeoutMs: 0 })).ok;
-		if (serving) {
-			env.setNamedHostsActive(true, { caPath: getCaPath(), hostnames });
-		}
-	}
+	const live = env.hosts
+		? readLiveNamedUrls(
+				env.root,
+				env.hosts.plan,
+				env.ports as Record<string, number>,
+			)
+		: undefined;
+	if (live) env.setNamedHostsActive(true, live);
 	await adoptLiveCaptures(env);
 	return env;
 }

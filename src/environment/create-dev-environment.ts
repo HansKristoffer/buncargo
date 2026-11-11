@@ -1,5 +1,6 @@
 import { assertValidConfig } from "../config";
 import { applyIntegrations } from "../config/integrations";
+import { labelledCaptures } from "../core/captured-values";
 import { setUnsetEnv } from "../core/child-env";
 import { waitForServer } from "../core/network";
 import { findMonorepoRoot } from "../core/ports";
@@ -16,7 +17,7 @@ import type {
 	ServiceConfig,
 	SuffixedEnvironmentOptions,
 } from "../types";
-import { createCaptureRecorder, labelledCaptures } from "./captures";
+import { createCaptureRecorder } from "./captures";
 import { explainMissingContainers, withLossNotice } from "./container-loss";
 import { createDevEnvContext } from "./context";
 import { createEnvVarsApi } from "./env-vars";

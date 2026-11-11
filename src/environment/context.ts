@@ -1,3 +1,4 @@
+import { extname } from "node:path";
 import { pick } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
 import {
@@ -5,11 +6,13 @@ import {
 	resolveContainerRuntime,
 	resolveContainerRuntimeBinary,
 } from "../container-runtime";
-import { type EnvInput, loadEnvInput } from "../core/env-input";
-import { readEnvOverrides } from "../core/env-overrides";
-import { applyHostPlanToUrls, planNamedHosts } from "../core/hosts/plan";
+import {
+	namedHostsRuntime,
+	namedUrls,
+	resolveCheckoutView,
+} from "../core/checkout-view";
+import type { EnvInput } from "../core/env-input";
 import { tailscaleBlockPorts } from "../core/hosts/tailscale-serve";
-import { getLocalIp } from "../core/network";
 import {
 	offsetClaimKey,
 	readAllOffsetClaims,
@@ -20,10 +23,7 @@ import {
 	resolvePortPlan,
 } from "../core/port-allocation";
 import {
-	asComputedLoopbackUrls,
-	asComputedPorts,
 	asComputedUrls,
-	computeDevIdentity,
 	computeLoopbackUrls,
 	computeUrls,
 	findMonorepoRoot,
@@ -61,7 +61,6 @@ import type {
 	DevConfig,
 	DevEnvironmentTunnelLog,
 	EnvValues,
-	HostsOptionsLike,
 	HostsRuntime,
 	NamedHostsActivation,
 	PortOffsetProvenance,
@@ -169,8 +168,21 @@ export interface DevEnvContext<
 	): void;
 }
 
-function resolveHostsTld(hosts: boolean | HostsOptionsLike): string {
-	return typeof hosts === "object" ? (hosts.tld ?? "localhost") : "localhost";
+/**
+ * A suffixed environment's compose file beside the configured one: the
+ * suffix before the extension. Sharing the file let `ci` overwrite the dev
+ * stack's model, and fail where it is written only when missing.
+ */
+function suffixedComposeFile(
+	generatedFile: string | undefined,
+	suffix: string,
+): string {
+	const label = suffix.replace(/[^A-Za-z0-9-]/g, "-");
+	if (generatedFile === undefined)
+		return `.buncargo/docker-compose.${label}.generated.yml`;
+	const extension = extname(generatedFile);
+	const stem = generatedFile.slice(0, generatedFile.length - extension.length);
+	return `${stem}.${label}${extension}`;
 }
 
 export function createDevEnvContext<
@@ -188,42 +200,31 @@ export function createDevEnvContext<
 	} = {},
 ): DevEnvContext<TServices, TApps, TEnv> {
 	const root = options.root ?? findMonorepoRoot();
-	const envOverrides = readEnvOverrides(root);
-	const inputEnv = loadEnvInput(
-		root,
-		config.options?.envFiles,
-		process.env,
-		envOverrides,
-	);
 	const suffix = options.suffix;
-	const { worktree, worktreeSuffix, projectSuffix, projectName } =
-		computeDevIdentity({
-			projectPrefix: config.projectPrefix,
-			suffix,
-			root,
-			worktreeIsolation: config.options?.worktreeIsolation,
-		});
-	const localIp = getLocalIp();
+	// The checkout view `getEnvVar` answers from, made this environment's own:
+	// its maps are new objects, which allocation updates in place.
+	const view = resolveCheckoutView(config, root, { suffix });
+	const { worktree, worktreeSuffix, projectSuffix, projectName, localIp } =
+		view;
+	const { inputEnv, envOverrides, services } = view;
 
-	const services = config.services;
 	// Resolved once, here, because this is the last place the config-level
 	// defaults and the apps are both in hand: every spawner downstream reads the
 	// scope off `app.secrets` alone.
-	const apps = applySecretDefaults(
-		(config.apps ?? {}) as TApps,
-		config.secrets,
-	);
+	const apps = applySecretDefaults(view.apps, config.secrets);
 	// A suffixed environment (`withSuffix`, `buncargo ci`) is a second stack in
 	// the same checkout: it gets its own compose file and never persists its
 	// ports, or it would overwrite the ones the checkout's own `dev` run and
 	// every `exec`/`env` read.
-	const docker =
-		suffix && !config.docker?.generatedFile
-			? {
-					...config.docker,
-					generatedFile: `.buncargo/docker-compose.${suffix.replace(/[^A-Za-z0-9-]/g, "-")}.generated.yml`,
-				}
-			: config.docker;
+	const docker = suffix
+		? {
+				...config.docker,
+				generatedFile: suffixedComposeFile(
+					config.docker?.generatedFile,
+					suffix,
+				),
+			}
+		: config.docker;
 	const composeFile = getGeneratedComposePath(root, docker).composeFileArg;
 	const runtimeSelection = {
 		flag: options.containerRuntime,
@@ -239,74 +240,23 @@ export function createDevEnvContext<
 	let startSelection: StartSelection | undefined;
 	let preparedSelection: string | undefined;
 
-	let portPlan = resolvePortPlan({
-		projectPrefix: config.projectPrefix,
-		projectName,
-		root,
-		services,
-		apps,
-		suffix,
-		worktreeName: worktreeSuffix,
-		worktreeIsolation: config.options?.worktreeIsolation,
-		// Without the resolved backend the allocator asks Docker about every
-		// port, so this project's own Apple containers look foreign and shift
-		// the offset on every run.
-		persist: false,
-		probeConflicts: false,
-	});
+	/**
+	 * A suffixed environment, or any in CI, gives its port block back when it
+	 * ends; a developer's dev checkout keeps its block while stopped.
+	 */
+	const throwaway = () => suffix !== undefined || isCI();
+	let portPlan = view.portPlan;
 	const portMap = portPlan.ports;
-	const ports = asComputedPorts<TServices, TApps>(portMap);
-
-	const hostsPlan = config.options?.hosts
-		? planNamedHosts({
-				projectPrefix: config.projectPrefix,
-				worktreeSuffix,
-				apps,
-				services,
-				ports: portMap,
-				hosts: config.options.hosts,
-				primaryApp: config.options.primaryApp,
-			})
-		: [];
-	const hosts: HostsRuntime | null = config.options?.hosts
-		? {
-				plan: hostsPlan,
-				active: false,
-				tld: resolveHostsTld(config.options.hosts),
-				mode: hostsMode() === "tailscale" ? "tailscale" : "loopback",
-				tailscaleUrls: {},
-			}
-		: null;
-
-	const plainUrls: UrlMap = computeUrls(
-		services,
-		apps,
-		portMap,
-		localIp,
-		urlHostOverride(),
-	);
+	const { ports, plainUrls, loopbackUrls } = view;
+	const hostsPlan = view.hostPlan;
+	const hosts = namedHostsRuntime(config.options?.hosts, hostsPlan, undefined);
 	const urls = asComputedUrls<TServices, TApps>({ ...plainUrls });
-	const loopbackUrls = asComputedLoopbackUrls<TServices, TApps>(
-		computeLoopbackUrls(services, apps, portMap),
-	);
 	const publicUrls: UrlMap = {};
 	// Loopback: the plan's hostnames being served, when only some are.
 	let servedHostnames: ReadonlySet<string> | undefined;
 
 	function refreshUrls() {
-		const urlMap = toUrlMap(urls);
-		Object.assign(urlMap, plainUrls);
-
-		if (!hosts?.active) return;
-		if (hosts.mode === "tailscale") {
-			Object.assign(urlMap, hosts.tailscaleUrls);
-			return;
-		}
-		const served = servedHostnames;
-		const plan = served
-			? hosts.plan.filter((entry) => served.has(entry.hostname))
-			: hosts.plan;
-		applyHostPlanToUrls(urlMap, plan);
+		Object.assign(toUrlMap(urls), namedUrls(plainUrls, hosts, servedHostnames));
 	}
 
 	let model: ComposeDocument | undefined;
@@ -390,7 +340,7 @@ export function createDevEnvContext<
 			// parallel suffixed runs (CI jobs on one machine) never share one.
 			persist: suffix === undefined,
 			claim: true,
-			throwaway: suffix !== undefined || isCI(),
+			throwaway: throwaway(),
 			// The bind probe here too: this is the allocation every dev run
 			// makes, and a snapshot only knows what `lsof` lets this user see.
 			getOwner: snapshot
@@ -449,7 +399,7 @@ export function createDevEnvContext<
 			return { offset, provenance };
 		},
 		captureThrowawayClaim() {
-			if (suffix === undefined && !isCI()) return async () => {};
+			if (!throwaway()) return async () => {};
 			const key = offsetClaimKey(root, suffix);
 			// Read before the teardown: another run of this environment that
 			// allocates during it rewrites the claim, and a read after would

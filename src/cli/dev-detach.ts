@@ -88,6 +88,11 @@ function linkNewestDetachedLog(root: string, logPath: string): void {
 export interface DetachedReport {
 	setupHints: string[];
 	failures: RunFailure[];
+	/**
+	 * Whether the run's selection has apps to spawn (see {@link settledRun}),
+	 * recorded once it has planned: only the run loads the config.
+	 */
+	expectApps?: boolean;
 }
 
 /**
@@ -157,7 +162,8 @@ function validateReport(value: unknown): DetachedReport | undefined {
 		typeof report === "object" &&
 		report !== null &&
 		Array.isArray(report.setupHints) &&
-		Array.isArray(report.failures);
+		Array.isArray(report.failures) &&
+		(report.expectApps === undefined || typeof report.expectApps === "boolean");
 	return valid ? (report as DetachedReport) : undefined;
 }
 
@@ -306,8 +312,6 @@ export function namedHostsFallbacks(output: string): string[] {
  */
 export async function runDetached(input: {
 	root: string;
-	/** Whether the selection has apps to spawn and wait for (see {@link settledRun}). */
-	expectApps: boolean;
 	/** `--keep`: no idle limit. */
 	keep: boolean;
 	/** The `dev --detach` invocation, re-run without the flag ({@link detachedArgv}). */
@@ -315,7 +319,7 @@ export async function runDetached(input: {
 	/** How long apps may take to settle before this exits 2. */
 	timeoutMs: number;
 }): Promise<number> {
-	const { root, expectApps, timeoutMs } = input;
+	const { root, timeoutMs } = input;
 	const argv = detachedArgv(input.argv);
 	mkdirSync(logsRoot(root), { recursive: true });
 	pruneDetachedFiles(root, Date.now());
@@ -389,11 +393,15 @@ export async function runDetached(input: {
 		const run = (await findRunsByRoot(root).catch(() => [])).find(
 			(entry) => entry.pid === child.pid,
 		);
-		const settled = run !== undefined && settledRun(run, expectApps);
+		const report = readDetachedReport(root, child.pid);
+		const expectApps = report?.expectApps;
+		const settled =
+			run !== undefined &&
+			expectApps !== undefined &&
+			settledRun(run, expectApps);
 		const down = (run?.apps ?? []).filter(
 			(app) => app.status === "failed" || app.status === "stopped",
 		);
-		const report = readDetachedReport(root, child.pid);
 		if (settled) settledAt ??= Date.now();
 		else settledAt = undefined;
 		const awaitingReport =

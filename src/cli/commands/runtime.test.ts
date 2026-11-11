@@ -10,8 +10,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+	pidRouteOwners,
+	routesFromPlan,
+	upsertHostRoutes,
+} from "../../core/hosts/registry";
 import type { RunEntry } from "../../core/run-registry";
 import { CI_ENV_VARS } from "../../core/runtime-flags";
+import { createDevEnvironment } from "../../environment";
 import { formatEnvDotValue, formatEnvExports, getEnvDotPath } from "./runtime";
 
 describe("getEnvDotPath", () => {
@@ -296,5 +302,69 @@ describe("buncargo prisma", () => {
 
 			expect(result.exitCode).toBe(0);
 		});
+	});
+});
+
+describe("buncargo env", () => {
+	// During a daemon restart, or with one hostname unserved, `env`, `url`
+	// and `open` printed localhost for every app while the run's apps held
+	// their https URLs.
+	it("names each app whose route a live run serves, and only those", async () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-env-")));
+		const config = {
+			projectPrefix: "liveurls",
+			services: {},
+			apps: {
+				api: { port: 3000, devCommand: false as const },
+				web: { port: 3001, devCommand: false as const },
+			},
+			options: { hosts: true, worktreeIsolation: false },
+		};
+		writeFileSync(join(root, "package.json"), "{}");
+		writeFileSync(
+			join(root, "dev.config.ts"),
+			`export default ${JSON.stringify(config)};`,
+		);
+		const env: Record<string, string | undefined> = {
+			...process.env,
+			HOME: join(root, "home"),
+			BUNCARGO_PORT_OFFSET: "0",
+		};
+		for (const name of [...CI_ENV_VARS, "BUNCARGO_HOSTS"]) delete env[name];
+		const saved = process.env;
+		process.env = env;
+		try {
+			// This test process stands in for the run serving web's route.
+			const plan = createDevEnvironment(config, { root }).hosts?.plan ?? [];
+			await upsertHostRoutes(
+				routesFromPlan(
+					plan.filter((entry) => entry.name === "web"),
+					{ root, pid: process.pid },
+				),
+				{ owners: pidRouteOwners },
+			);
+		} finally {
+			process.env = saved;
+		}
+
+		try {
+			const child = Bun.spawn(
+				[process.execPath, resolve(import.meta.dir, "../bin.ts"), "env"],
+				{ cwd: root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+			);
+			const [stdout, stderr, exitCode] = await Promise.all([
+				new Response(child.stdout).text(),
+				new Response(child.stderr).text(),
+				child.exited,
+			]);
+			expect({ exitCode, stderr }).toMatchObject({ exitCode: 0 });
+			const { urls } = JSON.parse(stdout) as { urls: Record<string, string> };
+			expect(urls.web).toMatch(
+				/^https:\/\/(?:[a-z0-9-]+\.)?web\.liveurls\.localhost$/,
+			);
+			expect(urls.api).toBe("http://localhost:3000");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
