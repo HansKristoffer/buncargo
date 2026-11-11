@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
+	getRoutesPath,
 	loadHostRoutes,
 	removeHostRoutes,
 	upsertHostRoutes,
@@ -16,7 +17,11 @@ import type {
 	ServiceConfig,
 } from "../types";
 import { namedHostsFallbacks } from "./dev-detach";
-import { activateNamedHosts, reclaimAppRoute } from "./dev-hosts";
+import {
+	activateNamedHosts,
+	type NamedHostsDeps,
+	reclaimAppRoute,
+} from "./dev-hosts";
 
 // The routes registry lives in ~/.buncargo: never the developer's.
 const savedHome = process.env.HOME;
@@ -87,10 +92,128 @@ describe("reclaimAppRoute", () => {
 		]);
 	});
 
+	// Swallowed, the restarted app served a named URL that 404'd with nothing
+	// in its output saying why.
+	it("says why when the registry cannot be read", async () => {
+		mkdirSync(dirname(getRoutesPath()), { recursive: true });
+		writeFileSync(getRoutesPath(), "{ not json");
+
+		const warning = await reclaimAppRoute({ root, hosts: hosts(true) }, "web");
+
+		expect(namedHostsFallbacks(warning ?? "")).toEqual([
+			expect.stringContaining(getRoutesPath()),
+		]);
+	});
+
 	it("claims nothing while named hosts are not serving this run", async () => {
 		await reclaimAppRoute({ root, hosts: hosts(false) }, "web");
 		await reclaimAppRoute({ root, hosts: null }, "web");
 		expect(await loadHostRoutes()).toEqual([]);
+	});
+});
+
+describe("activateNamedHosts", () => {
+	/** A machine whose daemon is ready and serves whatever it is asked to. */
+	const readyMachine = (
+		overrides: Partial<NamedHostsDeps> = {},
+	): NamedHostsDeps => ({
+		ensureHostsReady: async () => ({ ok: true, caPath: "/ca.pem" }),
+		syncCertificateForRoutes: async () => {},
+		waitForDaemonRoutes: async () => ({ ok: true }),
+		owners: pidRouteOwners,
+		...overrides,
+	});
+
+	function loopbackEnv() {
+		const switches: Array<{ active: boolean; hostnames?: readonly string[] }> =
+			[];
+		const env = {
+			root,
+			hosts: hosts(false),
+			setNamedHostsActive: (
+				active: boolean,
+				extras: { hostnames?: readonly string[] } = {},
+			) => switches.push({ active, hostnames: extras.hostnames }),
+		} as unknown as DevEnvironment<
+			Record<string, ServiceConfig>,
+			Record<string, AppConfig>
+		>;
+		return { env, switches };
+	}
+
+	// An earlier run's service route outlives it; a run that then fell back
+	// printed localhost:port while getEnvVar read the named URL as live.
+	it("withdraws the checkout's service routes when the daemon is unavailable", async () => {
+		await upsertHostRoutes(
+			[
+				{
+					hostname: "typesense.fixture.localhost",
+					port: 8108,
+					kind: "service",
+					name: "typesense",
+					root,
+					updatedAt: new Date().toISOString(),
+				},
+			],
+			{ owners: pidRouteOwners },
+		);
+		const { env, switches } = loopbackEnv();
+
+		const warnings = await activateNamedHosts(
+			env,
+			{ enabled: true },
+			readyMachine({
+				ensureHostsReady: async () => ({
+					ok: false,
+					reason: "failed",
+					message: "Named-hosts service is not installed.",
+				}),
+			}),
+		);
+
+		expect(warnings).toEqual([
+			"Named URLs unavailable: Named-hosts service is not installed.",
+		]);
+		expect(switches).toEqual([{ active: false, hostnames: undefined }]);
+		expect(await loadHostRoutes()).toEqual([]);
+	});
+
+	it("serves the rest of the plan when another checkout holds one hostname", async () => {
+		const elsewhere = mkdtempSync(join(tmpdir(), "buncargo-other-checkout-"));
+		try {
+			await upsertHostRoutes(
+				[
+					{
+						hostname: "web.fixture.localhost",
+						port: 4100,
+						kind: "app",
+						name: "web",
+						root: elsewhere,
+						pid: process.ppid,
+						updatedAt: new Date().toISOString(),
+					},
+				],
+				{ owners: pidRouteOwners },
+			);
+			const { env, switches } = loopbackEnv();
+
+			const warnings = await activateNamedHosts(
+				env,
+				{ enabled: true },
+				readyMachine(),
+			);
+
+			expect(namedHostsFallbacks(warnings.join("\n"))).toEqual([
+				expect.stringContaining(
+					`web.fixture.localhost is already registered by ${elsewhere}`,
+				),
+			]);
+			expect(switches).toEqual([
+				{ active: true, hostnames: ["api.fixture.localhost"] },
+			]);
+		} finally {
+			rmSync(elsewhere, { recursive: true, force: true });
+		}
 	});
 });
 

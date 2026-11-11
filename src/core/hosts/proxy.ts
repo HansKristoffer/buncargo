@@ -20,7 +20,7 @@ export const HEALTH_PATH = "/_buncargo/health";
 export interface ProxyRoutesView {
 	/** Hostnames the bound listener answers for: routed, and its leaf covers them. */
 	hostnames: string[];
-	/** Epoch ms of the last successful refresh. */
+	/** Epoch ms of the last reload that finished, whether or not it loaded. */
 	lastReloadAt: number;
 	/**
 	 * Why the listener could not move to the certificate on disk. It keeps the
@@ -381,6 +381,12 @@ export interface LocalProxy {
 	stop: () => void;
 	httpsPort: number;
 	httpPort?: number;
+	/**
+	 * Why the http redirect listener is not bound, when one was asked for.
+	 * https serves without it: a redirect is a convenience, and failing the
+	 * bind over it put every run on the machine on `localhost:port`.
+	 */
+	redirectError?: string;
 }
 
 /**
@@ -487,49 +493,59 @@ export async function startLocalProxy(options: {
 	});
 
 	const httpsPort = httpsServers[0]?.port;
-	if (httpsPort === undefined) {
+	const stopHttps = () => {
+		websocket.closeAll();
 		for (const server of httpsServers) server.stop(true);
+	};
+	if (httpsPort === undefined) {
+		stopHttps();
 		throw new Error("Failed to bind the local hosts proxy");
 	}
 
 	let httpServers: BunServer[] = [];
+	let redirectError: string | undefined;
 	if (options.httpPort !== undefined) {
-		httpServers = serveOnEach(hostnames, {
-			port: options.httpPort,
-			idleTimeout: 0,
-			// So a reload can bind the replacement before stopping this one. Without
-			// it the daemon has to drop the listener first, and every certificate
-			// remint opens a window where :443 refuses connections.
-			reusePort: true,
-			fetch(request) {
-				const url = new URL(request.url);
-				if (url.pathname === HEALTH_PATH) {
-					return Response.json({ ok: true, redirect: true });
-				}
-				const host = hostnameFromHostHeader(request.headers.get("host"));
-				return new Response(null, {
-					status: 301,
-					headers: {
-						location: `https://${host}${url.pathname}${url.search}`,
-					},
-				});
-			},
-		});
+		try {
+			httpServers = serveOnEach(hostnames, {
+				port: options.httpPort,
+				idleTimeout: 0,
+				// So a reload can bind the replacement before stopping this one.
+				// Without it the daemon has to drop the listener first, and every
+				// certificate remint opens a window where :443 refuses connections.
+				reusePort: true,
+				fetch: redirectToHttps,
+			});
+		} catch (error) {
+			redirectError = `could not bind :${options.httpPort} (${getErrorMessage(error)})`;
+		}
 	}
 
 	return {
 		httpsPort,
 		httpPort: httpServers[0]?.port,
+		...(redirectError === undefined ? {} : { redirectError }),
 		stop() {
 			// Close the bridged upstreams first: a forced server stop resets
 			// them, and a reset is what kills dev servers that do not guard
 			// their upgraded sockets.
-			websocket.closeAll();
-			for (const server of [...httpsServers, ...httpServers]) {
-				server.stop(true);
-			}
+			stopHttps();
+			for (const server of httpServers) server.stop(true);
 		},
 	};
+}
+
+function redirectToHttps(request: Request): Response {
+	const url = new URL(request.url);
+	if (url.pathname === HEALTH_PATH) {
+		return Response.json({ ok: true, redirect: true });
+	}
+	const host = hostnameFromHostHeader(request.headers.get("host"));
+	return new Response(null, {
+		status: 301,
+		headers: {
+			location: `https://${host}${url.pathname}${url.search}`,
+		},
+	});
 }
 
 const HEALTH_TIMEOUT_MS = 500;
