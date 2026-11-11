@@ -1,11 +1,12 @@
 import { envName } from "../../core/ports";
 import {
 	APP_KEYS,
+	CAPTURE_KEYS,
 	keysChecked,
 	RENAMED_KEYS,
-	SECRETS_KEYS,
 	SERVICE_KEYS,
 	unknownKeyErrors,
+	WATCH_KEYS,
 } from "./key-tables";
 import type { ShapeChecks } from "./shape-checks";
 
@@ -48,6 +49,7 @@ export function validateEntryShapes(
 		fields,
 		duration,
 		envValues,
+		secretsScope,
 	} = checks;
 	errors.push(...sharedEnvNames(value));
 	for (const kind of ["services", "apps"] as const) {
@@ -88,28 +90,11 @@ export function validateEntryShapes(
 						entry.healthEndpoint === false,
 					"a path string or false",
 				);
-				if (
-					entry.secrets !== undefined &&
-					entry.secrets !== false &&
-					record(entry.secrets, `${path}.secrets`)
-				) {
-					errors.push(
-						...unknownKeyErrors(entry.secrets, `${path}.secrets`, SECRETS_KEYS),
-					);
-					fields(
-						entry.secrets,
-						`${path}.secrets.`,
-						keysChecked(SECRETS_KEYS, "string"),
-						"string",
-					);
-					check(
-						entry.secrets.required,
-						`${path}.secrets.required`,
-						strings(entry.secrets.required),
-						"an array of nonempty strings",
-					);
-				}
+				secretsScope(entry.secrets, `${path}.secrets`);
 				if (entry.watch !== undefined && record(entry.watch, `${path}.watch`)) {
+					errors.push(
+						...unknownKeyErrors(entry.watch, `${path}.watch`, WATCH_KEYS),
+					);
 					check(
 						entry.watch.paths,
 						`${path}.watch.paths`,
@@ -158,6 +143,13 @@ export function validateEntryShapes(
 				)
 					for (const [name, capture] of Object.entries(entry.captures)) {
 						if (!record(capture, `${path}.captures.${name}`)) continue;
+						errors.push(
+							...unknownKeyErrors(
+								capture,
+								`${path}.captures.${name}`,
+								CAPTURE_KEYS,
+							),
+						);
 						if (!(capture.pattern instanceof RegExp))
 							errors.push(
 								`${path}.captures.${name}.pattern must be a regular expression`,
@@ -166,7 +158,13 @@ export function validateEntryShapes(
 							errors.push(
 								`${path}.captures.${name}.as must be "publicUrl", "value" or "event"`,
 							);
-						fields(capture, `${path}.captures.${name}.`, ["label"], "string");
+						for (const type of ["boolean", "string"] as const)
+							fields(
+								capture,
+								`${path}.captures.${name}.`,
+								keysChecked(CAPTURE_KEYS, type),
+								type,
+							);
 						check(
 							capture.env,
 							`${path}.captures.${name}.env`,

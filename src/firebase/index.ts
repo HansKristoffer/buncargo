@@ -58,12 +58,6 @@ export {
 	readFirebaseProject,
 } from "./project";
 
-declare module "../types/all-types" {
-	interface IntegrationAppNames {
-		firebase: true;
-	}
-}
-
 /** The app the emulator suite runs as. */
 export const FIREBASE_APP = "firebase";
 
@@ -148,7 +142,7 @@ function removeStaleHubLocators(dir: string): void {
 
 export function firebase(
 	options: FirebaseIntegrationOptions = {},
-): BuncargoIntegration {
+): BuncargoIntegration<{ apps: typeof FIREBASE_APP }> {
 	const workdirOption = options.workdir;
 	const workdirOf = (root: string) => resolve(root, workdirOption ?? ".");
 	const dataDir =

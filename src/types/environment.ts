@@ -1,4 +1,3 @@
-import type { IntegrationAppNames } from "./all-types";
 import type { AppConfig, SecretsScopeConfig } from "./app";
 import type { PortOffsetProvenance } from "./cli";
 import type {
@@ -204,16 +203,8 @@ export interface DevEnvironment<
 			TaskConfig<Extract<keyof TServices, string>, Extract<keyof TApps, string>>
 		>
 	>;
-	/** `profiles` from config, for `buncargo dev --profile` */
-	readonly profiles?: Readonly<
-		Record<
-			string,
-			ProfileConfig<
-				| Extract<keyof TApps, string>
-				| Extract<keyof IntegrationAppNames, string>
-			>
-		>
-	>;
+	/** `profiles` from config, for `buncargo dev --profile`; may name integration apps. */
+	readonly profiles?: Readonly<Record<string, ProfileConfig>>;
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Container Management

@@ -1,4 +1,5 @@
 import { isRecord } from "hanzio";
+import { keysChecked, SECRETS_KEYS, unknownKeyErrors } from "./key-tables";
 
 export function createShapeChecks(errors: string[]) {
 	const record = (
@@ -53,6 +54,19 @@ export function createShapeChecks(errors: string[]) {
 				"a string or finite number",
 			);
 	};
+	/** A `secrets` scope, at the config level or on an app. */
+	const secretsScope = (input: unknown, path: string) => {
+		if (input === undefined || input === false || !record(input, path)) return;
+		errors.push(...unknownKeyErrors(input, path, SECRETS_KEYS));
+		fields(input, `${path}.`, keysChecked(SECRETS_KEYS, "string"), "string");
+		for (const key of ["only", "exclude", "required"])
+			check(
+				input[key],
+				`${path}.${key}`,
+				strings(input[key]),
+				"an array of secret names",
+			);
+	};
 	return {
 		errors,
 		object: isRecord,
@@ -62,6 +76,7 @@ export function createShapeChecks(errors: string[]) {
 		fields,
 		duration,
 		envValues,
+		secretsScope,
 	};
 }
 export type ShapeChecks = ReturnType<typeof createShapeChecks>;
