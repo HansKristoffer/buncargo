@@ -10,7 +10,8 @@ import {
 	symlinkSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { promiseTimeout } from "hanzio";
+import { isBoolean, isRecord, isString, promiseTimeout } from "hanzio";
+import { arrayOf, object, optional } from "../core/json-shape";
 import { logsRoot } from "../core/process/app-logs";
 import { isProcessAlive } from "../core/process/lifecycle";
 import { inOwnUserScope } from "../core/process/user-scope";
@@ -159,16 +160,30 @@ export function pruneDetachedFiles(root: string, now: number): void {
 	}
 }
 
+const isRunFailure = object({
+	cause: isString,
+	step: optional(isString),
+	output: arrayOf(isString),
+	hints: arrayOf(isString),
+	next: arrayOf(isString),
+});
+
 function validateReport(value: unknown): DetachedReport | undefined {
-	const report = value as Partial<DetachedReport> | null;
-	const valid =
-		typeof report === "object" &&
-		report !== null &&
-		Array.isArray(report.setupHints) &&
-		Array.isArray(report.failures) &&
-		Array.isArray(report.hostsWarnings) &&
-		(report.expectApps === undefined || typeof report.expectApps === "boolean");
-	return valid ? (report as DetachedReport) : undefined;
+	if (
+		!isRecord(value) ||
+		!Array.isArray(value.setupHints) ||
+		!Array.isArray(value.failures) ||
+		!Array.isArray(value.hostsWarnings) ||
+		!(value.expectApps === undefined || isBoolean(value.expectApps))
+	)
+		return undefined;
+	// A malformed entry never rejected a report; it is left out of its list.
+	return {
+		setupHints: value.setupHints.filter(isString),
+		failures: value.failures.filter(isRunFailure),
+		hostsWarnings: value.hostsWarnings.filter(isString),
+		...(value.expectApps !== undefined && { expectApps: value.expectApps }),
+	};
 }
 
 export function readDetachedReport(

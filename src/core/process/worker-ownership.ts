@@ -1,6 +1,7 @@
 import type { EventEmitter } from "node:events";
-import { typedSwitch } from "hanzio";
+import { isString, typedSwitch } from "hanzio";
 import { withFileLock } from "../file-lock";
+import { isPositiveInteger, object, refine } from "../json-shape";
 import {
 	checkProcessIdentitiesAsync,
 	checkProcessIdentityAsync,
@@ -21,19 +22,11 @@ interface WorkerOwner {
 const registry = defineListRegistry<WorkerOwner>({
 	version: 1,
 	key: "workers",
-	isEntry: (value): value is WorkerOwner => {
-		if (!value || typeof value !== "object") {
-			return false;
-		}
-
-		const entry = value as Partial<WorkerOwner>;
-		return (
-			typeof entry.name === "string" &&
-			Number.isInteger(entry.pid) &&
-			(entry.pid ?? 0) > 1 &&
-			typeof entry.identity === "string"
-		);
-	},
+	isEntry: object({
+		name: isString,
+		pid: refine(isPositiveInteger, (pid) => pid > 1),
+		identity: isString,
+	}),
 });
 
 const pathFor = (root: string) => projectStateFilePath(root, "workers.json");

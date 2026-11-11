@@ -1,5 +1,5 @@
 import { existsSync, rmSync } from "node:fs";
-import { getErrorMessage, typedSwitch } from "hanzio";
+import { getErrorMessage, isRecord, typedSwitch } from "hanzio";
 import { readJsonDocumentSync, writeJsonDocumentSync } from "../registry-file";
 import {
 	chownToInvokingUser,
@@ -112,8 +112,8 @@ export function isHostsServiceInstalled(): boolean {
 }
 
 function validateManifest(value: unknown): HostsServiceManifest | undefined {
-	if (typeof value !== "object" || value === null) return undefined;
-	const manifest = value as Partial<HostsServiceManifest>;
+	if (!isRecord(value)) return undefined;
+	const manifest = value;
 	if (
 		typeof manifest.version !== "number" ||
 		manifest.version < HOSTS_SERVICE_MANIFEST_VERSION
