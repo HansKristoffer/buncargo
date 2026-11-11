@@ -29,6 +29,10 @@ function fakeDocker(
 		versionStderr?: string;
 		/** Never answer `down`, as a hung daemon does. */
 		downHangs?: boolean;
+		/** What `volume ls` prints. */
+		volumes?: string;
+		/** Refuse `volume rm` with this on stderr. */
+		volumeRmStderr?: string;
 	} = {},
 ) {
 	const dir = mkdtempSync(join(tmpdir(), "buncargo docker down "));
@@ -49,6 +53,12 @@ if (args[0] === 'version' && versionStderr) {
 }
 if (args[0] === 'version') console.log('27.5.1');
 if (args[0] === 'ps') console.log(${JSON.stringify(options.psStdout ?? "")});
+if (args[0] === 'volume' && args[1] === 'ls') console.log(${JSON.stringify(options.volumes ?? "")});
+const volumeRmStderr = ${JSON.stringify(options.volumeRmStderr ?? "")};
+if (volumeRmStderr && args[0] === 'volume' && args[1] === 'rm') {
+  process.stderr.write(volumeRmStderr);
+  process.exit(1);
+}
 if (${options.downHangs === true} && args.includes('down')) setInterval(() => {}, 1000);
 const downStderr = ${JSON.stringify(options.downStderr ?? "")};
 if (downStderr && args.includes('down')) {
@@ -91,19 +101,45 @@ describe("stopContainers", () => {
 		expect(calls().at(-1)).toEqual(["compose", "-p", "demo", "down"]);
 	});
 
-	it("fails when it could not name the volumes it was asked to remove", async () => {
-		const { dir, binary, calls } = fakeDocker();
-		const gone = join(dir, "deleted-worktree");
+	it("removes the volumes by Compose's project label when the compose file is gone", async () => {
+		const { dir, binary, calls } = fakeDocker({
+			volumes: "demo_postgres_data\ndemo_redis_data",
+		});
+		await stopContainers(join(dir, "deleted-worktree"), "demo", {
+			binary,
+			composeFile: ".buncargo/compose.yml",
+			removeVolumes: true,
+			verbose: false,
+		});
+		expect(calls()).toEqual([
+			["compose", "-p", "demo", "down"],
+			[
+				"volume",
+				"ls",
+				"-q",
+				"--filter",
+				"label=com.docker.compose.project=demo",
+			],
+			["volume", "rm", "demo_postgres_data"],
+			["volume", "rm", "demo_redis_data"],
+		]);
+	});
+
+	it("fails naming the volumes it could not remove", async () => {
+		const { dir, binary } = fakeDocker({
+			volumes: "demo_postgres_data",
+			volumeRmStderr: "volume is in use",
+		});
 		await expect(
-			stopContainers(gone, "demo", {
+			stopContainers(join(dir, "deleted-worktree"), "demo", {
 				binary,
 				composeFile: ".buncargo/compose.yml",
 				removeVolumes: true,
 				verbose: false,
 			}),
-		).rejects.toThrow(/Removed demo's containers but kept its volumes/);
-		// The containers still come down.
-		expect(calls().at(-1)).toEqual(["compose", "-p", "demo", "down"]);
+		).rejects.toThrow(
+			"Removed demo's containers but kept these volumes: demo_postgres_data (volume is in use)",
+		);
 	});
 
 	it("finds a compose file relative to the checkout from any working directory", async () => {
