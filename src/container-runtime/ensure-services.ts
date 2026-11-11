@@ -6,8 +6,9 @@ import {
 	serviceFingerprint,
 	serviceHashEnv,
 } from "../docker-compose/interpolate";
-import type { ServiceConfig } from "../types";
+import type { PortContainerOwner, ServiceConfig } from "../types";
 import { assertServiceCapabilities } from "./capabilities";
+import { portOwnersOf, serviceStatesOf } from "./containers";
 import { waitForAllServices } from "./readiness";
 import { assertServicePortsClaimable } from "./service-ports";
 import type { ContainerRuntimeAdapter, ServiceRuntimeState } from "./types";
@@ -23,6 +24,55 @@ async function readProjectServiceStates(
 	} catch {
 		signal?.throwIfAborted();
 		return [];
+	}
+}
+
+/** What one listing of the runtime says about this start. */
+interface RuntimeReading {
+	states: ServiceRuntimeState[];
+	/** Undefined when the runtime could not list: the port check asks it again. */
+	portOwners?: Map<number, PortContainerOwner>;
+}
+
+/**
+ * The project's service states and the ports' container owners, from one
+ * listing.
+ *
+ * A listing that answers proves the runtime is up, so only one that fails
+ * asks the runtime to start, or to throw why it cannot. That keeps a warm
+ * start at one runtime call inside the project lock, where it used to be a
+ * daemon probe and two listings of the same containers.
+ */
+async function readRuntime(
+	runtime: ContainerRuntimeAdapter,
+	projectName: string,
+	ensureRunning: () => Promise<void>,
+	signal?: AbortSignal,
+): Promise<RuntimeReading> {
+	const list = async () => {
+		const containers = await runtime.containers?.(signal);
+		if (!containers) return undefined;
+		return {
+			states: serviceStatesOf(containers, projectName),
+			portOwners: portOwnersOf(containers, runtime.name),
+		};
+	};
+	try {
+		const reading = await list();
+		if (reading) return reading;
+	} catch {
+		signal?.throwIfAborted();
+	}
+	await ensureRunning();
+	try {
+		return (
+			(await list()) ?? {
+				states: await readProjectServiceStates(runtime, projectName, signal),
+			}
+		);
+	} catch {
+		signal?.throwIfAborted();
+		return { states: [] };
 	}
 }
 
@@ -125,24 +175,25 @@ export async function ensureServicesRunning(
 
 	assertServiceCapabilities(runtime.name, services);
 
-	await runtime.ensureRunning({
-		autoStart: autoStartRuntime,
-		startCommand: runtimeStartCommand,
-		verbose,
-		signal: request.signal,
-	});
-
-	// Two independent reads of the runtime, so a warm start waits for one.
-	const [states] = await Promise.all([
-		readProjectServiceStates(runtime, projectName, request.signal),
-		assertServicePortsClaimable(
-			runtime,
-			services,
-			ports,
-			{ root, projectName, projectPrefix },
-			request.signal,
-		),
-	]);
+	const { states, portOwners } = await readRuntime(
+		runtime,
+		projectName,
+		() =>
+			runtime.ensureRunning({
+				autoStart: autoStartRuntime,
+				startCommand: runtimeStartCommand,
+				verbose,
+				signal: request.signal,
+			}),
+		request.signal,
+	);
+	await assertServicePortsClaimable(
+		runtime,
+		services,
+		ports,
+		{ root, projectName, projectPrefix, containerOwners: portOwners },
+		request.signal,
+	);
 
 	const composeServiceNames = Object.entries(services).map(
 		([serviceKey, config]) => config.serviceName ?? serviceKey,

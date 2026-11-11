@@ -351,7 +351,7 @@ describe("published run ownership", () => {
 		const calls = join(root, "calls.jsonl");
 		writeFileSync(
 			binary,
-			`#!${process.execPath}\nimport { appendFileSync } from "node:fs"; const args = process.argv.slice(2); appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n"); if (args[0] === "ps") console.log("owned\\tfixture-database-1\\trunning\\tUp\\t\\tfixture\\t${root}\\t\\tdatabase\\nforeign\\tfixture-other-1\\trunning\\tUp\\t\\tfixture\\t${root}\\t\\tother");`,
+			`#!${process.execPath}\nimport { appendFileSync } from "node:fs"; const args = process.argv.slice(2); appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n"); if (args[0] === "ps") console.log("owned\\tfixture-database-1\\trunning\\tUp\\t\\tfixture\\tFalse\\tfixture\\t${root}\\t\\tdatabase\\nforeign\\tfixture-other-1\\trunning\\tUp\\t\\tfixture\\tFalse\\tfixture\\t${root}\\t\\tother");`,
 		);
 		chmodSync(binary, 0o755);
 		const run = await publishCurrentRun(env, {

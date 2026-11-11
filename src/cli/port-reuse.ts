@@ -3,7 +3,6 @@ import {
 	classifyPortOccupant,
 	createPortOwnerSnapshotAsync,
 	formatPortOwner,
-	getPortOwner,
 	killPortOwner,
 	type PortOwnerSnapshot,
 } from "../core/process";
@@ -150,7 +149,14 @@ async function inspectUnhealthyHolder(
 	const { context, runtime, skipContainers } = options;
 	if (!context) return undefined;
 
-	const owner = getPortOwner(port, { runtime, skipContainers });
+	// Read fresh: the classification's snapshot is older than the wait for health.
+	const owner = (
+		await createPortOwnerSnapshotAsync({
+			runtime,
+			skipContainers,
+			ports: [port],
+		})
+	).owner(port);
 	const action = classifyPortOccupant(owner, {
 		...context,
 		runtime: runtime?.name,

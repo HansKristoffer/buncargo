@@ -284,8 +284,9 @@ const TOPICS: readonly Topic[] = [
   checks everything.
 - \`bunx buncargo typecheck --changed\` checks the workspaces this branch
   touched and the ones depending on them.
-- Typechecks share a few slots across every checkout on the machine. One that
-  says it is waiting for a slot is not stuck; let it wait.
+- Typechecks share a few slots across every checkout of this user on the
+  machine. One that says it is waiting for a slot is not stuck; let it wait.
+  \`status --json\` (\`checkSlots\`) shows who holds them.
 - Run test suites as \`bunx buncargo slot -- <command>\` so they take a slot
   too. \`slot\` leaves the environment alone; \`exec --slot\` adds the
   checkout's URLs and secrets.`,

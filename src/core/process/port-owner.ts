@@ -8,7 +8,6 @@ import { manualComposeDownCommand } from "../../docker/binary";
 import {
 	dockerContainerPortOwners,
 	dockerContainerPortOwnersAsync,
-	findDockerContainerOnPort,
 } from "../../docker/port-lookup";
 import { CONFIG_FILES } from "../../loader/find-config-file";
 import type { ContainerRuntimeName, PortContainerOwner } from "../../types";
@@ -134,98 +133,76 @@ export function getListeningPids(port: number): number[] {
 	}
 }
 
-function processCommand(pid: number): string | undefined {
-	try {
-		return (
-			execSync(`ps -p ${pid} -o comm=`, {
-				encoding: "utf-8",
-				stdio: ["pipe", "pipe", "pipe"],
-			}).trim() || undefined
-		);
-	} catch {
-		return undefined;
-	}
-}
-
-function processCwd(pid: number): string | undefined {
-	try {
-		const output = execSync(`lsof -a -p ${pid} -d cwd -Fn`, {
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-		});
-		for (const line of output.split("\n")) {
-			if (line.startsWith("n")) {
-				return line.slice(1).trim() || undefined;
-			}
-		}
-		return undefined;
-	} catch {
-		return undefined;
-	}
+/** The runtimes a lookup asks, the selected one (Docker by default) first. */
+function runtimesToAsk(options: PortOwnerLookupOptions): {
+	name: ContainerRuntimeName;
+	owners: () => Map<number, PortContainerOwner>;
+	ownersAsync: (
+		signal?: AbortSignal,
+	) => Promise<Map<number, PortContainerOwner>>;
+}[] {
+	if (options.skipContainers) return [];
+	const selected = options.runtime;
+	const selectedName = selected?.name ?? "docker";
+	return [
+		{
+			name: selectedName,
+			owners: () =>
+				selected ? selected.containerPortOwners() : dockerContainerPortOwners(),
+			ownersAsync: (signal) =>
+				selected
+					? selected.containerPortOwnersAsync(signal)
+					: dockerContainerPortOwnersAsync(undefined, signal),
+		},
+		...(options.fallbackRuntimes ?? [])
+			.filter((other) => other.name !== selectedName)
+			.map((other) => ({
+				name: other.name,
+				owners: () => other.containerPortOwners(),
+				ownersAsync: (signal?: AbortSignal) =>
+					other.containerPortOwnersAsync(signal),
+			})),
+	];
 }
 
 /**
- * Container-held ports across the selected runtime and any fallbacks, in one
- * reading per runtime.
- *
- * The selected runtime wins a port both claim: it is the one this run can
- * actually start, exec into and tear down.
+ * One map from every runtime's reading. The selected runtime wins a port
+ * both claim: it is the one this run can start, exec into and tear down. A
+ * runtime that could not answer simply is not the owner.
  */
+function mergeContainerOwners(
+	readings: {
+		name: ContainerRuntimeName;
+		owners: Map<number, PortContainerOwner> | undefined;
+	}[],
+): Map<number, PortContainerOwner> {
+	const merged = new Map<number, PortContainerOwner>();
+	for (const { name, owners } of readings)
+		for (const [port, owner] of owners ?? [])
+			if (!merged.has(port)) merged.set(port, { ...owner, runtime: name });
+	return merged;
+}
+
+/** Container-held ports across the selected runtime and any fallbacks, in one reading per runtime. */
 export function containerPortOwnerMap(
 	options: PortOwnerLookupOptions = {},
 ): Map<number, PortContainerOwner> {
-	if (options.skipContainers) return new Map();
-	const selected = options.runtime;
-	const selectedName = selected?.name ?? "docker";
-	const owners = new Map<number, PortContainerOwner>();
-
-	const read = (
-		runtime: ContainerRuntimeName,
-		list: () => Map<number, PortContainerOwner>,
-	): void => {
-		try {
-			for (const [port, owner] of list()) {
-				if (!owners.has(port)) owners.set(port, { ...owner, runtime });
+	return mergeContainerOwners(
+		runtimesToAsk(options).map(({ name, owners }) => {
+			try {
+				return { name, owners: owners() };
+			} catch {
+				return { name, owners: undefined };
 			}
-		} catch {
-			// A runtime that cannot answer simply is not the owner.
-		}
-	};
-
-	read(selectedName, () =>
-		selected ? selected.containerPortOwners() : dockerContainerPortOwners(),
+		}),
 	);
-	for (const other of options.fallbackRuntimes ?? []) {
-		if (other.name === selectedName) continue;
-		read(other.name, () => other.containerPortOwners());
-	}
-
-	return owners;
 }
 
 export function findContainerOnPort(
 	port: number,
 	options: PortOwnerLookupOptions = {},
 ): PortContainerOwner | undefined {
-	if (options.skipContainers) return undefined;
-	const selected = options.runtime;
-	const found = selected
-		? selected.findContainerOnPort(port)
-		: findDockerContainerOnPort(port);
-	if (found) {
-		return { ...found, runtime: selected?.name ?? "docker" };
-	}
-
-	for (const other of options.fallbackRuntimes ?? []) {
-		if (other.name === (selected?.name ?? "docker")) continue;
-		try {
-			const foreign = other.findContainerOnPort(port);
-			if (foreign) return { ...foreign, runtime: other.name };
-		} catch {
-			// A runtime that cannot answer simply is not the owner.
-		}
-	}
-	return undefined;
+	return containerPortOwnerMap(options).get(port);
 }
 
 /**
@@ -325,36 +302,22 @@ export async function createPortOwnerSnapshotAsync(
 		return { owner: () => null, isBusy: () => false };
 	const readContainers = async (): Promise<Map<number, PortContainerOwner>> => {
 		if (options.containers) return options.containers;
-		if (options.skipContainers) return new Map();
-		const selected = options.runtime;
-		const names = [
-			selected?.name ?? "docker",
-			...(options.fallbackRuntimes ?? [])
-				.filter((runtime) => runtime.name !== (selected?.name ?? "docker"))
-				.map((runtime) => runtime.name),
-		];
-		const reads = [
-			selected
-				? () => selected.containerPortOwnersAsync(options.signal)
-				: () => dockerContainerPortOwnersAsync(undefined, options.signal),
-			...(options.fallbackRuntimes ?? [])
-				.filter((runtime) => runtime.name !== (selected?.name ?? "docker"))
-				.map(
-					(runtime) => () => runtime.containerPortOwnersAsync(options.signal),
-				),
-		];
+		const runtimes = runtimesToAsk(options);
 		const results = await Promise.allSettled(
-			reads.map((read) => Promise.resolve().then(read)),
+			runtimes.map(({ ownersAsync }) =>
+				Promise.resolve().then(() => ownersAsync(options.signal)),
+			),
 		);
 		options.signal?.throwIfAborted();
-		const owners = new Map<number, PortContainerOwner>();
-		for (const [index, result] of results.entries()) {
-			if (result.status !== "fulfilled") continue;
-			for (const [port, owner] of result.value)
-				if (!owners.has(port))
-					owners.set(port, { ...owner, runtime: names[index] });
-		}
-		return owners;
+		return mergeContainerOwners(
+			runtimes.map(({ name }, index) => {
+				const result = results[index];
+				return {
+					name,
+					owners: result?.status === "fulfilled" ? result.value : undefined,
+				};
+			}),
+		);
 	};
 	const [listeners, containers] = await Promise.all([
 		options.listeners ?? readListenerSnapshotAsync(options.signal),
@@ -377,23 +340,28 @@ export async function createPortOwnerSnapshotAsync(
 	return createPortOwnerSnapshot({ ...options, listeners, containers, cwds });
 }
 
+/**
+ * Who holds one port, read fresh: for the paths that change ownership on
+ * purpose (a kill, a takeover) and must not act on an older reading. Asking
+ * about several ports at once is {@link createPortOwnerSnapshotAsync}.
+ */
 export function getPortOwner(
 	port: number,
 	options: PortOwnerLookupOptions = {},
 ): PortOwner | null {
 	const ignore = new Set(options.ignorePids ?? []);
-	const pids = getListeningPids(port).filter((pid) => !ignore.has(pid));
-	const container = findContainerOnPort(port, options);
-	if (pids.length === 0 && !container) {
-		return null;
-	}
-	const primaryPid = pids[0];
-	return {
-		pids,
-		command: primaryPid !== undefined ? processCommand(primaryPid) : undefined,
-		cwd: primaryPid !== undefined ? processCwd(primaryPid) : undefined,
-		container,
-	};
+	const listeners = readListenerSnapshot();
+	const pids = (listeners.pidsByPort.get(port) ?? []).filter(
+		(pid) => !ignore.has(pid),
+	);
+	return createPortOwnerSnapshot({
+		...options,
+		ports: [port],
+		listeners: {
+			pidsByPort: new Map(pids.length > 0 ? [[port, pids]] : []),
+			commandByPid: listeners.commandByPid,
+		},
+	}).owner(port);
 }
 
 /**

@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dockerRuntimeAdapter } from "./adapter";
+import { dockerListLine } from "./fake-docker.testing";
 import { startContainers, stopContainers } from "./lifecycle";
 
 const roots: string[] = [];
@@ -268,7 +269,12 @@ describe("startContainers", () => {
 		const port = 47913;
 		const { dir, binary } = fakeDocker({
 			upStderr: `Bind for 0.0.0.0:${port} failed: port is already allocated`,
-			psStdout: `abc123\tother-postgres-1\t0.0.0.0:${port}->5432/tcp\tother`,
+			psStdout: dockerListLine({
+				id: "abc123",
+				name: "other-postgres-1",
+				ports: `0.0.0.0:${port}->5432/tcp`,
+				composeProject: "other",
+			}),
 		});
 		await expect(
 			startContainers(dir, "demo", {}, { binary, verbose: false }),

@@ -1,11 +1,16 @@
 import { isDefined, isRecord, safeJsonParse, toArray } from "hanzio";
 import {
 	type ContainerState,
-	isContainerLive,
 	isContainerServing,
 	parseContainerState,
 } from "../container-runtime/container-state";
+import {
+	buncargoContainersOf,
+	portOwnersOf,
+	serviceStatesOf,
+} from "../container-runtime/containers";
 import type {
+	RuntimeContainer,
 	ServiceDiagnosis,
 	ServiceDiagnosisRequest,
 	ServicePortProbeRequest,
@@ -223,21 +228,47 @@ export function listContainerRecords(cli: AppleContainerCli): AppleListing {
 	return readContainerListing(cli.run(LIST_ARGS));
 }
 
-export function toBuncargoContainer(
+/** A record in buncargo's words, as every runtime-neutral reader takes it. */
+export function toRuntimeContainer(
 	record: AppleContainerRecord,
-): BuncargoContainer {
+): RuntimeContainer {
+	const label = (name: string) => record.labels[name] || undefined;
+	const labels = {
+		// Apple has no Compose: its project label is the project both ways.
+		composeProject: label(PROJECT_LABEL),
+		project: label(PROJECT_LABEL),
+		root: label("buncargo.root"),
+		worktree: label("buncargo.worktree"),
+		service: label(SERVICE_LABEL),
+		serviceHash: label(SERVICE_HASH_LABEL),
+	};
 	return {
 		id: record.id,
 		name: record.id,
-		state: record.state,
+		state: recordState(record),
+		runtimeState: record.state,
 		status: record.state,
-		ports: formatPublishedPorts(record.ports),
-		project: record.labels[PROJECT_LABEL] ?? "",
-		root: record.labels["buncargo.root"] ?? "",
-		worktree: record.labels["buncargo.worktree"] ?? "",
-		service: record.labels[SERVICE_LABEL] ?? "",
-		runtime: "apple",
+		ports: record.ports.flatMap((published) =>
+			Array.from(
+				{ length: published.count ?? 1 },
+				(_, offset) => published.hostPort + offset,
+			),
+		),
+		portsText: formatPublishedPorts(record.ports),
+		labels: Object.fromEntries(
+			Object.entries(labels).filter(([, value]) => value !== undefined),
+		),
 	};
+}
+
+/** Every container, in one `container ls`. Throws when the runtime cannot answer. */
+export async function appleContainers(
+	cli: AppleContainerCli,
+	signal?: AbortSignal,
+): Promise<RuntimeContainer[]> {
+	const listing = await listContainerRecordsAsync(cli, signal);
+	if (!listing.listed) throw new Error(listing.error);
+	return listing.records.map(toRuntimeContainer);
 }
 
 /**
@@ -252,56 +283,31 @@ export function listAppleBuncargoContainers(
 ): BuncargoContainer[] {
 	const listing = listContainerRecords(cli);
 	if (!listing.listed) throw new Error(listing.error);
-	return listing.records
-		.filter((record) => record.labels[PROJECT_LABEL])
-		.map(toBuncargoContainer);
+	return buncargoContainersOf(listing.records.map(toRuntimeContainer), "apple");
 }
 
 /**
- * Which container is publishing each host port, from one `container ls`.
- *
- * A map rather than a per-port scan for the same reason as the Docker backend:
- * a dev run asks about every service and app port, and one listing answers all
- * of them.
+ * Which container is publishing each host port, from one `container ls`. A
+ * runtime that cannot answer names no container; the port's process owner
+ * still does, as with Docker.
  */
 export function appleContainerPortOwners(
 	cli: AppleContainerCli,
 ): Map<number, PortContainerOwner> {
-	// A runtime that cannot answer names no container; the port's process
-	// owner still does, as with Docker.
-	return portOwnersFromRecords(recordsOrNone(listContainerRecords(cli)));
+	return portOwnersOf(
+		recordsOrNone(listContainerRecords(cli)).map(toRuntimeContainer),
+	);
 }
 
 export async function appleContainerPortOwnersAsync(
 	cli: AppleContainerCli,
 	signal?: AbortSignal,
 ): Promise<Map<number, PortContainerOwner>> {
-	return portOwnersFromRecords(
-		recordsOrNone(await listContainerRecordsAsync(cli, signal)),
+	return portOwnersOf(
+		recordsOrNone(await listContainerRecordsAsync(cli, signal)).map(
+			toRuntimeContainer,
+		),
 	);
-}
-
-function portOwnersFromRecords(
-	records: AppleContainerRecord[],
-): Map<number, PortContainerOwner> {
-	const owners = new Map<number, PortContainerOwner>();
-	for (const record of records) {
-		// Apple lists a stopped container's configured ports too.
-		if (!isContainerLive(recordState(record))) continue;
-		const owner: PortContainerOwner = {
-			id: record.id,
-			name: record.id,
-			composeProject: record.labels[PROJECT_LABEL] || undefined,
-			root: record.labels["buncargo.root"] || undefined,
-		};
-		for (const published of record.ports) {
-			for (let offset = 0; offset < (published.count ?? 1); offset++) {
-				const port = published.hostPort + offset;
-				if (!owners.has(port)) owners.set(port, owner);
-			}
-		}
-	}
-	return owners;
 }
 
 export function findAppleContainerOnPort(
@@ -330,24 +336,7 @@ export async function appleProjectServiceStates(
 	projectName: string,
 	signal?: AbortSignal,
 ): Promise<ServiceRuntimeState[]> {
-	const listing = await listContainerRecordsAsync(cli, signal);
-	if (!listing.listed) throw new Error(listing.error);
-	return listing.records
-		.filter((record) => record.labels[PROJECT_LABEL] === projectName)
-		.flatMap((record) => {
-			const service = record.labels[SERVICE_LABEL];
-			if (!service) return [];
-			const serviceHash = record.labels[SERVICE_HASH_LABEL];
-			const state = recordState(record);
-			return [
-				{
-					service,
-					state,
-					running: isContainerServing(state),
-					...(serviceHash ? { serviceHash } : {}),
-				},
-			];
-		});
+	return serviceStatesOf(await appleContainers(cli, signal), projectName);
 }
 
 /**

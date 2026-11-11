@@ -47,6 +47,7 @@ import {
 import { unallocatedPortsMessage } from "../../../core/port-exhaustion";
 import {
 	classifyPortOccupant,
+	createPortOwnerSnapshotAsync,
 	formatPortOwner,
 	getPortOwner,
 	killPortOwnerFoundBy,
@@ -171,9 +172,12 @@ async function checkPortOwnership(
 		(candidate) => candidate.name !== runtime.name,
 	);
 
-	const lookup = withBindProbe((port) =>
-		getPortOwner(port, { runtime, fallbackRuntimes }),
-	);
+	const snapshot = await createPortOwnerSnapshotAsync({
+		runtime,
+		fallbackRuntimes,
+		ports: Object.values(env.ports),
+	});
+	const lookup = withBindProbe((port) => snapshot.owner(port));
 	for (const [name, port] of Object.entries(env.ports)) {
 		const owner = lookup(port);
 		if (!owner) continue;

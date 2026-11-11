@@ -1,32 +1,22 @@
+import { serviceContainerOf } from "../container-runtime/containers";
 import type {
 	ServiceDiagnosis,
 	ServiceDiagnosisRequest,
 } from "../container-runtime/types";
 import { remainingTime } from "../core/deadline";
 import { runDockerAsync } from "./binary";
-import { serviceContainerFilters } from "./exec";
-import { parseDockerExitCode } from "./status";
+import { listDockerContainersAsync } from "./containers";
 
 /**
  * Why a compose service is not answering.
  *
- * Resolved by Compose's labels with `docker ps --all`, which still lists a
- * container that exited seconds after starting - the case this exists to
- * report. Not `docker compose ps`: readiness calls this on every poll for a
- * service without a port, and Compose reparsing the project can overrun the
+ * Found in the one container listing, which still lists a container that
+ * exited seconds after starting - the case this exists to report. Not
+ * `docker compose ps`: Compose reparsing the project can overrun the
  * two-second budget (the same reason `exec.ts` avoids `docker compose exec`).
  */
 
 const DEFAULT_TAIL = 20;
-
-/** One `{{.ID}}\t{{.State}}\t{{.Status}}` line; the exit code only `Status` carries. */
-export function parseDockerPsState(
-	line: string,
-): { id: string; state: string; exitCode?: number } | undefined {
-	const [id, state, status = ""] = line.trim().split("\t");
-	if (!id || !state) return undefined;
-	return { id, state, exitCode: parseDockerExitCode(status) };
-}
 
 export async function diagnoseDockerService(
 	request: ServiceDiagnosisRequest,
@@ -39,25 +29,22 @@ export async function diagnoseDockerService(
 		timeoutMs: remainingTime(deadline),
 	});
 	try {
-		const ps = await runDockerAsync(
-			binary,
-			[
-				"ps",
-				"--all",
-				...serviceContainerFilters(request),
-				"--format",
-				"{{.ID}}\t{{.State}}\t{{.Status}}",
-			],
-			options(),
+		const container = serviceContainerOf(
+			await listDockerContainersAsync(binary, options()),
+			request.projectName,
+			request.serviceName,
 		);
-		const first = ps.stdout.trim().split("\n")[0] ?? "";
-		const found = ps.ok ? parseDockerPsState(first) : undefined;
-		if (!found) return undefined;
-		const { id, ...state } = found;
+		if (!container) return undefined;
+		const state = {
+			state: container.runtimeState,
+			...(container.exitCode === undefined
+				? {}
+				: { exitCode: container.exitCode }),
+		};
 		if (remainingTime(deadline) === 0) return { ...state, logTail: "" };
 		const logs = await runDockerAsync(
 			binary,
-			["logs", `--tail=${request.tail ?? DEFAULT_TAIL}`, id],
+			["logs", `--tail=${request.tail ?? DEFAULT_TAIL}`, container.id],
 			options(),
 		);
 		// The container writes its own stderr there too, and that is usually

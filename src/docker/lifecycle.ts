@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { formatPortOwner, getPortOwner } from "../core/process";
+import { createPortOwnerSnapshotAsync, formatPortOwner } from "../core/process";
 import { formatDone, formatStep } from "../core/style";
 import { dockerRuntimeAdapter } from "./adapter";
 import {
@@ -59,10 +59,10 @@ const COMPOSE_MISSING =
  * Only reachable with a captured stderr, which means the quiet path; a verbose
  * run streamed compose's own output to the terminal already.
  */
-function translateComposeFailure(
+async function translateComposeFailure(
 	result: DockerRunResult,
 	binary: string | undefined,
-): never {
+): Promise<never> {
 	const message = result.stderr.trim();
 	if (isComposeMissingMessage(message)) throw new Error(COMPOSE_MISSING);
 	const allocated =
@@ -73,10 +73,11 @@ function translateComposeFailure(
 		const port = Number.parseInt(portMatch[1], 10);
 		// Asked of the same `docker` that failed, so a pinned binary's container
 		// is found rather than one on whatever `docker` PATH names.
-		const owner = getPortOwner(port, {
+		const owners = await createPortOwnerSnapshotAsync({
 			runtime: dockerRuntimeAdapter({ binary }),
+			ports: [port],
 		});
-		throw new Error(formatPortOwner(port, owner ?? { pids: [] }));
+		throw new Error(formatPortOwner(port, owners.owner(port) ?? { pids: [] }));
 	}
 	throw new Error(
 		message || `docker compose exited with code ${result.exitCode}`,
@@ -118,7 +119,7 @@ export async function startContainers(
 			timeoutMs,
 		},
 	);
-	if (!result.ok) translateComposeFailure(result, binary);
+	if (!result.ok) await translateComposeFailure(result, binary);
 	if (verbose) console.log(formatDone("Containers started"));
 }
 
@@ -204,7 +205,7 @@ export async function stopContainers(
 				console.log(formatStep("ℹ Docker is not running. Nothing to stop."));
 			return;
 		}
-		translateComposeFailure(result, binary);
+		await translateComposeFailure(result, binary);
 	}
 
 	// A reset that kept the database is not one: the next run reads stale data.

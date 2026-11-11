@@ -1,19 +1,29 @@
 import { getErrorMessage, typedSwitch, typedSwitchGroup } from "hanzio";
+import { containerRuntimeForEnv } from "../../../container-runtime";
 import {
-	containerRuntimeForEnv,
-	listBuncargoContainers,
-} from "../../../container-runtime";
+	buncargoContainersOf,
+	portOwnersOf,
+} from "../../../container-runtime/containers";
+import type { ContainerRuntimeAdapter } from "../../../container-runtime/types";
+import {
+	checkSlotStatus,
+	formatCheckSlotHolder,
+} from "../../../core/check-slots";
 import { readEnvOverrides } from "../../../core/env-overrides";
 import { describeStrayLoopbackUrl } from "../../../core/loopback-env";
 import {
 	classifyPortOccupant,
+	createPortOwnerSnapshotAsync,
 	formatPortOwner,
-	getPortOwner,
 	withBindProbe,
 } from "../../../core/process";
 import { describeRemoval, readRemovals } from "../../../core/removal-log";
 import { type RunEntry, readLiveRuns } from "../../../core/run-registry";
-import type { AnyDevEnvironment } from "../../../types";
+import type {
+	AnyDevEnvironment,
+	BuncargoContainer,
+	PortContainerOwner,
+} from "../../../types";
 import { strayLoopbackUrls } from "../../core-checks";
 import { hasFlag } from "../../flags";
 import * as log from "../../log";
@@ -38,7 +48,16 @@ async function readStatus() {
 	// checkout's run, rather than a read-only load that never activates them.
 	const env = await loadLiveEnv();
 	const runtime = containerRuntimeForEnv(env);
-	const ownerOf = withBindProbe((port) => getPortOwner(port, { runtime }));
+	// One listing of the runtime answers both who holds each port and which
+	// containers this checkout has, where each used to be a `docker ps` of
+	// its own per port.
+	const listing = await readContainerListing(runtime);
+	const snapshot = await createPortOwnerSnapshotAsync({
+		runtime,
+		ports: Object.values(env.ports as Record<string, number>),
+		containers: "inventory" in listing ? listing.portOwners : undefined,
+	});
+	const ownerOf = withBindProbe((port) => snapshot.owner(port));
 
 	const ports = Object.fromEntries(
 		Object.entries(env.ports as Record<string, number>).map(([name, port]) => {
@@ -63,21 +82,17 @@ async function readStatus() {
 		}),
 	);
 
-	let containers:
-		{ service: string; name: string; status: string }[] | { error: string };
-	try {
-		containers = listBuncargoContainers([runtime])
-			.filter((item) => item.project === env.projectName)
-			.map((item) => ({
-				service: item.service || item.name,
-				name: item.name,
-				status: item.status,
-			}));
-	} catch (error) {
-		containers = {
-			error: getErrorMessage(error),
-		};
-	}
+	const containers:
+		{ service: string; name: string; status: string }[] | { error: string } =
+		"inventory" in listing
+			? listing.inventory
+					.filter((item) => item.project === env.projectName)
+					.map((item) => ({
+						service: item.service || item.name,
+						name: item.name,
+						status: item.status,
+					}))
+			: { error: listing.error };
 
 	const runs = (await readLiveRuns().catch(() => [])).filter(
 		(run) => run.root === env.root,
@@ -125,7 +140,13 @@ async function readStatus() {
 		portOffsetProvenance: env.portOffsetProvenance,
 		plannedOffset,
 		composeFile: env.composeFile,
-		runtime: { name: runtime.name, running: runtime.isAvailable() },
+		// A runtime that listed its containers is running; only one that did
+		// not is asked again.
+		runtime: {
+			name: runtime.name,
+			running: "inventory" in listing || runtime.isAvailable(),
+		},
+		checkSlots: checkSlotStatus(),
 		ports,
 		urls: env.urls,
 		containers,
@@ -156,6 +177,30 @@ async function readStatus() {
 			(stray) => ({ ...stray, message: describeStrayLoopbackUrl(stray) }),
 		),
 	};
+}
+
+/**
+ * The runtime's buncargo containers and the ports its containers hold, from
+ * one listing, or why it could not say. A runtime without a listing answers
+ * through its inventory, and the port snapshot asks it about ports itself.
+ */
+async function readContainerListing(runtime: ContainerRuntimeAdapter): Promise<
+	| {
+			inventory: BuncargoContainer[];
+			portOwners?: Map<number, PortContainerOwner>;
+	  }
+	| { error: string }
+> {
+	try {
+		const listed = await runtime.containers?.();
+		if (!listed) return { inventory: runtime.list() };
+		return {
+			inventory: buncargoContainersOf(listed, runtime.name),
+			portOwners: portOwnersOf(listed, runtime.name),
+		};
+	} catch (error) {
+		return { error: getErrorMessage(error) };
+	}
 }
 
 /** How many of this checkout's removal records `status` shows. */
@@ -258,6 +303,15 @@ function printStatus(status: Awaited<ReturnType<typeof readStatus>>): void {
 		log.line(
 			`env overrides (buncargo env set): ${status.envOverrides.join(", ")}`,
 		);
+	}
+	const slots = status.checkSlots;
+	if (slots.enabled && (slots.holders.length > 0 || slots.waiting > 0)) {
+		log.line();
+		log.line(
+			`check slots: ${slots.holders.length} of ${slots.capacity} taken, ${slots.waiting} waiting (this user's, in ${slots.dir})`,
+		);
+		for (const holder of slots.holders)
+			log.line(`  ${formatCheckSlotHolder(holder)}`);
 	}
 	for (const stray of status.strayLoopbackUrls) log.warn(stray.message);
 	for (const run of status.runs) {

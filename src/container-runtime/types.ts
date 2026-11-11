@@ -148,6 +148,41 @@ export interface ServiceRuntimeState {
 	exitCode?: number;
 }
 
+/** The labels buncargo reads, in buncargo's words rather than a backend's. */
+export interface ContainerLabels {
+	/** The Compose project, or Apple's project label. */
+	composeProject?: string;
+	/** `buncargo.project`: absent on a container buncargo did not create. */
+	project?: string;
+	/** `buncargo.root`: the checkout that created it. */
+	root?: string;
+	worktree?: string;
+	/**
+	 * `buncargo.service`, the Compose service name. Absent on a one-off
+	 * `compose run` container, which is not the service's replica.
+	 */
+	service?: string;
+	serviceHash?: string;
+}
+
+export interface RuntimeContainer {
+	id: string;
+	name: string;
+	state: ContainerState;
+	/** The runtime's own word for the state: "running", "exited", "stopped". */
+	runtimeState: string;
+	/** The runtime's human-readable status line, for display only. */
+	status: string;
+	exitCode?: number;
+	/** The runtime's healthcheck verdict; absent means "cannot tell". */
+	healthy?: boolean;
+	/** Every host port it publishes, ranges expanded. */
+	ports: number[];
+	/** The published ports as the runtime prints them, for display. */
+	portsText: string;
+	labels: ContainerLabels;
+}
+
 /** A container as `buncargo prune --project` reads it. */
 export interface ComposeProjectContainer {
 	id: string;
@@ -238,6 +273,16 @@ export interface ContainerRuntimeAdapter {
 	 * port. Never throws; false for anything but a listening service.
 	 */
 	probeServicePort?(request: ServicePortProbeRequest): Promise<boolean>;
+	/**
+	 * Every container this runtime holds, buncargo's or not, in one call: the
+	 * reading service states, port owners, the inventory and a service's state
+	 * are derived from (`containers.ts`). Throws when the runtime cannot
+	 * answer, so an empty list means it holds none.
+	 *
+	 * Optional for adapters written before it existed; callers fall back to
+	 * the members below.
+	 */
+	containers?(signal?: AbortSignal): Promise<RuntimeContainer[]>;
 	/** Every buncargo-labeled container this runtime knows about. */
 	list(): BuncargoContainer[];
 	/**
