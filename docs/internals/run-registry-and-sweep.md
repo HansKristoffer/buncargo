@@ -10,6 +10,11 @@ and owned versus reused apps. Several sessions in one root coexist. Updates are 
 terminal states cannot regress to ready. Read-only consumers filter live entries without writing;
 writers prune. `stop --run` selects an exact session.
 
+A publish reads `runs.json` once (`ListRegistry.update`) and prunes under the lock with
+`kill(pid, 0)` alone: a start publishes and patches a dozen times, and each publish used to read
+the file three times and fork `ps` on macOS. A pid another process reused keeps its entry until the
+sweep, which compares identities, finds it gone; the prune never drops an entry that might be live.
+
 - `environment/run-claim.ts` publishes a run's entry *before* its first container exists, so the
   sweep can never see a fresh stack as unowned. The entry carries the idle hold, the runtime and
   the pinned binary, which is why the sweep needs no config. The library claims too, not only the

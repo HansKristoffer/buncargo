@@ -5,6 +5,7 @@ import type { ContainerRuntimeName } from "../types";
 import { buncargoCli, type CliInvocation } from "./cli-entry";
 import { withFileLock } from "./file-lock";
 import { getWorktreeName } from "./ports";
+import { isProcessAlive } from "./process/lifecycle";
 import {
 	processIdentityMatcherAsync,
 	readCurrentProcessIdentity,
@@ -412,7 +413,8 @@ export async function runLivenessAsync(
 }
 
 /**
- * Unlocked core, so callers already holding the lock can reuse it.
+ * The entries a publish keeps: a run whose process is gone and owns no
+ * containers is dropped.
  *
  * A dead run that owns containers is *kept*. Its entry is the only record of
  * what those containers are for, which idle hold they were given and which
@@ -420,17 +422,17 @@ export async function runLivenessAsync(
  * them down. Every "what is running" reader filters on liveness anyway, so a
  * retired entry is invisible to `runs`, `stop` and the menu bar; only the
  * sweep sees it, and only the sweep removes it.
+ *
+ * Liveness here is `kill(pid, 0)` alone, asked under the registry's lock: no
+ * `ps`, which forks on macOS. A pid some other process reuses keeps an entry
+ * until the sweep, which compares identities, finds it gone.
  */
-async function prune(
-	path: string,
-	alive: (run: RunEntry) => boolean,
-): Promise<RunEntry[]> {
-	const runs = await registry.read(path);
-	const kept = runs.filter((run) => alive(run) || run.services.length > 0);
-	if (kept.length !== runs.length) {
-		await registry.write(path, kept);
-	}
-	return kept;
+function prunedForPublish(runs: readonly RunEntry[]): RunEntry[] {
+	return runs.filter(
+		(run) =>
+			run.services.length > 0 ||
+			(run.releasedAt === undefined && isProcessAlive(run.pid)),
+	);
 }
 
 /**
@@ -510,10 +512,7 @@ async function updateRuns(
 		runs: RunEntry[],
 	) => RunEntry[] | undefined | Promise<RunEntry[] | undefined>,
 ): Promise<void> {
-	await withFileLock(path, async () => {
-		const next = await change(await registry.read(path));
-		if (next) await registry.write(path, next);
-	});
+	await withFileLock(path, () => registry.update(path, change));
 }
 
 /**
@@ -692,16 +691,13 @@ export async function describeRun(run: RunEntry): Promise<void> {
 }
 
 async function publish(run: RunEntry, kind: RunPublishKind): Promise<void> {
-	const path = getRunsPath();
-	const alive = await livenessBeforeLock(path);
-	await withFileLock(path, async () => {
-		const runs = await prune(path, alive);
-		const index = runs.findIndex((entry) => entry.sessionId === run.sessionId);
-		const next = [...runs];
-		const merged = mergePublishedRun(runs[index], run, kind);
+	await updateRuns(getRunsPath(), (runs) => {
+		const next = prunedForPublish(runs);
+		const index = next.findIndex((entry) => entry.sessionId === run.sessionId);
+		const merged = mergePublishedRun(next[index], run, kind);
 		if (index === -1) next.push(merged);
 		else next[index] = merged;
-		await registry.write(path, next);
+		return next;
 	});
 }
 

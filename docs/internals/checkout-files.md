@@ -43,8 +43,10 @@ agentgate syncs file stores between machines without buncargo's code. Everything
   loads with `syncCheckoutFiles: false` and `files status` never builds an environment, so the
   two inspect without writing. A library caller of `createDevEnvironment` (not `loadDevEnv`) gets
   no sync.
-- **Cheap when in step.** A load reads without the lock and forks git once, for the repository
-  key (about 16 ms on an M-series Mac). Only when something has to be written does it take the
+- **Cheap when in step.** A load reads without the lock and forks nothing: the repository key's
+  origin is read from the git config files. Git is asked only when a config file rewrites URLs
+  (`insteadOf`), includes another, or holds a line the reader does not parse, so the key is always
+  the one the contract below defines. Only when something has to be written does it take the
   lock, read again and run `git check-ignore`.
 - **`dev` reports, it does not fork again.** The "Checkout files are current" check is fast because
   it reads the report the load's sync left (`lastSyncReport`); `doctor` inspects instead. The
@@ -89,7 +91,8 @@ empty or `.` segments, so each file has one spelling and one store entry.
 The store root is `getStateDir()/files`, `$HOME/.buncargo/files`, relocated by `HOME` like the rest
 of `~/.buncargo`. A repository's store is `<root>/<repository key>/`.
 
-The key comes from `git remote get-url origin`, run in the checkout:
+The key comes from `git remote get-url origin`, run in the checkout (buncargo reads the same URL
+from the config files when they hold it plainly):
 
 1. URL form `scheme://[user[:pass]@]host[:port]/path` gives `host/path`, port dropped. scp form
    `user@host:path` (the `user@` is required) gives `host/` followed by `path` as written.
