@@ -71,6 +71,12 @@ describe("parseDevArgs", () => {
 		]);
 	});
 
+	it("reads --detach=1 as an unknown flag, not as --detach", () => {
+		const args = parseDevArgs(["--detach=1"]);
+		expect(args.detach).toBe(false);
+		expect(args.unknownFlags).toEqual(["--detach=1"]);
+	});
+
 	it("reports unknown flags without throwing", () => {
 		expect(parseDevArgs(["--nope", "--reset"]).unknownFlags).toEqual([
 			"--nope",

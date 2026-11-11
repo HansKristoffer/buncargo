@@ -735,9 +735,11 @@ in the run registry as `openUrl`: a public tunnel URL when the app is exposed,
 else the named `https://` host while the hosts daemon serves it, else loopback.
 
 Both modes write each app's output, plain, to `.buncargo/logs/<run>/<app>.log`
-(the last ten runs, 5 MB per file), and a seed that runs beside the apps
+(the last ten runs, and any older run still going; 5 MB per file), and a seed that runs beside the apps
 (`seed.beforeApps: false`) to `seed.log`. `buncargo logs [app] [-f] [--since=5m]
-[--errors]` reads the current or last run. `--errors` keeps the lines that read as errors: a level
+[--errors] [--run=<sessionId>]` reads the live run that runs `app`, else the last run with a log
+for it; without an app, the last run. `--run` picks a run by the session id `buncargo runs` prints,
+and `-f` ends once that run has ended. `--errors` keeps the lines that read as errors: a level
 the logger wrote (`INFO:`, `[WARN]`, `level=info`) wins over words like "failed", and a structured
 block an error line opens (`[ERROR] job.completed {` … `}`) is kept whole.
 

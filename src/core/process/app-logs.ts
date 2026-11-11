@@ -3,12 +3,15 @@ import {
 	existsSync,
 	mkdirSync,
 	readdirSync,
+	readFileSync,
 	renameSync,
 	rmSync,
 	statSync,
+	writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { getProjectStateDir } from "../state-paths";
+import { isProcessAlive } from "./lifecycle";
 
 /**
  * Every app's output as plain text, per run: `.buncargo/logs/<run>/<app>.log`.
@@ -18,8 +21,13 @@ import { getProjectStateDir } from "../state-paths";
  * modes, already stripped of escapes, and capped per file.
  */
 
-/** Runs kept per checkout; older directories are removed when a run starts. */
+/**
+ * Runs kept per checkout; older directories are removed when a run starts,
+ * unless their run is still going.
+ */
 const KEPT_RUNS = 10;
+/** The pid of the run writing a directory, so pruning can tell it is live. */
+const OWNER_FILE = "owner.pid";
 /** Past this a file rotates to `<app>.log.1`, replacing the previous one. */
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const FLUSH_MS = 200;
@@ -38,10 +46,29 @@ export function listRunLogDirs(root: string): string[] {
 		.sort();
 }
 
+/** What a run directory's name ends with for its session. */
+function sessionTag(sessionId: string): string {
+	return sessionId.slice(0, 8);
+}
+
 function runDirName(sessionId: string, now: Date): string {
 	// Milliseconds kept: two runs in one second must still sort by start.
 	const stamp = now.toISOString().replace(/[-:.]/g, "");
-	return `${stamp}-${sessionId.slice(0, 8)}`;
+	return `${stamp}-${sessionTag(sessionId)}`;
+}
+
+/** Whether `dir` is a directory of the run with this session id. */
+export function isSessionLogDir(dir: string, sessionId: string): boolean {
+	return basename(dir).endsWith(`-${sessionTag(sessionId)}`);
+}
+
+function ownerAlive(dir: string): boolean {
+	try {
+		const pid = Number(readFileSync(join(dir, OWNER_FILE), "utf8"));
+		return pid > 0 && isProcessAlive(pid);
+	} catch {
+		return false;
+	}
 }
 
 export class AppLogs {
@@ -53,8 +80,10 @@ export class AppLogs {
 	constructor(root: string, sessionId: string, now = new Date()) {
 		this.dir = join(logsRoot(root), runDirName(sessionId, now));
 		mkdirSync(this.dir, { recursive: true });
+		writeFileSync(join(this.dir, OWNER_FILE), String(process.pid));
+		// A live run's directory stays: its next flush would fail silently.
 		for (const old of listRunLogDirs(root).slice(0, -KEPT_RUNS))
-			rmSync(old, { recursive: true, force: true });
+			if (!ownerAlive(old)) rmSync(old, { recursive: true, force: true });
 	}
 
 	file(app: string): string {

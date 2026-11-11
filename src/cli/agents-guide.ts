@@ -256,7 +256,9 @@ const TOPICS: readonly Topic[] = [
 		body: `## Logs
 
 - \`bunx buncargo logs <app> --errors\`, \`--since=5m\`, \`-f\`. App output is kept
-  per run, so it is there after the terminal scrolled or the run ended.
+  per run, so it is there after the terminal scrolled or the run ended. It
+  reads the live run that runs <app>; \`--run=<sessionId>\` picks another
+  (\`bunx buncargo runs --json\` lists them). \`-f\` exits 0 when the run ends.
 - \`--errors\` keeps the lines that read as errors (a logger's own INFO or WARN
   level wins over a word like "failed"), with the \`{ … }\` block that follows
   one. It can hide a line such as \`MISSING_SECRETS: X\`: when an app will not

@@ -164,6 +164,9 @@ export function createErrorFilter(): (text: string) => boolean {
 	};
 }
 
+const SCREEN_DROPPED =
+	"Output dropped: the app printed faster than its screen could parse, so lines of this burst are missing here and in its log.";
+
 export class RunOutput {
 	/** Set when every app runs under its own pseudo-terminal of this size (the TUI). */
 	terminalSize?: () => { cols: number; rows: number };
@@ -235,7 +238,12 @@ export class RunOutput {
 		let screen = this.screens.get(app);
 		if (!screen) {
 			const { cols, rows } = this.terminalSize?.() ?? { cols: 80, rows: 24 };
-			screen = new AppScreen(cols, rows, (text) => this.line(app, text));
+			screen = new AppScreen(
+				cols,
+				rows,
+				(text) => this.line(app, text),
+				() => this.event(app, SCREEN_DROPPED, "warn"),
+			);
 			this.screens.set(app, screen);
 		}
 		return screen;

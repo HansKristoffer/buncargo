@@ -225,6 +225,13 @@ export async function runCli<
 	exitOnDevArgErrors(args);
 	for (const warning of args.ignoredFlags) log.warn(warning);
 
+	if (args.detach && detachedRunMode() !== undefined) {
+		// The background run re-detaching would start another, without end.
+		log.error(
+			"--detach reached a run that is already in the background; it was not started again.",
+		);
+		process.exit(1);
+	}
 	if (args.detach) {
 		const { DETACH_TIMEOUT_MS, runDetached } = await import("./dev-detach");
 		const plan = planStart(env.apps, env.services, {
@@ -273,6 +280,16 @@ export async function runCli<
 		() => controller.abort(interrupts.signal.reason),
 		{ once: true },
 	);
+	// A throw or rejection nothing caught ends the run the way a failure
+	// does: its apps stopped and the teardown awaited. Unhandled, it killed
+	// this process and left every app running.
+	let crash: { error: unknown } | undefined;
+	const onCrash = (error: unknown) => {
+		crash ??= { error };
+		controller.abort(error);
+	};
+	process.on("uncaughtException", onCrash);
+	process.on("unhandledRejection", onCrash);
 	const tunnels = createTunnelCoordinator(
 		env,
 		cliTestTunnel ?? {
@@ -311,7 +328,10 @@ export async function runCli<
 			teardown: teardownOnce,
 			runningApps,
 		});
-	} catch (error) {
+		// A run that only held services returns normally from the abort.
+		if (crash) throw crash.error;
+	} catch (thrown) {
+		const error = crash ? crash.error : thrown;
 		controller.abort(error);
 		timer.report();
 		// The prompt re-raises SIGINT, which arrives after this.
@@ -339,6 +359,8 @@ export async function runCli<
 		process.exit(interrupts.exitCode() ?? 1);
 	} finally {
 		interrupts.dispose();
+		process.off("uncaughtException", onCrash);
+		process.off("unhandledRejection", onCrash);
 	}
 
 	// 128 + the signal however an interrupted run ended: one that only held
@@ -874,6 +896,13 @@ async function runDevFlow<
 		view.output.event("buncargo", message, problem ? "error" : undefined);
 		if (!view.tui) (problem ? log.warn : log.info)(message);
 	});
+	// Where the watchdog's failure stays, as a service change does: nothing
+	// sweeps the machine's ended runs until it is up again.
+	const reportWatchdogFailure = (error: unknown) => {
+		const message = `The watchdog did not start: ${String(error)}. Ended runs' containers stay until \`buncargo ls\` or \`buncargo doctor\` sweeps; the next \`buncargo dev\` tries again.`;
+		view.output.event("buncargo", message, "warn");
+		if (!view.tui) log.warn(message);
+	};
 	// An app that falls over is often the first sign its database was removed
 	// under it; say who did, once, rather than leave a refused connection.
 	let lossExplained = !hasServices;
@@ -959,7 +988,9 @@ async function runDevFlow<
 					// apps are up and not awaited, so startup pays nothing; quiet,
 					// because the TUI may own the screen.
 					if (!hasServices && options.watchdog)
-						void ensureWatchdog({ verbose: false }).catch(() => {});
+						void ensureWatchdog({ verbose: false }).catch((error) =>
+							reportWatchdogFailure(error),
+						);
 					if (servicesOnly)
 						log.success("Services ready. Press Ctrl-C to end the run.");
 				},
@@ -968,7 +999,14 @@ async function runDevFlow<
 				output: view.output,
 				waitForExit: true,
 				onSignal: () => {
-					void env.releaseRun();
+					// Teardown releases again and reports a failure that stays.
+					void env
+						.releaseRun()
+						.catch((error) =>
+							log.warn(
+								`Could not release this run in ~/.buncargo/runs.json: ${String(error)}. Retrying as the run ends.`,
+							),
+						);
 				},
 				// Ready as each app comes up, not when its whole wave has; a
 				// restart (`r`, `buncargo restart`, a watch, a capture's

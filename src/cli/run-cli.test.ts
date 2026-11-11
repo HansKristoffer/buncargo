@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { getRoutesPath } from "../core/hosts";
 import { acquireLease, releaseLeases } from "../core/leases";
+import { isProcessAlive } from "../core/process/lifecycle";
 import {
 	buildRunEntry,
 	findRunsByRoot,
@@ -1218,6 +1219,61 @@ setInterval(() => {}, 60_000);
 	}
 }, 20_000);
 
+/**
+ * A run of one app that keeps going until the run stops it: its exit code,
+ * the app's pid once it is ready, and the warnings the run printed.
+ */
+async function startLongRunningApp(
+	prefix: string,
+	overrides: Partial<
+		DevEnvironment<Record<string, ServiceConfig>, Record<string, AppConfig>>
+	> = {},
+) {
+	const root = await realpath(await mkdtemp(join(tmpdir(), prefix)));
+	const env = createStubEnv({
+		root,
+		services: {},
+		apps: {
+			api: {
+				port: 45010 + Math.floor(Math.random() * 200),
+				devCommand: "bun -e 'setInterval(() => {}, 1000)'",
+				healthEndpoint: false,
+				requiredServices: [],
+			},
+		},
+	});
+	Object.assign(env, overrides);
+	const warn = spyOn(console, "warn").mockImplementation(() => {});
+	const exit = withProcessExitTrap(() =>
+		runCli(env, { args: ["--no-hosts", "--no-tui"], watchdog: false }),
+	);
+	return {
+		exit,
+		warnings: () =>
+			warn.mock.calls.map((call) => call.map(String).join(" ")).join("\n"),
+		async readyPid(): Promise<number> {
+			const deadline = performance.now() + 5_000;
+			for (;;) {
+				const app = (await findRunsByRoot(root))
+					.find((run) => run.sessionId === env.sessionId)
+					?.apps.find((entry) => entry.name === "api");
+				if (app?.status === "ready" && app.pid) return app.pid;
+				if (performance.now() > deadline) throw new Error("api never ready");
+				await Bun.sleep(20);
+			}
+		},
+		async cleanup(): Promise<void> {
+			if (
+				!(await Promise.race([exit.then(() => true), Promise.resolve(false)]))
+			)
+				process.emit("SIGTERM");
+			await exit.catch(() => {});
+			warn.mockRestore();
+			await rm(root, { recursive: true, force: true });
+		},
+	};
+}
+
 describe("how a run ends", () => {
 	it("tears down once when an app fails during start", async () => {
 		const port = 44610 + Math.floor(Math.random() * 200);
@@ -1344,6 +1400,103 @@ describe("how a run ends", () => {
 		} finally {
 			warn.mockRestore();
 			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	// An exception nothing caught used to kill the CLI and leave every app
+	// running; it now ends the run as a failure does.
+	it("stops every app when the run crashes, and exits 1", async () => {
+		const run = await startLongRunningApp("buncargo-crash-");
+		try {
+			const pid = await run.readyPid();
+			process.emit("uncaughtException", new Error("boom"));
+			expect(await run.exit).toBe(1);
+			expect(isProcessAlive(pid)).toBe(false);
+		} finally {
+			await run.cleanup();
+		}
+	});
+
+	it("warns when releasing the run at Ctrl-C fails, and still ends it", async () => {
+		const run = await startLongRunningApp("buncargo-release-fails-", {
+			releaseRun: async () => {
+				throw new Error("registry lock timed out");
+			},
+		});
+		try {
+			await run.readyPid();
+			process.emit("SIGINT");
+			expect(await run.exit).toBe(130);
+			expect(run.warnings()).toContain(
+				"Could not release this run in ~/.buncargo/runs.json: Error: registry lock timed out",
+			);
+		} finally {
+			await run.cleanup();
+		}
+	});
+
+	it("says so when the watchdog does not start", async () => {
+		const ensure = spyOn(watchdog, "ensureWatchdog").mockImplementation(
+			async () => {
+				throw new Error("runner missing");
+			},
+		);
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		const env = createStubEnv({
+			services: {},
+			apps: {
+				api: {
+					port: 44410 + Math.floor(Math.random() * 100),
+					devCommand: "bun -e 'setTimeout(() => {}, 200)'",
+					healthEndpoint: false,
+					requiredServices: [],
+				},
+			},
+		});
+		try {
+			await runCli(env, { args: ["--no-hosts", "--no-tui"] });
+			const warned = warn.mock.calls.map((call) => String(call[0])).join("\n");
+			expect(warned).toContain(
+				"The watchdog did not start: Error: runner missing",
+			);
+		} finally {
+			warn.mockRestore();
+			ensure.mockRestore();
+		}
+	});
+
+	it("refuses --detach=1 rather than reading it as --detach", async () => {
+		const error = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const code = await withProcessExitTrap(() =>
+				runCli(createStubEnv(), { args: ["--detach=1"], watchdog: false }),
+			);
+			expect(code).toBe(1);
+			const printed = error.mock.calls
+				.map((call) => String(call[0]))
+				.join("\n");
+			expect(printed).toContain("--detach takes no value");
+		} finally {
+			error.mockRestore();
+		}
+	});
+
+	// A background run handed --detach would start another, without end.
+	it("refuses --detach in a run that is already in the background", async () => {
+		const error = spyOn(console, "error").mockImplementation(() => {});
+		process.env.BUNCARGO_DETACHED = "1";
+		try {
+			const code = await withProcessExitTrap(() =>
+				runCli(createStubEnv(), { args: ["--detach"], watchdog: false }),
+			);
+			expect(code).toBe(1);
+			const printed = error.mock.calls
+				.map((call) => String(call[0]))
+				.join("\n");
+			expect(printed).toContain("already in the background");
+		} finally {
+			delete process.env.BUNCARGO_DETACHED;
+			error.mockRestore();
 		}
 	});
 
