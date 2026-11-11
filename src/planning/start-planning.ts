@@ -6,7 +6,6 @@ export interface StartPlan {
 	appNames: string[];
 	apps: Record<string, ResolvedApp>;
 	requiredServiceKeys: string[];
-	composeServiceNames: string[];
 }
 
 export function getComposeServiceName(
@@ -307,14 +306,7 @@ export function buildStartPlan(
 			? resolveServiceDependencies(services, Object.keys(services))
 			: resolveRequiredServiceKeys(apps, services, selection.appNames);
 
-	return {
-		...selection,
-		requiredServiceKeys,
-		composeServiceNames: resolveComposeServiceNames(
-			services,
-			requiredServiceKeys,
-		),
-	};
+	return { ...selection, requiredServiceKeys };
 }
 
 /**
@@ -338,10 +330,6 @@ export function buildServicePlan(
 		appNames: [],
 		apps: {},
 		requiredServiceKeys,
-		composeServiceNames: resolveComposeServiceNames(
-			services,
-			requiredServiceKeys,
-		),
 	};
 }
 

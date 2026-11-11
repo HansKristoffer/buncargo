@@ -9,7 +9,6 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { debounce, exponentialBackoff, getErrorMessage } from "hanzio";
-import { createThrottledFailureLog } from "../failure-log";
 // The leaf module, not `../process`: its index re-exports the port-ownership
 // helpers, which reach into the container backends. The root daemon spawns
 // nothing and should not carry them.
@@ -32,6 +31,7 @@ import {
 	releaseDaemonState,
 	writeDaemonConfig,
 } from "./daemon-config";
+import { createThrottledFailureLog } from "./failure-log";
 import { cleanHostsFile, syncHostsFile } from "./hosts-file";
 import {
 	CERT_FILENAME,

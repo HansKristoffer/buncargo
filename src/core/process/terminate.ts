@@ -16,7 +16,7 @@ function exitSeen(child: AppChild | DetachedApp): boolean {
 }
 
 function groupAlive(pid: number): boolean {
-	return process.platform !== "win32" && isProcessAlive(-pid);
+	return isProcessAlive(-pid);
 }
 
 /**
@@ -127,7 +127,7 @@ function signalGroup(
 		return;
 	}
 	try {
-		process.kill(process.platform === "win32" ? child.pid : -child.pid, signal);
+		process.kill(-child.pid, signal);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		// macOS can report EPERM for a group whose last member is exiting.

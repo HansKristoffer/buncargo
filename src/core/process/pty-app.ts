@@ -82,7 +82,7 @@ export class PtyApp extends EventEmitter {
 		});
 	}
 
-	write(data: string): void {
+	write(data: string | Uint8Array): void {
 		if (this.exitCode === null && this.signalCode === null)
 			this.proc.terminal?.write(data);
 	}

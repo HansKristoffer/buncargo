@@ -28,8 +28,11 @@ interface CiRequest {
 	migrate: boolean;
 	seed: boolean;
 	schemaPush: boolean;
+	migrateCheck: boolean;
 	slot: boolean;
 	services: string[] | undefined;
+	apps: string[] | undefined;
+	build: boolean;
 	runtime: string | undefined;
 	command: readonly string[];
 }
@@ -65,12 +68,13 @@ function ciSuffix(): string {
 
 /**
  * Local services in CI: start them, apply migrations and the seed with the
- * same config as local, run the command with the environment, tear down.
+ * same config as local, check the migrations against the schema and start
+ * apps when asked, run the command with the environment, tear down.
  *
  * Each run is its own stack, with its data on tmpfs: a CI run that leaves a
  * database behind leaks it into the next job on a reused runner, and one run
  * finishing must never take down another's. Returns the command's exit code,
- * or 0 when only services/migrations/seed were asked for.
+ * the migration check's when it fails, or 0 when no command was given.
  */
 export const ciCommand = defineCommand({
 	spec: {
@@ -93,6 +97,11 @@ export const ciCommand = defineCommand({
 					"How the Prisma schema is applied: its migrations, or `prisma db push` (implies --migrate)",
 				validate: enumValidator("--schema", SCHEMA_MODES),
 			},
+			"migrate-check": {
+				kind: "boolean",
+				description:
+					"Fail (exit 2) when the Prisma schema has changes no migration contains, checked against a shadow database in this stack",
+			},
 			slot: {
 				kind: "boolean",
 				description:
@@ -103,6 +112,17 @@ export const ciCommand = defineCommand({
 				value: "<names>",
 				description:
 					"Start only these services (default: every configured one)",
+			},
+			apps: {
+				kind: "string",
+				value: "<names>",
+				description:
+					"Start these apps (and their requiredApps) after preparation and wait until they are healthy",
+			},
+			build: {
+				kind: "boolean",
+				description:
+					"With --apps: run their buildCommand, then their prodCommand instead of devCommand",
 			},
 			runtime: {
 				kind: "string",
@@ -126,11 +146,22 @@ export const ciCommand = defineCommand({
 				description:
 					"A unit shard: the schema pushed, not migrated, inside a check slot",
 			},
+			{
+				command: "buncargo ci --migrate-check",
+				description: "Fail when the schema has changes no migration contains",
+			},
+			{
+				command:
+					"buncargo ci --seed --apps=api,web --build -- bunx playwright test",
+				description:
+					"E2E: services seeded, apps built, started and healthy, tests, teardown",
+			},
 		],
 	},
 	exits: {
 		...BASE_EXITS,
-		1: "preparation failed, or bad arguments; otherwise the command's own code",
+		1: "preparation failed, an app failed to build or become healthy, or bad arguments; otherwise the command's own code",
+		2: "--migrate-check: the schema has changes no migration contains (before any command runs)",
 	},
 	run: ({ values, passthrough }) =>
 		withStatusOnStderr(() =>
@@ -138,11 +169,14 @@ export const ciCommand = defineCommand({
 				migrate: values.migrate,
 				seed: values.seed,
 				schemaPush: values.schema === "push",
+				migrateCheck: values["migrate-check"],
 				slot: values.slot,
 				services:
 					values.services === undefined
 						? undefined
 						: commaList(values.services),
+				apps: values.apps === undefined ? undefined : commaList(values.apps),
+				build: values.build,
 				runtime: values.runtime,
 				command: passthrough,
 			}),
@@ -173,11 +207,6 @@ async function runCi(parsed: CiRequest): Promise<number> {
 	const checkout = await loadDevEnv({ containerRuntime: parsed.runtime });
 	const env = checkout.withSuffix(ciSuffix(), { data: "tmpfs" });
 	const prisma = env.prisma;
-	if (parsed.schemaPush && !prisma) {
-		throw new CliError(
-			"--schema=push needs a prisma block in your dev config.",
-		);
-	}
 	const services = parsed.services ?? Object.keys(env.services);
 	const unknown = services.filter((name) => !env.services[name]);
 	if (unknown.length > 0) {
@@ -185,10 +214,30 @@ async function runCi(parsed: CiRequest): Promise<number> {
 			`Configured services: ${Object.keys(env.services).join(", ") || "none"}`,
 		]);
 	}
-	if (prisma && parsed.schemaPush && !services.includes(prisma.service)) {
+	const prismaFlag = parsed.schemaPush
+		? "--schema=push"
+		: parsed.migrateCheck
+			? "--migrate-check"
+			: undefined;
+	if (prismaFlag && !prisma) {
 		throw new CliError(
-			`--schema=push needs the ${prisma.service} service, which --services leaves out.`,
+			`${prismaFlag} needs a prisma block in your dev config.`,
 		);
+	}
+	if (prisma && prismaFlag && !services.includes(prisma.service)) {
+		throw new CliError(
+			`${prismaFlag} needs the ${prisma.service} service, which --services leaves out.`,
+		);
+	}
+	if (parsed.build && !parsed.apps) {
+		throw new CliError("--build needs --apps: it builds the apps it starts.");
+	}
+	const apps = parsed.apps ?? [];
+	const unknownApps = apps.filter((name) => !env.apps[name]);
+	if (unknownApps.length > 0) {
+		throw new CliError(`Unknown app(s): ${unknownApps.join(", ")}`, [
+			`Configured apps: ${Object.keys(env.apps).join(", ") || "none"}`,
+		]);
 	}
 	// Unless `docker.generatedFile` names one file for every stack.
 	const ownComposeFile =
@@ -233,6 +282,23 @@ async function runCi(parsed: CiRequest): Promise<number> {
 							await reportContainerLoss(env);
 							return exited(failedSeed.exitCode || 1);
 						}
+
+						// Inside this stack, so the shadow database is thrown away with
+						// it and the checkout's dev stack is never started.
+						if (prisma && parsed.migrateCheck) {
+							const drift = await prisma.migrateCheck();
+							if (drift !== 0) return exited(drift);
+						}
+
+						// Inside `withServices`, so the teardown's `stop()` stops them
+						// with the stack. Throws when one fails to build or start, or
+						// misses its health check.
+						if (apps.length > 0)
+							await env.startServers({
+								onlyApps: apps,
+								productionBuild: parsed.build,
+								signal,
+							});
 
 						if (parsed.command.length === 0) return exited(0);
 

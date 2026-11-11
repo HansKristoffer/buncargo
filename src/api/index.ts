@@ -50,7 +50,7 @@ export {
 	startPublicTunnels,
 	stopPublicTunnels,
 } from "../core/tunnel";
-export { getEnvVar, logApiUrl, logFrontendPort, sleep } from "../core/utils";
+export { getEnvVar } from "../core/utils";
 export {
 	ensureWatchdog,
 	getWatchdogLogFile,
@@ -65,7 +65,7 @@ export {
 	writeGeneratedComposeFile,
 } from "../docker-compose/index";
 export { createDevEnvironment } from "../environment/index";
-export { clearDevEnvCache, getDevEnv, loadDevEnv } from "../loader/index";
+export { clearDevEnvCache, loadDevEnv } from "../loader/index";
 export {
 	runWorkspaceTypecheck,
 	type TypecheckResult,

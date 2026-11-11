@@ -155,11 +155,6 @@ export interface DevEnvironment<
 	readonly root: string;
 	/** Path passed to docker compose -f */
 	readonly composeFile: string;
-	/** Validate selection and resolve startup allocation before activating hosts. */
-	prepareStart(
-		onlyApps?: Extract<keyof TApps, string>[],
-		onlyServices?: readonly Extract<keyof TServices, string>[],
-	): void;
 	/**
 	 * Where the next full `start()` would put the port block, probed the way
 	 * it would probe, without claiming or writing anything. `status` compares
@@ -168,7 +163,7 @@ export interface DevEnvironment<
 	planPortOffset(): { offset: number; provenance: PortOffsetProvenance };
 	/** Which backend runs the containers: 'docker' or 'apple' */
 	readonly containerRuntime: ContainerRuntimeName;
-	/** Cancellable startup allocation; prefer this when preparing before host activation. */
+	/** Validate the selection and allocate for it before activating hosts; cancellable. */
 	prepareStartAsync(
 		onlyApps?: Extract<keyof TApps, string>[],
 		onlyServices?: readonly Extract<keyof TServices, string>[],
@@ -279,8 +274,6 @@ export interface DevEnvironment<
 		/** If set, start and wait for only these app names plus any transitive `requiredApps`. */
 		onlyApps?: Extract<keyof TApps, string>[];
 	}): Promise<DevServerPids<TApps>>;
-	/** Stop a process by PID */
-	stopProcess(pid: number): void;
 	/** Wait for servers to be ready */
 	waitForServers(options?: {
 		signal?: AbortSignal;

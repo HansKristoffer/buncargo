@@ -235,7 +235,7 @@ run's, which in one project created a super admin with a known password on a dep
 neither variable. It is not in the auto-install commands: a deploy image's install layer comes
 from a cache older than its `bun.lock`. Unlike `typecheck`, a config that
 fails to import is an error here: migrating with half a config is worse than failing the deploy.
-`typecheck/config-settings.ts` is the one loader for these config-only commands.
+`loader/config-settings.ts` is the one loader for these config-only commands.
 
 ## Typecheck
 

@@ -79,7 +79,7 @@ export interface DevOptions<
 	primaryApp?: Extract<keyof TApps, string>;
 	/**
 	 * Named `.localhost` HTTPS URLs via the shared loopback proxy.
-	 * `true` uses defaults. Off on Windows, in CI, or when `BUNCARGO_HOSTS=0`.
+	 * `true` uses defaults. Off in CI or when `BUNCARGO_HOSTS=0`.
 	 */
 	hosts?: boolean | HostsOptions<TServices>;
 	/**

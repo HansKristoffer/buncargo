@@ -9,8 +9,8 @@ import {
 	createShapeChecks,
 	type ShapeChecks,
 } from "../config/validation/shape-checks";
-import { findRootConfigFile } from "../loader/find-config-file";
 import type { CheckConfig, TypecheckConfig } from "../types";
+import { findRootConfigFile } from "./find-config-file";
 
 export interface RootConfigKey<T> {
 	config?: T;
