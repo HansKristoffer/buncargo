@@ -16,7 +16,6 @@ import {
 	isHostsDaemonWedged,
 	SERVICE_START_TIMEOUT_MS,
 } from "./daemon-client";
-import { readDaemonConfig } from "./daemon-config";
 import {
 	cleanHostsFileAsRoot,
 	DEFAULT_HOSTS_FILE,
@@ -34,6 +33,7 @@ import {
 import { DECLINE_FILENAME } from "./paths";
 import { isHostsPlatformSupported } from "./plan";
 import { systemPrivilegedRunner } from "./privileged";
+import { HOSTS_HTTPS_PORT } from "./protocol";
 import { clearHostRoutes } from "./registry";
 import {
 	describeStaleHostsService,
@@ -121,7 +121,8 @@ async function promptStaleService(reason: string): Promise<"update" | "skip"> {
 export interface StaleServiceRepairDeps {
 	/** Undefined when there is no TTY to prompt on. */
 	prompt?: (reason: string) => Promise<"update" | "skip">;
-	reinstall: () => Promise<void>;
+	/** Resolves to notes worth showing, such as a newer service it kept. */
+	reinstall: () => Promise<string[]>;
 	caPath: () => string | undefined;
 }
 
@@ -147,8 +148,12 @@ export async function repairStaleService(
 	if (!deps.prompt) return asIs;
 	if ((await deps.prompt(staleService)) === "skip") return asIs;
 	try {
-		await deps.reinstall();
-		return { ok: true, caPath: deps.caPath() };
+		const notes = await deps.reinstall();
+		return {
+			ok: true,
+			caPath: deps.caPath(),
+			...(notes.length === 0 ? {} : { notes }),
+		};
 	} catch (error) {
 		// The old daemon is still up, so the run continues on named hosts either
 		// way; only the reason it is stale changes.
@@ -167,8 +172,10 @@ export async function runHostsInstall(
 		 * to repair it would skip the only step that could.
 		 */
 		reinstallService?: boolean;
+		/** Install over a newer service too (`hosts install --force`). */
+		force?: boolean;
 	} = {},
-): Promise<void> {
+): Promise<string[]> {
 	clearHostsDecline();
 	const mkcertPath = await ensureMkcert();
 	// Unconditionally: `hosts uninstall` removes the trust and keeps the CA
@@ -178,12 +185,14 @@ export async function runHostsInstall(
 	// Mint before the service starts. The daemon cannot bind :443 without a
 	// leaf, and it will not mint one itself.
 	await syncCertificateForRoutes({ mkcertPath });
+	const notes: string[] = [];
 	if (
 		options.reinstallService ||
 		!isHostsServiceInstalled() ||
 		describeStaleHostsService()
 	) {
-		installHostsService();
+		const { kept } = installHostsService({ force: options.force });
+		if (kept) notes.push(kept);
 	}
 	const ready = await ensureHostsDaemonRunning({
 		timeoutMs: SERVICE_START_TIMEOUT_MS,
@@ -191,6 +200,7 @@ export async function runHostsInstall(
 	if (!ready.ok) {
 		throw new Error(ready.message ?? "Named-hosts daemon failed to start");
 	}
+	return notes;
 }
 
 /** The steps of `hosts uninstall`, injected so the order can be tested without root. */
@@ -304,10 +314,9 @@ export async function ensureHostsReady(input: {
 
 	const interactive = input.interactive ?? isInteractive();
 
-	if (await isHostsDaemonHealthy(readDaemonConfig().httpsPort)) {
-		// Healthy is not the same as current: a daemon loaded from a previous
-		// version's bundle answers health checks while running that version's
-		// code, and only an explicit reinstall can move it.
+	if (await isHostsDaemonHealthy()) {
+		// Healthy is not the same as usable: a daemon below this CLI's protocol
+		// answers health checks, and only a reinstall can move it.
 		const stale = describeStaleHostsService();
 		return stale
 			? await repairStaleService(stale, {
@@ -332,7 +341,7 @@ export async function ensureHostsReady(input: {
 		//
 		// The squatter lookup lists containers; only pay for it here, where the
 		// message has to name whatever else is holding :443.
-		const squatter = describePortSquatter(readDaemonConfig().httpsPort);
+		const squatter = describePortSquatter(HOSTS_HTTPS_PORT);
 		if (!interactive) {
 			return {
 				ok: false,
@@ -370,8 +379,12 @@ export async function ensureHostsReady(input: {
 		}
 
 		try {
-			await runHostsInstall();
-			return { ok: true, caPath: getCaPath(resolvedMkcertPath()) };
+			const notes = await runHostsInstall();
+			return {
+				ok: true,
+				caPath: getCaPath(resolvedMkcertPath()),
+				...(notes.length === 0 ? {} : { notes }),
+			};
 		} catch (error) {
 			return {
 				ok: false,
@@ -477,8 +490,9 @@ export async function doctorFixHosts(
 		const needsTerminal = typedSwitch(fix, "action", {
 			none: () => false,
 			install: ({ note }) => {
-				installHostsService();
-				fixed.push(note);
+				const { kept } = installHostsService();
+				if (kept) issues.push({ kind: "service", message: kept });
+				else fixed.push(note);
 				return false;
 			},
 			"needs-terminal": ({ issue }) => {

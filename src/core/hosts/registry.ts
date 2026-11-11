@@ -2,9 +2,9 @@ import { isRecord, typedSwitch } from "hanzio";
 import type { NamedHost } from "../../types";
 import { checkoutDeleted } from "../checkout-presence";
 import { withFileLock } from "../file-lock";
+import { isProcessAlive } from "../process/lifecycle";
 import {
 	defineListRegistry,
-	isRouteOwnerAlive,
 	type ListRegistryReadOptions,
 	readJsonDocumentSync,
 	StateFileUnreadableError,
@@ -15,13 +15,17 @@ import { getRoutesPath } from "./paths";
 
 const REGISTRY_VERSION = 1;
 
-export interface HostsRoute {
+interface HostsRouteTarget {
 	hostname: string;
 	port: number;
-	kind: "app" | "service";
 	name: string;
 	root: string;
-	pid?: number;
+}
+
+/** An app's route: owned by the run serving it, and gone when that run is. */
+export interface AppHostsRoute extends HostsRouteTarget {
+	kind: "app";
+	pid: number;
 	/**
 	 * Birth identity of `pid` (`process-identity.ts`). A pid alone outlives a
 	 * reboot: reused by another process, it kept a dead run's route live and
@@ -30,24 +34,41 @@ export interface HostsRoute {
 	processIdentity?: string;
 }
 
-/** Whether a route's owner is still the run that registered it. */
-export type RouteOwnerCheck = (route: HostsRoute) => boolean;
+/**
+ * A service's route: no owner, since its container outlives the run. It goes
+ * when its checkout does, or with `dev --down`.
+ */
+export interface ServiceHostsRoute extends HostsRouteTarget {
+	kind: "service";
+}
+
+export type HostsRoute = AppHostsRoute | ServiceHostsRoute;
+
+/** The run holding a route, or `undefined` for a service route. */
+function routeOwnerPid(route: HostsRoute): number | undefined {
+	return route.kind === "app" ? route.pid : undefined;
+}
+
+/** Whether an app route's owner is still the run that registered it. */
+export type RouteOwnerCheck = (route: AppHostsRoute) => boolean;
 
 /**
  * Builds the owner check for the routes about to be judged, so a check that
  * reads process identity can read them all at once.
  */
 export type RouteOwners = (
-	routes: readonly HostsRoute[],
+	routes: readonly AppHostsRoute[],
 ) => Promise<RouteOwnerCheck>;
 
+/** Owner liveness by pid alone: the one place it is decided that way. */
+const pidOwnerAlive: RouteOwnerCheck = (route) => isProcessAlive(route.pid);
+
 /**
- * Owner liveness by pid alone. The daemon's check: it forks nothing, and
- * reading identity takes a `ps` on macOS. CLI writers pass
+ * {@link pidOwnerAlive} as {@link RouteOwners}. The daemon's check: it forks
+ * nothing, and reading identity takes a `ps` on macOS. CLI writers pass
  * `identityRouteOwners` and retire a reused pid's routes for it.
  */
-export const pidRouteOwners: RouteOwners = async () => (route) =>
-	isRouteOwnerAlive(route.pid);
+export const pidRouteOwners: RouteOwners = async () => pidOwnerAlive;
 
 /** A hostname a live route of another checkout, or another port, holds. */
 export class HostsRouteConflictError extends Error {
@@ -55,31 +76,33 @@ export class HostsRouteConflictError extends Error {
 	readonly ownerRoot: string;
 	readonly ownerPid?: number;
 
-	constructor(hostname: string, owner: Pick<HostsRoute, "root" | "pid">) {
-		const by =
-			owner.pid === undefined ? owner.root : `${owner.root} (pid ${owner.pid})`;
+	constructor(hostname: string, owner: HostsRoute) {
+		const pid = routeOwnerPid(owner);
+		const by = pid === undefined ? owner.root : `${owner.root} (pid ${pid})`;
 		super(
 			`${hostname} is already registered by ${by}. Run \`buncargo stop\` in that checkout, or give one of the projects a different \`projectPrefix\`.`,
 		);
 		this.name = "HostsRouteConflictError";
 		this.hostname = hostname;
 		this.ownerRoot = owner.root;
-		this.ownerPid = owner.pid;
+		this.ownerPid = pid;
 	}
 }
 
 function isHostsRoute(value: unknown): value is HostsRoute {
-	if (typeof value !== "object" || value === null) return false;
-	const route = value as Partial<HostsRoute>;
+	if (!isRecord(value)) return false;
+	const target =
+		typeof value.hostname === "string" &&
+		typeof value.port === "number" &&
+		typeof value.name === "string" &&
+		typeof value.root === "string";
+	if (!target) return false;
+	if (value.kind === "service") return value.pid === undefined;
 	return (
-		typeof route.hostname === "string" &&
-		typeof route.port === "number" &&
-		(route.kind === "app" || route.kind === "service") &&
-		typeof route.name === "string" &&
-		typeof route.root === "string" &&
-		(route.pid === undefined || typeof route.pid === "number") &&
-		(route.processIdentity === undefined ||
-			typeof route.processIdentity === "string")
+		value.kind === "app" &&
+		typeof value.pid === "number" &&
+		(value.processIdentity === undefined ||
+			typeof value.processIdentity === "string")
 	);
 }
 
@@ -159,9 +182,9 @@ function checkoutStillThere(root: string): boolean {
 export function isRouteLive(
 	route: HostsRoute,
 	directoryExists: (path: string) => boolean = checkoutStillThere,
-	ownerAlive: RouteOwnerCheck = (owned) => isRouteOwnerAlive(owned.pid),
+	ownerAlive: RouteOwnerCheck = pidOwnerAlive,
 ): boolean {
-	if (route.pid !== undefined) return ownerAlive(route);
+	if (route.kind === "app") return ownerAlive(route);
 	return route.root === "" || directoryExists(route.root);
 }
 
@@ -191,7 +214,7 @@ async function liveRoutes(
 	options: PruneOptions = {},
 ): Promise<HostsRoute[]> {
 	const ownerAlive = await (options.owners ?? pidRouteOwners)(
-		routes.filter((route) => route.pid !== undefined),
+		routes.filter((route) => route.kind === "app"),
 	);
 	return routes.filter((route) =>
 		isRouteLive(
@@ -266,8 +289,8 @@ export function classifyRouteClaim(
 	options: { takeover?: boolean } = {},
 ): RouteClaim {
 	if (existing.root !== incoming.root) return "conflict";
-	// The same run re-registering: refresh it.
-	if (existing.pid === incoming.pid) return "take";
+	// The same run re-registering, or a service route again: refresh it.
+	if (routeOwnerPid(existing) === routeOwnerPid(incoming)) return "take";
 	if (existing.port === incoming.port && existing.kind === incoming.kind) {
 		return options.takeover ? "take" : "keep";
 	}
@@ -305,7 +328,7 @@ export async function upsertHostRoutes(
 		const byHost = new Map(routes.map((route) => [route.hostname, route]));
 		const held = routesToSave.flatMap((route) => {
 			const existing = byHost.get(route.hostname);
-			return existing?.pid !== undefined && existing.pid !== route.pid
+			return existing?.kind === "app" && existing.pid !== routeOwnerPid(route)
 				? [existing]
 				: [];
 		});
@@ -367,14 +390,14 @@ export function routesAfterWithdraw(
 	const otherRunLive = routes.some(
 		(route) =>
 			route.root === run.root &&
-			route.pid !== undefined &&
+			route.kind === "app" &&
 			route.pid !== run.pid &&
-			isRouteOwnerAlive(route.pid),
+			pidOwnerAlive(route),
 	);
 	return routes.filter((route) => {
 		if (route.root !== run.root) return true;
-		if (route.pid === run.pid) return false;
-		return route.pid !== undefined || otherRunLive;
+		if (route.kind === "app") return route.pid !== run.pid;
+		return otherRunLive;
 	});
 }
 
@@ -410,26 +433,29 @@ export function routesDownRemoves(
 	return (route) => route.root === root && route.kind === "service";
 }
 
+/**
+ * A plan's routes: its apps' owned by the run `owner` names, its services'
+ * static.
+ */
 export function routesFromPlan(
-	plan: NamedHost[],
-	input: {
-		root: string;
-		pid?: number;
-		processIdentity?: string;
-		kinds?: Array<NamedHost["kind"]>;
-	},
+	plan: readonly NamedHost[],
+	owner: { root: string; pid: number; processIdentity?: string },
 ): HostsRoute[] {
-	return plan
-		.filter((entry) => !input.kinds || input.kinds.includes(entry.kind))
-		.map((entry) => ({
+	return plan.map((entry): HostsRoute => {
+		const target = {
 			hostname: entry.hostname,
 			port: entry.targetPort,
-			kind: entry.kind,
 			name: entry.name,
-			root: input.root,
-			pid: input.pid,
-			...(input.pid !== undefined && input.processIdentity !== undefined
-				? { processIdentity: input.processIdentity }
-				: {}),
-		}));
+			root: owner.root,
+		};
+		if (entry.kind === "service") return { ...target, kind: "service" };
+		return {
+			...target,
+			kind: "app",
+			pid: owner.pid,
+			...(owner.processIdentity === undefined
+				? {}
+				: { processIdentity: owner.processIdentity }),
+		};
+	});
 }

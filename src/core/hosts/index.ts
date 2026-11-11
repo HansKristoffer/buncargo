@@ -6,7 +6,6 @@ export {
 	readHostsDaemonHealth,
 	waitForDaemonRoutes,
 } from "./daemon-client";
-export { readDaemonConfig } from "./daemon-config";
 export { syncHostsFile } from "./hosts-file";
 export { getCaPath } from "./mkcert";
 export {

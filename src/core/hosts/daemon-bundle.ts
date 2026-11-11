@@ -67,25 +67,7 @@ export function readDaemonBundleSource(): {
 	return { contents: readFileSync(source, "utf-8"), version };
 }
 
-/** Identity of a bundle's contents, short enough to sit in a manifest. */
+/** Identity of a bundle's contents, short enough to sit in a file name. */
 export function hashDaemonBundle(contents: string): string {
 	return createHash("sha256").update(contents).digest("hex").slice(0, 16);
-}
-
-/**
- * Hash of the bundle this CLI would install, or `undefined` when there is none
- * to read.
- *
- * The installed path carries only the version, so a daemon rebuilt at the same
- * version is invisible to a path comparison — which is how a machine can run
- * days-old daemon code while every staleness check reports it current. Absent
- * is "cannot tell": a consumer installed without `dist/` must not be told its
- * service is stale on every command.
- */
-export function currentDaemonBundleHash(): string | undefined {
-	try {
-		return hashDaemonBundle(readDaemonBundleSource().contents);
-	} catch {
-		return undefined;
-	}
 }

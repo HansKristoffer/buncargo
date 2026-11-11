@@ -125,15 +125,11 @@ export async function activateNamedHosts<
 		// alone, with a warning naming that owner.
 		options.signal?.throwIfAborted();
 		const conflicts = await upsertHostRoutes(
-			[
-				...routesFromPlan(hosts.plan, {
-					root: env.root,
-					pid: process.pid,
-					processIdentity: await readCurrentProcessIdentityAsync(),
-					kinds: ["app"],
-				}),
-				...routesFromPlan(hosts.plan, { root: env.root, kinds: ["service"] }),
-			],
+			routesFromPlan(hosts.plan, {
+				root: env.root,
+				pid: process.pid,
+				processIdentity: await readCurrentProcessIdentityAsync(),
+			}),
 			{ takeover: new Set(options.takeover), owners: deps.owners },
 		);
 		const held = new Set(conflicts.map((conflict) => conflict.hostname));
@@ -254,8 +250,7 @@ export async function reclaimAppRoute(
 		root: env.root,
 		pid: process.pid,
 		processIdentity: await readCurrentProcessIdentityAsync(),
-		kinds: ["app"],
-	}).filter((route) => route.name === name);
+	}).filter((route) => route.kind === "app" && route.name === name);
 	if (routes.length === 0) return undefined;
 	try {
 		const [conflict] = await upsertHostRoutes(routes, {

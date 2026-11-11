@@ -11,7 +11,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
 	defineListRegistry,
-	isRouteOwnerAlive,
 	readJsonDocumentSync,
 	StateFileUnreadableError,
 	StateFileVersionError,
@@ -207,17 +206,6 @@ describe("defineListRegistry", () => {
 				StateFileUnreadableError,
 			);
 		});
-	});
-});
-
-describe("isRouteOwnerAlive", () => {
-	it("treats an ownerless entry as alive", () => {
-		expect(isRouteOwnerAlive(undefined)).toBe(true);
-	});
-
-	it("follows the owning process", () => {
-		expect(isRouteOwnerAlive(process.pid)).toBe(true);
-		expect(isRouteOwnerAlive(99_999_999)).toBe(false);
 	});
 });
 
