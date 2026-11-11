@@ -13,6 +13,92 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
+
+/** Every module of the installed package in `modules` is one of its built files. */
+function assertOneBuild(modules: readonly string[], installed: string) {
+	const own = modules.filter((path) => path.startsWith(`${installed}/`));
+	assert(own.length > 0, "no module of the installed package loaded");
+	const foreign = own.filter((path) => !path.startsWith(`${installed}/dist/`));
+	assert.deepEqual(foreign, [], "modules outside the installed build");
+}
+
+/**
+ * A config with an integration, loaded by the packed CLI: the config's
+ * `buncargo` and `buncargo/firebase` are the CLI's own modules, the CLI
+ * recognizes the apps the config's `discoverApps` made, and none of the
+ * commands it spawns, the integration's CLI among them, sees a variable in
+ * `unsetEnv`.
+ */
+function verifyConfigWithIntegration(
+	consumer: string,
+	cli: string,
+	installed: string,
+) {
+	const modulesFile = join(consumer, "loaded-modules.json");
+	writeFileSync(
+		join(consumer, "dev.config.ts"),
+		`import { writeFileSync } from "node:fs";
+import { defineDevConfig, discoverApps } from "buncargo";
+import { firebase } from "buncargo/firebase";
+
+if (process.env.VERIFY_MODULES_FILE)
+  writeFileSync(process.env.VERIFY_MODULES_FILE, JSON.stringify(Object.keys(require.cache)));
+
+export default defineDevConfig({
+  projectPrefix: "graph-fixture",
+  services: {},
+  apps: discoverApps({ globs: ["tools/*"] }),
+  unsetEnv: ["VERIFY_UNSET"],
+  integrations: [firebase({ persist: false })],
+});`,
+	);
+	writeFileSync(
+		join(consumer, "firebase.json"),
+		JSON.stringify({ emulators: { auth: { port: 9099 } } }),
+	);
+	// The integration resolves the checkout's own `node_modules/.bin` first.
+	const reportEnv = `#!/bin/sh\nprintf '%s|%s' "\${VERIFY_UNSET-unset}" "$VERIFY_KEPT"\n`;
+	const fakeFirebase = join(consumer, "node_modules", ".bin", "firebase");
+	writeFileSync(fakeFirebase, reportEnv, { mode: 0o755 });
+	const tool = join(consumer, "tools", "probe");
+	mkdirSync(tool, { recursive: true });
+	writeFileSync(join(tool, "report-env.sh"), reportEnv, { mode: 0o755 });
+	writeFileSync(
+		join(tool, "package.json"),
+		JSON.stringify({
+			scripts: { dev: "sh report-env.sh", build: "sh report-env.sh" },
+		}),
+	);
+	const env = {
+		...process.env,
+		VERIFY_UNSET: "set",
+		VERIFY_KEPT: "kept",
+		VERIFY_MODULES_FILE: modulesFile,
+	};
+
+	const built = command(
+		[process.execPath, cli, "build", "--discovered"],
+		consumer,
+		env,
+	);
+	assert(built.includes("unset|kept"), built);
+	assertOneBuild(JSON.parse(readFileSync(modulesFile, "utf8")), installed);
+
+	writeFileSync(
+		join(consumer, "integration-cli.ts"),
+		`import { loadDevEnv } from "buncargo/api";
+const env = await loadDevEnv({ readOnly: true });
+const app = env.apps.firebase;
+if (!app || !("devCommand" in app)) throw new Error("no firebase app");
+const { stdout } = await env.exec(app.devCommand, { app: "firebase" });
+process.stdout.write(stdout);`,
+	);
+	const { VERIFY_MODULES_FILE: _file, ...libraryEnv } = env;
+	assert.equal(
+		command([process.execPath, "integration-cli.ts"], consumer, libraryEnv),
+		"unset|kept",
+	);
+}
 const artifacts = join(root, ".buncargo", "artifacts");
 mkdirSync(artifacts, { recursive: true });
 function command(argv: string[], cwd: string, env = process.env) {
@@ -90,8 +176,25 @@ try {
 		`for (const name of ${JSON.stringify(specifiers)}) await import(name);`,
 	);
 	command([process.execPath, "imports.mjs"], consumer);
-	// Node selects the published import condition, Bun selects the source condition.
 	command(["node", "imports.mjs"], consumer);
+	// Bun loads the same build the CLI runs: a second copy of a module keeps
+	// its own module state. The package ships no source to load.
+	assert(!existsSync(join(installed, "src")), "the package ships src/");
+	const rootModules: string[] = JSON.parse(
+		command(
+			[
+				process.execPath,
+				"-e",
+				'await import("buncargo"); console.log(JSON.stringify(Object.keys(require.cache)))',
+			],
+			consumer,
+		),
+	);
+	assertOneBuild(rootModules, installed);
+	assert(
+		rootModules.length <= 60,
+		`import "buncargo" loads ${rootModules.length} modules`,
+	);
 	// Exercise the published browser entry, including shared build chunks.
 	const clientBuild = await Bun.build({
 		entrypoints: [join(installed, packageJson.exports["./client"].browser)],
@@ -121,7 +224,8 @@ try {
 	writeFileSync(
 		join(consumer, "consumer.ts"),
 		`
-import { defineDevConfig, createDevEnvironment, service } from "buncargo";
+import { defineDevConfig, service } from "buncargo";
+import { createDevEnvironment } from "buncargo/api";
 ${specifiers.map((name, i) => `import * as exported${i} from ${JSON.stringify(name)}; void exported${i};`).join("\n")}
 const config = defineDevConfig({
   projectPrefix: "fixture",
@@ -221,6 +325,7 @@ void web;
 		),
 		{ args: argv, overlay: "ok" },
 	);
+	verifyConfigWithIntegration(consumer, cli, installed);
 
 	assert(
 		command([process.execPath, cli, "--help"], consumer).includes("buncargo"),
@@ -245,8 +350,15 @@ void web;
 		bundleProbe,
 		`
 import assert from "node:assert/strict";
-import { realpathSync } from "node:fs";
-import { installConnectBundle } from "./node_modules/buncargo/src/core/connect/bundle.ts";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
+// Not exported: the chunk of the installed build that holds it.
+const dist = "./node_modules/buncargo/dist";
+const chunk = readdirSync(dist).find((name) =>
+	name.endsWith(".js") &&
+	/export \\{[^}]*\\binstallConnectBundle\\b/.test(readFileSync(\`\${dist}/\${name}\`, "utf8")),
+);
+assert(chunk, "no chunk exports installConnectBundle");
+const { installConnectBundle } = await import(\`\${dist}/\${chunk}\`);
 const path = installConnectBundle();
 assert.equal(path, realpathSync(path));
 assert.equal(installConnectBundle(), path);
