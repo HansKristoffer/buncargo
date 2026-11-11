@@ -89,6 +89,8 @@ const TOPICS: readonly Topic[] = [
   out its idle hold. A run someone started
   in a terminal (not with \`--detach\`) asks first, and without a terminal needs
   \`--force\`: only stop that one when the user asked.
+  Exit 3 means something was left running; nothing running exits 0, and a
+  mistyped flag 1.
   A container runtime that refuses this user or does not answer may still
   run the containers, so \`stop\` exits 3 and \`dev --down\` exits 1 rather
   than reporting nothing to stop: once \`docker version\` answers, stop again.
@@ -133,11 +135,11 @@ const TOPICS: readonly Topic[] = [
 - \`dev --detach\`: the run is a background process of its own (its own systemd
   scope on Linux), not a child of your shell, so your session or harness
   ending does not stop it. \`bunx buncargo stop\` does, and so does the
-  watchdog: after 2 hours with no request through its named URLs and no
-  \`buncargo\` command in the checkout (any command, \`status\` included,
-  resets the clock), and once its checkout has been deleted.
-  \`dev --detach --keep\` turns the idle limit off, for a long job or for
-  traffic that goes to \`localhost:port\` only. With
+  watchdog: after 2 hours with no request through its named URLs, no open
+  connection to its apps' ports and no \`buncargo\` command in the checkout
+  (any command, \`status\` included, resets the clock), and once its
+  checkout has been deleted. \`dev --detach --keep\` turns the idle limit
+  off, for a long job that nothing connects to. With
   \`BUNCARGO_HOSTS=tailscale\` there is no idle limit; \`dev --detach\` says
   which applies. \`bunx buncargo runs\` shows
   the time left (\`idleStopsAt\` in \`runs --json\`); when a run is gone,
@@ -256,7 +258,9 @@ const TOPICS: readonly Topic[] = [
 		body: `## Logs
 
 - \`bunx buncargo logs <app> --errors\`, \`--since=5m\`, \`-f\`. App output is kept
-  per run, so it is there after the terminal scrolled or the run ended.
+  per run, so it is there after the terminal scrolled or the run ended. It
+  reads the live run that runs <app>; \`--run=<sessionId>\` picks another
+  (\`bunx buncargo runs --json\` lists them). \`-f\` exits 0 when the run ends.
 - \`--errors\` keeps the lines that read as errors (a logger's own INFO or WARN
   level wins over a word like "failed"), with the \`{ … }\` block that follows
   one. It can hide a line such as \`MISSING_SECRETS: X\`: when an app will not

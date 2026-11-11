@@ -10,7 +10,11 @@ import {
 	sweepTailscaleServe,
 	tailscaleServeDeps,
 } from "../../../core/hosts/tailscale-serve";
-import { describeIdleState, readIdleState } from "../../../core/run-limits";
+import {
+	describeIdleState,
+	readIdleState,
+	readRunConnections,
+} from "../../../core/run-limits";
 import { getRunsPath } from "../../../core/run-registry";
 import {
 	describeRunStop,
@@ -63,6 +67,10 @@ export async function handleLs(): Promise<void> {
 	}
 	const now = Date.now();
 	const proxy = readProxyActivity(now);
+	const connections = await readRunConnections(
+		result.runs.filter((run) => result.liveSessions.has(run.sessionId)),
+		now,
+	);
 	const multipleRuntimes = result.answered.length > 1;
 
 	for (const group of result.remaining) {
@@ -86,7 +94,10 @@ export async function handleLs(): Promise<void> {
 		if (first.worktree) log.line(`  worktree: ${first.worktree}`);
 		if (multipleRuntimes) log.line(`  runtime: ${group.runtime}`);
 		if (live) {
-			const idle = describeIdleState(readIdleState(live, proxy), now);
+			const idle = describeIdleState(
+				readIdleState(live, proxy, connections),
+				now,
+			);
 			const limit = idle ? `; ${idle}` : "";
 			log.line(`  run: active, pid ${live.pid}${limit}`);
 		} else if (released?.releasedAt)

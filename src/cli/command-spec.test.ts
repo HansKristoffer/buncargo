@@ -4,8 +4,10 @@ import {
 	findUnknownFlags,
 	formatCommandHelp,
 	positiveIntegerValidator,
+	readBooleanFlag,
 	readPositionals,
 	readStringFlag,
+	unknownFlagMessage,
 } from "./command-spec";
 
 const spec: CommandSpec = {
@@ -33,6 +35,20 @@ describe("findUnknownFlags", () => {
 		expect(findUnknownFlags(spec, ["--nope", "-x", "value"])).toEqual([
 			"--nope",
 		]);
+	});
+
+	// `dev --detach=1` read as --detach, then was not stripped from the
+	// background run's argv, which detached again without end.
+	it("rejects a value on a boolean flag, which then does not read as set", () => {
+		const args = ["--dry-run=1"];
+		const [flag] = spec.flags;
+		if (!flag) throw new Error("missing flag");
+		expect(findUnknownFlags(spec, args)).toEqual(["--dry-run=1"]);
+		expect(readBooleanFlag(args, flag)).toBe(false);
+		expect(unknownFlagMessage(spec, "--dry-run=1")).toBe(
+			"--dry-run takes no value: pass --dry-run, not --dry-run=1.",
+		);
+		expect(unknownFlagMessage(spec, "--nope")).toBe("Unknown flag: --nope");
 	});
 });
 

@@ -15,6 +15,7 @@ import {
 	withProjectLifecycleLock,
 } from "../container-runtime";
 import { FileLockTimeoutError } from "../core/file-lock";
+import { externalStackProjectName } from "../core/ports";
 import { loadRuns } from "../core/run-registry";
 import { buildComposeModel } from "../docker-compose";
 import { service } from "../docker-compose/services";
@@ -110,6 +111,8 @@ describe("integration stacks", () => {
 			{
 				name: "fake",
 				down: ["sh", "-c", `echo "down ${env.projectName} false" >> '${log}'`],
+				// The label its containers carry, for when `down` cannot run.
+				composeProject: externalStackProjectName(env.projectName),
 			},
 		]);
 

@@ -5,7 +5,10 @@ import {
 	stopBuncargoContainers,
 	withProjectLifecycleLock,
 } from "../../container-runtime";
-import { runStackDowns } from "../../container-runtime/sweep";
+import {
+	runStackDowns,
+	withdrawStoppedRoutes,
+} from "../../container-runtime/sweep";
 import {
 	readAllOffsetClaims,
 	releaseSuffixedClaimsOf,
@@ -56,8 +59,11 @@ import { parseStopArgs, printStopHelp } from "../stop-flags";
  * treat as failure, so the other apps and the containers keep going.
  */
 
-/** 0 stopped · 2 nothing matched · 3 refused. */
-export const STOP_EXIT = { ok: 0, notFound: 2, refused: 3 } as const;
+/**
+ * 0 stopped, or nothing was running · 1 a usage error · 2 a named app or
+ * service matched nothing · 3 refused: leave it running.
+ */
+export const STOP_EXIT = { ok: 0, usage: 1, notFound: 2, refused: 3 } as const;
 
 export async function handleStop(args: string[] = []): Promise<number> {
 	const parsed = parseStopArgs(args);
@@ -68,12 +74,12 @@ export async function handleStop(args: string[] = []): Promise<number> {
 	if (parsed.unknownFlags.length > 0) {
 		log.error(`Unknown flag(s): ${parsed.unknownFlags.join(", ")}`);
 		printStopHelp();
-		return STOP_EXIT.refused;
+		return STOP_EXIT.usage;
 	}
 	for (const problem of parsed.errors) {
 		log.error(problem);
 	}
-	if (parsed.errors.length > 0) return STOP_EXIT.refused;
+	if (parsed.errors.length > 0) return STOP_EXIT.usage;
 
 	const root = parsed.root ?? findMonorepoRoot();
 	const selected = (run: RunEntry) =>
@@ -92,6 +98,13 @@ export async function handleStop(args: string[] = []): Promise<number> {
 				)
 			: undefined;
 	if (runs.length === 0 && held.length === 0) {
+		// Stopping a run that is not there leaves nothing to do; a named target
+		// that matches nothing is a mistake worth an exit code.
+		if (parsed.all) {
+			log.info(`Nothing running for this checkout (${root}).`);
+			if (stoppedByWatchdog) log.info(describeRunStop(stoppedByWatchdog));
+			return STOP_EXIT.ok;
+		}
 		log.error(`No active buncargo run for ${root}.`);
 		if (stoppedByWatchdog) {
 			log.hint(describeRunStop(stoppedByWatchdog));
@@ -419,6 +432,12 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		));
 	if (stopped === "refused") return STOP_EXIT.refused;
 	if (!stopped) {
+		// Ended between the read and the signal: what it left in the hold is
+		// the caller's next step, as for any finished run.
+		if (await runEnded(run)) {
+			log.info(`${run.projectName}'s run had already ended.`);
+			return STOP_EXIT.ok;
+		}
 		log.error(
 			`${run.projectName}'s run process (pid ${run.pid}) has exited or was replaced; nothing was signalled.`,
 		);
@@ -452,11 +471,20 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 				other.projectName === run.projectName &&
 				heldOnlyOn(other, downed),
 		);
-		if (!(await tearDown(run.root, run.projectName, [run, ...sharing])))
+		// Its entry as it is now: released on its way out, or gone.
+		const ended =
+			held.find((other) => other.sessionId === run.sessionId) ?? run;
+		if (!(await tearDown(run.root, run.projectName, [ended, ...sharing])))
 			return STOP_EXIT.refused;
 		log.done(`Stopped ${run.projectName}`);
 		return STOP_EXIT.ok;
 	});
+}
+
+/** Whether a run's entry is gone, or no longer live: released or crashed. */
+async function runEnded(run: RunEntry): Promise<boolean> {
+	const { live } = await findCheckoutRuns(run.root);
+	return !live.some((entry) => entry.sessionId === run.sessionId);
 }
 
 /**
@@ -535,7 +563,7 @@ async function tearDown(
 			})),
 		);
 	}
-	await retireRuns(runs.map((run) => run.sessionId));
+	await retireRuns(runs);
 	// The claims belong to whichever stack used them. Nothing removed (an
 	// app-only run), or an entry of the project still holding containers,
 	// means that stack is still standing, and so is its claim.
@@ -546,6 +574,7 @@ async function tearDown(
 		(run) => run.projectName === projectName,
 	);
 	if (standing) return true;
+	await withdrawStoppedRoutes(root, runs[0]?.pid);
 	// The run on record whose claims these are: the one that started last.
 	const owner = runs.reduce((newest, run) =>
 		run.startedAt > newest.startedAt ? run : newest,

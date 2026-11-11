@@ -98,8 +98,15 @@ no config load, no Docker unless a service is the target.
 - Stopping one app must not end the run, which is why `isDeliberateExit` in
   `process/process-owner.ts` treats a signalled exit (and `130`/`143`, what a shell wrapper reports
   for SIGINT/SIGTERM) as a clean stop rather than a failure.
-- The two refusals (the attached app, and an app reused from another terminal) carry exit code 3;
-  `2` is "no such target".
+- Exit 3 is "refused: leave it running" (the attached app, an app reused from another terminal, a
+  run in someone's terminal), and `help agents` tells agents exactly that, so nothing else may
+  return it: an unknown flag is `1`. `2` is a named target that matches nothing; a bare `stop` with
+  nothing running exits 0. A run that ends between the read and the signal is not a refusal
+  either: `stop` reads the entry again and, released or gone, takes down what it left.
+- Stopping the whole run, or what a finished run left, withdraws the checkout's service routes
+  (`withdrawStoppedRoutes` in `sweep.ts`), and so does the sweep's teardown. They carry no pid, so
+  nothing else retires them, and a later run that fell back to `localhost:port` still got the
+  named URLs from `getEnvVar`.
 - Services are `stop`ped, never `kill`ed, so a `restart:` policy cannot undo it; the exited
   container is removed by the sweep once the run has ended. Stopping the whole run `down`s its
   containers, because the run itself only releases them to the idle hold and "stop" from the menu
@@ -153,6 +160,11 @@ no config load, no Docker unless a service is the target.
   stack looks unowned. It returns what it listed, so `ls` and `doctor` do not list again.
 - A stack condemned from the sweep's snapshot is decided again from a fresh registry read under its
   lock, because a new run publishes its claim before it takes the lock to reuse those containers.
+- `retireRuns` and `clearRunStacks` take the entries as the pass read them and drop only those
+  whose `startedAt`, `releasedAt` and `ownerLostAt` are unchanged. A pass retires minutes after its
+  read, and by then a library session may have released and claimed again under the same id; by
+  session id alone its live entry went. Integration stacks are decided by the checkout's newest
+  entry (`runFor`), as containers are.
 - `ContainerDownRequest.model` is optional because containers are found by label. Only
   `removeVolumes` needs it, to name the volumes, which is why the sweep can tear a project down
   without loading its config. For the same reason the Docker backend passes `-f` only when the
@@ -287,15 +299,18 @@ the containers from there; nothing here removes a container or a volume.
   watchdog only waits one more period.
 - The idle limit (`idleLimitMs`, two hours, written by the detached run unless `--keep` or
   Tailscale mode, whose traffic never reaches the proxy) counts from the latest of the run's start,
-  the last request through the proxy to its checkout, and the last buncargo command in it. An
+  the last request through the proxy to its checkout, the last buncargo command in it, and the
+  last watchdog pass that saw an established TCP connection on one of its app ports (an open tab's
+  HMR socket, a client on `localhost:port` the proxy never sees; one `/proc/net/tcp` read on Linux,
+  one `netstat` on macOS, only while a detached run has a limit). An
   entry without `idleLimitMs` (an older buncargo's run) is never stopped for idling.
 - Requests: the hosts daemon counts each route lookup (every request and WebSocket upgrade, not
   the health path) by the route's checkout in memory and merges them into
   `~/.buncargo/proxy-activity.json` at most once a minute (`hosts/proxy-activity.ts`), and
   rewrites it every five minutes as a heartbeat. A missing file, or one silent for three beats,
   means no daemon counts requests (an older one put back by `hosts install` from a checkout on an
-  older buncargo leaves the file frozen): a run with named hosts is then `unknown`, never
-  stopped, because "no requests on record" would be no evidence.
+  older buncargo leaves the file frozen). A run is `unknown`, never stopped, only when neither its
+  requests nor the connections can be read, because "nothing on record" would be no evidence.
 - Commands: `bin.ts` sets the mtime of `<root>/.buncargo/last-command` on every command except
   `help` and `version` (`run-activity.ts`), with the root found as a run records it
   (`findCheckoutRoot`: the config's repository root, not the working directory). One `utimes`, no
@@ -308,11 +323,25 @@ the containers from there; nothing here removes a container or a volume.
 ## Volumes
 
 `prune.ts` is the volume half, and it is deliberately not automatic: a container costs nothing to
-recreate, a volume is the database. `planVolumePrune` is pure and proposes only a volume whose
-Compose project has no containers, no entry *and* no existing checkout; `cli/commands/prune.ts`
-confirms before removing. The checkouts come from the dev port claims in `offsets.json`, because
-an idle checkout after `dev --down` has neither containers nor an entry, and its volume is still its
-database. Suffixed claims (`ci`, E2E) do not count: their stacks are leftovers once the run is gone.
+recreate, a volume is the database. A volume needs positive evidence: `decideVolume`
+(`volume-decision.ts`, pure) proposes one only when a claim in `offsets.json` names its Compose
+project, every checkout claiming that project is confirmed deleted, and no container or entry names
+it. An idle checkout after `dev --down` has neither containers nor an entry, and its claim is the
+only thing saying its volume is still its database; when an unreadable claims file read as empty
+and absence counted as orphaned, `prune --yes` offered every idle checkout's database. A suffixed
+claim (`ci`, E2E) of an existing checkout keeps its stack's volume too; those are `prune --project`'s.
+
+`cli/commands/prune.ts` reads the claims before it sweeps, because without the opt-in below the
+sweep drops a deleted checkout's claim, the only record of its project. So on a machine whose
+watchdog has already seen the deletion, plain `prune` has nothing to propose for it; `prune
+--project` still finds the stacks through Git. After confirmation it decides each project again
+under the deleted checkout's lifecycle lock, from fresh volume, container, registry and claim
+inventories, and removes only what was listed.
+
+Every read-modify-write of `offsets.json` reads it strictly: missing is empty, and a file that does
+not parse or carries another `version` throws `StateFileUnreadableError` and is left as it is.
+Several buncargo versions share the file, and a lenient write replaced every other checkout's
+claim with its own.
 
 Buncargo attaches **no labels to volumes**. Verified: Compose compares a volume against the file
 and prompts "exists but doesn't match configuration in compose file. Recreate (data will be
@@ -331,7 +360,7 @@ no existing checkout claims the project and no run on record for it still has it
 container of the project still standing defers the decision to the next pass, and a runtime that
 does not answer defers everything. "Still has its checkout" includes one this user cannot read.
 
-The watchdog also reports, at most hourly and only when the set changes, the volumes `prune` would propose (`orphan-report.ts`). It never removes them: a project with no port claim has no removal record, so the sweep never sees it, and a report is the only thing that can say so. Only runtimes that answered that pass are judged, each against its own containers. The one automatic volume removal that is not an opt-in is `buncargo ci`'s own leftovers (`ciLeftoverVolumes`): at its start it removes what a killed run left in its `-ci` project, only when no container or run names that project, as its teardown would have done.
+The watchdog also reports, at most hourly and only when the set changes, the volumes `prune` would propose (`orphan-report.ts`), by the same `decideVolume`. It never removes them. Only runtimes that answered that pass are judged, each against its own containers. The one automatic volume removal that is not an opt-in is `buncargo ci`'s own leftovers (`ciLeftoverVolumes`): at its start it removes what a killed run left in its `-ci` project, only when no container or run names that project, as its teardown would have done.
 
 Volumes need more proof than containers. A deletion counts only when confirmed (`ENOENT`) on two
 passes at least `DELETED_CHECKOUT_SETTLE_MS` (10 minutes) apart: the first sighting is stamped on

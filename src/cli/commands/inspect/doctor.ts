@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { getErrorMessage, typedSwitch } from "hanzio";
 import {
 	availableContainerRuntimes,
@@ -69,10 +68,6 @@ import { describeCheckFailures, isWarning, runChecks } from "../../checks";
 import { allChecks } from "../../core-checks";
 import { hasFlag } from "../../flags";
 import * as log from "../../log";
-import {
-	getTunnelRegistryPath,
-	readLiveTunnelRegistry,
-} from "../../tunnel-registry";
 import {
 	type FileHolder,
 	type FileTableUsage,
@@ -311,19 +306,6 @@ async function checkOrphanedContainers(
 	} catch (error) {
 		report.fromError(error);
 	}
-}
-
-async function checkTunnelRegistry(
-	report: DoctorReport,
-	env: DevEnv,
-): Promise<void> {
-	if (!existsSync(getTunnelRegistryPath(env.root))) return;
-	const after = await readLiveTunnelRegistry(env.root);
-	report.note(
-		after.length === 0
-			? "Tunnel registry is empty"
-			: `Tunnel registry has ${after.length} live ${after.length === 1 ? "entry" : "entries"}`,
-	);
 }
 
 /**
@@ -601,7 +583,6 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 		else await checkPortOwnership(report, env, selected, fix);
 		checkPortsLockfile(report, env);
 		await checkOrphanedContainers(report, env, selected);
-		await checkTunnelRegistry(report, env);
 		await checkNamedHosts(report, env, hostsFix);
 		await checkSetupChecks(report, env);
 	}

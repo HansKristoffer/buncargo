@@ -11,6 +11,7 @@
 
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { basename, isAbsolute } from "node:path";
 import { getErrorMessage, typedSwitch } from "hanzio";
 import {
 	type CheckoutPresence,
@@ -18,6 +19,7 @@ import {
 	checkoutPresence,
 } from "../core/checkout-presence";
 import { FileLockTimeoutError } from "../core/file-lock";
+import { loadHostRoutes, withdrawHostRoutes } from "../core/hosts/registry";
 import {
 	dropDeletedOffsetClaims,
 	markDeletedOffsetClaims,
@@ -36,6 +38,7 @@ import {
 } from "../core/removal-log";
 import {
 	clearRunStacks,
+	findCheckoutRuns,
 	markOwnersLost,
 	newestLifecycleFirst,
 	type RunEntry,
@@ -45,6 +48,7 @@ import {
 	runLivenessAsync,
 } from "../core/run-registry";
 import { pruneDeletedCheckoutVolumes } from "../core/runtime-flags";
+import { lookupOnPath } from "../core/tool-binary";
 import {
 	DELETED_CHECKOUT_SETTLE_MS,
 	WATCHDOG_OWNER_DEAD_GRACE_MS,
@@ -272,7 +276,7 @@ export interface SweepOptions {
 
 /** The run that owns a stack: a live session if there is one, else the one that ended last. */
 function runFor(
-	group: ContainerGroup,
+	group: Pick<RunEntry, "projectName" | "root">,
 	runs: RunEntry[],
 	alive: (run: RunEntry) => boolean,
 ): RunEntry | null {
@@ -389,7 +393,8 @@ export async function sweepOrphanedContainers(
 		const excepted =
 			options.except?.projectName === run.projectName &&
 			options.except.root === run.root;
-		if (!excepted) await sweepStacks(run, runs, alive, now, result, swept);
+		if (!excepted)
+			await sweepStacks(run, runs, alive, now, runtimes, result, swept);
 	}
 	result.pendingStacks = stackRuns.filter(
 		(run) => (run.stacks?.length ?? 0) > 0,
@@ -410,7 +415,7 @@ export async function sweepOrphanedContainers(
 	}
 
 	try {
-		await retireRuns(finishedSessions(runs, groups, answered, alive));
+		await retireRuns(finishedRuns(runs, groups, answered, alive));
 	} catch {
 		// A busy registry: these are still finished next pass.
 	}
@@ -427,11 +432,76 @@ export async function sweepOrphanedContainers(
 export async function runStackDowns(
 	run: Pick<RunEntry, "root" | "stacks">,
 	onDown: (stack: RunStackEntry) => void | Promise<void> = () => {},
+	runtimes: readonly ContainerRuntimeAdapter[] = [],
 ): Promise<void> {
 	const cwd = existsSync(run.root) ? run.root : homedir();
 	for (const stack of run.stacks ?? []) {
-		await execAsync(stack.down, cwd, {}, { timeoutMs: 120_000 });
+		const down = runnableDown(stack.down);
+		if (down) await execAsync(down, cwd, {}, { timeoutMs: 120_000 });
+		else stopStackByLabel(stack, runtimes);
 		await onDown(stack);
+	}
+}
+
+/**
+ * The recorded `down`, or the same command from `PATH` when its binary was
+ * an absolute path that is gone: the CLI in a deleted checkout's
+ * `node_modules`. Undefined when neither exists.
+ */
+function runnableDown(argv: readonly string[]): readonly string[] | undefined {
+	const [bin, ...rest] = argv;
+	if (bin === undefined || !isAbsolute(bin) || existsSync(bin)) return argv;
+	const found = lookupOnPath(basename(bin));
+	return found ? [found, ...rest] : undefined;
+}
+
+/**
+ * Stop a stack whose CLI cannot run, by the Compose project label its
+ * containers carry. Stopped, not removed, so volumes and data stay. Docker
+ * only: the integration CLIs run nothing on Apple's runtime.
+ */
+function stopStackByLabel(
+	stack: RunStackEntry,
+	runtimes: readonly ContainerRuntimeAdapter[],
+): void {
+	const docker =
+		runtimes.find((runtime) => runtime.name === "docker") ??
+		getContainerRuntimeAdapter("docker");
+	if (!stack.composeProject || !docker.listComposeProjectResources)
+		throw new Error(
+			`${stack.name}'s stop command \`${stack.down[0]}\` is gone, and nothing records its containers' project`,
+		);
+	const ids = docker
+		.listComposeProjectResources()
+		.containers.filter(
+			(container) =>
+				container.project === stack.composeProject && container.running,
+		)
+		.map((container) => container.id);
+	if (ids.length > 0) docker.stopByIds(ids);
+}
+
+/**
+ * Withdraw a checkout's service routes, and the stopped run's own, once its
+ * containers came down. Left registered, a later run that falls back to
+ * `localhost:port` gets the named URLs from `getEnvVar` all the same. Not
+ * while another run of the checkout is live: its routes are its own.
+ *
+ * Best effort: a routes file that cannot be read is reported by every path
+ * that needs it, and a containers teardown must not fail on it.
+ */
+export async function withdrawStoppedRoutes(
+	root: string,
+	pid: number | undefined,
+): Promise<void> {
+	try {
+		const routes = await loadHostRoutes();
+		if (!routes.some((route) => route.root === root)) return;
+		if ((await findCheckoutRuns(root)).live.length > 0) return;
+		// No route records pid 0: with no owner, only the service routes go.
+		await withdrawHostRoutes({ root, pid: pid ?? 0 });
+	} catch {
+		// The next teardown in this checkout tries again.
 	}
 }
 
@@ -501,6 +571,7 @@ async function sweepGroup(
 					owner: removalOwner(owner),
 				});
 				await releaseSuffixedClaimsOf(group, freshClaims, owner, now);
+				await withdrawStoppedRoutes(group.root, owner?.pid);
 				return true;
 			},
 			{ timeoutMs: 0 },
@@ -687,27 +758,27 @@ async function sweepStacks(
 	runs: RunEntry[],
 	alive: (run: RunEntry) => boolean,
 	now: number,
+	runtimes: ContainerRuntimeAdapter[],
 	result: SweepResult,
 	swept: NoteSwept,
 ): Promise<void> {
+	// The newest entry speaks for the checkout, as it does for containers.
 	const decide = (runs: RunEntry[], isAlive: (run: RunEntry) => boolean) => {
-		const sameCheckout = runs.filter(
-			(entry) =>
-				entry.projectName === run.projectName && entry.root === run.root,
-		);
-		const owner =
-			runs.find((entry) => entry.sessionId === run.sessionId) ?? null;
-		return decideSweep({
-			// Recorded by a run of this user's: known by definition.
-			known: true,
-			checkout: checkoutPresence(run.root),
-			anyRunning: true,
-			run: owner,
-			ownerAlive: sameCheckout.some(isAlive),
-			now,
-		});
+		const owner = runFor(run, runs, isAlive);
+		return {
+			owner,
+			verdict: decideSweep({
+				// Recorded by a run of this user's: known by definition.
+				known: true,
+				checkout: checkoutPresence(run.root),
+				anyRunning: true,
+				run: owner,
+				ownerAlive: owner !== null && isAlive(owner),
+				now,
+			}),
+		};
 	};
-	if (decide(runs, alive).kind !== "down") return;
+	if (decide(runs, alive).verdict.kind !== "down") return;
 
 	try {
 		await withProjectLifecycleLock(
@@ -716,18 +787,25 @@ async function sweepStacks(
 			async () => {
 				const fresh = await readAllRuns();
 				const freshAlive = await runLivenessAsync(fresh);
-				const verdict = decide(fresh, freshAlive);
-				if (verdict.kind !== "down") return;
-				await runStackDowns(run, (stack) =>
-					swept({
-						projectName: run.projectName,
-						root: run.root,
-						runtime: stack.name,
-						reason: verdict.reason,
-						owner: removalOwner(run),
-					}),
+				const { owner, verdict } = decide(fresh, freshAlive);
+				const stacked = fresh.find(
+					(entry) => entry.sessionId === run.sessionId,
 				);
-				await clearRunStacks([run.sessionId]);
+				if (verdict.kind !== "down" || !stacked?.stacks?.length) return;
+				await runStackDowns(
+					stacked,
+					(stack) =>
+						swept({
+							projectName: run.projectName,
+							root: run.root,
+							runtime: stack.name,
+							reason: verdict.reason,
+							owner: removalOwner(owner),
+						}),
+					runtimes,
+				);
+				await clearRunStacks([stacked]);
+				await withdrawStoppedRoutes(run.root, owner?.pid);
 				// Retirable this pass, like an entry whose containers are gone.
 				run.stacks = undefined;
 			},
@@ -784,19 +862,20 @@ async function stampLostOwners(
 }
 
 /**
- * Sessions whose containers are gone.
+ * Entries whose containers are gone, as read: {@link retireRuns} drops
+ * each only while it is still that entry.
  *
  * Only when the runtime that holds them answered: from a daemon that is down,
  * an empty listing means "cannot tell", and retiring on that would throw away
  * the only record of a stack that is still there. A checkout that no longer
  * exists is the one case that needs no listing to be sure.
  */
-function finishedSessions(
+function finishedRuns(
 	runs: RunEntry[],
 	groups: ContainerGroup[],
 	answered: ContainerRuntimeName[],
 	alive: (run: RunEntry) => boolean,
-): string[] {
+): RunEntry[] {
 	const stillHasContainers = (run: RunEntry) =>
 		groups.some(
 			(group) =>
@@ -810,14 +889,12 @@ function finishedSessions(
 			? recorded.every((name) => answered.includes(name))
 			: answered.length > 0;
 	};
-	return runs
-		.filter(
-			(run) =>
-				!alive(run) &&
-				!stillHasContainers(run) &&
-				// Its stacks are only recorded here; retiring would orphan them.
-				(run.stacks?.length ?? 0) === 0 &&
-				(runtimeAnswered(run) || checkoutDeleted(run.root)),
-		)
-		.map((run) => run.sessionId);
+	return runs.filter(
+		(run) =>
+			!alive(run) &&
+			!stillHasContainers(run) &&
+			// Its stacks are only recorded here; retiring would orphan them.
+			(run.stacks?.length ?? 0) === 0 &&
+			(runtimeAnswered(run) || checkoutDeleted(run.root)),
+	);
 }

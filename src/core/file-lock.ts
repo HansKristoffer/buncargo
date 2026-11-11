@@ -75,6 +75,15 @@ function flockOperation(): (fd: number) => boolean {
 	return loadedFlock;
 }
 
+/**
+ * Take the exclusive kernel lock on an open descriptor without waiting: false
+ * while another descriptor holds it. The lock lives as long as the
+ * descriptor, so a holder that dies frees it with no pid to judge.
+ */
+export function tryLockDescriptor(fd: number): boolean {
+	return flockOperation()(fd);
+}
+
 /** Run a mutation exclusively, or reject on bounded contention without running it. */
 export async function withFileLock<T>(
 	target: string,

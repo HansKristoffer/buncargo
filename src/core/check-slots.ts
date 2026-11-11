@@ -1,5 +1,7 @@
 import {
 	closeSync,
+	fstatSync,
+	ftruncateSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
@@ -9,6 +11,7 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 import { getErrorMessage } from "hanzio";
+import { tryLockDescriptor } from "./file-lock";
 import {
 	CHECK_SLOT_ENV,
 	checkSlotCount,
@@ -23,9 +26,11 @@ import { getStateDir } from "./state-paths";
  *
  * Coding agents run checks in many worktrees at once, and one native `tsc`
  * peaks at several GB. Unbounded, they run the machine out of memory and slow
- * each other down. Each slot is a lock file under `~/.buncargo/check-slots/`.
- * The holder's pid in it lets a lock left behind by a killed process be
- * reclaimed.
+ * each other down. Each slot is a file under `~/.buncargo/check-slots/` whose
+ * kernel lock (`flock`) its holder keeps for the length of the check. The
+ * kernel frees the lock when the holder exits, however it dies, so no pid is
+ * ever judged. The holder's details in the file are only for the waiting
+ * message.
  *
  * The holder exports `BUNCARGO_CHECK_SLOT` to its children, so a command that
  * already holds a slot (`slot -- bun run lint`) never waits on itself
@@ -33,9 +38,12 @@ import { getStateDir } from "./state-paths";
  */
 
 const SLOT_DIRNAME = "check-slots";
-// A holder writes its lock within milliseconds of creating it. An unreadable
-// lock older than this was left half-written (a full disk, a kill mid-write).
-const UNREADABLE_LOCK_GRACE_MS = 5_000;
+/**
+ * How long a check waits for a slot before it runs without one. Long enough
+ * for a queue of typechecks to drain; a holder that hangs for longer must not
+ * hang every check on the machine behind it.
+ */
+const CHECK_SLOT_WAIT_MS = 15 * 60_000;
 
 export interface CheckSlotHolder {
 	pid: number;
@@ -50,8 +58,15 @@ export interface CheckSlotOptions {
 	dir?: string;
 	env?: NodeJS.ProcessEnv;
 	pollMs?: number;
+	/** How long to wait for a slot before running without one. */
+	waitMs?: number;
 	/** Called once when every slot is taken, before waiting. */
 	onWait?: (holders: CheckSlotHolder[]) => void;
+}
+
+interface HeldSlot {
+	file: string;
+	fd: number;
 }
 
 function readHolder(file: string): CheckSlotHolder | undefined {
@@ -62,21 +77,17 @@ function readHolder(file: string): CheckSlotHolder | undefined {
 	}
 }
 
-function holderAlive(file: string): boolean {
-	const holder = readHolder(file);
-	if (!holder) {
-		try {
-			return Date.now() - statSync(file).mtimeMs < UNREADABLE_LOCK_GRACE_MS;
-		} catch {
-			return false;
-		}
-	}
+/**
+ * Whether `fd` is still the file at `file`. A holder unlinks its file as it
+ * releases, so a waiter that opened the file just before can lock the
+ * unlinked inode while a third process creates and locks a new one: only the
+ * one whose inode is still at the path holds the slot.
+ */
+function stillAtPath(fd: number, file: string): boolean {
 	try {
-		process.kill(holder.pid, 0);
-		return true;
-	} catch (error) {
-		// EPERM is a live process owned by someone else.
-		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+		return fstatSync(fd).ino === statSync(file).ino;
+	} catch {
+		return false;
 	}
 }
 
@@ -84,39 +95,41 @@ function tryAcquire(
 	dir: string,
 	slots: number,
 	holder: CheckSlotHolder,
-): string | undefined {
+): HeldSlot | undefined {
 	for (let slot = 0; slot < slots; slot++) {
 		const file = join(dir, `${slot}.lock`);
-		let fd: number;
-		try {
-			fd = openSync(file, "wx");
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			// A racing reclaimer can remove a lock that was just re-taken and let
-			// one extra check through. For a memory cap that is acceptable.
-			if (!holderAlive(file)) {
-				try {
-					unlinkSync(file);
-				} catch {}
-			}
+		const fd = openSync(file, "a+", 0o600);
+		if (!tryLockDescriptor(fd) || !stillAtPath(fd, file)) {
+			closeSync(fd);
 			continue;
 		}
 
 		try {
+			ftruncateSync(fd, 0);
 			writeSync(fd, JSON.stringify(holder));
-			return file;
+			return { file, fd };
 		} catch (error) {
-			// An empty lock would read as held: never leave one behind.
-			unlinkSync(file);
+			release({ file, fd });
 			throw error;
-		} finally {
-			closeSync(fd);
 		}
 	}
 	return undefined;
 }
 
-/** The current holders, for the waiting message and `doctor`-style output. */
+/** Unlink before closing: the path never names a file nobody holds. */
+function release(slot: HeldSlot): void {
+	try {
+		unlinkSync(slot.file);
+	} catch {}
+	try {
+		closeSync(slot.fd);
+	} catch {}
+}
+
+/**
+ * The holders recorded in the slot files, for the waiting message. Current
+ * while every slot is taken: each holder rewrote its file when it took it.
+ */
 export function checkSlotHolders(
 	dir = join(getStateDir(), SLOT_DIRNAME),
 	slots = checkSlotCount(),
@@ -132,6 +145,43 @@ export function checkSlotHolders(
 export function formatCheckSlotHolder(holder: CheckSlotHolder): string {
 	const seconds = Math.round((Date.now() - holder.startedAt) / 1000);
 	return `${basename(holder.cwd)} ${holder.label} (${seconds}s)`;
+}
+
+/**
+ * Wait for a slot until the deadline. The cap protects memory; it must never
+ * be why a check cannot run. A full disk, an unwritable state directory or a
+ * wait past its deadline returns no slot, and the check runs without one.
+ */
+async function acquireSlot(
+	dir: string,
+	slots: number,
+	holder: CheckSlotHolder,
+	options: CheckSlotOptions,
+): Promise<HeldSlot | undefined> {
+	const waitMs = options.waitMs ?? CHECK_SLOT_WAIT_MS;
+	const pollMs = options.pollMs ?? 500;
+	try {
+		mkdirSync(dir, { recursive: true });
+		let slot = tryAcquire(dir, slots, holder);
+		if (slot) return slot;
+
+		options.onWait?.(checkSlotHolders(dir, slots));
+		const deadline = Date.now() + waitMs;
+		while (!slot && Date.now() < deadline) {
+			await Bun.sleep(Math.min(pollMs, deadline - Date.now()));
+			slot = tryAcquire(dir, slots, holder);
+		}
+		if (slot) return slot;
+
+		const holders = checkSlotHolders(dir, slots).map(formatCheckSlotHolder);
+		const minutes = Math.round(waitMs / 60_000);
+		console.warn(
+			`Waited ${minutes}m for a check slot in ${dir}, held by ${holders.join(", ")}; running without one.`,
+		);
+	} catch (error) {
+		console.warn(`Running without a check slot: ${getErrorMessage(error)}`);
+	}
+	return undefined;
 }
 
 /**
@@ -156,39 +206,18 @@ export async function withCheckSlot<T>(
 		startedAt: Date.now(),
 	};
 
-	// The cap protects memory; it must never be why a check cannot run. A
-	// full disk or an unwritable state directory runs the check without one.
-	let file: string | undefined;
-	try {
-		mkdirSync(dir, { recursive: true });
-		file = tryAcquire(dir, slots, holder);
-		if (!file) {
-			options.onWait?.(checkSlotHolders(dir, slots));
-			while (!file) {
-				await Bun.sleep(options.pollMs ?? 500);
-				file = tryAcquire(dir, slots, holder);
-			}
-		}
-	} catch (error) {
-		console.warn(`Running without a check slot: ${getErrorMessage(error)}`);
-		return run();
-	}
+	const held = await acquireSlot(dir, slots, holder, options);
+	if (!held) return run();
 
-	const held = file;
-	const release = () => {
-		if (readHolder(held)?.pid !== process.pid) return;
-		try {
-			unlinkSync(held);
-		} catch {}
-	};
-	process.once("exit", release);
-	env[CHECK_SLOT_ENV] = held;
+	const releaseHeld = () => release(held);
+	process.once("exit", releaseHeld);
+	env[CHECK_SLOT_ENV] = held.file;
 
 	try {
 		return await run();
 	} finally {
 		delete env[CHECK_SLOT_ENV];
-		process.off("exit", release);
-		release();
+		process.off("exit", releaseHeld);
+		releaseHeld();
 	}
 }

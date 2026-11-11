@@ -22,6 +22,12 @@ import * as log from "../log";
 import { barSubcommandList, resolveBarSubcommand } from "./registry";
 
 /**
+ * Never fires: Ctrl-C ends a `bar` command's process, and the download's own
+ * deadline bounds the rest.
+ */
+const COMMAND_SIGNAL = new AbortController().signal;
+
+/**
  * `buncargo bar` — the menu bar app, from the CLI side.
  *
  * Install, update, open, check and remove. The CLI is the only updater — the
@@ -81,7 +87,7 @@ async function runInstall(fromSource: boolean): Promise<void> {
 	}
 
 	log.info(`Downloading ${BAR_APP_NAME}…`);
-	const result = await installBar();
+	const result = await installBar({ signal: COMMAND_SIGNAL });
 	log.done(`Installed ${BAR_APP_NAME} ${result.version} to ${result.path}`);
 	openBar(result.path);
 }
@@ -117,7 +123,10 @@ async function runUpdate(): Promise<void> {
 	log.info(
 		`Updating ${BAR_APP_NAME} ${installed.version ?? "?"} → ${release.version}…`,
 	);
-	const result = await installBar({ minRegistryVersion: REGISTRY_VERSION });
+	const result = await installBar({
+		signal: COMMAND_SIGNAL,
+		minRegistryVersion: REGISTRY_VERSION,
+	});
 	log.done(
 		result.relaunched
 			? `Updated ${BAR_APP_NAME} to ${result.version} and restarted it`

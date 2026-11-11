@@ -15,6 +15,8 @@
  * containers to the hold, where the sweep takes them as for any ended run.
  */
 
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { getErrorMessage, typedSwitch } from "hanzio";
 import type { CheckoutPresence } from "./checkout-presence";
 import type { ProxyActivity } from "./hosts/proxy-activity";
@@ -41,28 +43,50 @@ export interface RunActivity {
 	 * hosts daemon on this machine records them (`hosts/proxy-activity.ts`).
 	 */
 	proxy: ProxyActivity | undefined;
+	/**
+	 * The ports with an established connection when they were read, or
+	 * `undefined` when they could not be read ({@link readConnectionActivity}).
+	 */
+	connections: ConnectionActivity | undefined;
+}
+
+/** The local ports that had an established TCP connection, at `at`. */
+export interface ConnectionActivity {
+	at: number;
+	ports: ReadonlySet<number>;
 }
 
 /** The idle limit of one run, from its entry and what was read of its use. */
 export function idleState(
 	run: Pick<
 		RunEntry,
-		"detached" | "idleLimitMs" | "startedAt" | "hosts" | "root"
+		"detached" | "idleLimitMs" | "startedAt" | "hosts" | "root" | "apps"
 	>,
 	activity: RunActivity,
 ): IdleState {
 	if (!run.detached || run.idleLimitMs === undefined) return { kind: "off" };
-	// Requests are the run being used; with nothing counting them, a quiet
-	// limit would stop a run someone has open in a browser.
-	if (run.hosts?.active && activity.proxy === undefined)
+	// Requests and connections are the run being used; with nothing counting
+	// either, a quiet limit would stop a run someone has open in a browser.
+	const requestsCounted =
+		run.hosts?.active === true && activity.proxy !== undefined;
+	if (!requestsCounted && activity.connections === undefined)
 		return {
 			kind: "unknown",
-			why: "the hosts daemon predates request counting; `buncargo hosts install` updates it",
+			why: run.hosts?.active
+				? "the hosts daemon predates request counting and connections to its apps could not be read; `buncargo hosts install` updates the daemon"
+				: "connections to its apps could not be read",
 		};
+	const connections = activity.connections;
+	const connected =
+		connections !== undefined &&
+		run.apps.some(
+			(app) => app.port !== undefined && connections.ports.has(app.port),
+		);
 	const times = [
 		Date.parse(run.startedAt),
 		activity.commandAt,
 		activity.proxy?.get(run.root),
+		connected ? connections.at : undefined,
 	].filter((time): time is number => time !== undefined && !Number.isNaN(time));
 	if (times.length === 0)
 		return { kind: "unknown", why: "its start time does not parse" };
@@ -74,12 +98,103 @@ export function idleState(
 	};
 }
 
+/**
+ * Local ports of established connections in `/proc/net/tcp` or `tcp6`:
+ * the second column is `ADDRESS:PORT` in hex, the fourth the state, `01`
+ * for established.
+ */
+export function establishedPortsFromProcNet(text: string): number[] {
+	const ports: number[] = [];
+	for (const line of text.split("\n").slice(1)) {
+		const [, local, , state] = line.trim().split(/\s+/);
+		if (state !== "01" || local === undefined) continue;
+		const port = Number.parseInt(local.slice(local.lastIndexOf(":") + 1), 16);
+		if (Number.isInteger(port) && port > 0) ports.push(port);
+	}
+	return ports;
+}
+
+/**
+ * Local ports of established connections in macOS `netstat -an -p tcp`,
+ * whose fourth column is `ADDRESS.PORT` (`127.0.0.1.5173`, `::1.5173`).
+ */
+export function establishedPortsFromNetstat(text: string): number[] {
+	const ports: number[] = [];
+	for (const line of text.split("\n")) {
+		const columns = line.trim().split(/\s+/);
+		if (columns.at(-1) !== "ESTABLISHED") continue;
+		const local = columns[3] ?? "";
+		const port = Number.parseInt(local.slice(local.lastIndexOf(".") + 1), 10);
+		if (Number.isInteger(port) && port > 0) ports.push(port);
+	}
+	return ports;
+}
+
+/**
+ * Which local ports have an established TCP connection now: an open tab's
+ * HMR socket, a request in flight, a client on `localhost:port` the proxy
+ * never sees. One file read on Linux, one `netstat` on macOS; `undefined`
+ * when neither answers, so the idle limit is not judged on no evidence.
+ */
+export async function readConnectionActivity(
+	now: number,
+): Promise<ConnectionActivity | undefined> {
+	try {
+		const ports =
+			process.platform === "linux"
+				? await readProcNetPorts()
+				: establishedPortsFromNetstat(await netstat());
+		return { at: now, ports: new Set(ports) };
+	} catch {
+		return undefined;
+	}
+}
+
+async function readProcNetPorts(): Promise<number[]> {
+	const tables = await Promise.allSettled(
+		["/proc/net/tcp", "/proc/net/tcp6"].map((path) => readFile(path, "utf8")),
+	);
+	const read = tables.flatMap((table) =>
+		table.status === "fulfilled" ? [table.value] : [],
+	);
+	if (read.length === 0)
+		throw new Error("No /proc/net/tcp table could be read");
+	return read.flatMap(establishedPortsFromProcNet);
+}
+
+function netstat(): Promise<string> {
+	return new Promise((resolve, reject) => {
+		execFile(
+			"netstat",
+			["-an", "-p", "tcp"],
+			{ timeout: 5_000, maxBuffer: 16 * 1024 * 1024 },
+			(error, stdout) => (error ? reject(error) : resolve(stdout)),
+		);
+	});
+}
+
+/** Connections are read only for a run the idle limit applies to. */
+export async function readRunConnections(
+	runs: readonly Pick<RunEntry, "detached" | "idleLimitMs">[],
+	now: number,
+): Promise<ConnectionActivity | undefined> {
+	const limited = runs.some(
+		(run) => run.detached && run.idleLimitMs !== undefined,
+	);
+	return limited ? readConnectionActivity(now) : undefined;
+}
+
 /** A run's idle limit as a reader shows it, read from the disk now. */
 export function readIdleState(
 	run: RunEntry,
 	proxy: ProxyActivity | undefined,
+	connections: ConnectionActivity | undefined,
 ): IdleState {
-	return idleState(run, { commandAt: lastCheckoutCommandAt(run.root), proxy });
+	return idleState(run, {
+		commandAt: lastCheckoutCommandAt(run.root),
+		proxy,
+		connections,
+	});
 }
 
 /** "stops after 1h 42m more idle", or why the limit is not enforced. */
@@ -92,7 +207,7 @@ export function describeIdleState(
 		unknown: ({ why }) => `idle limit not enforced: ${why}`,
 		counting: ({ stopsAt }) =>
 			now < stopsAt
-				? `stops after ${formatDuration(stopsAt - now)} more with no request or buncargo command`
+				? `stops after ${formatDuration(stopsAt - now)} more with no request, connection to its apps or buncargo command`
 				: "idle past its limit; the watchdog stops it on its next pass",
 	});
 }
@@ -148,7 +263,7 @@ export function decideRunLimit(input: {
 		return {
 			kind: "stop",
 			reason: "idle",
-			detail: `idle for ${formatDuration(now - idle.lastActivityAt)}, with no request through buncargo's proxy and no buncargo command in ${run.root} (\`dev --detach --keep\` opts out)`,
+			detail: `idle for ${formatDuration(now - idle.lastActivityAt)}, with no request through buncargo's proxy, no connection to its apps and no buncargo command in ${run.root} (\`dev --detach --keep\` opts out)`,
 		};
 	return { kind: "keep" };
 }
@@ -174,6 +289,7 @@ export interface RunLimiterDeps {
 	checkoutPresence: (root: string) => CheckoutPresence;
 	lastCommandAt: (root: string) => number | undefined;
 	readProxyActivity: (now: number) => ProxyActivity | undefined;
+	readConnections: (now: number) => Promise<ConnectionActivity | undefined>;
 	/**
 	 * End the run's process by its recorded pid and identity; false when it
 	 * was already gone or is no longer that process. Throws when it could not
@@ -220,6 +336,7 @@ export function createRunLimiter(
 		);
 		const alive = await deps.liveness([...runs, ...terminalRuns]);
 		const proxy = deps.readProxyActivity(now);
+		const connections = await deps.readConnections(now);
 		const due: Array<{ run: RunEntry; reason: RunStopReason; detail: string }> =
 			[];
 		for (const run of runs) {
@@ -238,6 +355,7 @@ export function createRunLimiter(
 				idle: idleState(run, {
 					commandAt: deps.lastCommandAt(run.root),
 					proxy,
+					connections,
 				}),
 				now,
 			});

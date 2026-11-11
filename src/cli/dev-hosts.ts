@@ -9,7 +9,10 @@ import {
 	waitForDaemonRoutes,
 	withdrawHostRoutes,
 } from "../core/hosts";
+import type { DaemonRouteCheck } from "../core/hosts/daemon-client";
+import type { HostsEnableResult } from "../core/hosts/onboarding";
 import { certificateHostnames } from "../core/hosts/plan";
+import type { RouteOwners } from "../core/hosts/registry";
 import {
 	activateTailscaleServe,
 	releaseTailscaleServe,
@@ -22,6 +25,26 @@ import type {
 	HostsRuntime,
 	ServiceConfig,
 } from "../types";
+
+const HOSTS_FALLBACK = "Named URLs unavailable:";
+
+/** The machine edges of {@link activateNamedHosts}: the daemon, certificate and owners. */
+export interface NamedHostsDeps {
+	ensureHostsReady: () => Promise<HostsEnableResult>;
+	syncCertificateForRoutes: (options?: {
+		include?: string[];
+		root?: string;
+	}) => Promise<unknown>;
+	waitForDaemonRoutes: (hostnames: string[]) => Promise<DaemonRouteCheck>;
+	owners: RouteOwners;
+}
+
+const machineNamedHostsDeps: NamedHostsDeps = {
+	ensureHostsReady: () => ensureHostsReady({ hosts: true }),
+	syncCertificateForRoutes,
+	waitForDaemonRoutes,
+	owners: identityRouteOwners,
+};
 
 /**
  * Claim this run's named `.localhost` routes and switch `env.urls` over to them.
@@ -47,38 +70,41 @@ export async function activateNamedHosts<
 		signal?: AbortSignal;
 		takeover?: readonly string[];
 	},
+	deps: NamedHostsDeps = machineNamedHostsDeps,
 ): Promise<string[]> {
-	if (!env.hosts || !options.enabled) {
+	if (!env.hosts) {
 		return [];
 	}
-	if (env.hosts.mode === "tailscale")
-		return activateTailscaleHosts(env, env.hosts, options);
+	const { hosts } = env;
+	if (hosts.mode === "tailscale")
+		return options.enabled ? activateTailscaleHosts(env, hosts, options) : [];
 
 	// Named hosts still work, but something about the setup will bite later.
 	const notes: string[] = [];
-	// A retry that fails must not leave the first attempt's named URLs in
-	// `env.urls`, or the banner prints them beside this warning.
-	const unavailable = (reason: string): string[] => {
-		env.setNamedHostsActive(false);
-		return [...notes, `Named URLs unavailable: ${reason}`];
-	};
-	// After registering: what is left in the registry is what `env` and
-	// `getEnvVar` read as this checkout's named URLs being live.
-	const withdraw = async (reason: string): Promise<string[]> => {
+	// Every way out on `localhost:port` withdraws what this checkout has
+	// registered: this attempt's routes, and service routes an earlier run
+	// left, unless another live run of the checkout holds them. Left there,
+	// `env` and `getEnvVar` read them as this checkout's named URLs being
+	// live. A retry that fails must also not leave the first attempt's named
+	// URLs in `env.urls`, or the banner prints them beside this warning.
+	const fallBack = async (reason?: string): Promise<string[]> => {
 		try {
 			await withdrawHostRoutes({ root: env.root, pid: process.pid });
 		} catch {
-			// the registry's own failure is the one already being reported
+			// An unreadable registry: activation reports it, or had nothing to.
 		}
-		return unavailable(reason);
+		env.setNamedHostsActive(false);
+		return reason === undefined
+			? notes
+			: [...notes, `${HOSTS_FALLBACK} ${reason}`];
 	};
-	let registered = false;
 
+	if (!options.enabled) return fallBack();
 	options.signal?.throwIfAborted();
-	const result = await ensureHostsReady({ hosts: true });
+	const result = await deps.ensureHostsReady();
 	options.signal?.throwIfAborted();
 	if (!result.ok) {
-		return result.reason === "disabled" ? [] : unavailable(result.message);
+		return fallBack(result.reason === "disabled" ? undefined : result.message);
 	}
 	notes.push(...(result.notes ?? []));
 
@@ -86,37 +112,41 @@ export async function activateNamedHosts<
 		// Widen the certificate before publishing, not after. The daemon polls
 		// the registry every second, so a hostname that lands first is a
 		// hostname it tries to serve with a certificate that omits it.
-		await syncCertificateForRoutes({
+		await deps.syncCertificateForRoutes({
 			// Wildcards as well as this run's exact hostnames, so the next
 			// worktree of this project is already covered and needs no remint —
 			// and remembered under this root, so the coverage survives the
 			// project not running.
-			include: certificateHostnames(env.hosts.plan, env.hosts.tld),
+			include: certificateHostnames(hosts.plan, hosts.tld),
 			root: env.root,
 		});
-		// App routes die with this process; service routes outlive it.
+		// App routes die with this process; service routes outlive it. A
+		// hostname a live owner elsewhere holds stays on `localhost:port`
+		// alone, with a warning naming that owner.
 		options.signal?.throwIfAborted();
-		await upsertHostRoutes(
-			routesFromPlan(env.hosts.plan, {
+		const appConflicts = await upsertHostRoutes(
+			routesFromPlan(hosts.plan, {
 				root: env.root,
 				pid: process.pid,
 				processIdentity: await readCurrentProcessIdentityAsync(),
 				kinds: ["app"],
 			}),
-			{
-				takeover: new Set(options.takeover),
-				owners: identityRouteOwners,
-			},
+			{ takeover: new Set(options.takeover), owners: deps.owners },
 		);
-		registered = true;
 		options.signal?.throwIfAborted();
-		await upsertHostRoutes(
-			routesFromPlan(env.hosts.plan, {
-				root: env.root,
-				kinds: ["service"],
-			}),
-			{ owners: identityRouteOwners },
+		const serviceConflicts = await upsertHostRoutes(
+			routesFromPlan(hosts.plan, { root: env.root, kinds: ["service"] }),
+			{ owners: deps.owners },
 		);
+		const conflicts = [...appConflicts, ...serviceConflicts];
+		const held = new Set(conflicts.map((conflict) => conflict.hostname));
+		notes.push(
+			...conflicts.map((conflict) => `${HOSTS_FALLBACK} ${conflict.message}`),
+		);
+		const hostnames = hosts.plan
+			.map((entry) => entry.hostname)
+			.filter((hostname) => !held.has(hostname));
+		if (hostnames.length === 0) return fallBack();
 
 		// Mint again now that this run's routes are on disk.
 		//
@@ -131,24 +161,24 @@ export async function activateNamedHosts<
 		// No `root` here: this pass exists to pick up what other runs published,
 		// and this project's names were already recorded above.
 		options.signal?.throwIfAborted();
-		await syncCertificateForRoutes();
+		await deps.syncCertificateForRoutes();
 		options.signal?.throwIfAborted();
 
 		// Registering a route only writes a file. Advertising the hostname before
 		// the daemon has picked it up is how a banner full of https URLs ends up
 		// pointing at our own 404 page, so the switch waits for the proxy to
 		// confirm it is serving them.
-		const serving = await waitForDaemonRoutes(
-			env.hosts.plan.map((entry) => entry.hostname),
-		);
-		if (!serving.ok) return withdraw(serving.reason);
+		const serving = await deps.waitForDaemonRoutes(hostnames);
+		if (!serving.ok) return fallBack(serving.reason);
 
 		options.signal?.throwIfAborted();
-		env.setNamedHostsActive(true, { caPath: result.caPath });
+		env.setNamedHostsActive(true, {
+			caPath: result.caPath,
+			...(held.size === 0 ? {} : { hostnames }),
+		});
 	} catch (error) {
 		options.signal?.throwIfAborted();
-		const reason = toHostsUserMessage(error);
-		return registered ? withdraw(reason) : unavailable(reason);
+		return fallBack(toHostsUserMessage(error));
 	}
 	return notes;
 }
@@ -208,16 +238,20 @@ async function activateTailscaleHosts(
  * A run that took this app over moved its route to itself, and that run's
  * exit deleted it; restarted here, the app would serve a named URL that 404s.
  * A route another live run of this checkout holds stays that run's. One locked
- * file write, no fork. Best-effort, like the rest of the registry.
+ * file write, no fork.
+ *
+ * Returns why the route could not be claimed, for the app's output: the
+ * restart goes ahead on its named URL either way, and a silent failure here
+ * is a URL that 404s with nothing saying why.
  */
 export async function reclaimAppRoute(
 	env: { root: string; hosts: HostsRuntime | null },
 	name: string,
-): Promise<void> {
-	if (!env.hosts?.active) return;
+): Promise<string | undefined> {
+	if (!env.hosts?.active) return undefined;
 	if (env.hosts.mode === "tailscale") {
 		await reclaimTailscaleApp(env.root, env.hosts, name);
-		return;
+		return undefined;
 	}
 	const routes = routesFromPlan(env.hosts.plan, {
 		root: env.root,
@@ -225,11 +259,14 @@ export async function reclaimAppRoute(
 		processIdentity: await readCurrentProcessIdentityAsync(),
 		kinds: ["app"],
 	}).filter((route) => route.name === name);
-	if (routes.length === 0) return;
+	if (routes.length === 0) return undefined;
 	try {
-		await upsertHostRoutes(routes, { owners: identityRouteOwners });
-	} catch {
-		// A conflict is another project's hostname: activation already said so.
+		const [conflict] = await upsertHostRoutes(routes, {
+			owners: identityRouteOwners,
+		});
+		return conflict && `${HOSTS_FALLBACK} ${conflict.message}`;
+	} catch (error) {
+		return `${HOSTS_FALLBACK} ${toHostsUserMessage(error)}`;
 	}
 }
 

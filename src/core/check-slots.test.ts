@@ -4,7 +4,6 @@ import {
 	mkdtempSync,
 	readdirSync,
 	rmSync,
-	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,6 +38,7 @@ describe("withCheckSlot", () => {
 		const options = { dir, slots: 2, env: {}, pollMs: 5 };
 		const first = deferred();
 		const second = deferred();
+		const waiting = deferred();
 		const order: string[] = [];
 
 		const holders = [
@@ -56,11 +56,12 @@ describe("withCheckSlot", () => {
 				env: {},
 				onWait: (current) => {
 					waitedOn = current;
+					waiting.resolve();
 				},
 			},
 		);
 
-		await Bun.sleep(30);
+		await waiting.promise;
 		expect(order).toEqual([]);
 		expect(waitedOn.map((holder) => holder.label).sort()).toEqual([
 			"one",
@@ -77,48 +78,97 @@ describe("withCheckSlot", () => {
 		expect(readdirSync(dir)).toEqual([]);
 	});
 
-	it("reclaims a slot whose holder died", async () => {
+	it("frees the slot of a holder that was killed", async () => {
 		const dir = slotDir();
-		const dead = Bun.spawnSync(["true"]).pid;
+		const holder = Bun.spawn(
+			[
+				process.execPath,
+				"--eval",
+				`const { withCheckSlot } = await import(${JSON.stringify(import.meta.resolve("./check-slots"))});
+				await withCheckSlot("killed", async () => {
+					console.log("held");
+					await new Promise(() => {});
+				}, { dir: ${JSON.stringify(dir)}, slots: 1, env: {} });`,
+			],
+			{ stdout: "pipe", stderr: "inherit" },
+		);
+		try {
+			const reader = holder.stdout.getReader();
+			const { value } = await reader.read();
+			expect(new TextDecoder().decode(value)).toContain("held");
+			holder.kill("SIGKILL");
+			await holder.exited;
+			// Killed mid-check: its file is left behind, naming it.
+			expect(readdirSync(dir)).toEqual(["0.lock"]);
+
+			let waited = false;
+			const env: NodeJS.ProcessEnv = {};
+			await withCheckSlot(
+				"next",
+				async () => {
+					expect(env[CHECK_SLOT_ENV]).toBe(join(dir, "0.lock"));
+				},
+				{
+					dir,
+					slots: 1,
+					env,
+					waitMs: 0,
+					onWait: () => {
+						waited = true;
+					},
+				},
+			);
+			expect(waited).toBe(false);
+		} finally {
+			holder.kill("SIGKILL");
+		}
+	});
+
+	it("takes a slot whose file names a live process that does not hold it", async () => {
+		// A recycled pid, or this very process: the file is a note, not the lock.
+		const dir = slotDir();
 		writeFileSync(
 			join(dir, "0.lock"),
 			JSON.stringify({
-				pid: dead,
+				pid: process.pid,
 				cwd: "/gone",
 				label: "typecheck",
 				startedAt: 0,
 			}),
 		);
+		const env: NodeJS.ProcessEnv = {};
 
-		let ran = false;
 		await withCheckSlot(
 			"next",
 			async () => {
-				ran = true;
+				expect(env[CHECK_SLOT_ENV]).toBe(join(dir, "0.lock"));
 			},
-			{ dir, slots: 1, env: {}, pollMs: 5 },
+			{ dir, slots: 1, env, waitMs: 0 },
 		);
-
-		expect(ran).toBe(true);
 	});
 
-	it("reclaims a lock left empty, as a full disk leaves it", async () => {
+	it("runs the check without a slot once its wait passes the deadline", async () => {
 		const dir = slotDir();
-		const lock = join(dir, "0.lock");
-		writeFileSync(lock, "");
-		const longAgo = new Date(Date.now() - 60_000);
-		utimesSync(lock, longAgo, longAgo);
+		const held = deferred();
+		const holding = withCheckSlot("long", () => held.promise, {
+			dir,
+			slots: 1,
+			env: {},
+		});
+		const env: NodeJS.ProcessEnv = {};
 
-		let ran = false;
+		let ranWith: string | undefined = "not run";
 		await withCheckSlot(
-			"next",
+			"impatient",
 			async () => {
-				ran = true;
+				ranWith = env[CHECK_SLOT_ENV];
 			},
-			{ dir, slots: 1, env: {}, pollMs: 5 },
+			{ dir, slots: 1, env, pollMs: 5, waitMs: 20 },
 		);
 
-		expect(ran).toBe(true);
+		expect(ranWith).toBeUndefined();
+		held.resolve();
+		await holding;
 	});
 
 	it("runs the check without a slot when none can be taken", async () => {

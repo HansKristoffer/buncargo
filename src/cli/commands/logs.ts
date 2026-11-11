@@ -2,8 +2,9 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { promiseTimeout } from "hanzio";
 import { findMonorepoRoot } from "../../core/ports";
-import { listRunLogDirs } from "../../core/process/app-logs";
+import { isSessionLogDir, listRunLogDirs } from "../../core/process/app-logs";
 import { createErrorFilter } from "../../core/process/run-output";
+import { findRunsByRoot, type RunEntry } from "../../core/run-registry";
 import { colorizeName } from "../../core/style";
 import {
 	type CommandSpec,
@@ -12,6 +13,7 @@ import {
 	readBooleanFlag,
 	readPositionals,
 	readStringFlag,
+	unknownFlagMessage,
 } from "../command-spec";
 import { argumentsError, CliError } from "../errors";
 
@@ -47,6 +49,13 @@ const FLAGS = {
 		valueHint: "=<path>",
 		description: "Checkout whose logs to read (default: this one)",
 	},
+	run: {
+		name: "--run",
+		kind: "string",
+		valueHint: "=<sessionId>",
+		description:
+			"The run whose logs to read (default: the live run of <app>, else the newest)",
+	},
 } as const;
 
 export const LOGS_COMMAND_SPEC: CommandSpec = {
@@ -59,6 +68,10 @@ export const LOGS_COMMAND_SPEC: CommandSpec = {
 			description: "What went wrong in one app",
 		},
 		{ command: "buncargo logs api -f --since=5m", description: "Tail one app" },
+		{
+			command: "buncargo logs --run=<sessionId>",
+			description: "One run's apps, by the id `buncargo runs` prints",
+		},
 	],
 };
 
@@ -101,22 +114,26 @@ export async function handleLogs(rawArgs: string[]): Promise<number> {
 	}
 	const problems: string[] = [];
 	const since = readStringFlag(args, FLAGS.since, problems);
+	const sessionId = readStringFlag(args, FLAGS.run, problems);
 	const root = readStringFlag(args, FLAGS.root, problems) ?? findMonorepoRoot();
 	const [app, ...extra] = readPositionals(LOGS_COMMAND_SPEC, args);
 	problems.push(
-		...findUnknownFlags(LOGS_COMMAND_SPEC, args).map(
-			(f) => `Unknown flag: ${f}`,
+		...findUnknownFlags(LOGS_COMMAND_SPEC, args).map((flag) =>
+			unknownFlagMessage(LOGS_COMMAND_SPEC, flag),
 		),
 		...extra.map((arg) => `Unexpected argument: ${arg}`),
 	);
 	if (problems.length > 0) throw argumentsError(problems, "logs");
 
-	const dir = listRunLogDirs(root).at(-1);
-	if (!dir)
-		throw new CliError(`No logs yet for ${root}: start \`buncargo dev\`.`);
-	const apps = readdirSync(dir)
-		.filter((name) => name.endsWith(".log"))
-		.map((name) => basename(name, ".log"));
+	const runs = await findRunsByRoot(root).catch((): RunEntry[] => []);
+	const dir = pickRunLogDir(listRunLogDirs(root), runs, { app, sessionId });
+	if (!dir) {
+		const none = sessionId
+			? `No logs of run ${sessionId} in ${root}: \`buncargo runs\` lists the live runs.`
+			: `No logs yet for ${root}: start \`buncargo dev\`.`;
+		throw new CliError(none);
+	}
+	const apps = readdirApps(dir);
 	if (app !== undefined && !apps.includes(app))
 		throw new CliError(`No log for "${app}" in ${dir}.`, [
 			`Available: ${apps.join(", ") || "(none)"}`,
@@ -163,8 +180,13 @@ export async function handleLogs(rawArgs: string[]): Promise<number> {
 		print(line);
 
 	if (!readBooleanFlag(args, FLAGS.follow)) return 0;
+	let checkedAt = Date.now();
 	for (;;) {
-		await promiseTimeout(300);
+		await promiseTimeout(FOLLOW_POLL_MS);
+		// Ends with the run, its last lines printed: read once more first.
+		const due = Date.now() - checkedAt >= RUN_CHECK_MS;
+		const ended = due && !(await runIsLive(root, dir));
+		if (due) checkedAt = Date.now();
 		for (const name of app === undefined ? readdirApps(dir) : selected) {
 			const file = join(dir, `${name}.log`);
 			if (!existsSync(file)) continue;
@@ -176,7 +198,46 @@ export async function handleLogs(rawArgs: string[]): Promise<number> {
 			for (const line of readLines(file, name, from).filter(keep)) print(line);
 			offsets.set(name, size);
 		}
+		if (ended) return 0;
 	}
+}
+
+const FOLLOW_POLL_MS = 300;
+/** How often `-f` asks the registry whether the run is still going. */
+const RUN_CHECK_MS = 1_000;
+
+async function runIsLive(root: string, dir: string): Promise<boolean> {
+	const runs = await findRunsByRoot(root).catch((): RunEntry[] => []);
+	return runs.some((run) => isSessionLogDir(dir, run.sessionId));
+}
+
+/**
+ * The run directory to read, from `dirs` (oldest first) and the checkout's
+ * live `runs`: the asked session's newest, else the newest live run that runs
+ * `app`, else the newest directory with a log for `app`, else the newest. Two
+ * runs in one checkout (`dev --apps=api`, then `dev --apps=web`) each write
+ * their own directory, and the newest is not the one `api` is in.
+ */
+function pickRunLogDir(
+	dirs: readonly string[],
+	runs: readonly RunEntry[],
+	want: { app: string | undefined; sessionId: string | undefined },
+): string | undefined {
+	const newestOf = (sessionId: string) =>
+		dirs.findLast((dir) => isSessionLogDir(dir, sessionId));
+	if (want.sessionId !== undefined) return newestOf(want.sessionId);
+	const { app } = want;
+	if (app === undefined) return dirs.at(-1);
+
+	const running = runs
+		.filter((run) => run.apps.some((entry) => entry.name === app))
+		.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+		.flatMap((run) => newestOf(run.sessionId) ?? []);
+	return (
+		running.at(-1) ??
+		dirs.findLast((dir) => existsSync(join(dir, `${app}.log`))) ??
+		dirs.at(-1)
+	);
 }
 
 function readdirApps(dir: string): string[] {

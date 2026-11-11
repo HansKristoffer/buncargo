@@ -171,21 +171,57 @@ function describeRouteGap(input: {
 const HEALTH_POLL_MS = 150;
 /** Budget after `hosts install` / doctor, while launchd/systemd cold-starts the unit. */
 export const SERVICE_START_TIMEOUT_MS = 15_000;
+/**
+ * How long a routine run waits for an installed, current unit to answer.
+ *
+ * The daemon is briefly down after its own stall exit, while another project
+ * reinstalls it, and at login. A run cannot attach later, because its apps'
+ * environments are fixed at spawn, so one unanswered probe put it on
+ * `localhost:port` for its whole life.
+ */
+export const DAEMON_RESTART_GRACE_MS = 2_000;
+
+/** What {@link ensureHostsDaemonRunning} asks of the machine. */
+export interface HostsDaemonProbe {
+	healthy: () => Promise<boolean>;
+	serviceInstalled: () => boolean;
+	/** Why the installed unit is not this buncargo's, if it is not. */
+	staleService: () => string | undefined;
+	/** Whatever else holds the daemon's port, named. */
+	squatter: () => string | undefined;
+	now: () => number;
+	sleep: (ms: number) => Promise<void>;
+}
+
+function hostsDaemonProbe(port: number): HostsDaemonProbe {
+	return {
+		healthy: () => isHostsDaemonHealthy(port),
+		serviceInstalled: isHostsServiceInstalled,
+		staleService: describeStaleHostsService,
+		squatter: () => describePortSquatter(port),
+		now: Date.now,
+		sleep: (ms) => promiseTimeout(ms),
+	};
+}
+
+async function pollHealthy(
+	probe: Pick<HostsDaemonProbe, "healthy" | "now" | "sleep">,
+	timeoutMs: number,
+): Promise<boolean> {
+	const deadline = probe.now() + timeoutMs;
+	for (;;) {
+		if (await probe.healthy()) return true;
+		const remaining = deadline - probe.now();
+		if (remaining <= 0) return false;
+		await probe.sleep(Math.min(HEALTH_POLL_MS, remaining));
+	}
+}
 
 export async function waitForDaemonHealthy(
 	port: number,
 	timeoutMs: number,
 ): Promise<boolean> {
-	if (timeoutMs <= 0) {
-		return isHostsDaemonHealthy(port);
-	}
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		if (await isHostsDaemonHealthy(port)) return true;
-		const remaining = deadline - Date.now();
-		if (remaining <= 0) return false;
-		await promiseTimeout(Math.min(HEALTH_POLL_MS, remaining));
-	}
+	return pollHealthy(hostsDaemonProbe(port), timeoutMs);
 }
 
 /**
@@ -197,41 +233,43 @@ export async function waitForDaemonHealthy(
  * *successfully* and the two would answer from separate route maps at random.
  * The service is the only thing that owns this port; every caller here reaches
  * this after `runHostsInstall` has loaded it.
+ *
+ * An installed, current unit that does not answer gets `timeoutMs`
+ * ({@link DAEMON_RESTART_GRACE_MS} unless given) to come back: `KeepAlive`
+ * restarts it within that.
  */
 export async function ensureHostsDaemonRunning(
 	options: { timeoutMs?: number } = {},
+	probe: HostsDaemonProbe = hostsDaemonProbe(readDaemonConfig().httpsPort),
 ): Promise<{ ok: boolean; message?: string }> {
-	const config = readDaemonConfig();
-	if (await isHostsDaemonHealthy(config.httpsPort)) {
+	if (await probe.healthy()) {
 		return { ok: true };
 	}
 
-	if (!isHostsServiceInstalled()) {
+	if (!probe.serviceInstalled()) {
 		// Naming whatever else is on the port is the whole value of this
 		// message: "not running" sends someone to the wrong file.
 		return {
 			ok: false,
 			message:
-				describePortSquatter(config.httpsPort) ??
+				probe.squatter() ??
 				"Named-hosts service is not installed. Run `buncargo hosts install`.",
 		};
 	}
 
-	const stale = describeStaleHostsService();
+	const stale = probe.staleService();
 	if (stale) {
 		return { ok: false, message: stale };
 	}
 
-	// `KeepAlive` means a loaded unit is either answering or down, so a routine
-	// `buncargo dev` must not sit on the cold-start budget. Only a caller that
-	// just loaded the unit passes `timeoutMs`.
-	const waitMs = options.timeoutMs ?? 0;
-	if (waitMs > 0 && (await waitForDaemonHealthy(config.httpsPort, waitMs))) {
+	const waitMs = options.timeoutMs ?? DAEMON_RESTART_GRACE_MS;
+	if (await pollHealthy(probe, waitMs)) {
 		return { ok: true };
 	}
 
+	const port = readDaemonConfig().httpsPort;
 	return {
 		ok: false,
-		message: `Named-hosts service is installed but did not answer on :${config.httpsPort}. Check ${hostsServiceLogHint()}, then run \`buncargo hosts install\`.`,
+		message: `Named-hosts service is installed but did not answer on :${port}. Check ${hostsServiceLogHint()}, then run \`buncargo hosts install\`.`,
 	};
 }

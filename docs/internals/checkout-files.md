@@ -118,8 +118,10 @@ another machine.
 - Write: take the lock, write each data file (temp file and rename in the same directory), then
   the manifest (temp and rename), release.
 - Remove: drop the manifest entry, then the data file.
-- Read: trust the manifest. A data file whose sha256 differs from its entry is absent for now (a
-  write is in progress) and is read again later. Data files without an entry are ignored.
+- Read: trust the manifest. A data file whose sha256 differs from its entry, or that is missing, is
+  unreadable for now (a write is in progress, or it was torn) and is read again later. Its entry's
+  hash still decides the file's state, so a reader neither copies from it nor adopts a checkout's
+  copy over it. Data files without an entry are ignored.
 - A store whose `version` a reader does not know is left alone, with a warning.
 
 ### Lock

@@ -49,8 +49,13 @@ the services one provides.
   instead of `container`), so the sweep can stop a released stack after its hold with no config:
   `sweepStacks` decides with the same `decideSweep`, counting the stack as running (its containers
   carry none of our labels, so nothing lists them), clears `stacks` once stopped, and
-  `finishedSessions` never retires an entry that still has some. `pendingStacks` keeps the
+  `finishedRuns` never retires an entry that still has some. `pendingStacks` keeps the
   watchdog alive meanwhile.
+- The recorded argv starts with the checkout's own `node_modules/.bin/supabase`, which a deleted
+  worktree takes with it; the spawn failed every pass and the stack stayed up for good. So
+  `runStackDowns` retries the basename on `PATH`, and failing that stops the containers by the
+  `composeProject` the entry records, through the Docker adapter (stopped, never removed: volumes
+  stay). Docker only: no integration CLI runs on Apple's runtime.
 - `stop` refuses one external service (exit 3) and runs the stacks when stopping the whole run.
 - A buncargo older than this retires a stack-only entry at once, leaving that stack running as it
   would without the integration.

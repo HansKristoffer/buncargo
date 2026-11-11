@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -9,6 +10,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unreadableCheckout } from "../core/checkout-presence.testing";
+import { getRoutesPath } from "../core/hosts/paths";
+import {
+	loadHostRoutes,
+	pidRouteOwners,
+	upsertHostRoutes,
+} from "../core/hosts/registry";
 import {
 	claimOffset,
 	getOffsetClaimsPath,
@@ -35,7 +42,11 @@ import {
 	settleDeletedCheckouts,
 	sweepOrphanedContainers,
 } from "./sweep";
-import type { ContainerDownRequest, ContainerRuntimeAdapter } from "./types";
+import type {
+	ComposeProjectResources,
+	ContainerDownRequest,
+	ContainerRuntimeAdapter,
+} from "./types";
 
 const realHome = process.env.HOME;
 let home = "";
@@ -59,6 +70,7 @@ afterAll(() => {
 afterEach(() => {
 	rmSync(join(home, ".buncargo", "runs.json"), { force: true });
 	rmSync(getOffsetClaimsPath(), { force: true });
+	rmSync(getRoutesPath(), { force: true });
 });
 
 /** Give `root` a port claim for `projectName`, as a run of this user's does. */
@@ -904,6 +916,181 @@ describe("sweepOrphanedContainers", () => {
 		expect(downs).toEqual(["abandoned"]);
 		expect(result.remaining.map((group) => group.projectName)).toEqual([
 			"reused",
+		]);
+	});
+});
+
+describe("sweepOrphanedContainers, against a registry that changes under it", () => {
+	it("keeps a session that released and claimed again under the same id during the pass", async () => {
+		// Finished when the pass read it; a library `start()` claims again
+		// under the same session while the pass is busy with another stack.
+		await publishRun(
+			entry({ sessionId: "library", projectName: "library", services: [DB] }),
+		);
+		await releaseRun("library");
+		claim("abandoned", checkout);
+		const runtime = {
+			name: "docker",
+			list: () => [container("abandoned", checkout, "exited")],
+			down: async () => {
+				await publishRun(
+					entry({
+						sessionId: "library",
+						projectName: "library",
+						pid: process.pid,
+						processIdentity: readProcessIdentity(process.pid),
+						services: [DB],
+					}),
+				);
+			},
+		} as unknown as ContainerRuntimeAdapter;
+		await sweepOrphanedContainers({ runtimes: [runtime] });
+		expect((await loadRuns()).map((run) => run.sessionId)).toEqual(["library"]);
+	});
+
+	it("lets the newest entry of a checkout decide its integration stack", async () => {
+		// An older session's own hold is long over, but a newer one of the
+		// same checkout released minutes ago into a longer hold.
+		const marker = join(checkout, "stack-downs");
+		await publishRun(
+			entry({
+				sessionId: "older",
+				startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+				releasedAt: new Date(Date.now() - 600_000).toISOString(),
+				idleTimeoutMs: 60_000,
+				stacks: [
+					{ name: "supabase", down: ["sh", "-c", `echo down >> '${marker}'`] },
+				],
+			}),
+		);
+		await publishRun(
+			entry({
+				sessionId: "newer",
+				startedAt: new Date(Date.now() - 300_000).toISOString(),
+				releasedAt: new Date(Date.now() - 60_000).toISOString(),
+				idleTimeoutMs: 3_600_000,
+			}),
+		);
+		const result = await sweepOrphanedContainers({
+			runtimes: [stubRuntime([]).runtime],
+		});
+		expect(result.swept).toEqual([]);
+		expect(existsSync(marker)).toBe(false);
+	});
+});
+
+describe("sweepOrphanedContainers, for a deleted checkout's integration stack", () => {
+	const gone = join(tmpdir(), "buncargo-deleted-checkout-never-existed");
+	const missingCli = join(gone, "node_modules", ".bin", "buncargo-test-cli");
+	const deletedRun = (stack: { down: string[]; composeProject?: string }) =>
+		entry({
+			sessionId: "deleted",
+			root: gone,
+			releasedAt: AGES_AGO,
+			idleTimeoutMs: 60_000,
+			stacks: [{ name: "supabase", ...stack }],
+		});
+
+	/** Docker as far as the label fallback needs it, recording what it is asked. */
+	function dockerWithStack(resources: ComposeProjectResources) {
+		const asked = { stopped: [] as string[], volumes: [] as string[] };
+		const runtime = {
+			...stubRuntime([]).runtime,
+			listComposeProjectResources: () => resources,
+			stopByIds: (ids: string[]) => asked.stopped.push(...ids),
+			removeVolumes: async (names: string[]) => {
+				asked.volumes.push(...names);
+				return [];
+			},
+		} as unknown as ContainerRuntimeAdapter;
+		return { runtime, asked };
+	}
+
+	it("runs the stack's CLI from PATH when the checkout's copy is gone", async () => {
+		const bin = mkdtempSync(join(tmpdir(), "buncargo-path-"));
+		const marker = join(bin, "called");
+		writeFileSync(
+			join(bin, "buncargo-test-cli"),
+			`#!/bin/sh\necho "$*" > '${marker}'\n`,
+			{ mode: 0o755 },
+		);
+		const path = process.env.PATH;
+		process.env.PATH = `${bin}:${path}`;
+		try {
+			await publishRun(deletedRun({ down: [missingCli, "stop"] }));
+			await sweepOrphanedContainers({ runtimes: [stubRuntime([]).runtime] });
+			expect(readFileSync(marker, "utf8")).toBe("stop\n");
+			expect(await loadRuns()).toEqual([]);
+		} finally {
+			process.env.PATH = path;
+			rmSync(bin, { recursive: true, force: true });
+		}
+	});
+
+	it("stops its containers by Compose project when no CLI is left, keeping volumes", async () => {
+		const { runtime, asked } = dockerWithStack({
+			containers: [
+				{ id: "api", project: "demo-stack", running: true, root: "" },
+				{ id: "exited", project: "demo-stack", running: false, root: "" },
+				{ id: "neighbour", project: "other", running: true, root: "" },
+			],
+			volumes: [{ name: "demo-stack_db", project: "demo-stack" }],
+			networks: [],
+		});
+		await publishRun(
+			deletedRun({ down: [missingCli, "stop"], composeProject: "demo-stack" }),
+		);
+		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+		expect(asked).toEqual({ stopped: ["api"], volumes: [] });
+		expect(result.swept).toEqual([
+			expect.objectContaining({ root: gone, runtime: "supabase" }),
+		]);
+		expect(await loadRuns()).toEqual([]);
+	});
+
+	it("keeps the entry, and reports it, when nothing records the containers' project", async () => {
+		const { runtime, asked } = dockerWithStack({
+			containers: [],
+			volumes: [],
+			networks: [],
+		});
+		await publishRun(deletedRun({ down: [missingCli, "stop"] }));
+		const result = await sweepOrphanedContainers({ runtimes: [runtime] });
+		expect(asked.stopped).toEqual([]);
+		expect(result.failed).toEqual([expect.objectContaining({ root: gone })]);
+		expect((await loadRuns()).map((run) => run.sessionId)).toEqual(["deleted"]);
+	});
+});
+
+describe("sweepOrphanedContainers and named hosts", () => {
+	it("withdraws a checkout's service routes with the stack it takes down", async () => {
+		const updatedAt = new Date().toISOString();
+		await upsertHostRoutes(
+			[
+				{
+					hostname: "typesense.demo.localhost",
+					port: 8108,
+					kind: "service",
+					name: "typesense",
+					root: checkout,
+					updatedAt,
+				},
+				{
+					hostname: "typesense.other.localhost",
+					port: 9108,
+					kind: "service",
+					name: "typesense",
+					root: home,
+					updatedAt,
+				},
+			],
+			{ owners: pidRouteOwners },
+		);
+		claim("stopped", checkout);
+		const { runtime } = stubRuntime([container("stopped", checkout, "exited")]);
+		await sweepOrphanedContainers({ runtimes: [runtime] });
+		expect((await loadHostRoutes()).map((route) => route.hostname)).toEqual([
+			"typesense.other.localhost",
 		]);
 	});
 });
