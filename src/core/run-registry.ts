@@ -97,6 +97,13 @@ const isRunApp = refine(
 		url: optional(isString),
 		loopbackUrl: optional(isString),
 		publicUrl: optional(isString),
+		/**
+		 * The URL of the tunnel that reaches this app, opened by this run or
+		 * inherited from the run it reuses the app from. A `publicUrl` can
+		 * also be one the app printed (`captures`); only this is another
+		 * run's to inherit.
+		 */
+		tunnelUrl: optional(isString),
 		/** What "open" opens for this app (`preferredAppUrl`), so every reader agrees. */
 		openUrl: optional(isString),
 		hostname: optional(isString),
@@ -663,12 +670,19 @@ function describedApp(
 	app: RunAppEntry,
 ): RunAppEntry {
 	const previous = current.find((entry) => entry.name === app.name);
-	if (!previous || app.status === "reused" || previous.status === "reused")
-		return app;
+	if (!previous) return app;
+	// Only the tunnel coordinator writes it, and a describe never says it.
+	const tunnel =
+		app.tunnelUrl === undefined && previous.tunnelUrl !== undefined
+			? { tunnelUrl: previous.tunnelUrl }
+			: {};
+	if (app.status === "reused" || previous.status === "reused")
+		return { ...app, ...tunnel };
 	const keepsPublicUrl =
 		app.publicUrl === undefined && previous.publicUrl !== undefined;
 	return {
 		...app,
+		...tunnel,
 		...(keepsPublicUrl
 			? { publicUrl: previous.publicUrl, openUrl: previous.openUrl }
 			: {}),

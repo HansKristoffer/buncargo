@@ -221,16 +221,18 @@ it("keeps the URLs apps printed when its tunnels open and close", async () => {
 	expect(publicUrls).toEqual({ mobile: "https://mobile.exp.direct" });
 });
 
-it("inherits a reused app's public URL from the live run serving it, on its port only", async () => {
+it("inherits a reused app's tunnel URL from the live run serving it, on its port only", async () => {
 	const root = mkdtempSync(join(tmpdir(), "buncargo-tunnel-reuse-"));
 	const publicUrls: Record<string, string> = {};
 	const env = {
+		sessionId: "tunnel-reuser",
 		services: {},
 		apps: {
 			api: { port: 4100, expose: true },
 			web: { port: 4101, expose: true },
+			shop: { port: 4102, expose: true },
 		},
-		ports: { api: 4100, web: 4101 },
+		ports: { api: 4100, web: 4101, shop: 4102 },
 		root,
 		publicUrls,
 		setPublicUrls: (next: Record<string, string>) => {
@@ -243,26 +245,45 @@ it("inherits a reused app's public URL from the live run serving it, on its port
 		Record<string, ServiceConfig>,
 		Record<string, AppConfig>
 	>;
-	const served = (name: string, port: number) => ({
+	const row = (name: string, port: number, urls: object = {}) => ({
 		name,
 		port,
 		url: `http://localhost:${port}`,
 		loopbackUrl: `http://localhost:${port}`,
-		publicUrl: `https://${name}.trycloudflare.com`,
 		status: "ready" as const,
+		...urls,
 	});
-	// This process stands in for the run that opened the tunnels. Its `web`
-	// row is on a port this run would not use.
-	await publishRun({
+	const tunnel = (name: string) => {
+		const url = `https://${name}.trycloudflare.com`;
+		return { publicUrl: url, tunnelUrl: url };
+	};
+	const entry = (sessionId: string, apps: ReturnType<typeof row>[]) => ({
 		...buildRunEntry({
-			sessionId: "tunnel-owner",
+			sessionId,
 			projectPrefix: "demo",
 			projectName: "demo",
 			root,
 			isWorktree: false,
 		}),
-		apps: [served("api", 4100), served("web", 4999)],
+		apps,
 	});
+	// This process stands in for the run that serves the apps. Its `web`
+	// tunnel is on a port this run would not use, and `shop`'s public URL is
+	// one the app printed, not a tunnel.
+	await publishRun(
+		entry("tunnel-owner", [
+			row("api", 4100, tunnel("api")),
+			row("web", 4999, tunnel("web")),
+			row("shop", 4102, { publicUrl: "https://shop.example.dev" }),
+		]),
+	);
+	await publishRun(
+		entry("tunnel-reuser", [
+			row("api", 4100),
+			row("web", 4101),
+			row("shop", 4102),
+		]),
+	);
 	const opened: string[] = [];
 	const coordinator = createTunnelCoordinator(
 		env,
@@ -271,7 +292,12 @@ it("inherits a reused app's public URL from the live run serving it, on its port
 			stopPublicTunnels,
 			startPublicTunnels: async (targets) => {
 				opened.push(...targets.map((target) => target.name));
-				return [];
+				return targets.map((target) => ({
+					...target,
+					localUrl: `http://localhost:${target.port}`,
+					publicUrl: `https://${target.name}-new.trycloudflare.com`,
+					close: async () => {},
+				}));
 			},
 		},
 		{ exposeRequested: true },
@@ -281,19 +307,36 @@ it("inherits a reused app's public URL from the live run serving it, on its port
 		await coordinator.planExpose({
 			exposeValue: undefined,
 			appsRequested: false,
-			selectedAppNames: new Set(["api", "web"]),
+			selectedAppNames: new Set(["api", "web", "shop"]),
 			startAppNames: new Set(),
-			reusedAppNames: new Set(["api", "web"]),
+			reusedAppNames: new Set(["api", "web", "shop"]),
 		});
 		await coordinator.openOwnedTunnels();
 
 		expect(coordinator.inheritsPublicUrls()).toBe(true);
-		expect(publicUrls).toEqual({ api: "https://api.trycloudflare.com" });
-		expect(opened).toEqual(["web"]);
+		expect(opened).toEqual(["web", "shop"]);
+		expect(publicUrls).toEqual({
+			api: "https://api.trycloudflare.com",
+			web: "https://web-new.trycloudflare.com",
+			shop: "https://shop-new.trycloudflare.com",
+		});
+		// This run's entry says which of its URLs are tunnels, for the next.
+		const reuser = (await loadRuns()).find(
+			(run) => run.sessionId === "tunnel-reuser",
+		);
+		expect(
+			Object.fromEntries(
+				(reuser?.apps ?? []).map((app) => [app.name, app.tunnelUrl]),
+			),
+		).toEqual({
+			api: "https://api.trycloudflare.com",
+			web: "https://web-new.trycloudflare.com",
+			shop: "https://shop-new.trycloudflare.com",
+		});
 	} finally {
 		await retireRuns(
 			(await loadRuns()).filter((run) =>
-				["tunnel-owner"].includes(run.sessionId),
+				["tunnel-owner", "tunnel-reuser"].includes(run.sessionId),
 			),
 		);
 		rmSync(root, { recursive: true, force: true });
