@@ -1,5 +1,7 @@
 import { join } from "node:path";
+import { isString } from "hanzio";
 import { checkoutDeleted } from "../checkout-presence";
+import { arrayOf, type Guard, object } from "../json-shape";
 import { defineListRegistry } from "../registry-file";
 import { chownToInvokingUser, getStateDir } from "../state-paths";
 
@@ -43,16 +45,11 @@ export function getCertNamesPath(): string {
 	return join(getStateDir(), CERT_NAMES_FILENAME);
 }
 
-function isCertNameEntry(value: unknown): value is CertNameEntry {
-	if (typeof value !== "object" || value === null) return false;
-	const entry = value as Partial<CertNameEntry>;
-	return (
-		typeof entry.root === "string" &&
-		Array.isArray(entry.names) &&
-		entry.names.every((name) => typeof name === "string") &&
-		typeof entry.updatedAt === "string"
-	);
-}
+const isCertNameEntry: Guard<CertNameEntry> = object({
+	root: isString,
+	names: arrayOf(isString),
+	updatedAt: isString,
+});
 
 const registry = defineListRegistry<CertNameEntry>({
 	version: REGISTRY_VERSION,

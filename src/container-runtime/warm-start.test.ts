@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { resolveServices } from "../config/resolve";
+import { freePorts } from "../core/test-env.testing";
 import { dockerRuntimeAdapter } from "../docker/adapter";
 import { dockerListLine, fakeDocker } from "../docker/fake-docker.testing";
 import { serviceHashEnv } from "../docker-compose/interpolate";
@@ -10,23 +11,11 @@ afterEach(() => {
 	for (const fake of fakes.splice(0)) fake.remove();
 });
 
-/** A port nothing on this machine listens on, for the service to publish. */
-function unusedPort(): number {
-	const listener = Bun.listen({
-		hostname: "127.0.0.1",
-		port: 0,
-		socket: { data() {} },
-	});
-	const { port } = listener;
-	listener.stop(true);
-	return port;
-}
-
 describe("ensureServicesRunning against Docker", () => {
 	it("forks docker once on a warm start with every service up", async () => {
 		const docker = fakeDocker({ ps: { stdout: "" } });
 		fakes.push(docker);
-		const port = unusedPort();
+		const [port] = freePorts(1);
 		const start = (wait: boolean) =>
 			ensureServicesRunning({
 				runtime: dockerRuntimeAdapter({ binary: docker.binary }),
