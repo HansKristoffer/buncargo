@@ -253,9 +253,7 @@ export function createRunClaimApi<
 					: holdToInherit(await loadRuns(), ctx);
 			lastHold = { value: hold, inherited };
 			const stacks = stackEntries();
-			// Claimed before it is published: a write that fails must not be
-			// retried on every container subset.
-			claim = { kind: "claimed", at: Date.now() };
+			const at = Date.now();
 			await publishRun({
 				...(await buildRunEntryAsync(
 					{
@@ -274,6 +272,10 @@ export function createRunClaimApi<
 				services: serviceEntries(),
 				...(stacks.length > 0 ? { stacks } : {}),
 			});
+			// Only once the entry is on disk: a claim that failed to publish
+			// (aborted, a lock timeout, a newer registry) is retried by the next
+			// start, which would otherwise create containers nobody claimed.
+			claim = { kind: "claimed", at };
 		},
 
 		async releaseRun() {

@@ -98,6 +98,25 @@ export function createLifecycleApi<
 	 */
 	const stacksUp = new Set<string>();
 
+	let watchdogFailureSaid = false;
+	/**
+	 * Not awaited: confirming the watchdog came up is no reason to delay a
+	 * start. A failure is said once, where the run's service changes are (the
+	 * run's log in the CLI): without the watchdog nothing removes a crashed
+	 * run's containers until a `ls` or `doctor` sweeps.
+	 */
+	function ensureWatchdog(): void {
+		void runClaim.ensureWatchdog().catch((error: unknown) => {
+			if (watchdogFailureSaid) return;
+			watchdogFailureSaid = true;
+			const reason = error instanceof Error ? error.message : String(error);
+			serviceWatch.notify(
+				`The watchdog did not start (${reason}). Nothing removes this run's containers if it crashes, until \`buncargo ls\` or \`buncargo doctor\` sweeps.`,
+				true,
+			);
+		});
+	}
+
 	function preparationSelected(prerequisites?: readonly string[]): boolean {
 		// Omitted prerequisites prepare whenever any service is selected; an
 		// explicit empty list opts into preparation for app-only selections.
@@ -422,10 +441,8 @@ export function createLifecycleApi<
 			if (hasServices) {
 				await runClaim.claimRun({ signal });
 				// A script that starts containers and then crashes needs someone to
-				// clean up after it, exactly as a `buncargo dev` does. Not awaited:
-				// confirming the watchdog came up is no reason to delay the start.
-				if (startOptions.watchdog !== false)
-					void runClaim.ensureWatchdog().catch(() => {});
+				// clean up after it, exactly as a `buncargo dev` does.
+				if (startOptions.watchdog !== false) ensureWatchdog();
 			}
 
 			if (verbose && !skipEnvironmentLog) {
@@ -619,14 +636,14 @@ export function createLifecycleApi<
 					});
 					// A run without containers is in the registry for its apps,
 					// and the watchdog is what lists live runs to BuncargoBar on
-					// the tailnet. Once they are up and not awaited, as `dev`
-					// does, so startup pays nothing for it.
+					// the tailnet. Once they are up, as `dev` does, so startup
+					// pays nothing for it.
 					if (
 						!hasServices &&
 						startOptions.watchdog !== false &&
 						Object.keys(pids).length > 0
 					)
-						void runClaim.ensureWatchdog().catch(() => {});
+						ensureWatchdog();
 
 					if (verbose) {
 						console.log(formatDone("Environment ready"));
@@ -658,89 +675,121 @@ export function createLifecycleApi<
 			// A claim lives as long as its directory, and a CI runner's persists
 			// between jobs: its claims and every E2E stack's filled the machine's
 			// blocks. Only on stop, not restart, which needs the block back.
-			if (await stopEnvironment(stopOptions)) await ctx.releaseThrowawayClaim();
+			const releaseClaim = ctx.captureThrowawayClaim();
+			if (await stopEnvironment(stopOptions)) await releaseClaim();
 		}, stopOptions.signal);
 	}
 
-	/** Whether nothing of the environment is left that could use its block. */
+	/**
+	 * Whether nothing of the environment is left that could use its block.
+	 * Every step runs even when an earlier one fails, and the first failure
+	 * is thrown at the end: a `beforeStop` hook that throws must not leave
+	 * the apps, their leases, the containers and the entry behind.
+	 */
 	async function stopEnvironment(
 		stopOptions: StopOptions = {},
 	): Promise<boolean> {
-		const { verbose = true, removeVolumes = false } = stopOptions;
-		stopOptions.signal?.throwIfAborted();
+		const { verbose = true, removeVolumes = false, signal } = stopOptions;
+		signal?.throwIfAborted();
+		const errors: unknown[] = [];
+		async function step(work: () => Promise<void>): Promise<boolean> {
+			try {
+				await work();
+				return true;
+			} catch (error) {
+				errors.push(error);
+				return false;
+			}
+		}
+		function settled(nothingLeft: boolean): boolean {
+			if (errors.length > 0) throw errors[0];
+			return nothingLeft;
+		}
+
 		// Before anything comes down: this run's own teardown is not news.
 		serviceWatch.stop();
 		const beforeStop = config.hooks?.beforeStop;
-		if (beforeStop) {
-			await withDeadline(
-				(hookSignal) => beforeStop(hookContext(hookSignal)),
-				600000,
-				stopOptions.signal,
+		if (beforeStop)
+			await step(() =>
+				withDeadline(
+					(hookSignal) => beforeStop(hookContext(hookSignal)),
+					600000,
+					signal,
+				),
 			);
-		}
 
-		await stopDevServers(ctx.ownedServerPids ?? {});
+		await step(() => stopDevServers(ctx.ownedServerPids ?? {}));
 		for (const name of Object.keys(ctx.ownedServerPids ?? {}))
 			delete ctx.ownedServerPids?.[name];
-		await runClaim.releaseApps();
+		await step(() => runClaim.releaseApps());
 		if (appOnlyRun()) {
 			// Another run's containers may still use the block, unless the
 			// config has none.
-			return Object.keys(services).length === 0;
+			return settled(Object.keys(services).length === 0);
 		}
 
 		const hasCompose = Object.keys(composeServicesOf(services)).length > 0;
 		// Every stack, not just this run's selection: stop means the environment.
 		const stacks = configuredStacks(config as AnyDevConfig);
+		let down = true;
 		if (hasCompose || stacks.length > 0) {
-			await withProjectLifecycleLock(
-				ctx.projectName,
-				ctx.root,
-				async () => {
-					if (hasCompose) {
-						ctx.ensureComposeFile();
-						await ctx.runtime.down({
-							root: ctx.root,
-							projectName: ctx.projectName,
-							model: ctx.composeModel(),
-							composeFile: ctx.composeFile,
-							verbose,
-							removeVolumes,
-							signal: stopOptions.signal,
-						});
-					}
-
-					for (const { name, stack } of stacks) {
-						await envVars.execTeardown(
-							stack.down({
-								projectName: ctx.projectName,
+			down = await step(() =>
+				withProjectLifecycleLock(
+					ctx.projectName,
+					ctx.root,
+					async () => {
+						if (hasCompose) {
+							ctx.ensureComposeFile();
+							await ctx.runtime.down({
 								root: ctx.root,
+								projectName: ctx.projectName,
+								model: ctx.composeModel(),
+								composeFile: ctx.composeFile,
+								verbose,
 								removeVolumes,
-							}),
-							{
-								secrets: false,
-								signal: stopOptions.signal,
-								timeoutMs: 120_000,
-							},
-						);
-						if (verbose) console.log(formatDone(`Stopped ${name}`));
-					}
-				},
-				{ signal: stopOptions.signal },
+								signal,
+							});
+						}
+
+						for (const { name, stack } of stacks) {
+							await envVars.execTeardown(
+								stack.down({
+									projectName: ctx.projectName,
+									root: ctx.root,
+									removeVolumes,
+								}),
+								{ secrets: false, signal, timeoutMs: 120_000 },
+							);
+							if (verbose) console.log(formatDone(`Stopped ${name}`));
+						}
+					},
+					{ signal },
+				),
 			);
-			await recordTeardown(ctx, {
-				sessionId: runClaim.sessionId,
-				runtimes: [
-					...(hasCompose ? [ctx.runtime.name] : []),
-					...stacks.map(({ name }) => name),
-				],
-				removeVolumes,
-			});
+			if (down)
+				await step(() =>
+					recordTeardown(ctx, {
+						sessionId: runClaim.sessionId,
+						runtimes: [
+							...(hasCompose ? [ctx.runtime.name] : []),
+							...stacks.map(({ name }) => name),
+						],
+						removeVolumes,
+					}),
+				);
 		}
-		await runClaim.retireRun({ containersDown: hasCompose });
-		broughtUp = "unknown";
-		stacksUp.clear();
-		return true;
+		// Containers that did not come down stay on record, released, for the
+		// next `stop` or the sweep to find.
+		await step(() =>
+			down
+				? runClaim.retireRun({ containersDown: hasCompose })
+				: runClaim.releaseRun(),
+		);
+		if (down) {
+			broughtUp = "unknown";
+			stacksUp.clear();
+		}
+		return settled(down);
 	}
 
 	function restart(): Promise<void> {

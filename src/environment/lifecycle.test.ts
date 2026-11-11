@@ -79,6 +79,7 @@ function fixture() {
 		runtime,
 		root: tmpdir(),
 		projectName: "test",
+		ownedServerPids: {},
 		ports: {},
 		urls: {},
 		loopbackUrls: {},
@@ -93,7 +94,7 @@ function fixture() {
 	ctx.getStartPlan = (onlyApps, onlyServices) =>
 		planStart(ctx.apps, ctx.services, { onlyApps, onlyServices });
 	ctx.prepareStartAsync = async () => {};
-	ctx.releaseThrowawayClaim = async () => {
+	ctx.captureThrowawayClaim = () => async () => {
 		events.push("release claim");
 	};
 
@@ -129,18 +130,23 @@ function fixture() {
 		claimApps: async (apps: Record<string, AppConfig>) => apps,
 		appEvents: {},
 		abandonApps: async () => {},
-		releaseApps: async () => {},
+		releaseApps: async () => {
+			events.push("release apps");
+		},
 	};
+	const serviceWatch = createServiceWatch(ctx, runClaim.sessionId);
 	return {
 		events,
 		ctx,
 		envVars,
+		runClaim,
+		serviceWatch,
 		lifecycle: createLifecycleApi(
 			ctx,
 			envVars,
 			runClaim,
 			new LifecycleCoordinator(),
-			createServiceWatch(ctx, runClaim.sessionId),
+			serviceWatch,
 		),
 	};
 }
@@ -261,6 +267,56 @@ describe("startup modes and hooks", () => {
 				by: { pid: process.pid },
 			},
 		]);
+	});
+	it("stops the apps, their leases, the containers and the entry when beforeStop throws, then rejects with its error", async () => {
+		const { ctx, events, lifecycle } = fixture();
+		ctx.runtime.down = async () => {
+			events.push("down");
+		};
+		const hookFailed = new Error("beforeStop failed");
+		ctx.config.hooks = {
+			beforeStop: async () => {
+				throw hookFailed;
+			},
+		};
+		ctx.apps.web.devCommand = "sleep 60";
+		const pids = await lifecycle.start({ verbose: false, wait: false });
+		const app = pids?.web;
+		if (app === undefined) throw new Error("web did not start");
+
+		await expect(lifecycle.stop({ verbose: false })).rejects.toBe(hookFailed);
+
+		expect(() => process.kill(app, 0)).toThrow();
+		expect(events.slice(-4)).toEqual([
+			"release apps",
+			"artifact",
+			"down",
+			"retire",
+		]);
+		// A stop that failed gives no block back.
+		expect(events).not.toContain("release claim");
+	});
+	it("says once that the watchdog did not start, where the run's service changes are said", async () => {
+		// Swallowed, a missing runner left nothing sweeping until a `ls`.
+		const { lifecycle, runClaim, serviceWatch } = fixture();
+		const said: [string, boolean][] = [];
+		serviceWatch.report((message, problem) => said.push([message, problem]));
+		let attempt: Promise<void> = Promise.resolve();
+		runClaim.ensureWatchdog = () => {
+			attempt = Promise.reject(new Error("runner missing"));
+			return attempt;
+		};
+		for (const _ of [1, 2]) {
+			await lifecycle.start({
+				prepare: "containers",
+				startServers: false,
+				verbose: false,
+				wait: false,
+			});
+			// Settles after the lifecycle's own handler, attached first.
+			await attempt.catch(() => {});
+		}
+		expect(said).toEqual([[expect.stringContaining("runner missing"), true]]);
 	});
 	it("stop tears down the containers a start brought up, whatever a later start selected", async () => {
 		const { ctx, events, lifecycle } = fixture();

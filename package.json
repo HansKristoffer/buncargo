@@ -226,7 +226,6 @@
   },
   "dependencies": {
     "@xterm/headless": "^6.0.0",
-    "fast-glob": "^3.3.3",
     "hanzio": "^3.4.0",
     "picocolors": "^1.1.1"
   },

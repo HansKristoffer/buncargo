@@ -7,7 +7,7 @@ store root (what `~/.buncargo/files` holds) containing one repository's store. T
 - `stores/basic`: `.env.local` and `apps/mobile/.env`, plus `.env.machine` with `machine: true`,
   which must never be exported or synced.
 - `stores/mid-write`: the manifest names bytes the data file does not hold yet. Readers treat
-  `.env.local` as absent.
+  `.env.local` as unreadable: neither copied from nor overwritten.
 - `stores/unknown-version`: a manifest with `version: 2`. Readers leave the store alone.
 - `stores/orphan-data`: `data/.env.orphan` has no manifest entry. Readers ignore it.
 

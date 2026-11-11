@@ -17,6 +17,8 @@ export interface ServiceWatchApi {
 	/** Watch these service keys too, from now until {@link stop}. */
 	watch(serviceKeys: readonly string[]): void;
 	report(report: ServiceChangeReport): void;
+	/** Say something else about the run where its service changes are said. */
+	notify: ServiceChangeReport;
 	stop(): void;
 }
 
@@ -116,6 +118,9 @@ export function createServiceWatch(
 		},
 		report(next) {
 			report = next;
+		},
+		notify(message, problem) {
+			report(message, problem);
 		},
 		stop() {
 			stopWatching?.();
