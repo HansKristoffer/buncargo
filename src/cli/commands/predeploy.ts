@@ -4,8 +4,8 @@ import { validateSupplementShapes } from "../../config/validation/config-shapes"
 import { createShapeChecks } from "../../config/validation/shape-checks";
 import { childProcessEnv } from "../../core/child-env";
 import { findMonorepoRoot } from "../../core/ports";
+import { loadPredeployConfig } from "../../loader/config-settings";
 import { migrationsFor } from "../../prisma/migrations-for";
-import { loadPredeployConfig } from "../../typecheck/config-settings";
 import type {
 	AnyDevConfig,
 	MigrationConfig,
@@ -53,10 +53,10 @@ export function predeployEnvironment(
 }
 
 /**
- * Whether and with what predeploy seeds. Never production, never an
- * environment no variable named, only `seedIn` when it is set. The command is
- * `predeploy.seed` from the root, else the dev run's `seed.command`; `false`
- * never seeds.
+ * Whether and with what predeploy seeds. Only when `predeploy.seed` asks,
+ * never production, never an environment no variable named, only `seedIn`
+ * when it is set. The command is `predeploy.seed` from the root, or the dev
+ * run's `seed.command` with `seed: true`.
  */
 function planPredeploySeed(
 	config: PredeployConfig,
@@ -66,6 +66,20 @@ function planPredeploySeed(
 	| { kind: "seed"; command: string; cwd?: string }
 	| { kind: "skip"; reason: string } {
 	const { environment } = deploy;
+	// The dev seeder may create known accounts; a deploy runs it only on purpose.
+	if (config.seed === undefined)
+		return {
+			kind: "skip",
+			reason:
+				"predeploy.seed is not set: not seeding. Set it to a command, or to true for the dev seed.command.",
+		};
+	const fromDev = config.seed === true;
+	const command = config.seed === true ? devSeed?.command : config.seed;
+	if (!command)
+		throw new CliError(
+			"predeploy.seed is true, but the config has no seed.command to run.",
+			["Set seed.command, or give predeploy.seed the command itself."],
+		);
 	if (deploy.production)
 		return { kind: "skip", reason: "production: not seeding." };
 	if (!deploy.named) {
@@ -84,11 +98,7 @@ function planPredeploySeed(
 			kind: "skip",
 			reason: `"${environment}" is not in predeploy.seedIn: not seeding.`,
 		};
-	const nothing = { kind: "skip", reason: "no seed to run." } as const;
-	if (config.seed === false) return nothing;
-	if (config.seed !== undefined) return { kind: "seed", command: config.seed };
-	if (!devSeed?.command) return nothing;
-	return { kind: "seed", command: devSeed.command, cwd: devSeed.cwd };
+	return { kind: "seed", command, cwd: fromDev ? devSeed?.cwd : undefined };
 }
 
 /**
@@ -315,13 +325,13 @@ function resolveHints(name: string, cwd = "."): string[] {
 export const predeployCommand = defineCommand({
 	spec: {
 		name: "predeploy",
-		summary: "Before a deploy: migrate, then seed unless production",
+		summary: "Before a deploy: migrate, then seed when predeploy.seed says so",
 		flags: {},
 		examples: [
 			{
 				command: "bunx buncargo predeploy",
 				description:
-					"Migrate, then seed a named environment outside production (e.g. Railway's preDeployCommand)",
+					"Migrate, then seed a named environment outside production when predeploy.seed is set (e.g. Railway's preDeployCommand)",
 			},
 		],
 	},

@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { isProcessAlive } from "../core/process";
-import { loadTypecheckConfig } from "./config-settings";
+import { loadTypecheckConfig } from "../loader/config-settings";
 import { runWorkspaceTypecheck } from "./typecheck";
 
 /**

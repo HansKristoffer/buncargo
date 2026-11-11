@@ -118,10 +118,7 @@ export async function loadDevEnv<TConfig extends DevConfigLike = AnyDevConfig>(
 		!options?.reload && !options?.fresh && isConfigCacheable(configPath);
 	if (shared) {
 		const cached = cachedFor(identity, variables);
-		if (cached) {
-			setCachedDevEnv(cached, configPath);
-			return cached as DevEnvironmentFor<TConfig>;
-		}
+		if (cached) return cached as DevEnvironmentFor<TConfig>;
 		// A load of this identity already under way builds the one environment
 		// both callers get: two would each claim a session of their own.
 		const pending = inflight.get(identity);
@@ -186,10 +183,7 @@ async function importAndBuild(
 	// resolves the environment; subsequent consumers reuse that exact object.
 	if (!options?.reload && !options?.fresh && isConfigCacheable(configPath)) {
 		const cached = cachedFor(identity, variables);
-		if (cached) {
-			setCachedDevEnv(cached, configPath);
-			return cached;
-		}
+		if (cached) return cached;
 	}
 
 	const loaded: unknown = mod.default;
@@ -215,7 +209,6 @@ async function importAndBuild(
 		{ containerRuntime: requested, root },
 	);
 	builtUnder.set(env, variables);
-	if (isCurrentRevision)
-		setCachedDevEnv(env, configPath, options?.fresh ? undefined : identity);
+	if (isCurrentRevision && !options?.fresh) setCachedDevEnv(env, identity);
 	return env;
 }

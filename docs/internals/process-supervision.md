@@ -2,7 +2,7 @@
 
 `src/core/process/` is command execution (`exec.ts`), the dev-server spawner (`dev-servers.ts`:
 waves, ownership, captures, restarts) and the single-app spawn it drives (`app-process.ts`: shell,
-prefixed output, the `script` tee, prebuild), port ownership and kill classification
+prefixed output, the attached app's terminal, prebuild), port ownership and kill classification
 (`port-owner.ts`), PID lifecycle (`lifecycle.ts`) and production builds (`build.ts`), re-exported
 from `process/index.ts`.
 
@@ -32,8 +32,7 @@ URL. For the same reason it joins rows an app wrapped itself (Ink at a narrow pa
 onto a line ending in a URL (`joinWrappedUrls`), holds a trailing `\r` for its `\n`, never takes
 an incomplete `publicUrl` (`looksLikeCompleteUrl`: a dotted host with a TLD, not stopping inside
 `trycloudflare.com`), and lets a URL ending the newest line wait for the row that may continue
-it. The attached app is teed through `script` when stdin is a TTY, else through pipes. Piped
-bytes become lines only through `line-splitter.ts`: a streaming decoder (a character cut at a chunk
+it. Piped bytes become lines only through `line-splitter.ts`: a streaming decoder (a character cut at a chunk
 boundary used to become U+FFFD) and a 64 KiB cap per line.
 `AppSupervision.retire` replaces a child for `restartOn` without its exit counting as a crash.
 

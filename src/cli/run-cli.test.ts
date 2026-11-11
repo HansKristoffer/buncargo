@@ -165,7 +165,6 @@ function createStubEnv(
 		projectName: "stub-cli",
 		projectPrefix: "stub",
 		workspaceId: "0123456789abcdef",
-		prepareStart: () => {},
 		prepareStartAsync: async () => {},
 		resolvePrimaryApp: (selected?: readonly string[]) =>
 			(selected ?? Object.keys(apps))[0],
@@ -180,7 +179,6 @@ function createStubEnv(
 		stop: async () => {},
 		isRunning: async () => true,
 		startServers: async () => ({}),
-		stopProcess: () => {},
 		waitForServers: async (waitOptions?: { onlyApps?: string[] }) => {
 			await options.waitForServers?.(waitOptions);
 		},

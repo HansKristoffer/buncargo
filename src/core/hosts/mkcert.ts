@@ -24,16 +24,8 @@ export const MKCERT_RELEASE_BASE =
 
 const RENEW_BEFORE_MS = 1000 * 60 * 60 * 24 * 30;
 
-function mkcertFileName(version: string): string {
-	return process.platform === "win32"
-		? `mkcert.${version}.exe`
-		: `mkcert.${version}`;
-}
-
 export function cachedMkcertBinPath(version = mkcertVersion()): string {
-	return toolCachePath(
-		`${mkcertFileName(version)}.${process.platform}-${process.arch}`,
-	);
+	return toolCachePath(`mkcert.${version}.${process.platform}-${process.arch}`);
 }
 
 function mkcertResolution() {
@@ -133,10 +125,6 @@ export function caRootCandidates(
 		process.platform,
 		{
 			darwin: () => [join(home, "Library", "Application Support", "mkcert")],
-			win32: () => {
-				const localAppData = env.LOCALAPPDATA?.trim();
-				return localAppData ? [join(localAppData, "mkcert")] : [];
-			},
 		},
 		() => {
 			const xdg = env.XDG_DATA_HOME?.trim();

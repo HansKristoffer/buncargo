@@ -5,6 +5,7 @@ import type {
 	DockerComposeHealthcheckRaw,
 	DockerPresetName,
 	HealthCheckFn,
+	ResolvedComposeService,
 } from "../../types";
 
 const DEFAULT_HEALTHCHECK_SETTINGS = {
@@ -56,18 +57,27 @@ function resolveSecondaryInternalPort(
 	});
 }
 
+/**
+ * A service's `ports` entries, published on its `bind` address. Compose would
+ * otherwise publish on every interface, where another machine reaches a
+ * database with its default credentials.
+ */
 export function getDefaultPortBindings(
 	serviceKey: string,
-	config: { port?: number; secondaryPort?: number },
+	config: ResolvedComposeService,
 	preset?: DockerPresetName,
 ): string[] {
-	if (config.port === undefined) return [];
+	if (config.kind !== "container") return [];
 	const envName = getPortEnvName(serviceKey);
 	const bindings: string[] = [];
+	// An IPv6 address is bracketed, so its colons do not split the entry.
+	const host = config.bind.includes(":") ? `[${config.bind}]` : config.bind;
 
 	const defaultInternalPort = resolveInternalPort(preset, config.port);
 
-	bindings.push(`\${${envName}:-${config.port}}:${defaultInternalPort}`);
+	bindings.push(
+		`${host}:\${${envName}:-${config.port}}:${defaultInternalPort}`,
+	);
 
 	if (config.secondaryPort !== undefined) {
 		const secondaryEnv = getPortEnvName(`${serviceKey}Secondary`);
@@ -76,7 +86,7 @@ export function getDefaultPortBindings(
 			config.secondaryPort,
 		);
 		bindings.push(
-			`\${${secondaryEnv}:-${config.secondaryPort}}:${secondaryInternal}`,
+			`${host}:\${${secondaryEnv}:-${config.secondaryPort}}:${secondaryInternal}`,
 		);
 	}
 

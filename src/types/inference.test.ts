@@ -118,10 +118,10 @@ type _HostOnlyOptional = Expect<
 // `getEnvVar` is the surface that keeps the overlay's declared type, so a
 // `vite.config.ts` reading a port gets a `number` rather than a string.
 function _probeGetEnvVar() {
-	const vitePort = getEnvVar(config, "VITE_PORT", { log: false });
+	const vitePort = getEnvVar(config, "VITE_PORT");
 	type _OverlayTypeSurvives = Expect<Equal<typeof vitePort, number>>;
 
-	const dbUrl = getEnvVar(config, "DATABASE_URL", { log: false });
+	const dbUrl = getEnvVar(config, "DATABASE_URL");
 	type _ComputedNameStaysWide = Expect<
 		Equal<typeof dbUrl, string | number | undefined>
 	>;
@@ -251,7 +251,7 @@ describe("config inference guardrails", () => {
 	});
 
 	it("keeps the overlay value typed through getEnvVar", () => {
-		expect(getEnvVar(config, "VITE_PORT", { log: false })).toBeNumber();
+		expect(getEnvVar(config, "VITE_PORT")).toBeNumber();
 	});
 
 	it("rejects a partial type-argument list on defineDevConfig", () => {

@@ -46,11 +46,11 @@ describe("buildComposeModel", () => {
 			"clickhouse/clickhouse-server:24-alpine",
 		);
 		expect(compose.services.postgres?.ports).toEqual([
-			"$" + "{POSTGRES_PORT:-5432}:5432",
+			"127.0.0.1:$" + "{POSTGRES_PORT:-5432}:5432",
 		]);
 		expect(compose.services.clickhouse?.ports).toEqual([
-			"$" + "{CLICKHOUSE_PORT:-8123}:8123",
-			"$" + "{CLICKHOUSESECONDARY_PORT:-9000}:9000",
+			"127.0.0.1:$" + "{CLICKHOUSE_PORT:-8123}:8123",
+			"127.0.0.1:$" + "{CLICKHOUSESECONDARY_PORT:-9000}:9000",
 		]);
 		expect(compose.volumes).toEqual({
 			postgres_data: {},
@@ -134,7 +134,7 @@ describe("buildComposeModel", () => {
 			"rabbitmq:3-management-alpine",
 		);
 		expect(compose.services.nats?.ports).toEqual([
-			"$" + "{NATS_PORT:-4222}:4222",
+			"127.0.0.1:$" + "{NATS_PORT:-4222}:4222",
 		]);
 	});
 
@@ -148,8 +148,8 @@ describe("buildComposeModel", () => {
 
 		expect(compose.services.mailpit?.image).toBe("axllent/mailpit:v1.33.1");
 		expect(compose.services.mailpit?.ports).toEqual([
-			"$" + "{MAILPIT_PORT:-8025}:8025",
-			"$" + "{MAILPITSECONDARY_PORT:-1025}:1025",
+			"127.0.0.1:$" + "{MAILPIT_PORT:-8025}:8025",
+			"127.0.0.1:$" + "{MAILPITSECONDARY_PORT:-1025}:1025",
 		]);
 		expect(compose.services.typesense?.image).toBe("typesense/typesense:29.0");
 		// Neither preset may emit an in-container probe by default: mailpit opts
@@ -187,7 +187,7 @@ describe("buildComposeModel", () => {
 		const compose = buildComposeModel(services);
 		expect(compose.services.postgres).toEqual({
 			image: "postgres:16-alpine",
-			ports: ["$" + "{POSTGRES_PORT:-5432}:5432"],
+			ports: ["127.0.0.1:$" + "{POSTGRES_PORT:-5432}:5432"],
 		});
 		expect(compose.volumes).toBeUndefined();
 	});

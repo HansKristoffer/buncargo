@@ -19,11 +19,6 @@ const MACOS_URL: Partial<Record<NodeJS.Architecture, string>> = {
 	x64: "cloudflared-darwin-amd64.tgz",
 };
 
-const WINDOWS_URL: Partial<Record<NodeJS.Architecture, string>> = {
-	x64: "cloudflared-windows-amd64.exe",
-	ia32: "cloudflared-windows-386.exe",
-};
-
 /**
  * sha256 of each asset for the default version, from the digests GitHub
  * records on the 2026.3.0 release assets. The release notes' list hashes the
@@ -42,10 +37,6 @@ const PINNED_SHA256: Record<string, string> = {
 		"2aae4f69b0fc1c671b8353b4f594cbd902cd1e360c8eed2b8cad4602cb1546fb",
 	"2026.3.0/cloudflared-darwin-amd64.tgz":
 		"0f30140c4a5e213d22f951ef4c964cac5fb6a5f061ba6eba5ea932999f7c0394",
-	"2026.3.0/cloudflared-windows-amd64.exe":
-		"59b12880b24af581cf5b1013db601c7d843b9b097e9c78aa5957c7f39f741885",
-	"2026.3.0/cloudflared-windows-386.exe":
-		"e00a9e9fed12f8a8f5703539c4662750dd5472d35c16dcbbdc5869f3fe5e238b",
 };
 
 function resolveBase(version: string): string {
@@ -65,7 +56,6 @@ export async function installCloudflared(
 		{
 			linux: () => LINUX_URL,
 			darwin: () => MACOS_URL,
-			win32: () => WINDOWS_URL,
 		},
 		() => undefined,
 	);

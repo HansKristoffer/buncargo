@@ -58,7 +58,26 @@ describe("preset Compose models", () => {
 	it("binds a hyphenated key's port to a variable Compose can read", () => {
 		const { model, env } = render({ "my-db": service.postgres() });
 		const [binding] = model.services["my-db"]?.ports ?? [];
-		expect(interpolate(String(binding), env)).toBe("5442:5432");
+		expect(interpolate(String(binding), env)).toBe("127.0.0.1:5442:5432");
+	});
+
+	it("publishes ports on loopback only, unless the service sets bind", () => {
+		const { model, env } = render({
+			db: service.postgres(),
+			analytics: service.clickhouse({ bind: "0.0.0.0" }),
+			queue: { port: 5672, bind: "::", docker: { image: "rabbitmq:3" } },
+		});
+		const published = (key: string) =>
+			(model.services[key]?.ports ?? []).map((spec) =>
+				interpolate(String(spec), env),
+			);
+
+		expect(published("db")).toEqual(["127.0.0.1:5442:5432"]);
+		expect(published("analytics")).toEqual([
+			"0.0.0.0:8133:8123",
+			"0.0.0.0:9010:9000",
+		]);
+		expect(published("queue")).toEqual(["[::]:5682:5672"]);
 	});
 
 	it("hands Compose a typed password with its $ escaped, so it arrives as typed", () => {
@@ -84,7 +103,7 @@ describe("minio and job helpers", () => {
 	it("serves MinIO on its own port 9000 whatever host port the config picks", () => {
 		const { model, env } = render({ storage: service.minio({ port: 9100 }) });
 		const [binding] = model.services.storage?.ports ?? [];
-		expect(interpolate(String(binding), env)).toBe("9110:9000");
+		expect(interpolate(String(binding), env)).toBe("127.0.0.1:9110:9000");
 		expect(env.MINIO_URL).toBe("http://localhost:9110");
 	});
 

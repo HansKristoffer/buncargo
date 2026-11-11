@@ -22,7 +22,6 @@ import {
 	RunInterrupted,
 } from "./app-lifecycle";
 import {
-	ptyTeeArgv,
 	resolveStartCommand,
 	runPrebuild,
 	spawnManagedApp,
@@ -501,16 +500,6 @@ export async function startDevServers(
 		for (const [name, config] of toStart) {
 			const attached = name === attachedName;
 			const onText = scannerFor(name, config);
-			const unreadCaptures =
-				attached &&
-				onText !== undefined &&
-				output.terminals === "pipe" &&
-				process.stdin.isTTY &&
-				!ptyTeeArgv("");
-			if (unreadCaptures) {
-				const text = `${name}'s captures are not read: no \`script\` command to run it under a terminal.`;
-				output.announce(name, text, { raw: formatWarn(text), level: "warn" });
-			}
 			const spawnOnce = () =>
 				spawnManagedApp(name, config, root, appEnv(name), {
 					attached,

@@ -4,8 +4,8 @@ import { getErrorMessage, typedSwitch } from "hanzio";
 import { buncargoCli } from "../../../core/cli-entry";
 import { findMonorepoRoot } from "../../../core/ports";
 import { isGitHubActions } from "../../../core/runtime-flags";
+import { loadCheckConfig } from "../../../loader/config-settings";
 import { changedFilesSince } from "../../../typecheck/changed";
-import { loadCheckConfig } from "../../../typecheck/config-settings";
 import type { CheckConfig } from "../../../types";
 import {
 	BASE_EXITS,

@@ -303,6 +303,12 @@ export interface ServiceConfigBase<
 	exposeProtocol?: "http" | "tcp";
 	/** Optional secondary port (e.g., ClickHouse native protocol) */
 	secondaryPort?: number;
+	/**
+	 * Host address its ports are published on. Default: `"127.0.0.1"`, this
+	 * machine only. `"0.0.0.0"` lets other machines reach it, e.g. a database
+	 * opened from another computer.
+	 */
+	bind?: string;
 	/** Health check: built-in name, custom function, or disabled (false) */
 	healthCheck?: BuiltInHealthCheck | HealthCheckFn | false;
 	/** Timeout for service health polling in milliseconds. Default: 30000 */

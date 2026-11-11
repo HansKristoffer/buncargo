@@ -5,7 +5,6 @@ import { labelledCaptures } from "../core/captured-values";
 import { waitForDevServers, waitForServer } from "../core/network";
 import { findMonorepoRoot } from "../core/ports";
 import { resolvePrimaryApp } from "../core/primary-app";
-import { stopProcess } from "../core/process";
 import { createPrismaRunner } from "../prisma";
 import type {
 	AppConfig,
@@ -140,7 +139,6 @@ function createEnvironment(
 		workspaceId: ctx.workspaceId,
 		services: ctx.services,
 		apps: ctx.apps,
-		prepareStart: ctx.prepareStart,
 		planPortOffset: ctx.planPortOffset,
 		prepareStartAsync: ctx.prepareStartAsync,
 		get portOffset() {
@@ -214,7 +212,6 @@ function createEnvironment(
 					(pids) => Object.keys(pids).length > 0,
 				),
 			),
-		stopProcess,
 		waitForServers: (options = {}) =>
 			withLossNotice(missingContainers, () =>
 				servers.waitForServersReady(options),

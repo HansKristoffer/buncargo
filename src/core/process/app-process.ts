@@ -10,14 +10,15 @@ import { childProcessEnv } from "../child-env";
 import { registerAbortCleanup } from "../deadline";
 import { shellQuote } from "../shell-quote";
 import { recordStartupMetric } from "../startup-metrics";
+import { createLineSplitter } from "./line-splitter";
 import { type AppChild, PtyApp } from "./pty-app";
-import type { RunOutput } from "./run-output";
+import { defaultScreenSize, type RunOutput } from "./run-output";
 import { terminateOwnedProcess } from "./terminate";
 
 /**
  * Spawning one app process: the shell it runs under, where its output goes
- * (a pseudo-terminal of its own in the TUI, pipes otherwise), the `script`
- * tee that lets captures read an attached app, and its prebuild.
+ * (a pseudo-terminal of its own in the TUI and for the attached app, pipes
+ * otherwise), and its prebuild.
  * `dev-servers.ts` orchestrates many of these.
  */
 
@@ -129,59 +130,77 @@ export function spawnManagedApp(
 		return child;
 	}
 
-	// The attached app keeps the real terminal (one without a terminal
-	// took the pseudo-terminal path above). Capturing from it needs its output
-	// too, so it runs under `script`, whose copy of the output passes through
-	// here unchanged; TUIs like Shopify CLI see a TTY. Captured also when
-	// logging, so the attached app has a log file too.
-	const capturing =
-		options.attached &&
-		(options.onText !== undefined || output.logs !== undefined);
-	const tee = capturing ? ptyTeeArgv(command) : null;
-	if (tee) recordStartupMetric("subprocesses");
-	const child = tee
-		? spawn(tee[0], tee.slice(1), {
-				...base,
-				stdio: ["inherit", "pipe", "inherit"],
-			})
-		: spawnAppCommand(command, {
-				...base,
-				stdio: options.attached ? "inherit" : ["ignore", "pipe", "pipe"],
-			});
+	if (options.attached) return attachToTerminal(name, command, base, options);
 
-	if (!options.attached) {
-		output.pipe(name, child.stdout, options.onText);
-		output.pipe(name, child.stderr, options.onText);
-	} else if (tee) {
-		// Passed through unchanged. The feed gets a copy for the log, marked as
-		// already on the terminal.
-		child.stdout?.on("data", (chunk: Buffer) => process.stdout.write(chunk));
-		output.pipe(name, child.stdout, options.onText, { echoed: true });
-	}
-
-	if (!options.waitForExit && child.unref) {
-		child.unref();
-	}
-
+	const child = spawnAppCommand(command, {
+		...base,
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	output.pipe(name, child.stdout, options.onText);
+	output.pipe(name, child.stderr, options.onText);
+	if (!options.waitForExit) child.unref();
 	return child;
 }
 
 /**
- * Argv running `command` under a pseudo-terminal whose output goes to stdout,
- * or null when this platform has no way to (checked with any command).
- *
- * `script` is on every macOS and on util-linux; the two disagree on syntax.
- * Without it the attached app keeps its terminal and its captures are not
- * seen, which the caller reports.
+ * Stream mode's attached app, on a real terminal: a pseudo-terminal of its
+ * own whose output passes through to ours unchanged, with our keys and size
+ * passed to it, so TUIs like Shopify CLI see a TTY. Its lines feed the log and
+ * captures, marked as already on the terminal. It leads its own session, so
+ * stopping its process group reaches all it spawned (under `script` it reached
+ * only `script`).
  */
-export function ptyTeeArgv(command: string): [string, ...string[]] | null {
-	if (process.platform === "darwin") {
-		return ["script", "-q", "/dev/null", SHELL, "-c", command];
-	}
-	if (process.platform === "linux" && existsSync("/usr/bin/script")) {
-		return ["script", "-q", "-f", "-e", "-c", command, "/dev/null"];
-	}
-	return null;
+function attachToTerminal(
+	name: string,
+	command: string,
+	base: ReturnType<typeof appSpawnOptions>,
+	options: Parameters<typeof spawnManagedApp>[4],
+) {
+	const { stdin, stdout } = process;
+	const lines = createLineSplitter({
+		onText: options.onText,
+		onLine: (line) => options.output.line(name, line, { echoed: true }),
+	});
+	const child = new PtyApp([SHELL, "-c", command], {
+		cwd: base.cwd,
+		env: base.env,
+		...terminalSize(),
+		onData: (data) => {
+			stdout.write(data);
+			lines.push(data);
+		},
+	});
+
+	// Raw, like the app's own terminal: Ctrl-C reaches the app as a key, and
+	// its exit ends the run.
+	const forwardKeys = (data: Uint8Array) => child.write(data);
+	const forwardSize = () => {
+		const { cols, rows } = terminalSize();
+		child.resize(cols, rows);
+	};
+	const restoreTerminal = () => stdin.setRawMode?.(false);
+	stdin.setRawMode?.(true);
+	stdin.on("data", forwardKeys);
+	stdin.resume();
+	stdout.on("resize", forwardSize);
+	process.once("exit", restoreTerminal);
+	child.once("exit", () => {
+		lines.end();
+		stdin.off("data", forwardKeys);
+		stdin.pause();
+		restoreTerminal();
+		process.off("exit", restoreTerminal);
+		stdout.off("resize", forwardSize);
+	});
+
+	if (!options.waitForExit) child.unref();
+	return child;
+}
+
+/** Our terminal's size, or a default when stdout is piped. */
+function terminalSize() {
+	const { columns, rows } = process.stdout;
+	return columns && rows ? { cols: columns, rows } : defaultScreenSize();
 }
 
 /**

@@ -64,7 +64,12 @@ it("starts an HTTP app without containers or database preparation", async () => 
 		await env.stop();
 		await expect(fetch(env.urls.marketing)).rejects.toThrow();
 	} finally {
-		for (const pid of Object.values(pids ?? {})) await env.stopProcess(pid);
+		for (const pid of Object.values(pids ?? {}))
+			try {
+				process.kill(pid, "SIGTERM");
+			} catch {
+				// `stop()` already ended it.
+			}
 	}
 });
 
