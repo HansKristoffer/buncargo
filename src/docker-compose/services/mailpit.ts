@@ -42,7 +42,7 @@ export const mailpitDockerService = defineDockerService<
 	build: ({ serviceKey, config }) => {
 		return {
 			service: {
-				image: "axllent/mailpit",
+				image: "axllent/mailpit:v1.33.1",
 				restart: "unless-stopped",
 				ports: getDefaultPortBindings(serviceKey, config, "mailpit"),
 				volumes: [`${serviceKey}_data:/data`],

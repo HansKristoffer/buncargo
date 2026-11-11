@@ -4,6 +4,7 @@ import { buildComposeModel } from "../docker-compose";
 import {
 	configHashFor,
 	interpolate,
+	SERVICE_HASH_LABEL,
 	serviceFingerprint,
 	serviceHashEnv,
 } from "../docker-compose/interpolate";
@@ -14,7 +15,6 @@ import type {
 } from "../types";
 import {
 	buildAppleRunPlan,
-	CONFIG_HASH_LABEL,
 	containerNameFor,
 	orderServices,
 	projectVolumeNames,
@@ -267,7 +267,7 @@ describe("buildAppleRunPlan", () => {
 		expect(labels).toContain("buncargo.project=gey-main");
 		expect(labels).toContain("buncargo.service=postgres");
 		expect(labels).toContain("buncargo.root=/repo");
-		expect(labels).toContain(`${CONFIG_HASH_LABEL}=${service.configHash}`);
+		expect(labels).toContain(`${SERVICE_HASH_LABEL}=${service.configHash}`);
 	});
 
 	it("labels the service fingerprint reuse compares, whether or not the caller passed it", () => {
@@ -600,6 +600,25 @@ describe("buildAppleRunPlan", () => {
 				model: { services: { web: { build: "." } } },
 			}),
 		).toThrow(/no image/);
+	});
+
+	it("refuses interpolation it cannot translate rather than passing it on as text", () => {
+		const planFor = (value: string) =>
+			buildAppleRunPlan({
+				projectName: IDENTITY.projectName,
+				root: IDENTITY.root,
+				env: { MODE: "debug" },
+				model: {
+					services: { web: { image: "nginx:1", environment: { FLAG: value } } },
+				},
+			});
+		// biome-ignore-start lint/suspicious/noTemplateCurlyInString: the literal `${...}` is the input under test.
+		expect(() => planFor("${MODE:+--verbose}")).toThrow(
+			/"web" uses "\$\{MODE:\+--verbose\}", which Apple container cannot interpolate/,
+		);
+		expect(() => planFor("${PORT:-${FALLBACK}}")).toThrow(/cannot interpolate/);
+		expect(() => planFor("${MODE:-x} costs $$5")).not.toThrow();
+		// biome-ignore-end lint/suspicious/noTemplateCurlyInString: end
 	});
 });
 

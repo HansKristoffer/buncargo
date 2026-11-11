@@ -161,11 +161,13 @@ command prefix.
   `<project>-<service>` so exec, reuse and teardown agree on one name; honoring a user-set value
   would mean threading a second name through all three, for a key buncargo's own presets never
   emit.
-- Each container carries a `buncargo.config-hash` label, so `up` can tell "mine and still matching"
+- Each container carries a `buncargo.service-hash` label, so `up` can tell "mine and still matching"
   (start it) from "config changed underneath it" (recreate) rather than throwing away a warm data
-  volume on every run. Its value is the service fingerprint, computed by the plan and written to
-  `buncargo.service-hash` too: a second hash that disagreed with the one `ensureServicesRunning`
-  compares recreated containers nothing had changed.
+  volume on every run. It is the fingerprint `ensureServicesRunning` compares, computed by the plan:
+  a second hash that disagreed with it recreated containers nothing had changed. (Older containers
+  also carry an equal `buncargo.config-hash`, which nothing reads.)
+- Apple has no Compose to hand interpolation to, so the plan refuses a value whose `$` forms
+  `interpolate` does not understand (`findUninterpolable`) rather than passing it on as text.
 - New named volumes are created at 256G. Apple formats each as a sparse ext4 image, and formatting
   its 512G default took about a second against ~0.4s, paid by every new checkout's database. The
   CLI cannot grow one later.

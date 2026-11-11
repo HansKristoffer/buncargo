@@ -9,6 +9,7 @@
 import { spawnSync } from "node:child_process";
 import { execAsync } from "../core/process/exec";
 import { recordStartupMetric } from "../core/startup-metrics";
+import { lookupOnPath } from "../core/tool-binary";
 
 export const DEFAULT_DOCKER_BINARY = "docker";
 
@@ -20,17 +21,30 @@ export function manualComposeDownCommand(projectName: string): string {
 	return `${DEFAULT_DOCKER_BINARY} compose -p ${projectName} down`;
 }
 
+/**
+ * How one `docker` invocation ended: it exited 0, exited with another code,
+ * could not start because there is no such binary, or was killed at its
+ * timeout. A missing binary is not a daemon that refused, and the two paths
+ * that run `docker` must say so the same way.
+ */
+export type DockerRunStatus = "ok" | "exit" | "notFound" | "timedOut";
+
 export interface DockerRunResult {
+	status: DockerRunStatus;
+	/** `status === "ok"`, kept for the many callers that only ask that. */
 	ok: boolean;
 	exitCode: number;
 	stdout: string;
 	stderr: string;
-	/**
-	 * Node's code when the process could not run or was cut off: `ENOENT` for
-	 * a binary that is not there, `ETIMEDOUT` for one killed at its timeout.
-	 * `runDockerAsync` sets only `ETIMEDOUT`.
-	 */
-	spawnErrorCode?: string;
+}
+
+function runResult(
+	status: DockerRunStatus,
+	exitCode: number,
+	stdout: string,
+	stderr: string,
+): DockerRunResult {
+	return { status, ok: status === "ok", exitCode, stdout, stderr };
 }
 
 export interface DockerRunOptions {
@@ -68,26 +82,23 @@ export function runDocker(
 
 	if (result.error) {
 		const { error } = result;
-		const code =
-			"code" in error && typeof error.code === "string"
-				? error.code
-				: undefined;
-		return {
-			ok: false,
-			exitCode: 1,
-			stdout: "",
-			stderr: result.error.message,
-			...(code ? { spawnErrorCode: code } : {}),
-		};
+		const code = "code" in error ? error.code : undefined;
+		const status: DockerRunStatus =
+			code === "ENOENT"
+				? "notFound"
+				: code === "ETIMEDOUT"
+					? "timedOut"
+					: "exit";
+		return runResult(status, 1, "", error.message);
 	}
 
 	const exitCode = result.status ?? 1;
-	return {
-		ok: exitCode === 0,
+	return runResult(
+		exitCode === 0 ? "ok" : "exit",
 		exitCode,
-		stdout: result.stdout ?? "",
-		stderr: result.stderr ?? "",
-	};
+		result.stdout ?? "",
+		result.stderr ?? "",
+	);
 }
 
 /** Async runtime execution keeps cancellation responsive during pulls and probes. */
@@ -109,10 +120,12 @@ export async function runDockerAsync(
 		},
 	);
 	options.signal?.throwIfAborted();
-	const { timedOut, ...answer } = result;
-	return {
-		...answer,
-		ok: result.exitCode === 0,
-		...(timedOut ? { spawnErrorCode: "ETIMEDOUT" } : {}),
-	};
+	const { exitCode, stdout, stderr } = result;
+	if (result.timedOut) return runResult("timedOut", exitCode, stdout, stderr);
+	if (exitCode === 0) return runResult("ok", exitCode, stdout, stderr);
+	// The async spawn reports a missing binary as a failed exit with Node's
+	// code dropped, so the failure path asks the PATH itself: a scan, no fork.
+	const env = { ...process.env, ...options.env };
+	const missing = lookupOnPath(binary, env) === undefined;
+	return runResult(missing ? "notFound" : "exit", exitCode, stdout, stderr);
 }

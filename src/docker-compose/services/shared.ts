@@ -1,4 +1,5 @@
 import { typedSwitch, typedSwitchGroup } from "hanzio";
+import { envName } from "../../core/ports";
 import type {
 	DockerComposeHealthcheckRaw,
 	DockerPresetName,
@@ -11,8 +12,17 @@ const DEFAULT_HEALTHCHECK_SETTINGS = {
 	retries: 20,
 } as const;
 
+/**
+ * A value typed into a preset option, written so Compose reads it literally:
+ * Compose interpolates every `$` in the file, while the connection URL is
+ * built from the raw value.
+ */
+export function composeLiteral(value: string): string {
+	return value.replaceAll("$", () => "$$");
+}
+
 export function getPortEnvName(portKey: string): string {
-	return `${portKey.toUpperCase()}_PORT`;
+	return `${envName(portKey)}_PORT`;
 }
 
 function resolveInternalPort(

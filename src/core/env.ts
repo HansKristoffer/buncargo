@@ -9,7 +9,13 @@ import type {
 	ServiceConfig,
 	ServiceEnvValueSource,
 } from "../types";
-import { type PortMap, toPortMap, toUrlMap, type UrlMap } from "./ports";
+import {
+	envName,
+	type PortMap,
+	toPortMap,
+	toUrlMap,
+	type UrlMap,
+} from "./ports";
 import { resolveServiceEnvVarSources } from "./service-presets";
 
 export type SharedEnvValues = EnvValues;
@@ -62,22 +68,22 @@ export function buildSharedEnvValues<
 	};
 
 	for (const [name, port] of Object.entries(toPortMap(ports))) {
-		sharedEnv[`${name.toUpperCase()}_PORT`] = port;
+		sharedEnv[`${envName(name)}_PORT`] = port;
 	}
 
 	for (const [name, url] of Object.entries(toUrlMap(urls))) {
-		sharedEnv[`${name.toUpperCase()}_URL`] = url;
+		sharedEnv[`${envName(name)}_URL`] = url;
 	}
 
 	// Emitted alongside `<NAME>_URL` so a process handed a named HTTPS URL it
 	// cannot verify still has the loopback address to fall back to.
 	for (const [name, url] of Object.entries(loopbackUrls ?? {})) {
-		sharedEnv[`${name.toUpperCase()}_LOOPBACK_URL`] = url;
+		sharedEnv[`${envName(name)}_LOOPBACK_URL`] = url;
 	}
 
 	for (const [name, url] of Object.entries(publicUrls)) {
 		if (url !== undefined) {
-			sharedEnv[`${name.toUpperCase()}_PUBLIC_URL`] = url;
+			sharedEnv[`${envName(name)}_PUBLIC_URL`] = url;
 		}
 	}
 

@@ -452,6 +452,7 @@ Both backends use `dev.config.ts`, the generated Compose model, inspection comma
 - Any other compose key that cannot be translated is listed in a warning rather than silently ignored.
 - **No DNS between containers.** Every Apple container joins one builtin `default` network (`192.168.64.0/24`), so containers can already reach each other by IP. Resolving each other by *name* needs `container system dns create`, which must run as an administrator; buncargo keeps a single deliberate `sudo` seam for the hosts daemon and does not add a second one. Note also that a container's hostname is `<project>-<service>` (for example `myapp-main-postgres`), not the compose service name. Apps on the host are unaffected - they reach services on `localhost:<port>` either way, which is how buncargo wires them already.
 - Bind-mounting a host directory into an image that `chown`s it fails on virtiofs. The built-in presets all use named volumes, which are unaffected.
+- Interpolation is translated for `${VAR}`, `${VAR:-default}`, `${VAR-default}`, `${VAR:?error}` and `$$`. A service using any other form (`${VAR:+x}`, a default that holds another `${...}`) fails to start on Apple, naming the value.
 - New named volumes are created with a 256 GB size limit (sparse, so they take only the space used). Apple cannot grow a volume afterwards. Volumes created before this limit keep their size.
 - Published ports listen on IPv4 only. Clients that connect to `localhost` fall back from `::1` to `127.0.0.1` (Bun, Node and Python all do).
 - A container name longer than 63 characters, the most Apple accepts, is shortened and ends in a hash of the full name.
@@ -1370,7 +1371,7 @@ credentials out of browser and Expo public environment mappings.
 | --- | --- | --- |
 | `COMPOSE_PROJECT_NAME` | Compose / shared env | Isolated project name |
 | `NODE_ENV` | Shared env | `development` unless production build |
-| `<NAME>_PORT` | Shared env | Assigned port for each port-bearing service/app |
+| `<NAME>_PORT` | Shared env | Assigned port for each port-bearing service/app. `<NAME>` is the key upper-cased with `-` as `_`: `my-db` is `MY_DB_PORT` |
 | `<NAME>_URL` | Shared env | Local URL. Named HTTPS when hosts are active (`https://api.myapp.localhost`, or `https://<machine>.ts.net:<port>` with `BUNCARGO_HOSTS=tailscale`) |
 | `<NAME>_LOOPBACK_URL` | Shared env | Always `http://localhost:<port>`, never rewritten by named hosts |
 | `<NAME>_PUBLIC_URL` | Shared env | Tunnel URL while a tunnel is active |

@@ -1,4 +1,31 @@
+import { envName } from "../../core/ports";
 import { SECRETS_FIELDS, type ShapeChecks } from "./shape-checks";
+
+/**
+ * Two keys that spell one env name would write each other's `<NAME>_PORT` and
+ * `<NAME>_URL`: `my-db` and `my_db` are both `MY_DB`. A key used twice as is
+ * is the namespace check's to report, so only differing keys count here.
+ */
+function sharedEnvNames(value: Record<string, unknown>): string[] {
+	const owners = new Map<string, { keys: Set<string>; paths: string[] }>();
+	for (const kind of ["services", "apps"] as const) {
+		const entries = value[kind];
+		if (typeof entries !== "object" || entries === null) continue;
+		for (const key of Object.keys(entries)) {
+			const stem = envName(key);
+			const owner = owners.get(stem) ?? { keys: new Set(), paths: [] };
+			owner.keys.add(key);
+			owner.paths.push(`${kind}.${key}`);
+			owners.set(stem, owner);
+		}
+	}
+	return [...owners]
+		.filter(([, owner]) => owner.keys.size > 1)
+		.map(
+			([stem, { paths }]) =>
+				`${paths.join(" and ")} share the env name ${stem} (${stem}_PORT, ${stem}_URL): rename one of them`,
+		);
+}
 
 export function validateEntryShapes(
 	value: Record<string, unknown>,
@@ -14,6 +41,7 @@ export function validateEntryShapes(
 		duration,
 		envValues,
 	} = checks;
+	errors.push(...sharedEnvNames(value));
 	for (const kind of ["services", "apps"] as const) {
 		const entries = value[kind];
 		if (entries === undefined || !record(entries, kind)) continue;

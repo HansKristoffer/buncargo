@@ -128,6 +128,9 @@ export async function startContainers(
  * teardown's own failure is reported.
  */
 function daemonStateFromTeardown(result: DockerRunResult): DockerDaemonState {
+	// A binary that is not there never reached the daemon, so it cannot say
+	// nothing runs: the containers another binary listed may still be up.
+	if (result.status === "notFound") return { state: "up" };
 	const said = dockerDaemonStateFrom(result);
 	return said.state === "failed" ? { state: "up" } : said;
 }
@@ -184,8 +187,7 @@ export async function stopContainers(
 		// capturing it, so only then is the probe worth its fork.
 		// Only a daemon that is really down has nothing running: one that
 		// refuses this user or does not answer may hold every container.
-		const captured =
-			result.stderr.trim() !== "" || result.spawnErrorCode !== undefined;
+		const captured = result.stderr.trim() !== "" || result.status !== "exit";
 		const daemon = captured
 			? daemonStateFromTeardown(result)
 			: dockerDaemonState(binary);

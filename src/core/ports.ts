@@ -8,6 +8,7 @@ import type {
 	ComputedUrls,
 	ServiceConfig,
 } from "../types";
+import { inferDockerPreset } from "./service-presets";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Port / URL Map Boundary
@@ -327,6 +328,16 @@ export function checkoutProjectNames(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
+ * The environment variable stem for a service or app key: `my-db` becomes
+ * `MY_DB`, so `MY_DB_PORT` and `MY_DB_URL`. A hyphen is no part of a name
+ * Compose or a shell can read, and `${MY-DB_PORT:-5432}` reads to Compose as
+ * the variable `MY` with a default. Validation rejects two keys with one stem.
+ */
+export function envName(key: string): string {
+	return key.toUpperCase().replaceAll("-", "_");
+}
+
+/**
  * Service defaults for common services.
  */
 const SERVICE_DEFAULTS: Record<
@@ -410,9 +421,10 @@ export function computeUrls<
 			// Use the provided function
 			urls[name] = config.urlTemplate(ctx);
 		} else {
-			// Try to build URL using service name and config options
+			// The preset decides the scheme, so `db: service.postgres()` gets a
+			// `postgresql://` URL; a service with none is still read by its key.
 			const builtUrl = buildServiceUrl(
-				name,
+				inferDockerPreset(name, config) ?? name,
 				{ port, host },
 				{
 					database: config.database,

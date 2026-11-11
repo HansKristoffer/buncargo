@@ -134,7 +134,7 @@ describe("buildComposeModel", () => {
 			typesense: service.typesense({ apiKey: "xyz" }),
 		});
 
-		expect(compose.services.mailpit?.image).toBe("axllent/mailpit");
+		expect(compose.services.mailpit?.image).toBe("axllent/mailpit:v1.33.1");
 		expect(compose.services.mailpit?.ports).toEqual([
 			"$" + "{MAILPIT_PORT:-8025}:8025",
 			"$" + "{MAILPITSECONDARY_PORT:-1025}:1025",

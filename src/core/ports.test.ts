@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { service } from "../docker-compose/services";
 import type { AppConfig, ServiceConfig } from "../types";
 import { applyHostPlanToUrls } from "./hosts/plan";
 import {
@@ -18,6 +19,23 @@ import {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("computeUrls", () => {
+	it("builds a preset's URL from the preset, whatever its key", () => {
+		const services = {
+			db: service.postgres({ database: "app" }),
+			cache: service.redis(),
+		};
+		const urls = computeUrls(
+			services,
+			undefined,
+			{ db: 5433, cache: 6380 },
+			"",
+		);
+		expect(urls).toEqual({
+			db: "postgresql://postgres:postgres@localhost:5433/app",
+			cache: "redis://localhost:6380",
+		});
+	});
+
 	const localIp = "192.168.1.100";
 
 	it("uses the app host for apps only", () => {

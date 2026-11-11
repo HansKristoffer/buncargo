@@ -21,7 +21,6 @@ export {
 export {
 	type AppleRunPlan,
 	buildAppleRunPlan,
-	CONFIG_HASH_LABEL,
 	type ContainerRunPlan,
 	containerNameFor,
 	orderServices,

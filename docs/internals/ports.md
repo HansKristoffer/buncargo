@@ -15,7 +15,7 @@ per port.
 - It takes the resolved runtime for the same reason the readiness check does: asking Docker about a
   port an Apple container published reports the `container` forwarder process, which classifies as
   a foreign occupant and shifts the offset by `PORT_OFFSET_STEP`. A shifted port changes the
-  generated model, which changes Apple's `buncargo.config-hash`, so every run recreated its own
+  generated model, which changes Apple's `buncargo.service-hash`, so every run recreated its own
   containers and alternated between two ports. A container of ours on the *other* backend must
   still shift: that port really is taken.
 - `buncargo prisma` and `env.prisma` (`ensureDatabase`) start the database outside `start()`, and

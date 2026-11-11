@@ -161,6 +161,11 @@ export type ServiceEnvVarNames<
 		| OverlayEnvVarNames<DeclaredStaticEnv<TServices[K]>>;
 }[keyof TServices];
 
+/** `envName` in `core/ports.ts`, at the type level: `my-db` is `MY_DB`. */
+type EnvNameOf<K extends string> = Uppercase<
+	K extends `${infer Head}-${infer Tail}` ? `${Head}_${EnvNameOf<Tail>}` : K
+>;
+
 export type SharedEnvVarNames<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
@@ -169,12 +174,12 @@ export type SharedEnvVarNames<
 	| "NODE_ENV"
 	| "NODE_EXTRA_CA_CERTS"
 	| "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS"
-	| `${Uppercase<Extract<keyof ComputedPorts<TServices, TApps>, string>>}_PORT`
-	| `${Uppercase<Extract<keyof ComputedUrls<TServices, TApps>, string>>}_URL`
-	| `${Uppercase<
+	| `${EnvNameOf<Extract<keyof ComputedPorts<TServices, TApps>, string>>}_PORT`
+	| `${EnvNameOf<Extract<keyof ComputedUrls<TServices, TApps>, string>>}_URL`
+	| `${EnvNameOf<
 			Extract<keyof ComputedLoopbackUrls<TServices, TApps>, string>
 	  >}_LOOPBACK_URL`
-	| `${Uppercase<Extract<ExposedKeys<TServices, TApps>, string>>}_PUBLIC_URL`;
+	| `${EnvNameOf<Extract<ExposedKeys<TServices, TApps>, string>>}_PUBLIC_URL`;
 
 export type ConfigEnvVarNames<
 	TServices extends Record<string, ServiceConfig>,
