@@ -10,6 +10,7 @@ import type {
 	DockerComposeVolumeRaw,
 	DockerPresetName,
 	ServiceConfig,
+	SuffixedEnvironmentOptions,
 } from "../types";
 import {
 	normalizeComposeLabels,
@@ -156,6 +157,52 @@ function resolveServiceDefinition(
 	};
 }
 
+export interface ComposeModelOptions {
+	/** `"tmpfs"` also declares none of the volumes it no longer mounts. */
+	data?: SuffixedEnvironmentOptions["data"];
+}
+
+/** A short-syntax source that names a host path rather than a volume. */
+function isBindSource(source: string): boolean {
+	return /^[./~$]/.test(source);
+}
+
+/** The service with each mount of a volume not in `kept` moved to tmpfs. */
+function withDataInMemory(
+	service: DockerComposeServiceRaw,
+	kept: ReadonlySet<string>,
+): DockerComposeServiceRaw {
+	// Typed as strings, but a raw service can use Compose's long syntax.
+	const mounts: DockerComposeNode[] = service.volumes ?? [];
+	if (mounts.length === 0) return service;
+	const volumes: DockerComposeNode[] = [];
+	const tmpfs: string[] =
+		service.tmpfs === undefined
+			? []
+			: Array.isArray(service.tmpfs)
+				? service.tmpfs.map(String)
+				: [String(service.tmpfs)];
+	for (const mount of mounts) {
+		if (isRecord(mount)) {
+			const type = mount.type ?? "volume";
+			const source = typeof mount.source === "string" ? mount.source : "";
+			if (type === "volume" && !kept.has(source))
+				tmpfs.push(String(mount.target));
+			else volumes.push(mount);
+			continue;
+		}
+		const [source = "", target] = String(mount).split(":");
+		// No target: an anonymous volume, mounted at the source position.
+		if (target === undefined) tmpfs.push(source);
+		else if (isBindSource(source) || kept.has(source)) volumes.push(mount);
+		else tmpfs.push(target);
+	}
+	const inMemory: DockerComposeServiceRaw = { ...service, tmpfs };
+	if (volumes.length > 0) inMemory.volumes = volumes as string[];
+	else delete inMemory.volumes;
+	return inMemory;
+}
+
 /**
  * @param runtime The *resolved* backend, not the configured selection. A preset
  * needs to know which of the two will actually run it, and `docker.runtime` may
@@ -166,18 +213,26 @@ export function buildComposeModel(
 	docker?: DockerComposeGenerationOptions,
 	identity?: ComposeIdentity,
 	runtime?: ContainerRuntimeName,
+	options: ComposeModelOptions = {},
 ): ComposeDocument {
+	const inMemory = options.data === "tmpfs";
+	// Volumes another project or the user owns: never this stack's to replace.
+	const external = new Set(
+		Object.entries(docker?.volumes ?? {})
+			.filter(([, volume]) => Boolean(volume.external))
+			.map(([name]) => name),
+	);
 	const composeServices: Record<string, DockerComposeServiceRaw> = {};
 	const composeVolumes: Record<string, DockerComposeVolumeRaw> = {};
 
 	for (const [name, serviceConfig] of Object.entries(services)) {
 		// Its stack's own CLI creates it; buncargo only knows its port.
 		if (isExternalService(serviceConfig)) continue;
-		const { serviceName, service, volume } = resolveServiceDefinition(
-			name,
-			serviceConfig,
-			runtime,
-		);
+		const resolved = resolveServiceDefinition(name, serviceConfig, runtime);
+		const { serviceName, volume } = resolved;
+		const service = inMemory
+			? withDataInMemory(resolved.service, external)
+			: resolved.service;
 		if (identity) {
 			const identityLabels = {
 				"buncargo.project": identity.projectName,
@@ -199,13 +254,14 @@ export function buildComposeModel(
 				: { ...normalizeComposeLabels(service.labels), ...identityLabels };
 		}
 		composeServices[serviceName] = service;
-		if (volume) {
+		if (volume && !inMemory) {
 			composeVolumes[volume] = {};
 		}
 	}
 
 	for (const [volumeName, volume] of Object.entries(docker?.volumes ?? {})) {
-		composeVolumes[volumeName] = volume;
+		if (!inMemory || external.has(volumeName))
+			composeVolumes[volumeName] = volume;
 	}
 
 	const document: ComposeDocument = {

@@ -82,6 +82,12 @@ export interface OffsetClaim {
 	root?: string;
 	suffix?: string;
 	/**
+	 * Made by a run that should not outlive it: a suffixed environment, or
+	 * any in CI. Its teardown releases the claim, and when the run was killed
+	 * before that, the sweep frees it once nothing of the run is left.
+	 */
+	throwaway?: true;
+	/**
 	 * When a sweep first found the checkout deleted. Its volumes wait for a
 	 * later pass to find it still gone (see `settleDeletedCheckouts`).
 	 */
@@ -352,12 +358,13 @@ export async function releaseSuffixedClaimsOf(
 /**
  * Why the block at `offset` with `ports` is someone else's, or undefined when
  * it is free: another checkout, or another environment of this one, claims the
- * offset or one of the ports. `key` is the asker's own {@link offsetClaimKey}.
+ * offset or one of the ports. `key` is the asker's own {@link offsetClaimKey},
+ * when `claims` holds it.
  */
 export function offsetClaimConflict(
 	claims: Record<string, OffsetClaim>,
 	block: { offset: number; ports: readonly number[] },
-	key: string,
+	key?: string,
 ): string | undefined {
 	return offsetClaimConflicts(claims, block, key)[0]?.reason;
 }
@@ -370,7 +377,7 @@ export function offsetClaimConflict(
 export function offsetClaimConflicts(
 	claims: Record<string, OffsetClaim>,
 	block: { offset: number; ports: readonly number[] },
-	key: string,
+	key?: string,
 ): { key: string; reason: string }[] {
 	return Object.entries(claims).flatMap(([other, claim]) => {
 		if (other === key) return [];
@@ -438,8 +445,11 @@ export function claimOffset(input: {
 	ports: readonly number[];
 	projectName: string;
 	suffix?: string;
+	/** See {@link OffsetClaim.throwaway}. */
+	throwaway?: boolean;
 }): void {
 	const { root, offset, projectName, suffix } = input;
+	const throwaway = input.throwaway === true;
 	const ports = [...new Set(input.ports)].sort((a, b) => a - b);
 	const key = offsetClaimKey(root, suffix);
 	const claims = readAllOffsetClaims({ strict: true });
@@ -449,7 +459,8 @@ export function claimOffset(input: {
 		current?.offset === offset &&
 		current.projectName === projectName &&
 		current.ports?.join() === ports.join() &&
-		current.reclaimedAt === undefined;
+		current.reclaimedAt === undefined &&
+		(current.throwaway === true) === throwaway;
 	// Written on every claiming run, even when nothing else changed: a reclaim
 	// that read this claim as idle compares it before marking it
 	// (`markOffsetClaimsReclaimed`), so a run that started in between keeps
@@ -463,6 +474,7 @@ export function claimOffset(input: {
 				updatedAt: now,
 				usedAt: now,
 				...(suffix ? { root, suffix } : {}),
+				...(throwaway ? { throwaway: true } : {}),
 			};
 	writeJsonDocumentSync(getOffsetClaimsPath(), { version: VERSION, claims });
 }
