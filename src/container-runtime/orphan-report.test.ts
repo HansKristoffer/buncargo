@@ -32,9 +32,16 @@ function container(project: string): BuncargoContainer {
 	};
 }
 
+/** A claim; a suffixed one belongs to the checkout at `PRESENT`. */
 function claim(projectName: string, suffix?: string): OffsetClaim {
-	return { projectName, ...(suffix ? { suffix } : {}) } as OffsetClaim;
+	return {
+		projectName,
+		...(suffix ? { suffix, root: PRESENT } : {}),
+	} as OffsetClaim;
 }
+
+/** The claims of a machine where the checkout that used project `a` was deleted. */
+const deletedA = () => ({ [GONE]: claim("a") });
 
 function setup(
 	options: {
@@ -55,7 +62,7 @@ function setup(
 		log: (message) => logged.push(message),
 		runtimes: () => [runtime],
 		readRuns: async () => options.runs ?? [],
-		claims: () => options.claims ?? {},
+		claims: () => options.claims ?? deletedA(),
 		now: () => clock,
 	});
 	return {
@@ -69,13 +76,13 @@ function setup(
 }
 
 describe("orphanVolumeReporter", () => {
-	it("names the volumes whose project nothing mentions", async () => {
+	it("names the volumes of deleted checkouts", async () => {
 		const { logged, pass } = setup({
-			volumes: [volume("old_postgres_data", "old")],
+			volumes: [volume("a_postgres_data", "a")],
 		});
 		await pass();
 		expect(logged).toHaveLength(1);
-		expect(logged[0]).toContain("old_postgres_data");
+		expect(logged[0]).toContain("a_postgres_data");
 		expect(logged[0]).toContain("nothing is removed automatically");
 	});
 
@@ -94,7 +101,7 @@ describe("orphanVolumeReporter", () => {
 		expect(logged).toEqual([]);
 	});
 
-	it("does not count a suffixed claim, or a deleted checkout's, as a checkout", async () => {
+	it("keeps an existing checkout's suffixed stack, and names a deleted checkout's", async () => {
 		const { logged, pass } = setup({
 			volumes: [volume("ci_db", "demo-ci"), volume("gone_db", "gone")],
 			claims: {
@@ -103,7 +110,7 @@ describe("orphanVolumeReporter", () => {
 			},
 		});
 		await pass();
-		expect(logged[0]).toContain("ci_db");
+		expect(logged[0]).not.toContain("ci_db");
 		expect(logged[0]).toContain("gone_db");
 	});
 
@@ -126,7 +133,7 @@ describe("orphanVolumeReporter", () => {
 			log: (message) => logged.push(message),
 			runtimes: () => [runtime],
 			readRuns: async () => [],
-			claims: () => ({}),
+			claims: deletedA,
 			now: () => clock,
 		});
 		await report(["docker"]);
@@ -151,7 +158,7 @@ describe("orphanVolumeReporter", () => {
 			log: (message) => logged.push(message),
 			runtimes: () => [runtime],
 			readRuns: async () => [],
-			claims: () => ({}),
+			claims: deletedA,
 			now: () => clock,
 		});
 		await report(["docker"]);
@@ -174,7 +181,7 @@ describe("orphanVolumeReporter", () => {
 			log: (message) => logged.push(message),
 			runtimes: () => [runtime],
 			readRuns: async () => [],
-			claims: () => ({}),
+			claims: deletedA,
 			now: () => clock,
 		});
 		await report([]);

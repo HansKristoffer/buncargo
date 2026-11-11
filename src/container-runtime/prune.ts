@@ -10,20 +10,24 @@
  * nothing else — buncargo cannot add a label of its own, because Compose
  * compares a volume against the file and offers to recreate it, which is the
  * data loss this exists to prevent. So the checkout a volume belongs to is
- * unknowable, and the strongest honest statement is "no container, no run and
- * no existing checkout mentions this project".
+ * known only from this user's port claims, and a volume is proposed only when
+ * a claim names its project and that checkout is confirmed deleted
+ * ({@link decideVolume}).
  */
 
+import { checkoutDeleted } from "../core/checkout-presence";
+import { type OffsetClaim, offsetClaimRoot } from "../core/offset-claims";
 import type { RunEntry } from "../core/run-registry";
 import type { BuncargoContainer, BuncargoVolume } from "../types";
+import { type ClaimedCheckout, decideVolume } from "./volume-decision";
 
 export type VolumeVerdict =
-	/** A container, a run or an existing checkout still refers to this project. */
+	/** Kept: something refers to its project, or nothing shows its checkout is gone. */
 	| { kind: "in-use"; reason: string }
-	/** Nothing on this machine refers to it. */
-	| { kind: "orphaned" }
+	/** Its checkout, at `root`, was deleted, and nothing else refers to its project. */
+	| { kind: "orphaned"; reason: string; root: string }
 	/** The runtime does not say which project it belongs to. */
-	| { kind: "unattributed" };
+	| { kind: "unattributed"; reason: string };
 
 export interface VolumeReport {
 	volume: BuncargoVolume;
@@ -34,52 +38,35 @@ export interface PruneInput {
 	volumes: readonly BuncargoVolume[];
 	containers: readonly BuncargoContainer[];
 	runs: readonly RunEntry[];
-	/**
-	 * The checkouts that still exist, by the project their dev stack uses
-	 * (their port claims in `offsets.json`).
-	 */
-	checkouts: readonly { projectName: string; root: string }[];
+	/** The checkouts this user's port claims name ({@link claimedCheckouts}). */
+	checkouts: readonly ClaimedCheckout[];
 }
 
 /**
- * Classify every volume. Pure, so the rule is testable without a daemon.
- *
- * A project that merely stopped still counts as in use while its checkout
- * exists: `dev --down` removes containers and retires the entry, and its
- * database has to survive that. Only a project nothing mentions at all is
- * proposed, and even then the caller confirms.
+ * Classify every volume by {@link decideVolume}. Pure, so the rule is
+ * testable without a daemon.
  */
 export function planVolumePrune(input: PruneInput): VolumeReport[] {
-	const withContainers = new Set(
-		input.containers.map((container) => container.project),
-	);
-	const withRuns = new Set(input.runs.map((run) => run.projectName));
-	const checkoutRoots = new Map(
-		input.checkouts.map((checkout) => [checkout.projectName, checkout.root]),
-	);
-
-	return input.volumes.map((volume) => {
-		if (!volume.project) return { volume, verdict: { kind: "unattributed" } };
-		if (withContainers.has(volume.project))
-			return {
-				volume,
-				verdict: { kind: "in-use", reason: "its project has containers" },
-			};
-		if (withRuns.has(volume.project))
-			return {
-				volume,
-				verdict: { kind: "in-use", reason: "its project has a run on record" },
-			};
-		const root = checkoutRoots.get(volume.project);
-		if (root)
+	const state = {
+		containerProjects: new Set(
+			input.containers.map((container) => container.project),
+		),
+		runProjects: new Set(input.runs.map((run) => run.projectName)),
+		checkouts: input.checkouts,
+	};
+	return input.volumes.map((volume): VolumeReport => {
+		const decision = decideVolume(volume, state);
+		if (decision.propose)
 			return {
 				volume,
 				verdict: {
-					kind: "in-use",
-					reason: `its checkout ${root} still exists`,
+					kind: "orphaned",
+					reason: decision.reason,
+					root: decision.root,
 				},
 			};
-		return { volume, verdict: { kind: "orphaned" } };
+		const kind = volume.project ? "in-use" : "unattributed";
+		return { volume, verdict: { kind, reason: decision.reason } };
 	});
 }
 
@@ -87,4 +74,18 @@ export function orphanedVolumes(reports: readonly VolumeReport[]): string[] {
 	return reports
 		.filter((report) => report.verdict.kind === "orphaned")
 		.map((report) => report.volume.name);
+}
+
+/** The checkout each claim names, and whether it is confirmed deleted. */
+export function claimedCheckouts(
+	claims: Record<string, OffsetClaim>,
+): ClaimedCheckout[] {
+	return Object.entries(claims).map(([key, claim]) => {
+		const root = offsetClaimRoot(key, claim);
+		return {
+			projectName: claim.projectName,
+			root,
+			deleted: checkoutDeleted(root),
+		};
+	});
 }

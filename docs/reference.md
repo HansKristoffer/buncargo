@@ -132,7 +132,7 @@ version the project did not choose.
 
 `buncargo dev --detach` starts the run in its own session, with its output in `.buncargo/logs/detached-<pid>.log` (`.buncargo/logs/detached.log` links to the newest run's) and the apps' in their run directory, and returns once every app has come up or failed: exit 0 when all are up, or when every selected app already runs elsewhere and is reused (attached `dev` exits 0 on that too); 1 when one is not up (the others keep running) or the run failed; 2 when apps are still starting after 10 minutes (the run keeps going; `buncargo wait --app=<app>` waits on). The log of the last detached run that ended is kept until a later one has ended too. A failure ends the output with one block: what failed in one line (the app, the seed or the step), its last 20 lines of output, the setup checks that warned before the start, and what to run next (`buncargo logs <app>`), so `dev --detach | tail` shows the cause. Attached `dev` ends a failed start with the same block. Stop it with `buncargo stop`: a detached run is recorded as such, so `stop` does not ask for confirmation the way it does for a run in another terminal. It is the way to run `dev` from an agent or a script.
 
-A detached run stops by itself after 2 hours idle: no request through buncargo's named-hosts proxy to this checkout and no `buncargo` command run in it. `buncargo runs` and `ls` show the time left (`runs --json` gives it as `idleStopsAt`), and once the watchdog has stopped a run, `stop` and `ls` say so and why. While a `dev` in a terminal runs in the same checkout, the detached run is left alone, since that run may be serving from its apps. `dev --detach --keep` turns the limit off. Traffic that does not pass the proxy does not count: `localhost:port`, a public tunnel, and Tailscale mode (`BUNCARGO_HOSTS=tailscale`, where detached runs get no limit). With named hosts on and a hosts daemon that does not count requests (one older than the limit, or none running), the limit is not enforced; `buncargo hosts install` updates the daemon. A detached run whose checkout has been deleted for 10 minutes is stopped too, `--keep` or not. A run in a terminal is never stopped either way.
+A detached run stops by itself after 2 hours idle: no request through buncargo's named-hosts proxy to this checkout, no open connection to one of its apps' ports (a browser tab's HMR socket, a client on `localhost:port`), and no `buncargo` command run in it. `buncargo runs` and `ls` show the time left (`runs --json` gives it as `idleStopsAt`), and once the watchdog has stopped a run, `stop` and `ls` say so and why. While a `dev` in a terminal runs in the same checkout, the detached run is left alone, since that run may be serving from its apps. `dev --detach --keep` turns the limit off. Tailscale mode (`BUNCARGO_HOSTS=tailscale`) gives detached runs no limit. When neither the hosts daemon's request counts nor the machine's open connections can be read, the limit is not enforced; with named hosts on, `buncargo hosts install` updates a daemon too old to count requests. A detached run whose checkout has been deleted for 10 minutes is stopped too, `--keep` or not. A run in a terminal is never stopped either way.
 
 `buncargo sql --create-scratch=<name>` drops and recreates an empty Postgres database `scratch_<name>` in this checkout's container and prints its URL alone on stdout, so `DATABASE_URL=$(buncargo sql --create-scratch=migcheck) bun test` works. When the database service is down, it starts that one service first (no apps, no other services), and leaves it running as `dev --up-only` does. `--drop-scratch=<name>` drops it. The prefix is always added, so neither can touch a database the project uses. A scratch database lives in the checkout's volume: `dev --reset` and `prune` remove it with the rest.
 
@@ -148,7 +148,7 @@ Without a terminal, `dev --reset` (which deletes the checkout's volumes) and `de
 
 `buncargo typecheck` runs each workspace's own `typecheck` script in parallel (longest job first), plus the root `dev.config.ts` on its own - that file belongs to no workspace, so nothing else checks it. Default concurrency is the CPU count, capped at 4 locally and in CI at one process per 3.5 GB of memory (2 on a 7 GB runner, the CPU count on a large self-hosted machine); override with `--concurrency=N`, then `BUNCARGO_TYPECHECK_CONCURRENCY`, then `typecheck.concurrency` in the config, in that order, so a CI runner sizes itself over the config's local value. `--only=platform` (path or basename) checks one workspace. `--changed[=<ref>]` checks only what the branch can break: the workspaces holding files changed since the merge base with `<ref>` (default `origin/HEAD`, then `origin/main`, then `main`), committed, uncommitted, untracked or deleted, plus every workspace that depends on one of them through `package.json`, transitively. A root `package.json`, lockfile, `tsconfig*.json` or `dev.config.ts` among them checks everything, the root config included; otherwise the root config is skipped.
 
-A typecheck holds one of the machine-wide check slots while it runs (`BUNCARGO_CHECK_SLOTS`, default 3, `0` turns the cap off). Coding agents in many worktrees otherwise start several native `tsc` runs at once, each peaking at several GB, and run the machine out of memory. A typecheck that finds every slot taken prints who holds them and waits. A killed holder's slot is reclaimed. `buncargo slot -- <command>` takes a slot for any other heavy command, such as a test suite, and runs it with the shell's own environment; `exec --slot` does the same with the checkout environment added. Their children see `BUNCARGO_CHECK_SLOT`, so a `buncargo typecheck` inside does not wait for a second slot. CI takes no slot. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
+A typecheck holds one of the machine-wide check slots while it runs (`BUNCARGO_CHECK_SLOTS`, default 3, `0` turns the cap off). Coding agents in many worktrees otherwise start several native `tsc` runs at once, each peaking at several GB, and run the machine out of memory. A typecheck that finds every slot taken prints who holds them and waits, for up to 15 minutes; past that it runs without a slot and says so. A slot is a kernel lock on a file, so a killed holder's slot frees at once. `buncargo slot -- <command>` takes a slot for any other heavy command, such as a test suite, and runs it with the shell's own environment; `exec --slot` does the same with the checkout environment added. Their children see `BUNCARGO_CHECK_SLOT`, so a `buncargo typecheck` inside does not wait for a second slot. CI takes no slot. The config run generates `.buncargo/config-typecheck.tsconfig.json` and records durations in `.buncargo/typecheck-timings.json`; keep `.buncargo/` in `.gitignore`.
 
 Workspaces are discovered from the root `package.json` `workspaces` (else `apps/*`, `packages/*`, `modules`), keeping those whose `package.json` has a `typecheck` script. `typecheck` in `dev.config.ts` changes that set:
 
@@ -269,7 +269,7 @@ export default defineDevConfig({
 
 ## `buncargo check` and `buncargo predeploy`
 
-`buncargo check` is one check for the change in front of you. It runs `bun install` when `bun.lock` changed since the last check, `bun fmt` on the changed files when `check.format` is set, Biome (`--write`) on the changed files when the root has a `biome.json`, the docs check when a Markdown file changed, `buncargo typecheck --changed`, the config's gates, and the tests beside the changed files (`a.ts` → `a.test.ts`, `a.*.test.ts`). It prints one line per step and the tail of a failing step's output, then `PASS`, or `FAIL: <steps>` followed by one line per failed step with its exit code and the command to rerun it, so the end of the output (`| tail`) holds the whole verdict. A step passes only on exit code 0: one killed by a signal, or that cannot start at all (`E2BIG`, a missing binary), fails. The exit code is 1 when any step failed. "Changed" means since the merge base with `origin`'s default branch (or `--base=<ref>`), committed or not, plus untracked files. `--staged` checks the staged files only, writes nothing and runs no tests: the pre-commit hook. `--all` checks every file, workspace and gate, without tests: `bun run lint`.
+`buncargo check` is one check for the change in front of you. It runs `bun fmt` on the changed files when `check.format` is set, Biome (`--write`) on the changed files when the root has a `biome.json`, the docs check when a Markdown file changed, `buncargo typecheck --changed`, the config's gates, and the tests beside the changed files (`a.ts` → `a.test.ts`, `a.*.test.ts`). It prints one line per step and the tail of a failing step's output, then `PASS`, or `FAIL: <steps>` followed by one line per failed step with its exit code and the command to rerun it, so the end of the output (`| tail`) holds the whole verdict. A step passes only on exit code 0: one killed by a signal, or that cannot start at all (`E2BIG`, a missing binary), fails. The exit code is 1 when any step failed. "Changed" means since the merge base with `origin`'s default branch (or `--base=<ref>`), committed or not, plus untracked files. `--staged` checks the staged files only, writes nothing and runs no tests: the pre-commit hook. `--all` checks every file, workspace and gate, without tests: `bun run lint`.
 
 ```typescript
 check: {
@@ -900,6 +900,11 @@ same offset only collided while both ran, so which got which ports depended on
 which started first. `buncargo ports` lists the claims, and it and `doctor` report
 two claims whose blocks overlap, naming both checkouts and the ports they share.
 
+A claiming run that finds `offsets.json` unreadable, or written by a newer buncargo,
+stops with an error naming the file and leaves it as it is: rewriting it would drop
+every other checkout's claim. Update buncargo, or move the file aside to let every
+checkout be assigned its ports again.
+
 A suffixed environment (`withSuffix()`, `buncargo ci`, an E2E stack) claims its
 own offset next to its checkout's dev claim, and gives it back when it is stopped.
 In CI the dev claim goes the same way: `dev --down` or `stop()` frees the block, so
@@ -1453,14 +1458,14 @@ Next is not a dependency of buncargo, and the wrapper imports nothing from it.
 | `BUNCARGO_HOSTS` | `0` forces `http://localhost:port` even when `options.hosts` is on; `tailscale` serves each app's named URL through Tailscale Serve instead of the loopback daemon ([Named URLs over Tailscale](#named-urls-over-tailscale)) |
 | `BUNCARGO_HOSTS_PORT` | HTTPS port the loopback proxy daemon binds (default `443`; plain HTTP on `:80` only when the default is used) |
 | `BUNCARGO_MKCERT_PATH` | Absolute `mkcert` binary; skips PATH lookup and download |
-| `BUNCARGO_MKCERT_VERSION` | GitHub release tag for the bundled `mkcert` download (default `v1.4.4`) |
+| `BUNCARGO_MKCERT_VERSION` | GitHub release tag for the bundled `mkcert` download (default `v1.4.4`). Another tag installs only when its GitHub release publishes the asset's sha256; otherwise point `BUNCARGO_MKCERT_PATH` at an mkcert you installed |
 | `BUNCARGO_SYNC_HOSTS` | `0` skips writing the `# buncargo-start` / `# buncargo-end` block in `/etc/hosts` |
 | `BUNCARGO_INFISICAL_PATH` | Absolute `infisical` binary; skips the PATH lookup |
 | `SECRETS_ENV` | Infisical environment slug when an app's `secrets` scope does not name one (default `dev`) |
 | `BUNCARGO_TYPECHECK_CONCURRENCY` | Max overlapping workspace typecheck processes (positive integer) |
 | `BUNCARGO_CHECK_SLOTS` | Typechecks, `slot` and `exec --slot` commands that may run at once across every checkout on the machine (default `3`, `0` turns the cap off) |
 | `BUNCARGO_TIMING` | `1` prints a per-phase breakdown of `dev` startup (same as `--timing`) |
-| `CLOUDFLARED_VERSION` | GitHub release tag for the bundled download |
+| `CLOUDFLARED_VERSION` | GitHub release tag for the bundled download (default `2026.3.0`). Another tag installs only when its GitHub release publishes the asset's sha256 |
 | `CI` | Skips Docker auto-start; also disables named hosts. Detected from `CI=1` / `CI=true`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL` |
 
 Every variable above is read through [`src/core/runtime-flags.ts`](../src/core/runtime-flags.ts) on each call, so a flag exported mid-session applies to the next command without a restart.
@@ -1684,7 +1689,7 @@ A tunnel lives as long as the run: `--migrate`, `--seed` and `--up-only` ignore
 
 Tunnels open **after** wave-1 apps are healthy and **before** `needsPublicUrls` apps spawn, so Expo can read `EXPO_PACKAGER_PROXY_URL` at start. Public URLs are normalized (trailing slash stripped). Without `--expose` there is no second wave at all.
 
-Reuse: if an exposed app is already healthy and `.buncargo/public-tunnels.json` still has a live URL, that URL is inherited.
+Reuse: if an exposed app is already healthy because another live run in this checkout serves it on the same port, the public URL that run publishes for it is inherited.
 
 `--expose` still wins: `publicUrls` / `*_PUBLIC_URL` are the only public addresses. Named hosts are loopback-only.
 
@@ -1712,7 +1717,7 @@ On a machine on a [Tailscale](https://tailscale.com) network, the watchdog also 
 
 A finished run keeps its registry entry until its containers are gone — that entry is what says they may still be reused, and for how long. `buncargo runs` and the menu bar filter it out; the sweep and `stop` see it, and `stop --all` removes its containers now. `dev --down`, `stop --all` and `stop()` remove the entry straight away, since they have just removed the containers.
 
-**Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes whose project has no containers, no run and no checkout that still exists, and removes them only after you confirm. An idle checkout's database stays until its directory is deleted; a `ci` or E2E stack's volume is listed once its run is gone:
+**Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes of checkouts whose directory was deleted, when no container, no run and no other checkout uses their project, and removes them only after you confirm. A volume nothing on record ties to a deleted checkout stays, and so does an idle checkout's database. Before removing, it checks each volume again, so one a run or checkout took up since the listing is kept. A project's `ci` stacks and deleted worktrees are `buncargo prune --project`'s (below):
 
 ```bash
 bunx buncargo prune --dry-run   # List what would go
@@ -1724,7 +1729,7 @@ Volumes carry no buncargo labels on purpose: Compose compares a volume against t
 
 A machine where worktrees come and go all day, such as a server agents work on, can opt in with `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`: the sweep then also removes the volumes of a checkout whose directory was deleted, once a pass at least 10 minutes after the first still finds it gone. It works for checkouts whose containers are already gone, and leaves the volumes whenever another checkout or a run still uses the same project name. A checkout your user cannot read never counts as deleted.
 
-The watchdog also reports the volumes `buncargo prune --dry-run` would propose, in `~/.buncargo/watchdog.log`. It checks at most once an hour and writes only when that set changes, and it never removes anything: a project whose checkout has no port claim is invisible to the sweep, so its volumes stay until you run `prune`. Only the runtimes that answered that pass are judged, each against its own containers.
+The watchdog also reports the volumes `buncargo prune --dry-run` would propose, in `~/.buncargo/watchdog.log`. It checks at most once an hour and writes only when that set changes, and it never removes anything. Only the runtimes that answered that pass are judged, each against its own containers.
 
 The watchdog exits when nothing is left to watch, and the next `buncargo dev` starts one from its own checkout. A machine that wants a standing watchdog on a pinned release, rather than one that follows whichever worktree last ran, can run it as a systemd user service. Use `on-failure`, not `always`: the watchdog exits with status 0 when idle, and `always` would restart it every 30 seconds to find nothing to do.
 

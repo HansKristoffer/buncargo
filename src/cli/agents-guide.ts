@@ -133,11 +133,11 @@ const TOPICS: readonly Topic[] = [
 - \`dev --detach\`: the run is a background process of its own (its own systemd
   scope on Linux), not a child of your shell, so your session or harness
   ending does not stop it. \`bunx buncargo stop\` does, and so does the
-  watchdog: after 2 hours with no request through its named URLs and no
-  \`buncargo\` command in the checkout (any command, \`status\` included,
-  resets the clock), and once its checkout has been deleted.
-  \`dev --detach --keep\` turns the idle limit off, for a long job or for
-  traffic that goes to \`localhost:port\` only. With
+  watchdog: after 2 hours with no request through its named URLs, no open
+  connection to its apps' ports and no \`buncargo\` command in the checkout
+  (any command, \`status\` included, resets the clock), and once its
+  checkout has been deleted. \`dev --detach --keep\` turns the idle limit
+  off, for a long job that nothing connects to. With
   \`BUNCARGO_HOSTS=tailscale\` there is no idle limit; \`dev --detach\` says
   which applies. \`bunx buncargo runs\` shows
   the time left (\`idleStopsAt\` in \`runs --json\`); when a run is gone,

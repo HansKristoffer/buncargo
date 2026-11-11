@@ -1,7 +1,13 @@
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { getErrorMessage, isRecord, safeJsonParse } from "hanzio";
 import { checkoutDeleted } from "./checkout-presence";
 import { withFileLock, withFileLockSync } from "./file-lock";
-import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
+import {
+	readJsonDocumentSync,
+	StateFileUnreadableError,
+	StateFileVersionError,
+	writeJsonDocumentSync,
+} from "./registry-file";
 import { stateFilePath } from "./state-paths";
 
 /**
@@ -137,9 +143,44 @@ function validateClaim(value: unknown): OffsetClaim | undefined {
 		: valid;
 }
 
-/** Every claim, including those of deleted checkouts the sweep has not settled. */
-export function readAllOffsetClaims(): Record<string, OffsetClaim> {
-	return readJsonDocumentSync(getOffsetClaimsPath(), validate)?.claims ?? {};
+/**
+ * Every claim, including those of deleted checkouts the sweep has not settled.
+ *
+ * A file this version cannot read is no claims, unless `strict`: then it
+ * throws {@link StateFileUnreadableError} ({@link StateFileVersionError} for a
+ * newer version), and only a missing file is no claims. Every
+ * read-modify-write reads strictly. Several buncargo versions share this
+ * file, and a write that took an unreadable one for empty dropped every other
+ * checkout's claim: its block, its project name, and `prune`'s record that
+ * its volumes are a database.
+ */
+export function readAllOffsetClaims(
+	options: { strict?: boolean } = {},
+): Record<string, OffsetClaim> {
+	const path = getOffsetClaimsPath();
+	if (!options.strict)
+		return readJsonDocumentSync(path, validate)?.claims ?? {};
+	let raw: string;
+	try {
+		raw = readFileSync(path, "utf-8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+		throw new StateFileUnreadableError(path, getErrorMessage(error));
+	}
+	const parsed = safeJsonParse(raw);
+	const value = parsed.ok ? parsed.data : undefined;
+	if (
+		isRecord(value) &&
+		typeof value.version === "number" &&
+		value.version > VERSION
+	)
+		throw new StateFileVersionError(path, value.version, VERSION);
+	const document = validate(value);
+	if (document) return document.claims;
+	throw new StateFileUnreadableError(
+		path,
+		`not a valid version ${VERSION} offsets document; move it aside to let buncargo assign every checkout's ports again`,
+	);
 }
 
 /**
@@ -166,7 +207,7 @@ export async function markDeletedOffsetClaims(input: {
 }): Promise<void> {
 	if (input.seen.length === 0 && input.back.length === 0) return;
 	await withFileLock(getOffsetClaimsPath(), async () => {
-		const claims = readAllOffsetClaims();
+		const claims = readAllOffsetClaims({ strict: true });
 		for (const key of input.seen) {
 			const claim = claims[key];
 			if (
@@ -191,7 +232,7 @@ export async function dropDeletedOffsetClaims(
 ): Promise<void> {
 	if (keys.length === 0) return;
 	await withFileLock(getOffsetClaimsPath(), async () => {
-		const claims = readAllOffsetClaims();
+		const claims = readAllOffsetClaims({ strict: true });
 		for (const key of keys) {
 			const claim = claims[key];
 			if (claim && checkoutDeleted(offsetClaimRoot(key, claim)))
@@ -240,7 +281,7 @@ export async function releaseOffsetClaimsIfUnchanged(
 	const keys = Object.keys(expected);
 	if (keys.length === 0) return [];
 	return withFileLock(getOffsetClaimsPath(), async () => {
-		const claims = readAllOffsetClaims();
+		const claims = readAllOffsetClaims({ strict: true });
 		const released = keys.filter((key) =>
 			unchangedSince(claims[key], expected[key]),
 		);
@@ -401,7 +442,7 @@ export function claimOffset(input: {
 	const { root, offset, projectName, suffix } = input;
 	const ports = [...new Set(input.ports)].sort((a, b) => a - b);
 	const key = offsetClaimKey(root, suffix);
-	const claims = readAllOffsetClaims();
+	const claims = readAllOffsetClaims({ strict: true });
 	const current = claims[key];
 	const now = new Date().toISOString();
 	const unchanged =
@@ -450,7 +491,7 @@ export async function markOffsetClaimsReclaimed(
 	const keys = Object.keys(expected);
 	if (keys.length === 0) return [];
 	return withFileLock(getOffsetClaimsPath(), async () => {
-		const claims = readAllOffsetClaims();
+		const claims = readAllOffsetClaims({ strict: true });
 		const marked = keys.filter((key) => {
 			const current = claims[key];
 			return (

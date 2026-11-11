@@ -37,7 +37,7 @@ export const PRUNE_COMMAND_SPEC: CommandSpec = {
 		{
 			command: "",
 			description:
-				"Removes volumes whose project has no containers, no run and no existing checkout. Destroys their data.",
+				"Removes the volumes of checkouts whose directory was deleted, when no container, run or other checkout uses their project. Destroys their data.",
 		},
 	],
 	examples: [

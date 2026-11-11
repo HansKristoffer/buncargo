@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import {
 	cpSync,
 	existsSync,
@@ -11,7 +12,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	type BarRelease,
 	type BundleCopy,
+	downloadBarRelease,
 	getBarManifestPath,
 	installDirectory,
 	readBundleInfo,
@@ -224,5 +227,63 @@ describe("replaceBundle", () => {
 		expect(readdirSync(join(home, "Applications"))).toEqual([
 			"BuncargoBar.app",
 		]);
+	});
+});
+
+describe("downloadBarRelease", () => {
+	const release: BarRelease = {
+		tag: "bar-v1.0.0",
+		version: "1.0.0",
+		zipUrl: "https://downloads.example/BuncargoBar.zip",
+		checksumUrl: "https://downloads.example/BuncargoBar.zip.sha256",
+	};
+	const checksumOf = (payload: string) =>
+		new Response(
+			`${createHash("sha256").update(payload).digest("hex")}  BuncargoBar.zip\n`,
+		);
+
+	it("stops the download when the run's signal fires", async () => {
+		const run = new AbortController();
+		const to = join(home, "bar.zip");
+		let cancelled = false;
+		await expect(
+			downloadBarRelease(release, to, {
+				signal: run.signal,
+				fetch: async (url) =>
+					url === release.checksumUrl
+						? checksumOf("the app")
+						: new Response(
+								new ReadableStream(
+									{
+										// The first chunk arrives, then the run ends.
+										pull(stream) {
+											stream.enqueue(new Uint8Array([1]));
+											run.abort(new Error("the run ended"));
+										},
+										cancel() {
+											cancelled = true;
+										},
+									},
+									{ highWaterMark: 0 },
+								),
+							),
+			}),
+		).rejects.toThrow("the run ended");
+		expect(cancelled).toBe(true);
+		expect(readdirSync(home)).toEqual([]);
+	});
+
+	it("refuses a zip that does not match the published checksum", async () => {
+		const to = join(home, "bar.zip");
+		await expect(
+			downloadBarRelease(release, to, {
+				signal: new AbortController().signal,
+				fetch: async (url) =>
+					url === release.checksumUrl
+						? checksumOf("the app")
+						: new Response("something else"),
+			}),
+		).rejects.toThrow("checksum did not match");
+		expect(readdirSync(home)).toEqual([]);
 	});
 });

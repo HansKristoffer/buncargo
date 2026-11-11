@@ -46,7 +46,8 @@ per port.
   checkouts share a directory name and so a hash, and they probed before any had bound a port.
   A developer's dev claim lives as long as its directory, which is what tells "stopped" from
   "deleted", and keeps a stopped worktree's URLs. A throwaway environment's claim (suffixed, or
-  any in CI) is released when a full `stop()` has taken its stack down (`releaseThrowawayClaim`):
+  any in CI) is released when a full `stop()` has taken its stack down (`captureThrowawayClaim`,
+  which reads the claim before the teardown, so a job that allocates during it keeps its block):
   self-hosted runners keep their directories between jobs, and their dev, `ci` and E2E claims
   held all 90 blocks of a machine running a few dozen runners, so every new allocation failed.
   Not on `restart()`, which needs the block back, nor while another run of the same environment

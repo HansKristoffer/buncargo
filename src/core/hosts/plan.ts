@@ -39,6 +39,18 @@ export interface ResolvedHostsOptions {
 	services: readonly string[] | true;
 }
 
+/**
+ * Whether `hostname` is a DNS name: dot-separated DNS labels, 253 characters
+ * at most. What the daemon checks before a route reaches `/etc/hosts`, where a
+ * newline in a name would be lines of its own.
+ */
+export function isDnsHostname(hostname: string): boolean {
+	return (
+		hostname.length <= MAX_HOSTNAME &&
+		hostname.split(".").every((label) => DNS_LABEL.test(label))
+	);
+}
+
 export function isHostsPlatformSupported(
 	platform: NodeJS.Platform = process.platform,
 ): boolean {

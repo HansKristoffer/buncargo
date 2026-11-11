@@ -570,7 +570,7 @@ Options:
   --dry-run  List what would be removed and stop
   --yes      Skip the confirmation (for scripts)
   --project  Only this project's leftovers: every checkout's ci stack and every stack of a deleted worktree (containers, volumes, networks)
-             Removes volumes whose project has no containers, no run and no existing checkout. Destroys their data.
+             Removes the volumes of checkouts whose directory was deleted, when no container, run or other checkout uses their project. Destroys their data.
 
 Examples:
   bunx buncargo prune --dry-run            List reclaimable volumes without touching them

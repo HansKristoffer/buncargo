@@ -17,6 +17,7 @@ import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
 import { barOfferOptedOut, isCI } from "./runtime-flags";
 import { shellQuote } from "./shell-quote";
 import { chownToInvokingUser, stateFilePath } from "./state-paths";
+import { downloadToolAsset, type ToolFetch } from "./tool-install";
 
 /**
  * BuncargoBar — the macOS menu bar app that reads the run registry.
@@ -250,12 +251,15 @@ interface GithubRelease {
  * most recently across the whole repository, which here is usually a CLI `v7.x`
  * tag with no app in it.
  */
-export async function fetchLatestBarRelease(): Promise<BarRelease | undefined> {
+export async function fetchLatestBarRelease(
+	signal?: AbortSignal,
+): Promise<BarRelease | undefined> {
+	const timeout = AbortSignal.timeout(RELEASE_FETCH_TIMEOUT_MS);
 	const response = await fetch(RELEASES_ENDPOINT, {
 		headers: { Accept: "application/vnd.github+json" },
 		// The background check must not keep a dev run's event loop alive on a
 		// hung connection.
-		signal: AbortSignal.timeout(RELEASE_FETCH_TIMEOUT_MS),
+		signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
 	});
 	if (!response.ok) {
 		throw new Error(`GitHub returned ${response.status} listing releases`);
@@ -291,42 +295,34 @@ export async function fetchLatestBarRelease(): Promise<BarRelease | undefined> {
 	return undefined;
 }
 
-async function download(url: string, destination: string): Promise<void> {
-	const response = await fetch(url, { redirect: "follow" });
-	if (!response.ok) {
-		throw new Error(`Download failed with ${response.status}: ${url}`);
-	}
-	await Bun.write(destination, response);
-}
+/** The published checksum is one line: the digest, then the file name. */
+const MAX_CHECKSUM_BYTES = 4096;
 
 /**
- * Verify the zip against the checksum the release workflow publishes beside
- * it. A release without one, or one that cannot be read, is not installed.
+ * Download the release's zip to `to`, verified against the checksum the
+ * release workflow publishes beside it, bounded in time and size, and stopped
+ * when `signal` fires. A release without a readable checksum is not installed.
  */
-async function verifyChecksum(
-	zipPath: string,
-	checksumUrl: string | undefined,
+export async function downloadBarRelease(
+	release: BarRelease,
+	to: string,
+	options: { signal: AbortSignal; fetch?: ToolFetch },
 ): Promise<void> {
-	if (!checksumUrl)
+	if (!release.checksumUrl)
 		throw new Error(
 			"The release has no checksum for the app; not installing it.",
 		);
-	const response = await fetch(checksumUrl, { redirect: "follow" });
-	if (!response.ok)
-		throw new Error(
-			`Could not download the app's checksum (HTTP ${response.status}).`,
-		);
-	const expected = (await response.text()).trim().split(/\s+/)[0];
-	if (!expected) throw new Error("The app's published checksum is empty.");
-
-	const hasher = new Bun.CryptoHasher("sha256");
-	hasher.update(await Bun.file(zipPath).arrayBuffer());
-	const actual = hasher.digest("hex");
-	if (actual !== expected) {
-		throw new Error(
-			`Checksum mismatch for the downloaded app (expected ${expected}, got ${actual}).`,
-		);
-	}
+	const checksumPath = `${to}.sha256`;
+	await downloadToolAsset(release.checksumUrl, checksumPath, {
+		...options,
+		maxBytes: MAX_CHECKSUM_BYTES,
+		timeoutMs: RELEASE_FETCH_TIMEOUT_MS,
+	});
+	const sha256 = readFileSync(checksumPath, "utf8").trim().split(/\s+/)[0];
+	rmSync(checksumPath, { force: true });
+	if (!sha256 || !/^[a-f0-9]{64}$/i.test(sha256))
+		throw new Error("The app's published checksum is not a sha256 digest.");
+	await downloadToolAsset(release.zipUrl, to, { ...options, sha256 });
 }
 
 /**
@@ -360,6 +356,8 @@ export interface BarInstallResult {
 }
 
 export interface BarInstallOptions {
+	/** The run's signal: the download stops when it fires. */
+	signal: AbortSignal;
 	/**
 	 * Refuse a release whose bundle cannot decode this `runs.json` version.
 	 *
@@ -382,21 +380,23 @@ export interface BarInstallOptions {
  * the only updater.
  */
 export async function installBar(
-	options: BarInstallOptions = {},
+	options: BarInstallOptions,
 ): Promise<BarInstallResult> {
 	if (!isBarSupported()) {
 		throw new Error(`${BAR_APP_NAME} is macOS only.`);
 	}
 
-	const release = await fetchLatestBarRelease();
+	const release = await fetchLatestBarRelease(options.signal);
 	if (!release) {
 		throw new Error(
 			`No ${BAR_APP_NAME} release published yet. Build it from source with \`buncargo bar install --source\`.`,
 		);
 	}
 
-	return withFileLock(getBarManifestPath(), () =>
-		applyRelease(release, options),
+	return withFileLock(
+		getBarManifestPath(),
+		() => applyRelease(release, options),
+		{ signal: options.signal },
 	);
 }
 
@@ -408,8 +408,7 @@ async function applyRelease(
 	const workspace = mkdtempSync(join(tmpdir(), "buncargo-bar-"));
 	try {
 		const zipPath = join(workspace, "bar.zip");
-		await download(release.zipUrl, zipPath);
-		await verifyChecksum(zipPath, release.checksumUrl);
+		await downloadBarRelease(release, zipPath, { signal: options.signal });
 
 		const extracted = join(workspace, "extracted");
 		const unzip = run(

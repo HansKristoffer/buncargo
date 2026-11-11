@@ -50,19 +50,22 @@ export type RouteOwners = (
 export const pidRouteOwners: RouteOwners = async () => (route) =>
 	isRouteOwnerAlive(route.pid);
 
+/** A hostname a live route of another checkout, or another port, holds. */
 export class HostsRouteConflictError extends Error {
 	readonly hostname: string;
+	readonly ownerRoot: string;
 	readonly ownerPid?: number;
 
-	constructor(hostname: string, ownerPid?: number) {
+	constructor(hostname: string, owner: Pick<HostsRoute, "root" | "pid">) {
+		const by =
+			owner.pid === undefined ? owner.root : `${owner.root} (pid ${owner.pid})`;
 		super(
-			ownerPid
-				? `Hostname ${hostname} is already registered by pid ${ownerPid}`
-				: `Hostname ${hostname} is already registered`,
+			`${hostname} is already registered by ${by}. Run \`buncargo stop\` in that checkout, or give one of the projects a different \`projectPrefix\`.`,
 		);
 		this.name = "HostsRouteConflictError";
 		this.hostname = hostname;
-		this.ownerPid = ownerPid;
+		this.ownerRoot = owner.root;
+		this.ownerPid = owner.pid;
 	}
 }
 
@@ -271,6 +274,11 @@ export function classifyRouteClaim(
 	return "conflict";
 }
 
+/**
+ * Register routes, and return the ones a live owner keeps
+ * ({@link classifyRouteClaim}). Those are skipped, not fatal: one name another
+ * checkout holds used to drop the whole plan to `localhost:port`.
+ */
 export async function upsertHostRoutes(
 	routesToSave: HostsRoute[],
 	options: {
@@ -286,9 +294,9 @@ export async function upsertHostRoutes(
 		 */
 		owners: RouteOwners;
 	},
-): Promise<void> {
+): Promise<HostsRouteConflictError[]> {
 	const path = options.path ?? getRoutesPath();
-	await withFileLock(path, async () => {
+	return withFileLock(path, async () => {
 		const routes = await prune(path, { strict: true });
 		const byHost = new Map(routes.map((route) => [route.hostname, route]));
 		const held = routesToSave.flatMap((route) => {
@@ -298,6 +306,7 @@ export async function upsertHostRoutes(
 				: [];
 		});
 		const ownerAlive = await options.owners(held);
+		const conflicts: HostsRouteConflictError[] = [];
 
 		for (const route of routesToSave) {
 			const existing = byHost.get(route.hostname);
@@ -309,7 +318,10 @@ export async function upsertHostRoutes(
 					take: () => true,
 					keep: () => false,
 					conflict: () => {
-						throw new HostsRouteConflictError(route.hostname, existing.pid);
+						conflicts.push(
+							new HostsRouteConflictError(route.hostname, existing),
+						);
+						return false;
 					},
 				});
 				if (!take) continue;
@@ -318,6 +330,7 @@ export async function upsertHostRoutes(
 		}
 
 		await registry.write(path, Array.from(byHost.values()));
+		return conflicts;
 	});
 }
 
@@ -364,7 +377,10 @@ export async function withdrawHostRoutes(
 ): Promise<void> {
 	await withFileLock(path, async () => {
 		const routes = await readForRewrite(path);
-		await registry.write(path, routesAfterWithdraw(routes, run));
+		const next = routesAfterWithdraw(routes, run);
+		// Most fallbacks registered nothing: no write, and no file created.
+		if (next.length === routes.length) return;
+		await registry.write(path, next);
 	});
 }
 

@@ -137,6 +137,42 @@ describe("proxy fetch", () => {
 		},
 	);
 
+	// A busy :80 threw after the https listeners were bound, and nothing
+	// stopped them: health listed no hostnames, every run fell back, and each
+	// retry left another reuse-port listener behind.
+	it("serves https without the redirect when its port is taken, and leaves no listener behind", async () => {
+		const redirectHolder = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: () => new Response("someone else"),
+		});
+		servers.push(redirectHolder);
+		const httpsPort = await findClosedPort();
+
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			const proxy = await startLocalProxy({
+				lookup: () => undefined,
+				routes: () => ({ hostnames: ["web.demo.localhost"], lastReloadAt: 1 }),
+				httpsPort,
+				httpPort: redirectHolder.port,
+				hostname: "127.0.0.1",
+			});
+			expect(proxy.redirectError).toContain(`:${redirectHolder.port}`);
+			expect(
+				await readProxyHealth(httpsPort, "127.0.0.1", { tls: false }),
+			).toMatchObject({ hostnames: ["web.demo.localhost"] });
+			proxy.stop();
+		}
+
+		// Binds without SO_REUSEPORT only once no listener holds the port.
+		const exclusive = Bun.serve({
+			hostname: "127.0.0.1",
+			port: httpsPort,
+			fetch: () => new Response(),
+		});
+		exclusive.stop(true);
+	});
+
 	// An empty pair once bound plain HTTP on :443 while the CLI probed HTTPS
 	// and reported the daemon down.
 	it("refuses to serve TLS from an empty certificate", async () => {

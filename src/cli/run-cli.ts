@@ -563,7 +563,7 @@ async function runDevFlow<
 	// middle of startup output.
 	if (!args.oneShot) {
 		signal.throwIfAborted();
-		await offerMenuBarApp();
+		await offerMenuBarApp(signal);
 	}
 	// Kept for the TUI, which covers the scrollback they were printed in.
 	const printedHostsWarnings: string[] = [];
@@ -826,7 +826,7 @@ async function runDevFlow<
 	// Deliberately not awaited, and only after the run is on disk: an app that
 	// cannot read this registry has something to read the moment it updates,
 	// and a GitHub round trip never sits between the user and their servers.
-	void checkMenuBarAppUpdate();
+	void checkMenuBarAppUpdate(signal);
 
 	logSelectedAppsSummary({
 		...classifiedApps,
@@ -978,9 +978,10 @@ async function runDevFlow<
 				// again in case a takeover moved it away and its run ended. Done
 				// before the new process spawns: its config reads its URL from
 				// the registry as it loads (`getEnvVar`).
-				onAppRestarting: (name) => {
+				onAppRestarting: async (name) => {
 					rows.onAppRestarting(name);
-					return reclaimAppRoute(env, name);
+					const warning = await reclaimAppRoute(env, name);
+					if (warning) view.output.event(name, warning, "warn");
 				},
 				// A developer's other apps should not go down with one that
 				// never came up; `ci` and library starts keep failing the run.

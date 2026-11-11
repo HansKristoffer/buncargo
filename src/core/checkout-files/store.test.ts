@@ -53,16 +53,18 @@ describe("reading the fixture stores", () => {
 		]);
 		expect(read.manifest.files[".env.machine"]?.machine).toBe(true);
 		for (const [path, entry] of Object.entries(read.manifest.files))
-			expect(readStoreData(dir, path, entry)).toBeDefined();
+			expect(readStoreData(dir, path, entry).kind).toBe("ok");
 	});
 
-	it("treats a data file that does not match its entry as absent", () => {
+	it("reads a data file that does not match its entry as unreadable", () => {
 		const dir = fixture("mid-write");
 		const read = readManifest(dir);
 		if (read.kind !== "ok") throw new Error(read.kind);
 		const entry = read.manifest.files[".env.local"];
 		if (!entry) throw new Error("no entry");
-		expect(readStoreData(dir, ".env.local", entry)).toBeUndefined();
+		expect(readStoreData(dir, ".env.local", entry)).toEqual({
+			kind: "unreadable",
+		});
 	});
 
 	it("leaves a store with an unknown version alone", () => {
