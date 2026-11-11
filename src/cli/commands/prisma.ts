@@ -193,7 +193,7 @@ async function runPrisma({
 		// What a scratch database holds is the caller's own throwaway.
 		scratch: values.db?.startsWith("scratch_") ?? false,
 	});
-	const env = await loadEnv({ readOnly: request.kind === "migration check" });
+	const env = await loadEnv();
 
 	if (!env.prisma) {
 		throw new CliError("Prisma is not configured in your dev config.", [

@@ -103,7 +103,7 @@ async function exec(parsed: {
 	slot: boolean;
 	command: string[];
 }): Promise<number> {
-	const env = await loadDevEnv({ readOnly: true });
+	const env = await loadDevEnv();
 	const databaseEnv =
 		parsed.db === undefined
 			? undefined

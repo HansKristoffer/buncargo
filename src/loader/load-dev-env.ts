@@ -72,8 +72,6 @@ interface LoadDevEnvOptions {
 	reload?: boolean;
 	/** Create independent session state while reusing the imported config. */
 	fresh?: boolean;
-	/** Read persisted ports without probing conflicts or writing allocation state. */
-	readOnly?: boolean;
 	/** `--runtime`, taking precedence over env and config. */
 	containerRuntime?: string;
 	/**
@@ -115,12 +113,7 @@ export async function loadDevEnv<TConfig extends DevConfigLike = AnyDevConfig>(
 
 	const root = realpathSync(findMonorepoRoot(dirname(configPath)));
 	const variables: EnvironmentVariables = { ...process.env };
-	const identity = JSON.stringify([
-		configPath,
-		root,
-		requested ?? null,
-		options?.readOnly ?? false,
-	]);
+	const identity = JSON.stringify([configPath, root, requested ?? null]);
 	const shared =
 		!options?.reload && !options?.fresh && isConfigCacheable(configPath);
 	if (shared) {
@@ -219,7 +212,7 @@ async function importAndBuild(
 			Record<string, ServiceConfig>,
 			Record<string, AppConfig>
 		>,
-		{ containerRuntime: requested, root, readOnly: options?.readOnly },
+		{ containerRuntime: requested, root },
 	);
 	builtUnder.set(env, variables);
 	if (isCurrentRevision)

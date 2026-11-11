@@ -48,6 +48,7 @@ Each section lists what a consumer of `buncargo` has to change when crossing one
 - **Upgrading with a `runs.json` v1 on the machine.** 16.0 reads it as empty, and the first 16.0 run or command that writes replaces it, keeping the old bytes in `~/.buncargo/runs.json.recovery-*`. Stacks that only a v1 entry named are kept while they run and their checkout exists (their port claim still names them); take one down with `buncargo dev --down` in its checkout. A 15.x run still going at that point keeps serving, but its own writes fail from then on, so it never records its release, and a 15.x `stop`, `ls` or BuncargoBar refuses the newer file. Stop 15.x runs before upgrading, and upgrade every project on a machine together.
 - **BuncargoBar reads `runs.json` v2 only.** `buncargo dev` offers the update, and `buncargo bar update` installs it; an older app says it is out of date and shows nothing.
 - **One events log, `~/.buncargo/events.json`.** The removal log and the record of detached runs the watchdog stopped are one file, each event with a `kind` (`containers`, `volumes`, `services`, `run-stopped`). `removals.json` and `run-stops.json` are no longer read; delete them. `status --json` `recentStops` entries carry `kind`.
+- **`readOnly` is gone** from `loadDevEnv` and `createDevEnvironment`. Nothing read it: loading never probed or claimed a port block either way. Delete the option. Loads that differed only by it now share one cached environment.
 
 ## 14.0 → 15.0
 

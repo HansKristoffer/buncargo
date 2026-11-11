@@ -63,7 +63,7 @@ async function setup(values: {
 		return 0;
 	}
 
-	const env = (await loadDevEnv({ readOnly: true })) as AnyDevEnvironment;
+	const env = (await loadDevEnv()) as AnyDevEnvironment;
 	const ctx: CheckContext = { root: env.root, env };
 	const checks = allChecks(env);
 	const autoFix = values.yes || isCI();

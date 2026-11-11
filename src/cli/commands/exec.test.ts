@@ -70,7 +70,7 @@ it("exec passes argv unchanged and uses app environment/cwd from a nested invoca
 	expect(output.cwd).toBe(join(root, "packages/api"));
 	expect(output.app).toBe("yes");
 	expect(output.source).toBe("file");
-	const env = await loadDevEnv({ cwd: root, readOnly: true });
+	const env = await loadDevEnv({ cwd: root });
 	expect(output.db).toBe(env.prisma?.getDatabaseUrl());
 	expect(offsetClaimsOf(root)).toEqual({});
 	expect(existsSync(join(root, "injected"))).toBe(false);

@@ -12,7 +12,7 @@ import * as log from "../log";
  * `BASE_URL=https://… bunx buncargo generate`.
  */
 async function generate(): Promise<number> {
-	const env = await loadDevEnv({ readOnly: true });
+	const env = await loadDevEnv();
 	const files = env.generatedFiles ?? [];
 	if (files.length === 0) {
 		log.info("No generatedFiles configured.");

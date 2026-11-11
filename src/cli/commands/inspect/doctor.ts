@@ -575,7 +575,7 @@ async function doctor(fix: boolean): Promise<number> {
 	let env: DevEnv | undefined;
 	try {
 		// Inspect-only: the checkout files check reports their state instead.
-		env = await loadDevEnv({ readOnly: true, syncCheckoutFiles: false });
+		env = await loadDevEnv({ syncCheckoutFiles: false });
 	} catch (error) {
 		report.issue(`Could not load dev config: ${getErrorMessage(error)}`);
 	}

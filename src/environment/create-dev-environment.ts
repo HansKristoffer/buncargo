@@ -60,7 +60,6 @@ export function createDevEnvironment<
 		suffix?: string;
 		containerRuntime?: string;
 		root?: string;
-		readOnly?: boolean;
 	} & SuffixedEnvironmentOptions = {},
 ): DevEnvironment<TServices, TApps, TEnv> {
 	// Integrations transform the config before anything reads it; `withSuffix`

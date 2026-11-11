@@ -74,7 +74,7 @@ export function parsePinnedOffset(value: string | undefined): number {
  * offset on the machine.
  */
 async function showPorts(): Promise<number> {
-	const env = await loadDevEnv({ readOnly: true });
+	const env = await loadDevEnv();
 	{
 		const claims = readHeldOffsetClaims();
 		const unallocated = env.portOffsetProvenance === "unallocated";
@@ -125,7 +125,7 @@ async function showPorts(): Promise<number> {
  * cannot see counts) and claims the offset, so no other checkout is given it.
  */
 async function pinPorts(value: string): Promise<number> {
-	const env = await loadDevEnv({ readOnly: true });
+	const env = await loadDevEnv();
 	const offset = parsePinnedOffset(value);
 	const runtime = containerRuntimeForEnv(env);
 	// One reading for every port the new block could take.

@@ -196,7 +196,6 @@ export function createDevEnvContext<
 		suffix?: string;
 		containerRuntime?: string;
 		root?: string;
-		readOnly?: boolean;
 		data?: "volumes" | "tmpfs";
 	} = {},
 ): DevEnvContext<TServices, TApps, TEnv> {
