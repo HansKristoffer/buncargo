@@ -410,8 +410,25 @@ export interface DevEnvironment<
 	// Advanced
 	// ─────────────────────────────────────────────────────────────────────────
 
-	/** Create a new environment with a different suffix (for test isolation) */
-	withSuffix(suffix: string): DevEnvironment<TServices, TApps, TEnv>;
+	/**
+	 * Create a new environment with a different suffix (for test isolation).
+	 * `data: "tmpfs"` keeps its services' data in memory, so its stack leaves
+	 * no volume behind (`buncargo ci`).
+	 */
+	withSuffix(
+		suffix: string,
+		options?: SuffixedEnvironmentOptions,
+	): DevEnvironment<TServices, TApps, TEnv>;
+}
+
+/** Options for {@link DevEnvironment.withSuffix}. */
+export interface SuffixedEnvironmentOptions {
+	/**
+	 * Where its services keep their data. `"tmpfs"` mounts in memory every
+	 * volume the stack would own; bind mounts and `external` volumes stay.
+	 * Default: `"volumes"`.
+	 */
+	data?: "volumes" | "tmpfs";
 }
 
 /**
@@ -439,7 +456,10 @@ export interface AnyDevEnvironment extends Omit<
 			Record<string, AppConfig>
 		>
 	>;
-	withSuffix(suffix: string): AnyDevEnvironment;
+	withSuffix(
+		suffix: string,
+		options?: SuffixedEnvironmentOptions,
+	): AnyDevEnvironment;
 }
 
 /**

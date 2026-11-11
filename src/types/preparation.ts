@@ -22,33 +22,55 @@ export interface PrismaConfig<
 	cwd?: string;
 	/** Migration directory relative to prisma.cwd. Default: prisma/migrations. */
 	migrations?: string;
+	/**
+	 * Schema file or folder relative to prisma.cwd, for `migrate-check` and
+	 * `prisma migration new`. Default: prisma/schema.prisma.
+	 */
+	schema?: string;
 	/** Configured service key for the database. Default: 'postgres' */
 	service?: Extract<keyof TServices, string>;
 	/**
 	 * Environment variable name for the database URL. Default: 'DATABASE_URL'
 	 *
+	 * A list sets every name to the checkout's URL, for a `prisma.config.ts`
+	 * that also reads a direct URL (`["DATABASE_URL", "DATABASE_URL_DIRECT"]`).
+	 * The first is the one buncargo reads the URL from; the rest need not be
+	 * declared.
+	 *
 	 * Deliberately not keyed on the `env` overlay: that would make `DevConfig`
 	 * invariant in its overlay type, so a narrowly typed config could no longer
 	 * be handed to anything expecting the widened one.
 	 */
-	urlEnvVar?: ConfigEnvVarNames<TServices, TApps>;
+	urlEnvVar?:
+		| ConfigEnvVarNames<TServices, TApps>
+		| readonly [ConfigEnvVarNames<TServices, TApps>, ...string[]];
 	/**
 	 * Command to run after migrations (e.g. Prisma 7 `prisma generate --sql`).
 	 * Skipped when unset.
 	 */
 	generate?: string;
-	/** Return true when generation is needed. Unset always runs generate. */
-	generateCheck?(
-		ctx: HookContext<TServices, TApps>,
-	): boolean | Promise<boolean>;
+	/**
+	 * Whether generation is needed. `"schema-hash"` runs it only when the
+	 * `.prisma` files changed since the last generate buncargo ran; a function
+	 * returns true to run it. Unset always runs generate.
+	 */
+	generateCheck?:
+		| "schema-hash"
+		| ((ctx: HookContext<TServices, TApps>) => boolean | Promise<boolean>);
 }
 
 /**
  * Prisma runner interface available on dev.prisma when prisma is configured.
  */
 export interface PrismaRunner {
-	/** Run a prisma command with the correct environment. Returns exit code. */
-	run(args: string[]): Promise<number>;
+	/**
+	 * Run a prisma command with the correct environment. Returns exit code:
+	 * Prisma's, 1 when a destructive command is refused because a variable
+	 * points at another database server, or 4 when `migrate deploy`, `dev` or
+	 * `status` would meet a database that applied migrations the checkout no
+	 * longer has (a squashed chain: only a reset of the data gets past it).
+	 */
+	run(args: string[], options?: PrismaRunOptions): Promise<number>;
 	/** Get the database URL from the dev environment */
 	getDatabaseUrl(): string;
 	/** Ensure the database container is running and healthy */
@@ -60,8 +82,19 @@ export interface PrismaRunner {
 	 * 0 in sync, 2 drifted, 1 error.
 	 */
 	migrateCheck(options?: PrismaMigrateCheckOptions): Promise<number>;
+	/**
+	 * Write a migration with what the schema has and the migrations lack, by
+	 * `prisma migrate diff` against a database created for it and dropped
+	 * after. Needs no terminal, unlike `migrate dev --create-only`.
+	 */
+	newMigration(
+		name: string,
+		options?: PrismaNewMigrationOptions,
+	): Promise<PrismaNewMigrationResult>;
 	/** `prisma.cwd`, relative to the root. */
 	readonly cwd: string;
+	/** `prisma.migrations`, relative to {@link cwd}. */
+	readonly migrations: string;
 	/** `prisma.service`: the database's service key. */
 	readonly service: string;
 	/** `prisma.generate`, when configured. */
@@ -79,6 +112,29 @@ export interface PrismaMigrateCheckOptions {
 	/** Extra arguments appended to `prisma migrate diff`. */
 	args?: readonly string[];
 }
+
+/** Options for {@link PrismaRunner.run}. */
+export interface PrismaRunOptions {
+	/**
+	 * Variables over the database's, last: `buncargo prisma --db` points the
+	 * database URLs at another database of the same server with them.
+	 */
+	env?: Readonly<Record<string, string>>;
+}
+
+/** Options for {@link PrismaRunner.newMigration}. */
+export interface PrismaNewMigrationOptions {
+	/** Write an empty `migration.sql` when the schema has nothing new. */
+	empty?: boolean;
+	/** When the migration is created, for its folder's timestamp. Default: now. */
+	now?: Date;
+}
+
+/** What {@link PrismaRunner.newMigration} did. */
+export type PrismaNewMigrationResult =
+	| { status: "created"; path: string }
+	| { status: "unchanged" }
+	| { status: "failed"; exitCode: number };
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Migrations Configuration

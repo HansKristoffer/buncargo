@@ -46,7 +46,7 @@ Use:
   terminal is left running (exit 3): leave it.
 
 When something fails:
-- The cause and the next command are at the end of the output: \`| tail\`.
+- The cause and the next command end the output. Add \`; echo $?\`, not \`| tail\`.
 - "Could not allocate a free port block": \`dev\` takes back an idle block on
   its own, so this lists holders still in use. Tell the user (\`help agents ports\`).
   \`"unallocated"\` in \`status --json\` means the ports shown are not yours.
@@ -63,6 +63,8 @@ node_modules/buncargo/src, and dist/*.js.map map the bundles back to it.`;
 
 interface Topic {
 	name: string;
+	/** Other names agents ask for it by (\`help agents sql\`). */
+	aliases?: readonly string[];
 	body: string;
 }
 
@@ -78,8 +80,8 @@ const TOPICS: readonly Topic[] = [
   \`bunx buncargo wait --app=<app>\`. Do not use \`nohup\`, \`&\` or \`disown\`.
 - When it fails, the last block of its output names what failed (an app, the
   seed or a step), shows its last 20 lines and the setup checks that warned,
-  and says what to run next: \`dev --detach 2>&1 | tail -40\` is enough. Do
-  not run \`dev\` again to find the cause.
+  and says what to run next: \`dev --detach; echo $?\` shows it with the
+  exit code. Do not run \`dev\` again to find the cause.
 - \`bunx buncargo dev --detach --apps=api\` starts only some apps (and the apps
   they require). \`--profile=<name>\` picks a configured set.
   \`bunx buncargo dev --up-only\` starts the services alone and returns once
@@ -167,11 +169,15 @@ const TOPICS: readonly Topic[] = [
 		body: `## Reading the environment
 
 - \`bunx buncargo url <app>\` prints the URL to open, and \`url <service>\` a
-  service's (its connection URL, \`postgres://…\`, when it has no HTTP one). When \`BUNCARGO_URL_HOST\` is set, the person is on another
-  machine: hand them that URL, not localhost. With \`BUNCARGO_HOSTS=tailscale\`
-  it is \`https://<machine>.ts.net:<port>\`, served by Tailscale; a warning at
+  service's (its connection URL, \`postgres://…\`, when it has no HTTP one).
+  When \`BUNCARGO_URL_HOST\` is set, the person is on another machine: hand
+  them that URL, not localhost. With \`BUNCARGO_HOSTS=tailscale\` it is
+  \`https://<machine>.ts.net:<port>\`, served by Tailscale; a warning at
   startup says when an app fell back to its plain URL, and
-  \`bunx buncargo doctor\` says why.
+  \`bunx buncargo doctor\` says why. A plain \`http://\` URL on another host is
+  no secure context (\`crypto.randomUUID\`, the clipboard and service workers
+  fail there): a browser you drive on this machine gets
+  \`bunx buncargo url <app> --local\`.
 - \`bunx buncargo env --get DATABASE_URL\` prints any variable the apps get, and
   \`bunx buncargo env --get ports.<name>\` one port.
   \`eval "$(bunx buncargo env --export)"\` loads them all into a shell.
@@ -192,6 +198,7 @@ const TOPICS: readonly Topic[] = [
 	},
 	{
 		name: "db",
+		aliases: ["sql", "prisma"],
 		body: `## Databases
 
 - \`bunx buncargo sql\` opens the database's own client in this checkout's
@@ -218,6 +225,21 @@ const TOPICS: readonly Topic[] = [
   \`bunx buncargo prisma migrate diff --script > migration.sql\` is only SQL.
   \`migrate reset\` and \`db push --force-reset\`/\`--accept-data-loss\` drop data
   and exit 1 without \`--yes\`: do not pass it to fix a migration, ask first.
+- New migration: \`bunx buncargo prisma migration new <name>\`. It needs no
+  terminal, prints only the new folder's path on stdout, and exits 1 when the
+  schema has nothing new. Do not use \`migrate dev --create-only\` or pick a
+  timestamp by hand. Before you push, \`bunx buncargo prisma migration check\`
+  exits 1 when a migration's timestamp collides or sorts before the newest one
+  on the base branch; recreate it with \`migration new\`.
+- \`bunx buncargo prisma --db=scratch_<name> <args>\` runs Prisma against a
+  scratch database (create it with \`sql --create-scratch\`); destructive
+  commands need no \`--yes\` there.
+- A "points at <host>, not this checkout's database" warning names an
+  inherited variable Prisma may read instead: unset it before any write. With
+  one set, destructive commands exit 1 even with \`--yes\`.
+- Exit 4 from \`buncargo prisma\`: the database applied migrations this
+  checkout no longer has (a squashed chain). Only \`bunx buncargo dev --reset
+  --yes\` fixes it, and it drops the data: stop and ask the user.
 - Do not \`docker exec\` into a database by name or read credentials from the
   generated compose file: other worktrees run databases of their own.`,
 	},
@@ -288,7 +310,8 @@ const TOPICS: readonly Topic[] = [
   says it is waiting for a slot is not stuck; let it wait.
 - Run test suites as \`bunx buncargo slot -- <command>\` so they take a slot
   too. \`slot\` leaves the environment alone; \`exec --slot\` adds the
-  checkout's URLs and secrets.`,
+  checkout's URLs and secrets; \`ci --slot -- <command>\` runs it against a
+  throwaway stack of its own.`,
 	},
 	{
 		name: "files",
@@ -357,6 +380,10 @@ const TOPICS: readonly Topic[] = [
   (set \`secrets.organizationId\`); \`error\` says which. \`dev\`, \`run\`
   and \`exec\` stop within seconds on an expired session instead of hanging,
   and only warn when Infisical is unreachable.
+- A browser page of another checkout failing with \`ERR_NETWORK_CHANGED\`
+  while a run starts or stops: Docker creating or removing a stack's network
+  makes Chrome drop its requests. It is a known buncargo issue, not the app;
+  reload the page, and do not share one network between projects to avoid it.
 - \`bunx buncargo setup --yes\` runs the fix of every failing check (missing
   dependencies, generated files).
 - Docker out of disk, or hanging: \`bunx buncargo prune --project --dry-run\`
@@ -394,7 +421,9 @@ export function agentsGuide(topic?: string): string {
 	if (topic === undefined) return AGENTS_GUIDE;
 	if (topic === "all")
 		return [AGENTS_GUIDE, ...TOPICS.map((entry) => entry.body)].join("\n\n");
-	const found = TOPICS.find((entry) => entry.name === topic);
+	const found = TOPICS.find(
+		(entry) => entry.name === topic || entry.aliases?.includes(topic),
+	);
 	if (!found)
 		throw new CliError(`No agents guide topic named "${topic}".`, [
 			`Topics: ${[...AGENTS_GUIDE_TOPICS, "all"].join(", ")}.`,

@@ -1,18 +1,13 @@
+import { randomBytes } from "node:crypto";
+import { rmSync } from "node:fs";
+import { resolve } from "node:path";
 import { typedSwitch, typedSwitchGroup } from "hanzio";
-import {
-	CONTAINER_RUNTIME_SELECTIONS,
-	containerRuntimeForEnv,
-	withProjectLifecycleLock,
-} from "../../container-runtime";
+import { CONTAINER_RUNTIME_SELECTIONS } from "../../container-runtime";
+import { formatCheckSlotHolder, withCheckSlot } from "../../core/check-slots";
 import { CI_PROJECT_SUFFIX } from "../../core/ports";
-import { type RunEntry, readAllRuns } from "../../core/run-registry";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import { loadDevEnv } from "../../loader";
-import type {
-	AnyDevEnvironment,
-	BuncargoContainer,
-	BuncargoVolume,
-} from "../../types";
+import type { AnyDevEnvironment, ExecResult, PrismaRunner } from "../../types";
 import {
 	type CommandSpec,
 	enumValidator,
@@ -27,6 +22,8 @@ import { argumentsError, CliError } from "../errors";
 import { splitCliArgs } from "../flags";
 import * as log from "../log";
 import { runForwardingSignals } from "./exec";
+
+const SCHEMA_MODES = ["migrate", "push"] as const;
 
 const FLAGS = {
 	help: {
@@ -43,6 +40,20 @@ const FLAGS = {
 		name: "--seed",
 		kind: "boolean",
 		description: "Run migrations, then the seed command",
+	},
+	schema: {
+		name: "--schema",
+		kind: "string",
+		valueHint: "=<migrate|push>",
+		description:
+			"How the Prisma schema is applied: its migrations, or `prisma db push` (implies --migrate)",
+		validate: enumValidator("--schema", SCHEMA_MODES),
+	},
+	slot: {
+		name: "--slot",
+		kind: "boolean",
+		description:
+			"Hold one of the machine's check slots from before the services start until teardown",
 	},
 	services: {
 		name: "--services",
@@ -79,6 +90,11 @@ export const CI_COMMAND_SPEC: CommandSpec = {
 			command: "buncargo ci --seed",
 			description: "Check that migrations and the seed apply cleanly",
 		},
+		{
+			command: "buncargo ci --schema=push --slot -- bun test",
+			description:
+				"A unit shard: the schema pushed, not migrated, inside a check slot",
+		},
 	],
 };
 
@@ -86,6 +102,7 @@ export function parseCiArgs(args: string[]) {
 	const { flags, passthrough } = splitCliArgs(args);
 	const errors: string[] = [];
 	const services = readStringFlag(flags, FLAGS.services, errors);
+	const schema = readStringFlag(flags, FLAGS.schema, errors);
 	for (const flag of findUnknownFlags(CI_COMMAND_SPEC, flags))
 		errors.push(`Unknown flag: ${flag}`);
 	for (const arg of readPositionals(CI_COMMAND_SPEC, flags))
@@ -95,6 +112,8 @@ export function parseCiArgs(args: string[]) {
 		help: readBooleanFlag(flags, FLAGS.help),
 		migrate: readBooleanFlag(flags, FLAGS.migrate),
 		seed: readBooleanFlag(flags, FLAGS.seed),
+		schemaPush: schema === "push",
+		slot: readBooleanFlag(flags, FLAGS.slot),
 		services: services
 			?.split(",")
 			.map((name) => name.trim())
@@ -120,74 +139,28 @@ function reportContainerLoss(
 }
 
 /**
- * The volumes a killed `buncargo ci` run left in its `-ci` project.
- *
- * A run killed outright cannot tear down, so its volumes outlive its containers.
- * They are this run's own: no container of the project is up and no run on
- * record names it. Anything else belongs to a run that is still going, and is
- * left alone.
+ * The suffix one `buncargo ci` runs its stack under: `ci-<id>`, so two runs in
+ * one checkout never share a project, plus a self-hosted runner's name, so
+ * `docker ps` on a shared machine says whose stack it is.
  */
-export function ciLeftoverVolumes(input: {
-	projectName: string;
-	volumes: readonly BuncargoVolume[];
-	containers: readonly BuncargoContainer[];
-	runs: readonly RunEntry[];
-}): string[] {
-	const { projectName } = input;
-	if (input.containers.some((container) => container.project === projectName))
-		return [];
-	if (input.runs.some((run) => run.projectName === projectName)) return [];
-	return input.volumes
-		.filter((volume) => volume.project === projectName)
-		.map((volume) => volume.name);
-}
-
-/**
- * Remove a killed run's leftover volumes before this run starts, so its
- * database starts empty, as every CI run's does.
- *
- * Only what `buncargo ci` would have removed on its own teardown, and only in
- * its own project. A busy project lock or a runtime that cannot answer means
- * someone else is working there, so the run goes ahead without the cleanup.
- */
-async function removeCiLeftovers(env: AnyDevEnvironment): Promise<void> {
-	const runtime = containerRuntimeForEnv(env);
-	try {
-		await withProjectLifecycleLock(
-			env.projectName,
-			env.root,
-			async () => {
-				const names = ciLeftoverVolumes({
-					projectName: env.projectName,
-					volumes: await runtime.listVolumes(),
-					containers: runtime.list(),
-					runs: await readAllRuns(),
-				});
-				if (names.length === 0) return;
-				const refused = await runtime.removeVolumes(names);
-				for (const { name, error } of refused)
-					log.warn(`Could not remove leftover volume ${name}: ${error}`);
-				const removed = names.length - refused.length;
-				if (removed > 0)
-					log.info(
-						`Removed ${removed} leftover volume${removed === 1 ? "" : "s"} of ${env.projectName}, from a run that did not finish`,
-					);
-			},
-			{ timeoutMs: 0 },
-		);
-	} catch {
-		// A busy lock, or a runtime that is not up: the run itself reports it
-		// with a clearer message than a cleanup could.
-	}
+function ciSuffix(): string {
+	const { RUNNER_ENVIRONMENT, RUNNER_NAME } = process.env;
+	const runner =
+		RUNNER_ENVIRONMENT === "self-hosted"
+			? RUNNER_NAME?.toLowerCase().replace(/[^a-z0-9]+/g, "-")
+			: undefined;
+	const id = randomBytes(3).toString("hex");
+	return [CI_PROJECT_SUFFIX, id, runner].filter(Boolean).join("-");
 }
 
 /**
  * Local services in CI: start them, apply migrations and the seed with the
  * same config as local, run the command with the environment, tear down.
  *
- * The teardown removes volumes, because a CI run that leaves a database behind
- * leaks it into the next job on a reused runner. Returns the command's exit
- * code, or 0 when only services/migrations/seed were asked for.
+ * Each run is its own stack, with its data on tmpfs: a CI run that leaves a
+ * database behind leaks it into the next job on a reused runner, and one run
+ * finishing must never take down another's. Returns the command's exit code,
+ * or 0 when only services/migrations/seed were asked for.
  */
 export async function handleCi(args: string[]): Promise<number> {
 	const parsed = parseCiArgs(args);
@@ -220,12 +193,17 @@ async function withStatusOnStderr<T>(work: () => Promise<T>): Promise<T> {
 }
 
 async function runCi(parsed: ReturnType<typeof parseCiArgs>): Promise<number> {
-	// Its own `<project>-ci` stack: tearing down with volumes must never reach
-	// the checkout's dev database, which is exactly what it would do if a
-	// developer ran this locally against the shared project.
-	const env = (
-		await loadDevEnv({ containerRuntime: parsed.runtime })
-	).withSuffix(CI_PROJECT_SUFFIX);
+	// A stack of its own, under a name no other run has, with its data in
+	// memory: tearing it down never reaches the checkout's dev database or
+	// another `ci` run's services, and a run killed outright leaves no volume.
+	const checkout = await loadDevEnv({ containerRuntime: parsed.runtime });
+	const env = checkout.withSuffix(ciSuffix(), { data: "tmpfs" });
+	const prisma = env.prisma;
+	if (parsed.schemaPush && !prisma) {
+		throw new CliError(
+			"--schema=push needs a prisma block in your dev config.",
+		);
+	}
 	const services = parsed.services ?? Object.keys(env.services);
 	const unknown = services.filter((name) => !env.services[name]);
 	if (unknown.length > 0) {
@@ -233,82 +211,123 @@ async function runCi(parsed: ReturnType<typeof parseCiArgs>): Promise<number> {
 			`Configured services: ${Object.keys(env.services).join(", ") || "none"}`,
 		]);
 	}
+	if (prisma && parsed.schemaPush && !services.includes(prisma.service)) {
+		throw new CliError(
+			`--schema=push needs the ${prisma.service} service, which --services leaves out.`,
+		);
+	}
+	// Unless `docker.generatedFile` names one file for every stack.
+	const ownComposeFile =
+		env.composeFile !== checkout.composeFile
+			? resolve(env.root, env.composeFile)
+			: undefined;
 
 	// The teardown runs inside the signal scope: a second Ctrl-C, or the
 	// runner's SIGTERM after its SIGINT, arriving while the stack comes down
-	// would otherwise kill this process half way and leave the stack, volume
-	// included. The containers' own commands run in their own process group,
-	// so the terminal's signal does not reach them.
-	return runForwardingSignals(async (signal) => {
-		try {
-			// Claimed with a hold, unlike a library run's keep-forever default:
-			// a run killed outright (`SIGKILL`) cannot tear down, and with no
-			// hold the sweep keeps its stack for as long as the checkout exists.
-			// Explicit, so a config's `autoShutdown: false`, which is about dev
-			// containers, does not keep a ci stack. Prepared first: the claim
-			// names the selection's services.
-			await removeCiLeftovers(env);
-			await env.prepareStartAsync(undefined, services, signal);
-			await env.claimRun({ idleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS, signal });
-			await env.start({
-				onlyServices: services,
-				startServers: false,
-				prepare: parsed.migrate || parsed.seed ? "all" : "containers",
-				// Explicit, below: `seed.check` is for skipping a seed on a warm
-				// local database, and a CI database is never warm.
-				skipSeed: true,
-				// This process tears the containers down itself, and a CI runner
-				// is thrown away after the job anyway.
-				watchdog: false,
-				signal,
-			});
-
-			if (parsed.seed) {
-				const outcome = await env.runSeed({ force: true, signal });
-				const failedSeed = typedSwitch(outcome, "status", {
-					"not-configured": () => {
-						throw new CliError("--seed needs a seed block in your dev config.");
-					},
-					...typedSwitchGroup(
-						outcome,
-						"status",
-						["not-needed", "succeeded"],
-						() => undefined,
-					),
-					failed: (failed) => failed.result,
+	// would otherwise kill this process half way and leave the stack. The
+	// containers' own commands run in their own process group, so the
+	// terminal's signal does not reach them.
+	const run = () =>
+		runForwardingSignals(async (signal) => {
+			try {
+				// Claimed with a hold, unlike a library run's keep-forever default:
+				// a run killed outright (`SIGKILL`) cannot tear down, and with no
+				// hold the sweep keeps its stack for as long as the checkout exists.
+				// Explicit, so a config's `autoShutdown: false`, which is about dev
+				// containers, does not keep a ci stack. Prepared first: the claim
+				// names the selection's services.
+				await env.prepareStartAsync(undefined, services, signal);
+				await env.claimRun({ idleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS, signal });
+				await env.start({
+					onlyServices: services,
+					startServers: false,
+					prepare:
+						(parsed.migrate || parsed.seed) && !parsed.schemaPush
+							? "all"
+							: "containers",
+					// Explicit, below: `seed.check` is for skipping a seed on a warm
+					// local database, and a CI database is never warm.
+					skipSeed: true,
+					// This process tears the containers down itself, and a CI runner
+					// is thrown away after the job anyway.
+					watchdog: false,
+					signal,
 				});
-				if (failedSeed) {
-					reportContainerLoss(env);
-					return {
-						exitCode: failedSeed.exitCode || 1,
-						stdout: "",
-						stderr: "",
-					};
+
+				if (prisma && parsed.schemaPush) {
+					const failed = await pushSchema(prisma);
+					if (failed) {
+						reportContainerLoss(env);
+						return exited(failed);
+					}
 				}
-			}
 
-			if (parsed.command.length === 0) {
-				return { exitCode: 0, stdout: "", stderr: "" };
-			}
+				if (parsed.seed) {
+					const outcome = await env.runSeed({ force: true, signal });
+					const failedSeed = typedSwitch(outcome, "status", {
+						"not-configured": () => {
+							throw new CliError(
+								"--seed needs a seed block in your dev config.",
+							);
+						},
+						...typedSwitchGroup(
+							outcome,
+							"status",
+							["not-needed", "succeeded"],
+							() => undefined,
+						),
+						failed: (failed) => failed.result,
+					});
+					if (failedSeed) {
+						reportContainerLoss(env);
+						return exited(failedSeed.exitCode || 1);
+					}
+				}
 
-			// The command gets no shared scope: a CI job should not need
-			// Infisical access for its tests. Migrations and the seed still get
-			// their own scopes.
-			const result = await env.exec(parsed.command, {
-				secrets: false,
-				verbose: true,
-				throwOnError: false,
-				signal,
-			});
-			if (result.exitCode !== 0 && !signal.aborted) reportContainerLoss(env);
-			return result;
-		} catch (error) {
-			// Interrupted before the command: the signal's exit code says so.
-			if (signal.aborted) return { exitCode: 1, stdout: "", stderr: "" };
-			reportContainerLoss(env);
-			throw error;
-		} finally {
-			await env.stop({ removeVolumes: true });
-		}
+				if (parsed.command.length === 0) return exited(0);
+
+				// The command gets no shared scope: a CI job should not need
+				// Infisical access for its tests. Migrations and the seed still get
+				// their own scopes.
+				const result = await env.exec(parsed.command, {
+					secrets: false,
+					verbose: true,
+					throwOnError: false,
+					signal,
+				});
+				if (result.exitCode !== 0 && !signal.aborted) reportContainerLoss(env);
+				return result;
+			} catch (error) {
+				// Interrupted before the command: the signal's exit code says so.
+				if (signal.aborted) return exited(1);
+				reportContainerLoss(env);
+				throw error;
+			} finally {
+				await env.stop({ removeVolumes: true });
+				if (ownComposeFile) rmSync(ownComposeFile, { force: true });
+			}
+		});
+
+	if (!parsed.slot) return run();
+	return withCheckSlot(["ci", ...parsed.command].join(" ").slice(0, 60), run, {
+		onWait: (holders) =>
+			console.error(
+				`Waiting for a check slot: ${holders.map(formatCheckSlotHolder).join(", ")}`,
+			),
 	});
+}
+
+function exited(exitCode: number): ExecResult {
+	return { exitCode, stdout: "", stderr: "" };
+}
+
+/**
+ * `prisma db push` in place of the migrations, then `prisma.generate` as
+ * `--migrate` runs it. Returns the failing step's exit code, or 0.
+ */
+async function pushSchema(prisma: PrismaRunner): Promise<number> {
+	log.info("Pushing the Prisma schema...");
+	const pushed = await prisma.run(["db", "push"]);
+	if (pushed !== 0 || !prisma.generateCommand) return pushed;
+	return prisma.generate();
 }

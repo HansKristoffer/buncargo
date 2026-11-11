@@ -184,6 +184,7 @@ export function createDevEnvContext<
 		containerRuntime?: string;
 		root?: string;
 		readOnly?: boolean;
+		data?: "volumes" | "tmpfs";
 	} = {},
 ): DevEnvContext<TServices, TApps, TEnv> {
 	const root = options.root ?? findMonorepoRoot();
@@ -315,6 +316,7 @@ export function createDevEnvContext<
 			config.docker,
 			{ projectName, root, worktree: worktreeSuffix },
 			runtime().name,
+			{ data: options.data },
 		);
 
 	let cachedPlan: { selection: string; plan: StartPlan } | undefined;
@@ -388,6 +390,7 @@ export function createDevEnvContext<
 			// parallel suffixed runs (CI jobs on one machine) never share one.
 			persist: suffix === undefined,
 			claim: true,
+			throwaway: suffix !== undefined || isCI(),
 			// The bind probe here too: this is the allocation every dev run
 			// makes, and a snapshot only knows what `lsof` lets this user see.
 			getOwner: snapshot

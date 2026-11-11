@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import {
+	existsSync,
+	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
@@ -9,10 +12,9 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execAsync } from "../../core/process";
-import type { RunEntry } from "../../core/run-registry";
+import { CI_ENV_VARS } from "../../core/runtime-flags";
 import { startFakeInfisical } from "../../core/secrets/fake-infisical.testing";
-import type { BuncargoContainer, BuncargoVolume } from "../../types";
-import { ciLeftoverVolumes, parseCiArgs } from "./ci";
+import { parseCiArgs } from "./ci";
 import { withAppendedArgs } from "./exec";
 
 const cli = [process.execPath, resolve(import.meta.dir, "../bin.ts")];
@@ -36,6 +38,10 @@ describe("parseCiArgs", () => {
 
 	it("allows no command, for a migrations/seed-only check", () => {
 		expect(parseCiArgs(["--seed"]).command).toEqual([]);
+	});
+
+	it("rejects a --schema it does not know", () => {
+		expect(parseCiArgs(["--schema=reset"]).errors).toHaveLength(1);
 	});
 
 	it("rejects unknown flags and stray arguments", () => {
@@ -251,64 +257,6 @@ it("claims its stack with an idle hold, so the sweep removes it after a SIGKILL"
 	}
 });
 
-describe("ciLeftoverVolumes", () => {
-	const volume = (name: string, project: string): BuncargoVolume => ({
-		name,
-		project,
-		runtime: "docker",
-	});
-	const container = (project: string): BuncargoContainer =>
-		({ id: project, project, state: "running" }) as BuncargoContainer;
-	const run = (projectName: string) => ({ projectName }) as RunEntry;
-
-	it("takes the leftover volumes of a ci project nothing is using", () => {
-		expect(
-			ciLeftoverVolumes({
-				projectName: "demo-ci",
-				volumes: [
-					volume("demo-ci_postgres_data", "demo-ci"),
-					volume("demo_postgres_data", "demo"),
-				],
-				containers: [],
-				runs: [],
-			}),
-		).toEqual(["demo-ci_postgres_data"]);
-	});
-
-	it("leaves them while a container of the project is up", () => {
-		expect(
-			ciLeftoverVolumes({
-				projectName: "demo-ci",
-				volumes: [volume("demo-ci_postgres_data", "demo-ci")],
-				containers: [container("demo-ci")],
-				runs: [],
-			}),
-		).toEqual([]);
-	});
-
-	it("leaves them while a run on record names the project", () => {
-		expect(
-			ciLeftoverVolumes({
-				projectName: "demo-ci",
-				volumes: [volume("demo-ci_postgres_data", "demo-ci")],
-				containers: [],
-				runs: [run("demo-ci")],
-			}),
-		).toEqual([]);
-	});
-
-	it("never takes an unattributed volume", () => {
-		expect(
-			ciLeftoverVolumes({
-				projectName: "demo-ci",
-				volumes: [{ name: "stray", runtime: "docker" }],
-				containers: [],
-				runs: [],
-			}),
-		).toEqual([]);
-	});
-});
-
 it("leaves stdout to the command, byte for byte", async () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-ci-")));
 	const docker = join(root, "docker");
@@ -331,4 +279,156 @@ it("leaves stdout to the command, byte for byte", async () => {
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+/**
+ * A checkout with one Postgres service and a `docker` that records every call
+ * as `<pid of its caller> <args>` and runs `onCall` (shell, with `$*` the args).
+ */
+function stubbedCheckout(prefix: string, onCall = "", extraConfig = "") {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-ci-")));
+	const log = join(root, "docker.log");
+	const docker = join(root, "docker");
+	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
+	writeFileSync(
+		join(root, "dev.config.ts"),
+		`export default {projectPrefix:'${prefix}',services:{postgres:{port:5432,healthCheck:false}},apps:{}${extraConfig}};`,
+	);
+	writeFileSync(
+		docker,
+		`#!/bin/sh\necho "$PPID $*" >> "${log}"\n${onCall}\nexit 0\n`,
+		{ mode: 0o755 },
+	);
+	/** `unset` names variables the run must not inherit. */
+	const run = async (
+		args: string[],
+		env: Record<string, string> = {},
+		unset: readonly string[] = [],
+	) => {
+		const childEnv: Record<string, string | undefined> = {
+			...process.env,
+			HOME: join(root, "home"),
+			BUNCARGO_CONTAINER_BINARY: docker,
+			...env,
+		};
+		for (const name of unset) delete childEnv[name];
+		const child = Bun.spawn([...cli, "ci", ...args], {
+			cwd: root,
+			env: childEnv,
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stderr, exitCode] = await Promise.all([
+			new Response(child.stderr).text(),
+			child.exited,
+		]);
+		return { exitCode, stderr };
+	};
+	return {
+		root,
+		run,
+		calls: () => readFileSync(log, "utf-8").trim().split("\n"),
+		[Symbol.dispose]: () => rmSync(root, { recursive: true, force: true }),
+	};
+}
+
+it("gives two runs in one checkout their own stacks", async () => {
+	using checkout = stubbedCheckout("cipair");
+
+	const results = await Promise.all([
+		checkout.run(["--", "true"]),
+		checkout.run(["--", "true"]),
+	]);
+	expect(results.map((result) => result.exitCode)).toEqual([0, 0]);
+
+	// Each run's Compose calls, by the run that made them.
+	const projects = new Map<string, Set<string>>();
+	for (const line of checkout.calls()) {
+		const [pid = "", ...args] = line.split(" ");
+		const project = args[args.indexOf("-p") + 1];
+		if (args[0] !== "compose" || !project) continue;
+		projects.set(pid, (projects.get(pid) ?? new Set()).add(project));
+	}
+	const perRun = [...projects.values()].map((names) => [...names]);
+	expect(perRun).toHaveLength(2);
+	for (const names of perRun) {
+		expect(names).toHaveLength(1);
+		expect(names[0]).toMatch(/^cipair-buncargo-ci-[^-]+-ci-[0-9a-f]{6}$/);
+	}
+	expect(perRun[0]).not.toEqual(perRun[1]);
+});
+
+it("runs its stack on tmpfs and leaves no compose file behind", async () => {
+	using checkout = stubbedCheckout(
+		"citmpfs",
+		`case "$*" in *" up "*) cat ${"$"}(dirname "$0")/.buncargo/docker-compose.ci-*.generated.yml >> "$(dirname "$0")/up.yml" ;; esac`,
+	);
+
+	const result = await checkout.run(["--", "true"]);
+
+	expect(result.exitCode).toBe(0);
+	const model = readFileSync(join(checkout.root, "up.yml"), "utf-8");
+	expect(model).toContain('tmpfs:\n      - "/var/lib/postgresql/data"');
+	expect(model).not.toContain("postgres_data");
+	expect(
+		readdirSync(join(checkout.root, ".buncargo")).filter((name) =>
+			name.startsWith("docker-compose.ci-"),
+		),
+	).toEqual([]);
+});
+
+it("names a self-hosted runner in the project", async () => {
+	using checkout = stubbedCheckout("cirunner");
+
+	await checkout.run(["--", "true"], {
+		RUNNER_ENVIRONMENT: "self-hosted",
+		RUNNER_NAME: "r1",
+	});
+
+	expect(checkout.calls().join("\n")).toMatch(/ -p \S+-ci-[0-9a-f]{6}-r1 /);
+});
+
+it("holds a check slot from before the services start until teardown", async () => {
+	// Records the slot's holder each time the stack comes up or down.
+	using checkout = stubbedCheckout(
+		"cislot",
+		`case "$*" in *" up "*|*" down "*) cat "$HOME/.buncargo/check-slots/0.lock" >> "$(dirname "$0")/holders"; echo >> "$(dirname "$0")/holders" ;; esac`,
+	);
+	const result = await checkout.run(
+		["--slot", "--", "true"],
+		{ BUNCARGO_CHECK_SLOTS: "1" },
+		// A slot is skipped in CI, and this suite runs in CI too.
+		CI_ENV_VARS,
+	);
+
+	expect(result.exitCode).toBe(0);
+	const holders = readFileSync(join(checkout.root, "holders"), "utf-8")
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line) as { label: string });
+	expect(holders.map((holder) => holder.label)).toEqual(["ci true", "ci true"]);
+	expect(
+		existsSync(
+			join(checkout.root, "home", ".buncargo", "check-slots", "0.lock"),
+		),
+	).toBe(false);
+});
+
+it("pushes the Prisma schema instead of migrating with --schema=push", async () => {
+	using checkout = stubbedCheckout("cipush", "", ",prisma:{}");
+	const bin = join(checkout.root, "packages/prisma/node_modules/.bin");
+	mkdirSync(bin, { recursive: true });
+	writeFileSync(
+		join(bin, "prisma"),
+		`#!/bin/sh\necho "$*" >> "${checkout.root}/prisma.log"\n`,
+		{ mode: 0o755 },
+	);
+
+	const result = await checkout.run(["--schema=push", "--migrate"]);
+
+	expect(result.exitCode).toBe(0);
+	expect(readFileSync(join(checkout.root, "prisma.log"), "utf-8")).toBe(
+		"db push\n",
+	);
 });

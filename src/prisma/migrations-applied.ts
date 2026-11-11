@@ -1,9 +1,9 @@
-import { readdir, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { withDeadline, withSignal } from "../core/deadline";
 import { inferDockerPreset } from "../core/service-presets";
 import type { PrismaConfig, ServiceConfig } from "../types";
 import { resolvePrismaConfig } from "./config";
+import { appliedButMissing, listMigrationFolders } from "./migration-chain";
 
 export interface MigrationRow {
 	migration_name: string;
@@ -65,20 +65,10 @@ export async function appliedMigrationCount(
 		)
 			return;
 		const { cwd, migrations } = resolvePrismaConfig(input.prisma);
-		const directory = resolve(input.root, cwd, migrations);
-		const entries = await readdir(directory, { withFileTypes: true });
-		const local: string[] = [];
-		for (const entry of entries) {
-			if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-			try {
-				if (
-					(await stat(resolve(directory, entry.name, "migration.sql"))).isFile()
-				)
-					local.push(entry.name);
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			}
-		}
+		const local = await listMigrationFolders(
+			resolve(input.root, cwd, migrations),
+		);
+		if (local.length === 0) return;
 		const rows = await readRows(input.url, input.signal);
 		if (
 			rows.some((row) => row.finished_at == null || row.rolled_back_at != null)
@@ -88,6 +78,26 @@ export async function appliedMigrationCount(
 		return local.every((name) => applied.has(name)) ? local.length : undefined;
 	} catch {
 		input.signal?.throwIfAborted();
+		return undefined;
+	}
+}
+
+/**
+ * The migrations the database at `url` finished that `dir` no longer has,
+ * as when a branch squashed the chain. Undefined when the database cannot
+ * say (unreachable, no `_prisma_migrations`): Prisma then decides.
+ */
+export async function missingAppliedMigrations(
+	url: string,
+	dir: string,
+	readRows = readMigrationRows,
+): Promise<string[] | undefined> {
+	try {
+		return appliedButMissing(
+			await readRows(url),
+			await listMigrationFolders(dir),
+		);
+	} catch {
 		return undefined;
 	}
 }

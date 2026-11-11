@@ -7,7 +7,9 @@ per port.
 ## Allocation and claims
 
 - `src/core/port-allocation.ts` hashes a project offset, probes conflicts, and persists
-  `.buncargo/ports.json`. `probeConflicts: false` turns the probe off for a read: `getEnvVar`
+  `.buncargo/ports.json`. `allocatePortBlock` is a run's allocation (a dry run without `claim`),
+  `readPortPlan` the read, and the pure `chooseBlock` decides which candidate block is free;
+  `resolvePortPlan` picks between the first two. The read probes nothing: `getEnvVar`
   answers a `vite.config.ts` with the ports the environment is *using*, and cannot resolve a
   runtime without importing the backends that import it back, so probing there would read this
   project's own service container as foreign and shift the block onto a port nothing is listening
@@ -59,8 +61,11 @@ per port.
   stack's teardown releases only claims last used before its run started: a job allocates before
   it publishes its run, and the last job's stack coming down in that window took the new job's
   claim with it. A stack the sweep downs with no run on record has no start to compare with, so
-  it keeps a claim used within `RECLAIM_MIN_IDLE_MS` (the hour a full range also spares). A CI dev run killed before its teardown keeps its claim until that
-  directory's next job: the claim does not record that it was made in CI. Releasing a CI dev
+  it keeps a claim used within `RECLAIM_MIN_IDLE_MS` (the hour a full range also spares). A throwaway run killed before its teardown (a CI dev run, an app-only
+  suffixed one, which has no stack whose removal releases it) records `throwaway: true` on its
+  claim, and the sweep frees it once the run left nothing: no live run, no listed container, and
+  its entries retired, by the same "used before its run started" rule, or the hour with no run on
+  record (`abandonedThrowawayClaims`). Releasing a CI dev
   claim after a `dev --down` that kept volumes also drops the project-name refusal for them;
   in CI the next job of that directory claims the name again.
   The hash spreads checkouts over 100 to 9000, and stays there: widening it would move every
