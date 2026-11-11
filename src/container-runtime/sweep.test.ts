@@ -403,6 +403,100 @@ describe("sweepOrphanedContainers", () => {
 		]);
 	});
 
+	it("frees the claim of a throwaway run killed before its teardown, once nothing of it is left", async () => {
+		// A CI run killed by its runner: no teardown released its claim, and
+		// its directory stays.
+		const throwaway = (projectName: string, suffix?: string) =>
+			claimOffset({
+				root: checkout,
+				suffix,
+				offset: 200,
+				ports: [],
+				projectName,
+				throwaway: true,
+			});
+		throwaway("demo-e2e", "e2e");
+		throwaway("demo-ci-held", "ci");
+		claim("demo", checkout);
+		const startedAt = new Date().toISOString();
+		const killed = (sessionId: string, projectName: string) =>
+			publishRun(entry({ sessionId, projectName, startedAt }));
+		await killed("e2e", "demo-e2e");
+		await killed("ci", "demo-ci-held");
+		await killed("dev", "demo");
+		const { runtime } = stubRuntime([
+			container("demo-ci-held", checkout, "running"),
+		]);
+
+		await sweepOrphanedContainers({ runtimes: [runtime] });
+
+		// Its containers still up: the run is not over yet.
+		expect(Object.keys(readAllOffsetClaims()).sort()).toEqual([
+			checkout,
+			offsetClaimKey(checkout, "ci"),
+		]);
+		expect((await loadRuns()).map((run) => run.sessionId)).toEqual(["ci"]);
+	});
+
+	it("keeps a throwaway claim a newer job made, or a live run holds", async () => {
+		// The last job's containers are gone; the claim is newer than its run.
+		await publishRun(entry({ sessionId: "last-job", projectName: "demo-ci" }));
+		claimOffset({
+			root: checkout,
+			offset: 200,
+			ports: [],
+			projectName: "demo-ci",
+			throwaway: true,
+		});
+		const live = join(checkout, "live-worktree");
+		mkdirSync(live, { recursive: true });
+		claimOffset({
+			root: live,
+			offset: 300,
+			ports: [],
+			projectName: "live-ci",
+			throwaway: true,
+		});
+		await publishRun(
+			entry({
+				sessionId: "live",
+				projectName: "live-ci",
+				root: live,
+				pid: process.pid,
+				processIdentity: readProcessIdentity(process.pid),
+				startedAt: new Date().toISOString(),
+				services: [],
+			}),
+		);
+
+		await sweepOrphanedContainers({ runtimes: [stubRuntime([]).runtime] });
+
+		expect(Object.keys(readAllOffsetClaims()).sort()).toEqual([checkout, live]);
+	});
+
+	it("frees a throwaway claim with no run on record only once it is an hour old", async () => {
+		claimOffset({
+			root: checkout,
+			offset: 200,
+			ports: [],
+			projectName: "demo-ci",
+			throwaway: true,
+		});
+		const { runtime } = stubRuntime([]);
+
+		await sweepOrphanedContainers({ runtimes: [runtime] });
+		expect(Object.keys(readAllOffsetClaims())).toEqual([checkout]);
+
+		await sweepOrphanedContainers({ runtimes: [], now: Date.now() + 3_600_000 });
+		expect(Object.keys(readAllOffsetClaims())).toEqual([checkout]);
+
+		await sweepOrphanedContainers({
+			runtimes: [runtime],
+			now: Date.now() + 3_600_000,
+		});
+		expect(readAllOffsetClaims()).toEqual({});
+	});
+
 	it("reports a stack this user's state does not name, and leaves it alone", async () => {
 		// Another user's stack on a shared daemon: no run and no claim of ours
 		// names it, so its checkout reading deleted and its containers being

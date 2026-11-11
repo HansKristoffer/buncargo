@@ -13,6 +13,7 @@ import type { AppConfig, ServiceConfig } from "../types";
 import {
 	claimOffset,
 	describeOffsetClaimOverlap,
+	type OffsetClaim,
 	offsetClaimKey,
 	overlappingOffsetClaims,
 	readOffsetClaims,
@@ -20,7 +21,9 @@ import {
 	withOffsetClaimsLock,
 } from "./offset-claims";
 import {
+	type BlockCandidate,
 	buildPortMap,
+	chooseBlock,
 	computeBaseOffset,
 	maxPortOffset,
 	PORT_OFFSET_STEP,
@@ -30,6 +33,7 @@ import {
 	resolvePortPlan,
 	writePortsLockfile,
 } from "./port-allocation";
+import type { BlockedOffset } from "./port-exhaustion";
 import type { PortOwner } from "./process";
 
 const originalOffset = process.env.BUNCARGO_PORT_OFFSET;
@@ -474,6 +478,114 @@ it("a partial start cannot relocate the unselected persisted infrastructure", ()
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+describe("chooseBlock", () => {
+	const block = (offset: number): BlockCandidate => ({
+		offset,
+		ports: [5432 + offset, 3000 + offset],
+	});
+	const claimed = (offset: number, ports: number[] = []): OffsetClaim => ({
+		offset,
+		ports,
+		projectName: `holder-${offset}`,
+		updatedAt: "2026-01-01T00:00:00.000Z",
+	});
+
+	it.each<{
+		name: string;
+		candidates: BlockCandidate[];
+		claims?: Record<string, OffsetClaim>;
+		busy?: number[];
+		chosen?: number;
+		blocked?: Partial<BlockedOffset>[];
+	}>([
+		{
+			name: "takes the first block when nothing is in its way",
+			candidates: [block(300), block(400)],
+			chosen: 300,
+		},
+		{
+			name: "passes over a block whose offset another checkout claims, running or not",
+			candidates: [block(300), block(400)],
+			claims: { "/a": claimed(300) },
+			chosen: 400,
+		},
+		{
+			name: "passes over a block sharing a port with a claim at another offset",
+			candidates: [block(1100), block(1200)],
+			// api 3000 at 1100 is admin 4000 at 100.
+			claims: { "/a": claimed(100, [4100]) },
+			chosen: 1200,
+		},
+		{
+			name: "passes over a block a process holds a port of",
+			candidates: [block(300), block(400)],
+			busy: [300],
+			chosen: 400,
+		},
+		{
+			name: "says why each block is taken when every one is",
+			candidates: [block(300), block(400), block(64_000)],
+			claims: { "/a": claimed(300), "/b": claimed(1300, [3400]) },
+			busy: [400],
+			blocked: [
+				{
+					offset: 300,
+					problem: "offset 300 is claimed by /a",
+					claimKeys: ["/a"],
+					unusable: false,
+				},
+				{
+					offset: 400,
+					problem: "port 3400 is in the block /b claims (offset 1300)",
+					claimKeys: ["/b"],
+					unusable: false,
+				},
+				{
+					offset: 64_000,
+					problem: "offset 64000 puts a port above 65535",
+					unusable: true,
+				},
+			],
+		},
+		{
+			name: "names every claim on a block, so a reclaim frees all of them",
+			candidates: [block(300)],
+			claims: { "/a": claimed(300), "/b": claimed(1300, [3300]) },
+			blocked: [{ offset: 300, claimKeys: ["/a", "/b"], unusable: false }],
+		},
+		{
+			name: "marks a block a process holds as unusable, which no reclaim frees",
+			candidates: [block(300)],
+			busy: [300],
+			blocked: [
+				{ offset: 300, problem: "held at 300", claimKeys: [], unusable: true },
+			],
+		},
+	])("$name", ({ candidates, claims = {}, busy = [], chosen, blocked }) => {
+		const choice = chooseBlock(candidates, claims, (offset) =>
+			busy.includes(offset) ? `held at ${offset}` : undefined,
+		);
+		if (chosen !== undefined) expect(choice).toEqual({ offset: chosen });
+		else
+			expect(choice).toEqual({
+				blocked: blocked?.map((entry) => expect.objectContaining(entry)),
+			});
+	});
+
+	it("probes only a block no claim holds and whose ports all exist", () => {
+		const probed: number[] = [];
+		chooseBlock(
+			[block(300), block(64_000), block(400)],
+			{ "/a": claimed(300) },
+			(offset) => {
+				probed.push(offset);
+				return "held";
+			},
+		);
+		expect(probed).toEqual([400]);
+	});
 });
 
 describe("offset claims", () => {
