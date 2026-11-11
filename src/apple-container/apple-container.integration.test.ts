@@ -46,7 +46,7 @@ describe.skipIf(!ENABLED)("apple container runtime", () => {
 
 		const running = async () =>
 			(await projectServiceStates(adapter, PROJECT))
-				.filter((state) => state.running)
+				.filter((state) => state.serving)
 				.map((state) => state.service);
 		try {
 			await adapter.up(request);

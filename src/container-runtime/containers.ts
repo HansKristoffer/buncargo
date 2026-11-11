@@ -38,7 +38,7 @@ export function serviceStatesOf(
 			{
 				service,
 				state: container.state,
-				running: isContainerServing(container.state),
+				serving: isContainerServing(container.state),
 				...(serviceHash ? { serviceHash } : {}),
 				...(container.healthy === undefined
 					? {}

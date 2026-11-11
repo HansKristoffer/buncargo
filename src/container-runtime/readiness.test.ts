@@ -329,7 +329,7 @@ describe("ensureServicesRunning reconcile", () => {
 			{
 				service: "postgres",
 				state: "running",
-				running: true,
+				serving: true,
 				serviceHash: hash,
 			},
 		]);
@@ -343,7 +343,7 @@ describe("ensureServicesRunning reconcile", () => {
 			{
 				service: "postgres",
 				state: "running",
-				running: true,
+				serving: true,
 				serviceHash: "0000000000000000",
 			},
 		]);
@@ -354,7 +354,7 @@ describe("ensureServicesRunning reconcile", () => {
 	// running yesterday's config forever.
 	it("reconciles a container created before the label existed", async () => {
 		const harness = reconcileHarness([
-			{ service: "postgres", state: "running", running: true },
+			{ service: "postgres", state: "running", serving: true },
 		]);
 		expect(await harness.run()).toHaveLength(1);
 	});
@@ -365,7 +365,7 @@ describe("ensureServicesRunning reconcile", () => {
 			{
 				service: "postgres",
 				state: "stopped",
-				running: false,
+				serving: false,
 				serviceHash: hash,
 			},
 		]);

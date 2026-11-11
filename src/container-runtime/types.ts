@@ -125,7 +125,7 @@ export interface ServiceRuntimeState {
 	service: string;
 	state: ContainerState;
 	/** `isContainerServing(state)`, for readers that ask only that. */
-	running: boolean;
+	serving: boolean;
 	/**
 	 * Fingerprint of this service and its referenced top-level definitions.
 	 * Absent means "cannot compare", never "does not match".

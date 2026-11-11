@@ -943,7 +943,7 @@ export function createLifecycleApi<
 			ctx.projectName,
 		).catch(() => []);
 		const running = new Set(
-			states.filter((state) => state.running).map((state) => state.service),
+			states.filter((state) => state.serving).map((state) => state.service),
 		);
 		return names.every((name) => running.has(name));
 	}

@@ -96,8 +96,8 @@ describe("serviceStatesOf a Docker listing", () => {
 			dockerListLine({ id: "d4", name: "unlabelled" }),
 		);
 		expect(serviceStatesOf(containers, "demo")).toEqual([
-			{ service: "redis", state: "stopped", running: false, exitCode: 137 },
-			{ service: "search", state: "restarting", running: false, exitCode: 1 },
+			{ service: "redis", state: "stopped", serving: false, exitCode: 137 },
+			{ service: "search", state: "restarting", serving: false, exitCode: 1 },
 		]);
 	});
 });

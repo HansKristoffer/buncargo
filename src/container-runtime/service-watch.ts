@@ -62,7 +62,7 @@ export function observeServices(
 	// A running container of a service wins over a stale stopped one.
 	const byService = new Map<string, ServiceRuntimeState>();
 	for (const state of states)
-		if (!byService.get(state.service)?.running)
+		if (!byService.get(state.service)?.serving)
 			byService.set(state.service, state);
 	const observed = new Map<string, ServiceCondition>();
 	for (const service of watched) {

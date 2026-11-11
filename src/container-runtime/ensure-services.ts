@@ -83,7 +83,7 @@ function servicesAllRunning(
 	}
 
 	const running = new Set(
-		states.filter((state) => state.running).map((state) => state.service),
+		states.filter((state) => state.serving).map((state) => state.service),
 	);
 	return serviceNames.every((name) => running.has(name));
 }
@@ -109,7 +109,7 @@ function stackMatches(
 	return serviceNames.every((name) => {
 		const state = byService.get(name);
 		return (
-			state?.running === true &&
+			state?.serving === true &&
 			provable.has(name) &&
 			state.serviceHash === hashes[name]
 		);
@@ -283,7 +283,7 @@ export async function ensureServicesRunning(
 				root,
 				healthyServices: new Set(
 					readyStates
-						.filter((state) => state.running && state.healthy === true)
+						.filter((state) => state.serving && state.healthy === true)
 						.map((state) => state.service),
 				),
 			},
