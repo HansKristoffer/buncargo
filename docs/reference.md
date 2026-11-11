@@ -1130,8 +1130,12 @@ are refused without `--force` (and prompt when there is a terminal): the
 attached app, because closing it tears the run down by design, and an app this
 run reused from another terminal, because that process is not ours. A process
 whose identity cannot be read (`ps` failed or timed out) is refused too, rather
-than reported stopped while it may still run. Exit codes are `0` stopped, `2` no
-such target, `3` refused or not removed. A stopped Docker daemon or Apple system
+than reported stopped while it may still run. Exit codes are `0` stopped (or
+nothing running for this checkout), `1` a usage error such as an unknown flag,
+`2` no such app or service, `3` refused or not removed. A run that ends on its
+own just as `stop` reaches it counts as stopped, and its idle containers are
+taken down. Stopping a run also removes its checkout's service routes from the
+named hosts. A stopped Docker daemon or Apple system
 service has nothing to stop, but one that refuses this user or does not answer
 may still run the containers, so `stop` exits `3` and `dev --down` exits `1`
 rather than reporting nothing to stop.

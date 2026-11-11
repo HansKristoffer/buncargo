@@ -10,6 +10,7 @@ import { acquireLease, releaseLeases } from "../core/leases";
 import {
 	buildRunEntry,
 	findRunsByRoot,
+	loadRuns,
 	publishRun,
 	retireRuns,
 } from "../core/run-registry";
@@ -911,7 +912,11 @@ describe("an app port held by a server failing its health check", () => {
 					/* Already stopped by this run. */
 				}
 			}
-			await retireRuns(["unhealthy-sibling"]);
+			await retireRuns(
+				(await loadRuns()).filter(
+					(run) => run.sessionId === "unhealthy-sibling",
+				),
+			);
 			await rm(root, { recursive: true, force: true });
 		}
 	}

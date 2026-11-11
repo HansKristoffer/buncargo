@@ -129,6 +129,11 @@ export interface RunStackEntry {
 	name: string;
 	/** argv, run from the checkout (or home once it is gone). Keeps data. */
 	down: string[];
+	/**
+	 * The `com.docker.compose.project` label its containers carry. What stops
+	 * them when `down` cannot run: a CLI that lived in a deleted checkout.
+	 */
+	composeProject?: string;
 }
 
 export interface RunEntry {
@@ -768,12 +773,36 @@ export function holdToInherit(
 	return newest?.idleTimeoutMs ?? newest?.inheritedIdleTimeoutMs;
 }
 
-/** Drop entries the sweep has finished with. */
-export async function retireRuns(sessionIds: readonly string[]): Promise<void> {
-	if (sessionIds.length === 0) return;
-	const drop = new Set(sessionIds);
+type LifecycleFields = Pick<
+	RunEntry,
+	"sessionId" | "startedAt" | "releasedAt" | "ownerLostAt"
+>;
+
+/**
+ * Whether an entry is still one of those read: it has not started again,
+ * released or been found gone since. A session that released and claimed
+ * again under the same id between a read and a write is live by then.
+ */
+function unchangedSince(
+	read: readonly LifecycleFields[],
+	current: RunEntry,
+): boolean {
+	const expected = read.find((entry) => entry.sessionId === current.sessionId);
+	return (
+		expected !== undefined &&
+		expected.startedAt === current.startedAt &&
+		expected.releasedAt === current.releasedAt &&
+		expected.ownerLostAt === current.ownerLostAt
+	);
+}
+
+/** Drop entries, each only while it is still the one that was read. */
+export async function retireRuns(
+	entries: readonly LifecycleFields[],
+): Promise<void> {
+	if (entries.length === 0) return;
 	await updateRuns(getRunsPath(), (runs) => {
-		const next = runs.filter((entry) => !drop.has(entry.sessionId));
+		const next = runs.filter((entry) => !unchangedSince(entries, entry));
 		return next.length === runs.length ? undefined : next;
 	});
 }
@@ -841,16 +870,19 @@ export async function retireProjectRuns(target: {
 	});
 }
 
-/** Forget stacks the sweep has stopped, so the entry can retire like any other. */
+/**
+ * Forget stacks the sweep has stopped, so the entry can retire like any other.
+ * Only on an entry still the one that was read: a session that claimed again
+ * meanwhile may have started those stacks again.
+ */
 export async function clearRunStacks(
-	sessionIds: readonly string[],
+	entries: readonly LifecycleFields[],
 ): Promise<void> {
-	if (sessionIds.length === 0) return;
-	const cleared = new Set(sessionIds);
+	if (entries.length === 0) return;
 	await updateRuns(getRunsPath(), (runs) => {
 		let changed = false;
 		const next = runs.map((entry) => {
-			if (!cleared.has(entry.sessionId) || entry.stacks === undefined)
+			if (entry.stacks === undefined || !unchangedSince(entries, entry))
 				return entry;
 			changed = true;
 			const { stacks: _stacks, ...rest } = entry;

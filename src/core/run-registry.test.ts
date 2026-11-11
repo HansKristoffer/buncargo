@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 import { readProcessIdentity } from "./process-identity";
 import {
 	buildRunEntry,
+	clearRunStacks,
 	describeRun,
 	getRunsPath,
 	groupRunsByProject,
@@ -278,11 +279,39 @@ describe("releaseRun", () => {
 });
 
 describe("retiring entries", () => {
-	it("retireRuns drops exactly the sessions it is given", async () => {
+	it("retireRuns drops exactly the entries it is given", async () => {
 		for (const sessionId of ["a", "b", "c"])
 			await publishRun(makeRun({ sessionId, services: [DB] }));
-		await retireRuns(["a", "c"]);
+		const read = await loadRuns();
+		await retireRuns(read.filter((run) => run.sessionId !== "b"));
 		expect(await sessions()).toEqual(["b"]);
+	});
+
+	it("keeps a session that released and claimed again after it was read", async () => {
+		// The sweep reads, spends minutes on `down`s, then retires: a library
+		// session can have claimed again under the same id by then.
+		await publishRun(makeRun({ services: [DB] }));
+		await releaseRun("s1");
+		const read = await loadRuns();
+		await publishRun(makeRun({ services: [DB] }));
+		await retireRuns(read);
+		expect(await sessions()).toEqual(["s1"]);
+	});
+
+	it("keeps the stacks of a session that claimed again after it was read", async () => {
+		const stacks = [{ name: "supabase", down: ["supabase", "stop"] }];
+		await publishRun(makeRun({ services: [DB], stacks }));
+		await releaseRun("s1");
+		const read = await loadRuns();
+		await clearRunStacks(read);
+		expect((await loadRuns())[0]?.stacks).toBeUndefined();
+
+		await publishRun(makeRun({ services: [DB], stacks }));
+		await releaseRun("s1");
+		const stale = await loadRuns();
+		await publishRun(makeRun({ services: [DB], stacks }));
+		await clearRunStacks(stale);
+		expect((await loadRuns())[0]?.stacks).toEqual(stacks);
 	});
 
 	it("an explicit teardown drops its own session and finished ones, not a live neighbour's", async () => {
@@ -461,7 +490,7 @@ describe("patchRun", () => {
 		await patchRun("s1", { apps: [{ name: "api", status: "failed" }] });
 		expect(await read()).toBe("stopped");
 
-		await retireRuns(["s1"]);
+		await retireRuns(await loadRuns());
 		await publishRun(makeRun());
 		await patchRun("s1", { apps: [{ name: "api", status: "failed" }] });
 		await patchRun("s1", { apps: [{ name: "api", status: "stopped" }] });
@@ -473,7 +502,7 @@ describe("patchRun", () => {
 		// `ready` and `restart && wait` returned on the replaced process.
 		const read = async () => (await loadRuns())[0]?.apps[0];
 		for (const before of ["ready", "failed", "stopped"] as const) {
-			await retireRuns(["s1"]);
+			await retireRuns(await loadRuns());
 			await publishRun(makeRun());
 			await patchRun("s1", {
 				apps: [{ name: "api", pid: 41, status: before }],
