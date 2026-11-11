@@ -24,6 +24,7 @@ import {
 	type Manifest,
 	readStoreData,
 	readStoreManifest,
+	type StoreData,
 	type StoreWrite,
 	sha256,
 	storeDir,
@@ -187,7 +188,8 @@ function baseCopyRepair(root: string, view: View): Buffer | undefined {
 	if (!view.base || readBaseCopy(root, view.spec.path, view.base))
 		return undefined;
 	if (view.base === view.localHash) return view.local.data;
-	if (view.base === view.store?.hash) return view.store.data;
+	if (view.store?.kind === "ok" && view.base === view.store.hash)
+		return view.store.data;
 	return undefined;
 }
 
@@ -297,12 +299,19 @@ export function gitignoreRefusals(
 	return refusals;
 }
 
+/**
+ * The store's copy: its entry's hash and flag, and its bytes unless they are
+ * `unreadable`. The hash alone decides the file's state, so a torn data file
+ * is a copy not readable yet, never a missing one to adopt a checkout's over.
+ */
+type StoreCopy = { hash: string; machine: boolean } & StoreData;
+
 interface View {
 	spec: CheckoutFileSpec;
 	local: Local;
 	localHash?: string;
 	base?: string;
-	store?: { hash: string; data: Buffer; machine: boolean };
+	store?: StoreCopy;
 	templateHash?: string;
 }
 
@@ -340,17 +349,18 @@ function readOpened(
 	const views = specs.map((spec): View => {
 		const local = readLocal(root, spec.path);
 		const entry = manifest?.files[spec.path];
-		const data = entry ? readStoreData(dir, spec.path, entry) : undefined;
+		const store: StoreCopy | undefined = entry && {
+			hash: entry.sha256,
+			machine: entry.machine,
+			...readStoreData(dir, spec.path, entry),
+		};
 		const template = readTemplate(root, spec);
 		return {
 			spec,
 			local,
 			localHash: local.data ? sha256(local.data) : undefined,
 			base: state[spec.path]?.base,
-			store:
-				entry && data
-					? { hash: entry.sha256, data, machine: entry.machine }
-					: undefined,
+			store,
 			templateHash: template ? sha256(template) : undefined,
 		};
 	});
@@ -368,7 +378,7 @@ function stateOf(view: View): FileState {
 
 /** Whether `files merge` would read the checkout's copy, the store's and the base as dotenv. */
 function isMergeable(root: string, view: View): boolean {
-	if (!view.local.data || !view.store) return false;
+	if (!view.local.data || view.store?.kind !== "ok") return false;
 	const decoder = new TextDecoder("utf-8", { fatal: true });
 	const base = readBaseCopy(root, view.spec.path, view.base);
 	try {
@@ -503,11 +513,15 @@ export async function syncCheckoutFiles(
 			view.store?.hash,
 			view.templateHash,
 		);
-		if (action === "leave" && options.force && view.store) return "force";
-		if (action === "template" && !view.templateHash) return "none";
-		return action;
+		const planned =
+			action === "leave" && options.force && view.store ? "force" : action;
+		const takesStoreData = planned === "copy" || planned === "force";
+		if (takesStoreData && view.store?.kind === "unreadable") return "wait";
+		if (planned === "template" && !view.templateHash) return "none";
+		return planned;
 	};
-	const needsWrite = (view: View) => !["none", "leave"].includes(plan(view));
+	const needsWrite = (view: View) =>
+		!["none", "leave", "wait"].includes(plan(view));
 	const needsBaseCopy = (view: View) =>
 		baseCopyRepair(root, view) !== undefined;
 
@@ -526,6 +540,15 @@ export async function syncCheckoutFiles(
 		});
 
 	const report = reportOf(root, opened, refusals);
+	for (const view of opened.views) {
+		if (plan(view) !== "wait") continue;
+		const path = view.spec.path;
+		log(
+			formatWarn(
+				`Left ${path} alone: ${unreadableStoreCopy(path, "the command")}`,
+			),
+		);
+	}
 	for (const { path, state, refusal, mergeable } of report.files) {
 		if (state !== "conflict" || refusal) continue;
 		const keep = mergeable
@@ -541,7 +564,13 @@ export async function syncCheckoutFiles(
 	return report;
 }
 
-type Planned = SyncAction | "force";
+/** Why a store copy whose bytes are unreadable was not used, and the fix. */
+function unreadableStoreCopy(path: string, retry: string): string {
+	return `the file store's copy does not match its manifest entry, so another program is writing it or it was torn. Run ${retry} again; if this stays, \`buncargo files save ${path}\` stores this checkout's copy.`;
+}
+
+/** `wait`: a copy from the store whose bytes are unreadable for now. */
+type Planned = SyncAction | "force" | "wait";
 
 /** Carry out a plan under the lock; returns the gitignore refusals it met. */
 function apply(
@@ -554,7 +583,12 @@ function apply(
 	const actions = new Map(opened.views.map((view) => [view, plan(view)]));
 	const writing = opened.views.filter((view) => {
 		const action = actions.get(view);
-		return action !== "none" && action !== "leave" && action !== "record-base";
+		const writesNothing =
+			action === "none" ||
+			action === "leave" ||
+			action === "wait" ||
+			action === "record-base";
+		return !writesNothing;
 	});
 	const refusals = gitignoreRefusals(
 		root,
@@ -577,7 +611,7 @@ function apply(
 					recordBase(root, state, path, view.local.data, view.localHash);
 			},
 			...typedSwitchGroup(action, ["copy", "force"], (copying) => {
-				if (!view.store) return;
+				if (view.store?.kind !== "ok") return;
 				if (copying === "force" && view.local.data) {
 					const backup = backUp(root, path, view.local.data, now);
 					log(
@@ -611,7 +645,7 @@ function apply(
 					formatStep(`Created ${path} from ${view.spec.template}; fill it in`),
 				);
 			},
-			...typedSwitchGroup(action, ["none", "leave"], () => {}),
+			...typedSwitchGroup(action, ["none", "leave", "wait"], () => {}),
 		});
 	}
 
@@ -723,6 +757,10 @@ export async function mergeCheckoutFile(
 		if (!store)
 			throw new Error(
 				`The file store has no ${path}. \`buncargo files save ${path}\` stores this checkout's.`,
+			);
+		if (store.kind === "unreadable")
+			throw new Error(
+				`Cannot merge ${path}: ${unreadableStoreCopy(path, "the merge")}`,
 			);
 		const refusal = gitignoreRefusals(root, [path]).get(path);
 		if (refusal) throw new Error(`Cannot merge ${path}: it ${refusal}.`);

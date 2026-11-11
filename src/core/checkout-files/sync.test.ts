@@ -120,6 +120,12 @@ function readStore(repo: Repo, path = ENV): string | undefined {
 	return existsSync(full) ? readFileSync(full, "utf8") : undefined;
 }
 
+/** Cut the store's data file short, as a crash mid-write leaves it. */
+function tearStoreData(repo: Repo, path = ENV): void {
+	const full = join(repo.store, "data", ...path.split("/"));
+	writeFileSync(full, readFileSync(full).subarray(0, 4));
+}
+
 function readBase(repo: Repo, path = ENV): string | undefined {
 	try {
 		return JSON.parse(
@@ -254,6 +260,36 @@ describe("syncCheckoutFiles", () => {
 		expect(statSync(join(repo.store, "manifest.json")).mode & 0o777).toBe(
 			0o600,
 		);
+	});
+
+	it("never adopts a checkout's copy over a store entry whose data is torn", async () => {
+		const repo = makeRepo();
+		writeLocal(repo, "A=old\n");
+		seedStore(repo, "A=new\n");
+		tearStoreData(repo);
+
+		const report = await sync(repo);
+
+		expect(report.files[0]?.state).toBe("local-edits");
+		expect(readStore(repo)).toBe("A=ne");
+		expect(readStoreManifest(repo.store)?.files[ENV]?.sha256).toBe(
+			hash("A=new\n"),
+		);
+	});
+
+	it("waits for a torn store copy instead of copying it, naming the fix", async () => {
+		const repo = makeRepo();
+		seedStore(repo, "A=old\n");
+		await sync(repo);
+		seedStore(repo, "A=new\n");
+		tearStoreData(repo);
+		repo.lines.length = 0;
+
+		const report = await sync(repo);
+
+		expect(readLocal(repo)).toBe("A=old\n");
+		expect(report.files[0]?.state).toBe("store-newer");
+		expect(repo.lines.join("\n")).toContain(`buncargo files save ${ENV}`);
 	});
 
 	it("records the base of a copy that already matches the store", async () => {
