@@ -122,6 +122,8 @@ interface ResolvedServiceBase {
 interface ResolvedServiceEndpoint {
 	port: number;
 	secondaryPort?: number;
+	/** The host address its ports are published on. */
+	bind: string;
 	expose: boolean;
 	exposeProtocol: "http" | "tcp";
 	healthCheck: BuiltInHealthCheck | HealthCheckFn | false;

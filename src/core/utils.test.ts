@@ -21,33 +21,7 @@ import * as registryFile from "./registry-file";
 import { adoptLiveCaptures } from "./run-publish";
 import { buildRunEntry, publishRun } from "./run-registry";
 import { withoutCiEnv } from "./test-env.testing";
-import { getEnvVar, sleep } from "./utils";
-
-// ═══════════════════════════════════════════════════════════════════════════
-// sleep Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("sleep", () => {
-	it("resolves after specified time", async () => {
-		const start = Date.now();
-
-		await sleep(50);
-
-		const elapsed = Date.now() - start;
-		// Allow some tolerance for timing
-		expect(elapsed).toBeGreaterThanOrEqual(45);
-		expect(elapsed).toBeLessThan(150);
-	});
-
-	it("resolves immediately for 0ms", async () => {
-		const start = Date.now();
-
-		await sleep(0);
-
-		const elapsed = Date.now() - start;
-		expect(elapsed).toBeLessThan(50);
-	});
-});
+import { getEnvVar } from "./utils";
 
 /**
  * A run of this checkout serving named hosts, as the registry records it, in

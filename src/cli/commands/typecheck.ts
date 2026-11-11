@@ -90,7 +90,7 @@ export const typecheckCommand = defineCommand({
 		// `typecheck` in dev.config.ts: directories discovery cannot see, and ones
 		// to leave out.
 		const settings = await (
-			await import("../../typecheck/config-settings")
+			await import("../../loader/config-settings")
 		).loadTypecheckConfig(root);
 		if (settings.errors.length > 0) {
 			log.fail(settings.errors[0] ?? "Invalid typecheck config.", [

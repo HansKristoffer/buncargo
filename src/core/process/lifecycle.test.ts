@@ -11,14 +11,11 @@ describe("isProcessAlive", () => {
 		expect(isProcessAlive(4_194_304)).toBe(false);
 	});
 
-	it.skipIf(process.platform === "win32")(
-		"counts a process it is not allowed to signal as alive",
-		() => {
-			// pid 1 is launchd/init: alive, root-owned, and `kill(1, 0)` from an
-			// unelevated process fails with EPERM. Reading that as "dead" made a
-			// user-level CLI break the root hosts daemon's registry lock the
-			// moment it held one, and prune away every route the daemon owned.
-			expect(isProcessAlive(1)).toBe(true);
-		},
-	);
+	it("counts a process it is not allowed to signal as alive", () => {
+		// pid 1 is launchd/init: alive, root-owned, and `kill(1, 0)` from an
+		// unelevated process fails with EPERM. Reading that as "dead" made a
+		// user-level CLI break the root hosts daemon's registry lock the
+		// moment it held one, and prune away every route the daemon owned.
+		expect(isProcessAlive(1)).toBe(true);
+	});
 });

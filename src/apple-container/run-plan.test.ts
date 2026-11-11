@@ -207,10 +207,21 @@ describe("buildAppleRunPlan", () => {
 
 		expect(
 			valuesOf(withOverride.services[0]?.runArgs ?? [], "--publish"),
-		).toEqual(["5533:5432"]);
+		).toEqual(["127.0.0.1:5533:5432"]);
 		expect(
 			valuesOf(withDefault.services[0]?.runArgs ?? [], "--publish"),
-		).toEqual(["5432:5432"]);
+		).toEqual(["127.0.0.1:5432:5432"]);
+	});
+
+	it("publishes on the service's bind address and still names the host port", () => {
+		const plan = planFor({ postgres: { port: 5432, bind: "0.0.0.0" } });
+		const service = plan.services[0];
+		if (!service) throw new Error("expected a postgres plan");
+
+		expect(valuesOf(service.runArgs, "--publish")).toEqual([
+			"0.0.0.0:5432:5432",
+		]);
+		expect(service.publishedPorts).toEqual([5432]);
 	});
 
 	it("prefixes named volumes with the project and creates them once", () => {

@@ -73,7 +73,7 @@ it("tells onCapture the prepared selection", async () => {
 		{ root },
 	);
 
-	env.prepareStart(["web"]);
+	await env.prepareStartAsync(["web"]);
 	await internalsOf(env).recordCapture("web", {
 		name: "token",
 		value: "x",

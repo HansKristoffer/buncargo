@@ -69,7 +69,11 @@ describe("predeploy", () => {
 
 	it("migrates then seeds outside production", async () => {
 		const run = io({ SECRETS_ENV: "staging" });
-		await runPredeploy("/repo", config, run.io);
+		await runPredeploy(
+			"/repo",
+			{ ...config, predeploy: { seed: true } },
+			run.io,
+		);
 		expect(run.ran).toEqual([
 			{ command: PRISMA, cwd: "/repo/packages/prisma" },
 			{ command: "bun ch:migrate", cwd: "/repo" },
@@ -140,13 +144,27 @@ describe("predeploy", () => {
 		expect(capped.slept).toEqual([10]);
 	});
 
-	it("stops before seeding when the seed is turned off", async () => {
-		const run = io({});
-		await runPredeploy(
+	it("never runs the dev seed.command unless predeploy.seed opts in, and says so", async () => {
+		const run = io({ SECRETS_ENV: "staging" });
+
+		await runPredeploy("/repo", { seed: config.seed }, run.io);
+
+		expect(run.ran).toEqual([]);
+		expect(run.logged).toContain(
+			"predeploy.seed is not set: not seeding. Set it to a command, or to true for the dev seed.command.",
+		);
+	});
+
+	it("refuses seed: true without a seed.command, before migrating", async () => {
+		const run = io({ SECRETS_ENV: "staging" });
+
+		const deploy = runPredeploy(
 			"/repo",
-			{ seed: config.seed, predeploy: { seed: false } },
+			{ prisma: config.prisma, predeploy: { seed: true } },
 			run.io,
 		);
+
+		await expect(deploy).rejects.toThrow("no seed.command to run");
 		expect(run.ran).toEqual([]);
 	});
 
@@ -168,7 +186,11 @@ describe("predeploy", () => {
 	it("does not seed an environment no variable names, and says so", async () => {
 		const run = io({});
 
-		await runPredeploy("/repo", { seed: config.seed }, run.io);
+		await runPredeploy(
+			"/repo",
+			{ seed: config.seed, predeploy: { seed: true } },
+			run.io,
+		);
 
 		expect(run.ran).toEqual([]);
 		expect(run.logged).toContain(
@@ -177,7 +199,10 @@ describe("predeploy", () => {
 	});
 
 	it("seeds only the environments in predeploy.seedIn", async () => {
-		const inputs = { seed: config.seed, predeploy: { seedIn: ["staging"] } };
+		const inputs = {
+			seed: config.seed,
+			predeploy: { seed: true, seedIn: ["staging"] },
+		} as const;
 		const preview = io({ SECRETS_ENV: "eu-prod" });
 		const staging = io({ SECRETS_ENV: "staging" });
 

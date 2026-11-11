@@ -115,7 +115,7 @@ bunx buncargo check --all         # Every check but the tests (lint)
 bunx buncargo check docs          # Only Markdown links and documented commands
 bunx buncargo check --list --json # The steps this change would run, by name
 bunx buncargo check --skip=typecheck  # Every step but these (--only=<names> for just these)
-bunx buncargo predeploy           # Before a deploy: migrate, seed a named environment outside production
+bunx buncargo predeploy           # Before a deploy: migrate, then seed when predeploy.seed says so
 bunx buncargo slot -- bun test      # A heavy command in a check slot
 bunx buncargo help
 bunx buncargo help agents         # The guide for AI agents working in a checkout
@@ -331,7 +331,7 @@ check: {
 },
 ```
 
-`buncargo predeploy` is the one-off step a host runs before each deploy (Railway's `preDeployCommand`). It applies the migrations a dev run applies (`prisma migrate deploy` in `prisma.cwd`, then `migrations`), then seeds: `predeploy.seed` when it is a command (run from the root), `seed.command` when it is unset, nothing when it is `false`. It reads the config module only, and runs everything with the deploy's own environment: no ports, containers or buncargo secrets. The environment is the first of `SECRETS_ENV` and `NODE_ENV` that is set. With neither set it is `dev` and is not seeded, and predeploy says so; `prod` and `production` are never seeded, and with `predeploy.seedIn` only the environments it lists are. It never installs dependencies first, even when `bun.lock` is newer than `node_modules`.
+`buncargo predeploy` is the one-off step a host runs before each deploy (Railway's `preDeployCommand`). It applies the migrations a dev run applies (`prisma migrate deploy` in `prisma.cwd`, then `migrations`), then seeds only when `predeploy.seed` says so: a command runs from the root, and `true` runs the dev `seed.command` (and fails before migrating when there is none). Without `predeploy.seed` nothing is seeded, and predeploy says so. It reads the config module only, and runs everything with the deploy's own environment: no ports, containers or buncargo secrets. The environment is the first of `SECRETS_ENV` and `NODE_ENV` that is set. With neither set it is `dev` and is not seeded, and predeploy says so; `prod` and `production` are never seeded, and with `predeploy.seedIn` only the environments it lists are. It never installs dependencies first, even when `bun.lock` is newer than `node_modules`.
 
 When Prisma reports a migration it recorded as failed (P3009, or P3018 as it fails), predeploy names it and prints the command that unblocks later deploys, which otherwise all stop at the same migration: `bunx prisma migrate resolve --rolled-back <name>` once what it applied is undone, or `--applied <name>` if it was finished by hand. `predeploy.onFailure` runs when any step fails, before the deploy exits nonzero; it gets the context and `{ step, migration?, message, failedPrismaMigration? }`. A migration refused with Postgres's "remaining connection slots are reserved" is retried every 15 s, up to 20 times: on a small instance the previous deploy's pool and a sibling service's pre-deploy can hold every slot for a few minutes.
 
@@ -339,7 +339,7 @@ When Prisma reports a migration it recorded as failed (P3009, or P3018 as it fai
 predeploy: {
 	environmentVars: ["APP_ENV"], // default: ["SECRETS_ENV", "NODE_ENV"]
 	production: ["live"], // default: ["prod", "production"]
-	seed: "bun run seed --allow-remote", // default: seed.command; false: never
+	seed: "bun run seed --allow-remote", // or true for seed.command; default: no seed
 	seedIn: ["staging", "preview"], // default: every named environment outside production
 	retry: { attempts: 10, delayMs: 30_000 }, // or false
 	afterMigrate: async ({ production, exec }) => {
@@ -489,7 +489,7 @@ Both backends use `dev.config.ts`, the generated Compose model, inspection comma
 - Bind-mounting a host directory into an image that `chown`s it fails on virtiofs. The built-in presets all use named volumes, which are unaffected.
 - Interpolation is translated for `${VAR}`, `${VAR:-default}`, `${VAR-default}`, `${VAR:?error}` and `$$`. A service using any other form (`${VAR:+x}`, a default that holds another `${...}`) fails to start on Apple, naming the value.
 - New named volumes are created with a 256 GB size limit (sparse, so they take only the space used). Apple cannot grow a volume afterwards. Volumes created before this limit keep their size.
-- Published ports listen on IPv4 only. Clients that connect to `localhost` fall back from `::1` to `127.0.0.1` (Bun, Node and Python all do).
+- Published ports listen on IPv4 only, so `bind` takes an IPv4 address. Clients that connect to `localhost` fall back from `::1` to `127.0.0.1` (Bun, Node and Python all do).
 - A container name longer than 63 characters, the most Apple accepts, is shortened and ends in a hash of the full name.
 - Memory and CPU default to Apple's 1 GiB and 4 CPUs per container. Set `mem_limit` and `cpus` on a service that needs more.
 
@@ -1590,6 +1590,7 @@ Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`
 | `port` | `number` | omitted | Base host port; omit for an internal container or job |
 | `expose` | `boolean` | `false` | Eligible for `--expose` |
 | `secondaryPort` | `number` | `undefined` | Extra host port (ClickHouse native). Exposed as `ports.<name>Secondary` |
+| `bind` | `string` | `"127.0.0.1"` | Address its ports are published on. `"0.0.0.0"` lets other machines reach it, such as a database you open from another computer. A raw `docker.ports` list is published as written |
 | `healthCheck` | `"pg_isready" \| "redis-cli" \| "http" \| "tcp" \| (port) => Promise<boolean> \| false` | preset default | `tcp` is a real TCP connect from the host and emits no container healthcheck. `false` disables |
 | `healthTimeout` | `number` | `30000` | Per-service health poll timeout (ms) |
 | `urlTemplate` | `(ctx: UrlBuilderContext) => string` | the preset's URL, else `http://localhost:<port>` | Connection URL builder |
@@ -1932,9 +1933,9 @@ await env.stop();
 
 `env.buildEnvFingerprint("web")` is a digest of `buildAppEnvVars("web")` that is the same in every checkout and on every machine: it leaves out ports, IP addresses, the project name, the workspace id and the checkout root. Key a build cache on it to share one build between worktrees or CI runners. It is only correct when the build bakes in none of those values, so leave a URL with a port out of the build's env first.
 
-`loadDevEnv()` imports the config at runtime, so pass your config type (`loadDevEnv<typeof devConfig>()`) to keep the `defineDevConfig` inference - `ports`, `urls`, `getEnvVar`, and `buildAppEnvVars` stay keyed to your actual services and apps. Without it you get the widened `AnyDevEnvironment` shape, where those keys are plain strings. `getDevEnv<typeof devConfig>()` takes the same parameter.
+`loadDevEnv()` imports the config at runtime, so pass your config type (`loadDevEnv<typeof devConfig>()`) to keep the `defineDevConfig` inference - `ports`, `urls`, `getEnvVar`, and `buildAppEnvVars` stay keyed to your actual services and apps. Without it you get the widened `AnyDevEnvironment` shape, where those keys are plain strings.
 
-Repeated `loadDevEnv({ cwd })` calls keep the same environment object by default. For separate runs in one process, use `fresh: true`: the config module stays cached while ports, URLs, captures, owned processes, and the session ID belong to the new environment. Keep the returned reference for each project; `getDevEnv()` still returns the most recently loaded environment. `reload: true` re-imports the config entry, while its imported dependencies remain cached. Sessions share this checkout's service stack and allocation; use `withSuffix()` when you need isolated container stacks.
+Repeated `loadDevEnv({ cwd })` calls keep the same environment object by default. For separate runs in one process, use `fresh: true`: the config module stays cached while ports, URLs, captures, owned processes, and the session ID belong to the new environment. Keep the returned reference for each project. `reload: true` re-imports the config entry, while its imported dependencies remain cached. Sessions share this checkout's service stack and allocation; use `withSuffix()` when you need isolated container stacks.
 
 One environment rejects overlapping `start()`/`startServers()` calls and starts attempted during teardown; independent sessions may start concurrently. Calling `stop()` during startup cancels that startup and waits for its child cleanup before teardown. Stop requests run in order, so a later `stop({ removeVolumes: true })` retains its stronger teardown. Await `stop()` before reusing the environment.
 

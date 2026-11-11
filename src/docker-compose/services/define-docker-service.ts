@@ -35,7 +35,7 @@ export type DockerServiceFactory = (
 /** Options every built-in preset helper accepts. */
 export type PresetServiceSharedOptions = Pick<
 	ServiceConfig,
-	"serviceName" | "expose"
+	"serviceName" | "expose" | "bind"
 > & {
 	/** Base host port, before the project offset is applied */
 	port?: number;
@@ -134,6 +134,7 @@ export function defineDockerService<
 		const base: PresetServiceConfigBase<TServiceConfig> = {
 			port: options?.port ?? input.defaults.port,
 			expose: options?.expose,
+			bind: options?.bind,
 			healthCheck: options?.healthCheck ?? input.defaults.healthCheck,
 			serviceName: options?.serviceName,
 			env: input.env,

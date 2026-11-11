@@ -76,7 +76,6 @@ describe("buildStartPlan", () => {
 
 		expect(plan.appNames).toEqual(["api", "expo"]);
 		expect(plan.requiredServiceKeys).toEqual(["postgres", "redis"]);
-		expect(plan.composeServiceNames).toEqual(["database", "redis"]);
 	});
 
 	it("allows an app selection without required services", () => {

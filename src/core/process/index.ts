@@ -6,7 +6,7 @@ export {
 	stopDevServers,
 } from "./dev-servers";
 export { CommandSignalError, type ExecResult, exec, execAsync } from "./exec";
-export { isProcessAlive, stopProcess } from "./lifecycle";
+export { isProcessAlive } from "./lifecycle";
 export {
 	type CheckoutStacks,
 	canBindPort,

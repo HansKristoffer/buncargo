@@ -22,31 +22,6 @@ import { asComputedUrls, findMonorepoRoot } from "./ports";
 import { readLiveCapturesSync } from "./run-registry";
 
 /**
- * Core utility functions shared across modules.
- */
-
-// Re-exported because `buncargo/core/utils` is a published entry point.
-export { promiseTimeout as sleep } from "hanzio";
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Vibe Kanban Integration
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Log the frontend port in a format that Vibe Kanban can detect.
- * This is used to communicate the dev server port to external tools.
- *
- * @param port - The port number the frontend is running on
- */
-export function logFrontendPort(port: number | undefined): void {
-	console.log(`using_frontend_port:${port}`);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Config-based Env Var Helper
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
  * Get an environment variable value from the config.
  * Computes the shared env surface from services/apps.
  *
@@ -56,12 +31,11 @@ export function logFrontendPort(port: number | undefined): void {
  *
  * @param config - The dev config object (from defineDevConfig)
  * @param name - The environment variable name
- * @param options - Optional settings (log for Vibe Kanban detection)
  *
  * @example
  * ```typescript
  * // In vite.config.ts
- * import { getEnvVar } from 'buncargo'
+ * import { getEnvVar } from 'buncargo/api'
  * import config from '../../dev.config'
  *
  * export default defineConfig(async ({ command }) => {
@@ -94,9 +68,7 @@ export function getEnvVar<
 		};
 	},
 	name: TName,
-	options: { log?: boolean } = {},
 ): GetEnvVarValue<TEnv, TName> {
-	const { log = true } = options;
 	const root = findMonorepoRoot();
 	// `apps` is typed by the config's own definitions, which name app keys
 	// only: what each holds is an `AppConfig`, as validation ensures.
@@ -112,14 +84,7 @@ export function getEnvVar<
 		{ ...view, config: applied, portOffset: view.portPlan.offset, urls },
 		{ publicUrls: {}, captured: readLiveCapturesSync(root), hosts },
 	);
-	const value = envVars[name];
-
-	// Log frontend port for Vibe Kanban detection
-	if (log && name === "VITE_PORT" && typeof value === "number") {
-		logFrontendPort(value);
-	}
-
-	return value as GetEnvVarValue<TEnv, TName>;
+	return envVars[name] as GetEnvVarValue<TEnv, TName>;
 }
 
 type AnyConfig = Omit<
@@ -167,14 +132,4 @@ function checkoutViewFor(config: AnyConfig, root: string) {
 	const entry = { key, applied, view };
 	views.set(config, entry);
 	return entry;
-}
-
-/**
- * Log the API URL in a format that tools can detect.
- * This is used by Expo and other tools to find the API server.
- *
- * @param url - The API URL
- */
-export function logApiUrl(url: string): void {
-	console.log(`using_api_url:${url}`);
 }

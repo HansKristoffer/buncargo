@@ -15,13 +15,7 @@ import { storeDir, writeStoreEntries } from "../core/checkout-files";
 import { offsetClaimsOf } from "../core/offset-claims";
 import { CI_ENV_VARS } from "../core/runtime-flags";
 import { service } from "../docker-compose/services";
-import {
-	CONFIG_FILES,
-	clearDevEnvCache,
-	findConfigFile,
-	getDevEnv,
-	loadDevEnv,
-} from ".";
+import { CONFIG_FILES, clearDevEnvCache, findConfigFile, loadDevEnv } from ".";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // findConfigFile Tests
@@ -134,31 +128,6 @@ describe("CONFIG_FILES", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// getDevEnv / clearDevEnvCache Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("getDevEnv", () => {
-	afterEach(() => {
-		clearDevEnvCache();
-	});
-
-	it("throws when environment not loaded", () => {
-		expect(() => getDevEnv()).toThrow(
-			"Dev environment not loaded. Call loadDevEnv() first.",
-		);
-	});
-});
-
-describe("clearDevEnvCache", () => {
-	it("clears the cached environment", () => {
-		// After clearing, getDevEnv should throw
-		clearDevEnvCache();
-
-		expect(() => getDevEnv()).toThrow();
-	});
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
 // loadDevEnv Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -209,20 +178,6 @@ describe("loadDevEnv", () => {
 
 		// @ts-expect-error - "missing" is not a configured app or service
 		expect(env.urls.missing).toBeUndefined();
-	});
-
-	it("returns the same typed environment from getDevEnv", async () => {
-		writeFileSync(
-			join(testDir, "dev.config.ts"),
-			`export default ${JSON.stringify(typedConfig)}`,
-		);
-
-		const loaded = await loadDevEnv<typeof typedConfig>({ cwd: testDir });
-		const fetched = getDevEnv<typeof typedConfig>();
-
-		expect(fetched).toBe(loaded);
-		const apiUrl: string = fetched.urls.api;
-		expect(apiUrl).toBe(loaded.urls.api);
 	});
 
 	it("creates independent fresh sessions while keeping the config import and default cache", async () => {
@@ -285,7 +240,7 @@ describe("loadDevEnv", () => {
 		expect(await loadDevEnv({ cwd: testDir, readOnly: true })).toBe(reloaded);
 	});
 
-	it("does not answer getDevEnv with the config from before a reload that failed", async () => {
+	it("does not answer with the config from before a reload that failed", async () => {
 		const entry = join(testDir, "dev.config.ts");
 		writeFileSync(entry, `export default ${JSON.stringify(typedConfig)}`);
 		await loadDevEnv({ cwd: testDir, readOnly: true });
@@ -296,7 +251,9 @@ describe("loadDevEnv", () => {
 		await loadDevEnv({ cwd: testDir, readOnly: true, reload: true }).catch(
 			() => undefined,
 		);
-		expect(() => getDevEnv()).toThrow("Dev environment not loaded");
+		await expect(loadDevEnv({ cwd: testDir, readOnly: true })).rejects.toThrow(
+			"Invalid dev config",
+		);
 	});
 
 	it("throws when no config file exists", async () => {
@@ -330,7 +287,6 @@ describe("loadDevEnv", () => {
 		expect(first.root).toBe(realpathSync(testDir));
 		expect(other.root).toBe(realpathSync(second));
 		expect(await loadDevEnv({ cwd: testDir, readOnly: true })).toBe(first);
-		expect(getDevEnv()).toBe(first);
 		expect(process.cwd()).toBe(previousCwd);
 	});
 
@@ -395,7 +351,6 @@ describe("loadDevEnv", () => {
 				});
 				writeFileSync(release, "yes");
 				await older;
-				expect(getDevEnv()).toBe(newer);
 				expect(await loadDevEnv({ cwd: testDir, readOnly: true })).toBe(newer);
 				clearDevEnvCache();
 				expect(

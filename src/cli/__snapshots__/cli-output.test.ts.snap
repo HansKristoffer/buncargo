@@ -367,7 +367,7 @@ exports[`buncargo CLI output predeploy --help 1`] = `
 
 Usage: buncargo predeploy
 
-Before a deploy: migrate, then seed unless production
+Before a deploy: migrate, then seed when predeploy.seed says so
 
 Options:
   --help, -h  Show this help message
@@ -377,7 +377,7 @@ Exit codes:
   1  failed, or bad arguments
 
 Examples:
-  bunx buncargo predeploy  Migrate, then seed a named environment outside production (e.g. Railway's preDeployCommand)
+  bunx buncargo predeploy  Migrate, then seed a named environment outside production when predeploy.seed is set (e.g. Railway's preDeployCommand)
 
 
 --- stderr
@@ -937,7 +937,7 @@ COMMANDS:
   dev [<app>...] [options] [-- <args>]      Start the development environment
   typecheck [options]                       Run TypeScript typecheck across workspaces
   check [docs] [options]                    Biome, typecheck, gates and nearby tests for the change in front of you (docs)
-  predeploy                                 Before a deploy: migrate, then seed unless production
+  predeploy                                 Before a deploy: migrate, then seed when predeploy.seed says so
   prisma <args>                             Run Prisma CLI with correct DATABASE_URL
   files <command>                           Gitignored files every checkout needs (.env.local), per machine (status | save | pull | merge | diff | export | import)
   secrets <command>                         List Infisical keys and where each comes from (never values) (ls | check)
@@ -1013,7 +1013,7 @@ COMMANDS:
   dev [<app>...] [options] [-- <args>]      Start the development environment
   typecheck [options]                       Run TypeScript typecheck across workspaces
   check [docs] [options]                    Biome, typecheck, gates and nearby tests for the change in front of you (docs)
-  predeploy                                 Before a deploy: migrate, then seed unless production
+  predeploy                                 Before a deploy: migrate, then seed when predeploy.seed says so
   prisma <args>                             Run Prisma CLI with correct DATABASE_URL
   files <command>                           Gitignored files every checkout needs (.env.local), per machine (status | save | pull | merge | diff | export | import)
   secrets <command>                         List Infisical keys and where each comes from (never values) (ls | check)
@@ -1089,7 +1089,7 @@ COMMANDS:
   dev [<app>...] [options] [-- <args>]      Start the development environment
   typecheck [options]                       Run TypeScript typecheck across workspaces
   check [docs] [options]                    Biome, typecheck, gates and nearby tests for the change in front of you (docs)
-  predeploy                                 Before a deploy: migrate, then seed unless production
+  predeploy                                 Before a deploy: migrate, then seed when predeploy.seed says so
   prisma <args>                             Run Prisma CLI with correct DATABASE_URL
   files <command>                           Gitignored files every checkout needs (.env.local), per machine (status | save | pull | merge | diff | export | import)
   secrets <command>                         List Infisical keys and where each comes from (never values) (ls | check)
@@ -1165,7 +1165,7 @@ COMMANDS:
   dev [<app>...] [options] [-- <args>]      Start the development environment
   typecheck [options]                       Run TypeScript typecheck across workspaces
   check [docs] [options]                    Biome, typecheck, gates and nearby tests for the change in front of you (docs)
-  predeploy                                 Before a deploy: migrate, then seed unless production
+  predeploy                                 Before a deploy: migrate, then seed when predeploy.seed says so
   prisma <args>                             Run Prisma CLI with correct DATABASE_URL
   files <command>                           Gitignored files every checkout needs (.env.local), per machine (status | save | pull | merge | diff | export | import)
   secrets <command>                         List Infisical keys and where each comes from (never values) (ls | check)
@@ -1374,7 +1374,7 @@ COMMANDS:
   dev [<app>...] [options] [-- <args>]      Start the development environment
   typecheck [options]                       Run TypeScript typecheck across workspaces
   check [docs] [options]                    Biome, typecheck, gates and nearby tests for the change in front of you (docs)
-  predeploy                                 Before a deploy: migrate, then seed unless production
+  predeploy                                 Before a deploy: migrate, then seed when predeploy.seed says so
   prisma <args>                             Run Prisma CLI with correct DATABASE_URL
   files <command>                           Gitignored files every checkout needs (.env.local), per machine (status | save | pull | merge | diff | export | import)
   secrets <command>                         List Infisical keys and where each comes from (never values) (ls | check)
