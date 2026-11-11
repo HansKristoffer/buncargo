@@ -3,7 +3,9 @@ import { claimFirstRunPrompt, resetFirstRunPrompt } from "../prompt";
 import { useTempHome } from "../test-env.testing";
 import {
 	doctorFixHosts,
+	type HostsInstallDeps,
 	hostsServiceFix,
+	installHosts,
 	persistHostsDecline,
 	promptFirstRun,
 	repairStaleService,
@@ -214,5 +216,71 @@ describe("uninstallHosts", () => {
 		expect(warnings).toHaveLength(1);
 		expect(warnings[0]).toContain("/etc/hosts");
 		expect(warnings[0]).toContain("buncargo hosts uninstall");
+	});
+});
+
+describe("installHosts", () => {
+	/** Every step recorded, the service already installed and current. */
+	function machine(overrides: Partial<HostsInstallDeps> = {}) {
+		const steps: string[] = [];
+		const deps: HostsInstallDeps = {
+			clearDecline: () => steps.push("clear decline"),
+			ensureMkcert: async () => {
+				steps.push("mkcert");
+				return "/bin/mkcert";
+			},
+			installTrust: (mkcert) => steps.push(`trust ${mkcert}`),
+			mintCertificate: async () => {
+				steps.push("certificate");
+			},
+			serviceCurrent: () => true,
+			installService: ({ force }) => {
+				steps.push(`service force=${force}`);
+				return {};
+			},
+			waitForDaemon: async () => {
+				steps.push("daemon");
+				return { ok: true };
+			},
+			...overrides,
+		};
+		return { steps, deps };
+	}
+
+	it("trusts and mints before it replaces the service, and passes --force through", async () => {
+		// The daemon cannot bind :443 without a leaf, and will not mint one.
+		const { steps, deps } = machine();
+		await installHosts(deps, { reinstallService: true, force: true });
+		expect(steps).toEqual([
+			"clear decline",
+			"mkcert",
+			"trust /bin/mkcert",
+			"certificate",
+			"service force=true",
+			"daemon",
+		]);
+	});
+
+	it("leaves a current service alone unless asked to reinstall it", async () => {
+		const { steps, deps } = machine();
+		await installHosts(deps, {});
+		expect(steps).not.toContain("service force=undefined");
+		expect(steps.at(-1)).toBe("daemon");
+	});
+
+	it("returns why it kept a newer service, and fails when the daemon does not start", async () => {
+		const kept = machine({
+			installService: () => ({ kept: "A newer buncargo installed it" }),
+		});
+		expect(await installHosts(kept.deps, { reinstallService: true })).toEqual([
+			"A newer buncargo installed it",
+		]);
+
+		const down = machine({
+			waitForDaemon: async () => ({ ok: false, message: "port 443 is taken" }),
+		});
+		await expect(installHosts(down.deps, {})).rejects.toThrow(
+			"port 443 is taken",
+		);
 	});
 });
