@@ -36,11 +36,13 @@ describe("checkPortDrift", () => {
 	});
 
 	it("names the drift when the assigned port is someone else's", async () => {
-		const message = await checkPortDrift(
+		const drift = await checkPortDrift(
 			[marketing],
 			probe(true, [100, 101]),
 			new AbortController().signal,
 		);
+		expect(drift?.name).toBe("marketing");
+		const message = drift?.message;
 		expect(message).toContain("marketing listens on :8022, :9229");
 		expect(message).toContain("not its assigned :8021");
 		expect(message).toContain("unidentified process");
@@ -56,16 +58,18 @@ describe("checkPortDrift", () => {
 		).toBeUndefined();
 	});
 
-	it("resolves rather than rejects once aborted", async () => {
+	it("resolves once aborted, having reported nothing", async () => {
 		const controller = new AbortController();
+		const drifted: string[] = [];
 		const watching = watchPortDrift(
 			() => [marketing],
 			probe(false, []),
 			controller.signal,
-			5,
+			(name) => drifted.push(name),
 		);
 		controller.abort();
 		await expect(watching).resolves.toBeUndefined();
+		expect(drifted).toEqual([]);
 	});
 });
 
@@ -94,7 +98,8 @@ describe("startDevServers port drift", () => {
 					verbose: false,
 					waitForExit: false,
 					// Once its port was found free and the app spawned.
-					onAppSpawned: () => {
+					onAppPhase: (_name, life, previous) => {
+						if (life.pid === undefined || previous.pid !== undefined) return;
 						holder = Bun.listen({
 							hostname: "127.0.0.1",
 							port: assigned,

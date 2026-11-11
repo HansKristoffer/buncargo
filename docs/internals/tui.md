@@ -6,7 +6,10 @@
 and `.buncargo/logs/<run>/<app>.log` (`app-logs.ts`: buffered, capped, last ten runs). Apps print
 into it; the supervisor reports `state` and `capture`. `startDevServers` takes it as
 `options.output`; without one it prints stream mode itself, so library callers are unchanged. A
-stream-mode attached app's output is fed in marked `echoed`: logged, not printed again.
+stream-mode attached app's output is fed in marked `echoed`: logged, not printed again. Run events
+reach stream mode only when they are `announce`d (a restart, a pid, a warning about the run): the
+caller says once what a line is, and each view decides how to show it, instead of the supervisor
+checking which view is open and printing a second copy itself.
 
 Whoever creates an output closes it, and awaits `close()` before unsubscribing a view: an app's
 last screen reaches the feed only once xterm has parsed it, so a view gone by then loses the app's
@@ -21,7 +24,8 @@ its messages land on the user's own screen.
 
 ## Pseudo-terminals
 
-With `terminalSize` set every app spawns as a `PtyApp` (`pty-app.ts`: `Bun.spawn({ terminal })`, a
+A `RunOutput` is made with `terminals: "pty"` (the TUI) or `"pipe"` (stream mode), so nothing
+asks a view which one it is. Under `pty` every app spawns as a `PtyApp` (`pty-app.ts`: `Bun.spawn({ terminal })`, a
 session leader so `kill(-pid)` still reaches the group, `exit` reported with Node's
 `(null, signal)` arguments) into an `AppScreen` (`app-screen.ts`: `@xterm/headless`) that survives
 restarts. An attached app with no TTY also runs as a `PtyApp`, which is what lets Expo start under

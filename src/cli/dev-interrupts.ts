@@ -1,5 +1,5 @@
 import { typedSwitch } from "hanzio";
-import { RunInterrupted } from "../core/process/process-owner";
+import { RunInterrupted } from "../core/process/app-lifecycle";
 
 /**
  * How a `dev` run takes SIGINT, SIGTERM and SIGHUP.

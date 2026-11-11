@@ -1,11 +1,12 @@
-import { execSync, spawn } from "node:child_process";
+import { type ChildProcess, execSync, spawn } from "node:child_process";
 import { constants } from "node:os";
 import { resolve } from "node:path";
 import type { ExecOptions, ExecResult } from "../../types";
 import { childProcessEnv } from "../child-env";
 import { abortError, registerAbortCleanup } from "../deadline";
 import { recordStartupMetric } from "../startup-metrics";
-import { forEachOutputLine, prefixOutput } from "./prefix-output";
+import { formatPrefixedLine, isBlankLogLine } from "../style";
+import { forEachLine } from "./line-splitter";
 import { terminateOwnedProcess } from "./terminate";
 
 export type { ExecResult };
@@ -144,7 +145,11 @@ export async function execAsync(
 		);
 		if (verbose && onOutputLine) forEachOutputLine(child, onOutputLine);
 		else if (verbose && outputPrefix)
-			prefixOutput(outputPrefix, child, { width: outputPrefix.length });
+			forEachOutputLine(child, (line) =>
+				process.stdout.write(
+					formatPrefixedLine(outputPrefix, line, outputPrefix.length),
+				),
+			);
 		let stdout = "";
 		let stderr = "";
 		let cancelling = false;
@@ -228,4 +233,18 @@ export async function execAsync(
 				Math.max(0, timeoutMs),
 			);
 	});
+}
+
+/** Each non-blank line of a piped child's stdout and stderr. */
+function forEachOutputLine(
+	child: ChildProcess,
+	onLine: (line: string) => void,
+): void {
+	const handlers = {
+		onLine: (line: string) => {
+			if (!isBlankLogLine(line)) onLine(line);
+		},
+	};
+	forEachLine(child.stdout, handlers);
+	forEachLine(child.stderr, handlers);
 }

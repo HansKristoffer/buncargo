@@ -172,14 +172,14 @@ async function spawnAppServers<
 			afterWave: () => {
 				renderGeneratedFiles(ctx, envVars);
 			},
-			waitForHealth: (wave, signal, onAppReady) =>
-				waitForDevServers(wave, ctx.ports, {
+			// One app at a time, quietly: the spawner reports readiness.
+			waitForHealth: (app, signal) =>
+				waitForDevServers(app, ctx.ports, {
 					timeout: serverReadyTimeout(),
-					verbose,
-					logReady: !options.seed,
+					verbose: false,
+					logReady: false,
 					productionBuild,
 					signal,
-					onAppReady,
 				}),
 		},
 		appsToStart,
@@ -193,10 +193,10 @@ async function spawnAppServers<
 			seed: options.seed,
 			deferPublicUrlApps: false,
 			onPhase: options.onPhase,
-			...options.claim.appEvents,
-			onAppSpawned: (name, pid, attached) => {
-				if (ctx.ownedServerPids) ctx.ownedServerPids[name] = pid;
-				options.claim.appEvents.onAppSpawned?.(name, pid, attached);
+			onAppPhase: (name, life, previous) => {
+				if (ctx.ownedServerPids && life.pid !== undefined)
+					ctx.ownedServerPids[name] = life.pid;
+				return options.claim.appEvents.onAppPhase?.(name, life, previous);
 			},
 		},
 	);
@@ -221,6 +221,7 @@ export interface DevServersApi<
 		onlyApps?: Extract<keyof TApps, string>[];
 		expandRequired?: boolean;
 		logReady?: boolean;
+		verbose?: boolean;
 		signal?: AbortSignal;
 		onAppReady?: (name: string) => void;
 	}): Promise<void>;
@@ -271,6 +272,7 @@ export function createServersApi<
 			onlyApps?: Extract<keyof TApps, string>[];
 			expandRequired?: boolean;
 			logReady?: boolean;
+			verbose?: boolean;
 			signal?: AbortSignal;
 			onAppReady?: (name: string) => void;
 		} = {},
@@ -295,6 +297,7 @@ export function createServersApi<
 			productionBuild,
 			signal: options.signal,
 			logReady: options.logReady,
+			verbose: options.verbose,
 			onAppReady: options.onAppReady,
 		});
 	}

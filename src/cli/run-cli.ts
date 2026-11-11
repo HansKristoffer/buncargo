@@ -22,7 +22,7 @@ import {
 } from "../core/run-publish";
 import { detachedRunMode, isCI } from "../core/runtime-flags";
 import { ensureSecretsSession } from "../core/secrets/index";
-import { joinColoredNames } from "../core/style";
+import { formatStep, formatWarn, joinColoredNames } from "../core/style";
 import {
 	createNoopPhaseTimer,
 	createPhaseTimer,
@@ -903,15 +903,18 @@ async function runDevFlow<
 	for (const { message, problem } of earlyReports)
 		view.output.event("buncargo", message, problem ? "error" : undefined);
 	env.reportServiceChanges((message, problem) => {
-		view.output.event("buncargo", message, problem ? "error" : undefined);
-		if (!view.tui) (problem ? log.warn : log.info)(message);
+		const raw = problem ? formatWarn(message) : formatStep(message);
+		const level = problem ? "error" : undefined;
+		view.output.announce("buncargo", message, { raw, level });
 	});
 	// Where the watchdog's failure stays, as a service change does: nothing
 	// sweeps the machine's ended runs until it is up again.
 	const reportWatchdogFailure = (error: unknown) => {
 		const message = `The watchdog did not start: ${String(error)}. Ended runs' containers stay until \`buncargo ls\` or \`buncargo doctor\` sweeps; the next \`buncargo dev\` tries again.`;
-		view.output.event("buncargo", message, "warn");
-		if (!view.tui) log.warn(message);
+		view.output.announce("buncargo", message, {
+			raw: formatWarn(message),
+			level: "warn",
+		});
 	};
 	// An app that falls over is often the first sign its database was removed
 	// under it; say who did, once, rather than leave a refused connection.
@@ -955,14 +958,15 @@ async function runDevFlow<
 				runHook: async (phase, hookSignal) => {
 					await env.runServerHook?.(phase, hookSignal);
 				},
-				waitForHealth: (apps, healthSignal, onAppReady) =>
+				// One app at a time, quietly: the spawner reports readiness.
+				waitForHealth: (app, healthSignal) =>
 					env.waitForServers({
-						onlyApps: Object.keys(apps) as Extract<keyof TApps, string>[],
+						onlyApps: Object.keys(app) as Extract<keyof TApps, string>[],
 						expandRequired: false,
 						timeout: serverReadyTimeout(),
-						logReady: !overlapSeed,
+						verbose: false,
+						logReady: false,
 						signal: healthSignal,
-						onAppReady,
 					}),
 				recordCapture: (app, captured) => env.recordCapture(app, captured),
 				afterWave: () => {
@@ -1018,54 +1022,59 @@ async function runDevFlow<
 							),
 						);
 				},
-				// Ready as each app comes up, not when its whole wave has; a
-				// restart (`r`, `buncargo restart`, a watch, a capture's
-				// `restartOn`) says `starting` before its new process spawns.
-				...rows,
-				// Activation claimed the first spawn's route; a restart claims it
-				// again in case a takeover moved it away and its run ended. Done
-				// before the new process spawns: its config reads its URL from
-				// the registry as it loads (`getEnvVar`).
-				onAppRestarting: async (name) => {
-					rows.onAppRestarting(name);
-					const warning = await reclaimAppRoute(env, name);
-					if (warning) view.output.event(name, warning, "warn");
-				},
 				// A developer's other apps should not go down with one that
 				// never came up; `ci` and library starts keep failing the run.
 				keepOthersOnFailure: env.onAppFailure !== "stop-run",
 				watch: args.watch,
-				onAppFailed: (name, error) => {
-					// Before the registry says it failed, which `dev --detach` waits on.
-					detached?.recordDetachedReport(env.root, (report) => ({
-						...report,
-						failures: [
-							...report.failures,
-							describeAppFailure({
-								app: name,
-								reason: error.message,
-								tail: view.output.tail(name),
-								setupHints: failureContext.setupHints,
-							}),
-						],
-					}));
-					rows.onAppFailed(name, error);
-				},
-				onAppSpawned: (name, pid, attached) => {
-					options.runningApps.add(name);
-					if (!firstSpawn) {
-						firstSpawn = true;
-						timer.record("entry to first app spawn", timer.elapsedMs());
+				onAppPhase: async (name, life, previous) => {
+					const spawned = life.pid !== undefined && life.pid !== previous.pid;
+					if (spawned) {
+						options.runningApps.add(name);
+						if (!firstSpawn) {
+							firstSpawn = true;
+							timer.record("entry to first app spawn", timer.elapsedMs());
+						}
 					}
-					rows.onAppSpawned(name, pid, attached);
-				},
-				// A non-zero code is the app falling over: the run's end for an
-				// essential app that was up, a parked row for one that never came
-				// up while the others are spared.
-				onAppExit: (name, code, signal, state) => {
-					options.runningApps.delete(name);
-					if (code !== null && code !== 0) explainLoss();
-					rows.onAppExit(name, code, signal, state);
+					const failure = life.end?.failure;
+					const newFailure = failure !== previous.end?.failure;
+					// Never came up while the rest goes on: recorded before the
+					// registry says it failed, which `dev --detach` waits on.
+					const sparedFailure =
+						newFailure &&
+						failure?.kind === "not-ready" &&
+						life.standing !== "essential";
+					if (sparedFailure)
+						detached?.recordDetachedReport(env.root, (report) => ({
+							...report,
+							failures: [
+								...report.failures,
+								describeAppFailure({
+									app: name,
+									reason: failure.message,
+									tail: view.output.tail(name),
+									setupHints: failureContext.setupHints,
+								}),
+							],
+						}));
+					// A non-zero code is the app falling over, often the first
+					// sign its database was removed under it.
+					const exit = life.end?.exit;
+					if (life.phase === "down" && exit !== previous.end?.exit) {
+						options.runningApps.delete(name);
+						if (exit && exit.code !== null && exit.code !== 0) explainLoss();
+					}
+					// Ready as each app comes up, not when its whole wave has; a
+					// restart (`r`, `buncargo restart`, a watch, a capture's
+					// `restartOn`) says `starting` before its new process spawns.
+					rows.onAppPhase(name, life, previous);
+					// Activation claimed the first spawn's route; a restart claims
+					// it again in case a takeover moved it away and its run ended.
+					// Done before the new process spawns: its config reads its URL
+					// from the registry as it loads (`getEnvVar`).
+					if (life.phase === "restarting" && previous.phase !== "restarting") {
+						const warning = await reclaimAppRoute(env, name);
+						if (warning) view.output.event(name, warning, "warn");
+					}
 				},
 				onAfterWave1: async (signal) => {
 					await timer.measure("tunnels", () =>

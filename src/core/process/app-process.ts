@@ -105,7 +105,10 @@ export function spawnManagedApp(
 	// detached run): Expo refuses to start its dev server without one, and
 	// agents piped `tail -f /dev/null | script …` into it to fake it. Its keys
 	// then come from `buncargo send`.
-	if (output.terminalSize || (options.attached && !process.stdin.isTTY)) {
+	if (
+		output.terminals === "pty" ||
+		(options.attached && !process.stdin.isTTY)
+	) {
 		const screen = output.screen(name);
 		const decoder = new TextDecoder();
 		const child = new PtyApp([SHELL, "-c", command], {

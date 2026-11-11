@@ -2,7 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { AppLogs, listRunLogDirs } from "./app-logs";
+import { MAX_LINE_CHARS } from "./line-splitter";
 import {
 	createErrorFilter,
 	lastErrorLines,
@@ -18,7 +20,7 @@ describe("RunOutput", () => {
 		const root = mkdtempSync(join(tmpdir(), "buncargo-run-output-"));
 		try {
 			const logs = new AppLogs(root, "session-1234");
-			const output = new RunOutput(logs);
+			const output = new RunOutput({ terminals: "pipe", logs });
 			output.line("api", "\u001b[32mlistening\u001b[0m on 3000");
 			output.line("api", "   ");
 			output.state("api", { state: "failed", detail: "exit 1" });
@@ -38,7 +40,7 @@ describe("RunOutput", () => {
 		const root = mkdtempSync(join(tmpdir(), "buncargo-run-output-close-"));
 		try {
 			const logs = new AppLogs(root, "session-close");
-			const output = new RunOutput(logs);
+			const output = new RunOutput({ terminals: "pipe", logs });
 			let printed = "";
 			printStream(output, {
 				width: 3,
@@ -93,7 +95,7 @@ describe("RunOutput", () => {
 	});
 
 	it("prints a stopped non-essential app with its errors and how to restart it", () => {
-		const output = new RunOutput();
+		const output = new RunOutput({ terminals: "pipe" });
 		let printed = "";
 		printStream(output, {
 			width: 7,
@@ -170,5 +172,32 @@ describe("RunOutput", () => {
 			"  details: { attempt: 2 },",
 			"}",
 		]);
+	});
+});
+
+describe("RunOutput.pipe", () => {
+	// A pipe hands over bytes wherever the kernel cut them: `é` split across
+	// two chunks became two U+FFFD in the line and in what captures read.
+	it("keeps a character cut across chunks whole, in the line and the raw text", () => {
+		const output = new RunOutput({ terminals: "pipe" });
+		const stream = new PassThrough();
+		const texts: string[] = [];
+		output.pipe("api", stream, (text) => texts.push(text));
+		const bytes = Buffer.from("café ready\n");
+		const cut = bytes.indexOf(0xa9);
+		stream.write(bytes.subarray(0, cut));
+		stream.write(bytes.subarray(cut));
+		expect(output.tail("api")).toEqual(["café ready"]);
+		expect(texts.join("")).toBe("café ready\n");
+	});
+
+	it("ends a line that never ends at the cap, keeping the rest for the next", () => {
+		const output = new RunOutput({ terminals: "pipe" });
+		const stream = new PassThrough();
+		output.pipe("api", stream);
+		stream.write("x".repeat(MAX_LINE_CHARS + 5));
+		stream.end("y\n");
+		const tail = output.tail("api");
+		expect(tail.map((line) => line.length)).toEqual([MAX_LINE_CHARS, 6]);
 	});
 });

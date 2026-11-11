@@ -3,8 +3,26 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AppSupervision, stopDevServers } from "./app-supervision";
+import {
+	AppSupervision,
+	type SupervisedApp,
+	stopDevServers,
+} from "./app-supervision";
 import { isProcessAlive } from "./lifecycle";
+
+const workerApp: SupervisedApp = {
+	optional: false,
+	worker: true,
+	checked: false,
+	attached: false,
+};
+const serverOn = (port: number): SupervisedApp => ({
+	optional: false,
+	worker: false,
+	checked: true,
+	attached: false,
+	port,
+});
 
 function child() {
 	return spawn(process.execPath, ["--eval", "setInterval(() => {}, 1000)"], {
@@ -14,19 +32,19 @@ function child() {
 }
 
 it("keeps supervision alive across replacement of its last child", async () => {
-	const session = new AppSupervision({ width: 1, onRestart: () => {} });
+	const session = new AppSupervision({ worker: workerApp });
 	let replacementPid: number | undefined;
 	try {
-		await session.register("worker", child(), true, false, false);
+		await session.register("worker", child(), { probation: false });
 		const first = session.pids.worker;
-		const watching = session.owner.wait().catch(() => {});
-		session.setSpawner("worker", async () => child(), true, false);
+		const watching = session.wait().catch(() => {});
+		session.setSpawner("worker", async () => child());
 		await session.restart("worker");
 		replacementPid = session.pids.worker;
 		if (replacementPid === undefined)
 			throw new Error("Replacement did not have a pid");
 		expect(replacementPid).not.toBe(first);
-		expect(session.owner.controller.signal.aborted).toBe(false);
+		expect(session.controller.signal.aborted).toBe(false);
 		expect(isProcessAlive(replacementPid)).toBe(true);
 		await session.stop();
 		await watching;
@@ -37,19 +55,14 @@ it("keeps supervision alive across replacement of its last child", async () => {
 });
 
 it("never respawns a child when stop arrives while it is being retired", async () => {
-	const session = new AppSupervision({ width: 1, onRestart: () => {} });
+	const session = new AppSupervision({ worker: workerApp });
 	let spawns = 0;
 	try {
-		await session.register("worker", child(), true, false, false);
-		session.setSpawner(
-			"worker",
-			async () => {
-				spawns++;
-				return child();
-			},
-			true,
-			false,
-		);
+		await session.register("worker", child(), { probation: false });
+		session.setSpawner("worker", async () => {
+			spawns++;
+			return child();
+		});
 		const replacing = session.restart("worker").catch(() => {});
 		await session.stop();
 		await replacing;
@@ -70,13 +83,15 @@ it("adopts detached listeners after replacements and warns once per app", async 
 	const marker = join(root, "ready");
 	const adopted: number[] = [];
 	const warnings: string[] = [];
-	const originalWarn = console.warn;
-	console.warn = (message) => warnings.push(String(message));
-	const session = new AppSupervision({
-		width: 1,
-		onRestart: () => {},
-		onAppAdopted: (_name, app) => adopted.push(app.pid),
-	});
+	const session = new AppSupervision(
+		{ web: serverOn(port) },
+		{
+			onPhase: (_name, life, _previous, event) => {
+				if (event.type === "adopted" && life.pid) adopted.push(life.pid);
+			},
+			onNotice: (_name, text) => warnings.push(text),
+		},
+	);
 	try {
 		await Bun.write(
 			join(root, "listener.ts"),
@@ -86,21 +101,15 @@ it("adopts detached listeners after replacements and warns once per app", async 
 			join(root, "parent.ts"),
 			`import { spawn } from "node:child_process"; const app = spawn(process.execPath, ["listener.ts"], { detached: true, stdio: "ignore" }); app.unref(); while (!(await Bun.file(${JSON.stringify(marker)}).exists())) await Bun.sleep(10);`,
 		);
-		await session.register("web", child(), false, false, false, port);
-		session.setSpawner(
-			"web",
-			async () => {
-				await rm(marker, { force: true });
-				return spawn(process.execPath, ["parent.ts"], {
-					cwd: root,
-					detached: true,
-					stdio: "ignore",
-				});
-			},
-			false,
-			false,
-			port,
-		);
+		await session.register("web", child(), { probation: false });
+		session.setSpawner("web", async () => {
+			await rm(marker, { force: true });
+			return spawn(process.execPath, ["parent.ts"], {
+				cwd: root,
+				detached: true,
+				stdio: "ignore",
+			});
+		});
 		for (const count of [1, 2]) {
 			await session.restart("web");
 			const deadline = Date.now() + 5000;
@@ -117,35 +126,29 @@ it("adopts detached listeners after replacements and warns once per app", async 
 		await expect(fetch(`http://localhost:${port}`)).rejects.toThrow();
 	} finally {
 		await session.stop();
-		console.warn = originalWarn;
 		await rm(root, { recursive: true, force: true });
 	}
 }, 15000);
 
 it("runs concurrent restarts of one app one after another, coalescing a waiting one", async () => {
-	const session = new AppSupervision({ width: 1, onRestart: () => {} });
+	const session = new AppSupervision({ web: workerApp });
 	let spawned = 0;
 	let live = 0;
 	let overlap = false;
 	try {
-		await session.register("web", child(), true, false, false);
+		await session.register("web", child(), { probation: false });
 		live = 1;
-		const watching = session.owner.wait().catch(() => {});
-		session.setSpawner(
-			"web",
-			async () => {
-				spawned++;
-				// Retire has to have finished: only one copy may hold the port.
-				if (live !== 0) overlap = true;
-				live++;
-				const replacement = child();
-				replacement.once("exit", () => live--);
-				return replacement;
-			},
-			true,
-			false,
-		);
-		const first = session.owner;
+		const watching = session.wait().catch(() => {});
+		session.setSpawner("web", async () => {
+			spawned++;
+			// Retire has to have finished: only one copy may hold the port.
+			if (live !== 0) overlap = true;
+			live++;
+			const replacement = child();
+			replacement.once("exit", () => live--);
+			return replacement;
+		});
+		const first = session;
 		// The original child is not tracked by `live`'s exit handler.
 		live = 0;
 		// Requests before the first has begun join it.
@@ -176,28 +179,26 @@ it("spawns the replacement only once what onRestart returned has settled", async
 			resolve();
 		};
 	});
-	const session = new AppSupervision({
-		width: 1,
-		onRestart: () => reclaimed,
-	});
+	const session = new AppSupervision(
+		{ web: workerApp },
+		{
+			onPhase: (_name, life) =>
+				life.phase === "restarting" ? reclaimed : undefined,
+		},
+	);
 	const spawnedBeforeRelease: boolean[] = [];
 	try {
 		const original = child();
-		await session.register("web", original, true, false, false);
-		const watching = session.owner.wait().catch(() => {});
-		session.setSpawner(
-			"web",
-			async () => {
-				spawnedBeforeRelease.push(!released);
-				return child();
-			},
-			true,
-			false,
-		);
+		await session.register("web", original, { probation: false });
+		const watching = session.wait().catch(() => {});
+		session.setSpawner("web", async () => {
+			spawnedBeforeRelease.push(!released);
+			return child();
+		});
 		// Released on the task after the retire ends. A spawn that does not
 		// wait for it follows the retire within the same task, before it.
-		const retire = session.owner.retire.bind(session.owner);
-		session.owner.retire = async (app) => {
+		const retire = session.retire.bind(session);
+		session.retire = async (app) => {
 			await retire(app);
 			setTimeout(release, 0);
 		};
@@ -233,14 +234,12 @@ async function stubborn() {
 // The default grace is a minute here: an app that is not given its own would
 // hold `stop` far past the test's timeout.
 it("stops each app after its own grace, not the default", async () => {
-	const session = new AppSupervision({
-		width: 1,
-		onRestart: () => {},
-		shutdownGraceMs: 60_000,
-		appGraceMs: new Map([["emulators", 50]]),
-	});
+	const session = new AppSupervision(
+		{ emulators: { ...workerApp, graceMs: 50 } },
+		{ shutdownGraceMs: 60_000 },
+	);
 	try {
-		await session.register("emulators", await stubborn(), true, false, false);
+		await session.register("emulators", await stubborn(), { probation: false });
 		const pid = session.pids.emulators;
 		if (pid === undefined) throw new Error("App did not have a pid");
 		await session.stop();
@@ -251,16 +250,14 @@ it("stops each app after its own grace, not the default", async () => {
 });
 
 it("replaces an app after its own grace on restart", async () => {
-	const session = new AppSupervision({
-		width: 1,
-		onRestart: () => {},
-		shutdownGraceMs: 60_000,
-		appGraceMs: new Map([["emulators", 50]]),
-	});
+	const session = new AppSupervision(
+		{ emulators: { ...workerApp, graceMs: 50 } },
+		{ shutdownGraceMs: 60_000 },
+	);
 	try {
-		await session.register("emulators", await stubborn(), true, false, false);
+		await session.register("emulators", await stubborn(), { probation: false });
 		const first = session.pids.emulators;
-		session.setSpawner("emulators", async () => child(), true, false);
+		session.setSpawner("emulators", async () => child());
 		await session.restart("emulators");
 		if (first === undefined) throw new Error("App did not have a pid");
 		expect(isProcessAlive(first)).toBe(false);
@@ -271,25 +268,23 @@ it("replaces an app after its own grace on restart", async () => {
 
 it("ends the run when a restart cannot replace an essential app", async () => {
 	const failures: string[] = [];
-	const session = new AppSupervision({
-		width: 1,
-		onRestart: () => {},
-		onRestartFailed: (name) => failures.push(name),
-	});
+	const session = new AppSupervision(
+		{ web: workerApp },
+		{
+			onPhase: (name, life) => {
+				if (life.end?.failure?.kind === "restart") failures.push(name);
+			},
+		},
+	);
 	try {
-		await session.register("web", child(), true, false, false);
-		const watching = session.owner.wait().then(
+		await session.register("web", child(), { probation: false });
+		const watching = session.wait().then(
 			() => undefined,
 			(error: Error) => error.message,
 		);
-		session.setSpawner(
-			"web",
-			async () => {
-				throw new Error("spawn failed");
-			},
-			true,
-			false,
-		);
+		session.setSpawner("web", async () => {
+			throw new Error("spawn failed");
+		});
 		await expect(session.restart("web")).rejects.toThrow("spawn failed");
 		expect(failures).toEqual(["web"]);
 		expect(await watching).toBe(
@@ -301,28 +296,19 @@ it("ends the run when a restart cannot replace an essential app", async () => {
 });
 
 it("parks an optional app whose replacement failed, and still stops by its pids", async () => {
-	const session = new AppSupervision({
-		width: 1,
-		onRestart: () => {},
-		isOptional: () => true,
-	});
+	const session = new AppSupervision({ web: { ...workerApp, optional: true } });
 	try {
-		await session.register("web", child(), true, false, false);
-		const watching = session.owner.wait().then(
+		await session.register("web", child(), { probation: false });
+		const watching = session.wait().then(
 			() => "ended",
 			() => "ended",
 		);
-		session.setSpawner(
-			"web",
-			async () => {
-				throw new Error("spawn failed");
-			},
-			true,
-			false,
-		);
+		session.setSpawner("web", async () => {
+			throw new Error("spawn failed");
+		});
 		await expect(session.restart("web")).rejects.toThrow("spawn failed");
 		// Parked: the run waits for a restart rather than ending.
-		expect(session.owner.controller.signal.aborted).toBe(false);
+		expect(session.controller.signal.aborted).toBe(false);
 		// What a library caller holds is how the session is found and stopped.
 		await stopDevServers({ ...session.pids });
 		expect(
@@ -340,11 +326,14 @@ it("stops a detached server whose launcher a restart retires mid-adoption", asyn
 	probe.stop(true);
 	const marker = join(root, "listener.pid");
 	const adopted: number[] = [];
-	const session = new AppSupervision({
-		width: 1,
-		onRestart: () => {},
-		onAppAdopted: (_name, app) => adopted.push(app.pid),
-	});
+	const session = new AppSupervision(
+		{ web: serverOn(port) },
+		{
+			onPhase: (_name, life, _previous, event) => {
+				if (event.type === "adopted" && life.pid) adopted.push(life.pid);
+			},
+		},
+	);
 	try {
 		await Bun.write(
 			join(root, "listener.ts"),
@@ -359,8 +348,8 @@ it("stops a detached server whose launcher a restart retires mid-adoption", asyn
 			detached: true,
 			stdio: "ignore",
 		});
-		await session.register("web", launcher, false, false, false, port);
-		session.setSpawner("web", async () => child(), false, false, port);
+		await session.register("web", launcher, { probation: false });
+		session.setSpawner("web", async () => child());
 		// Right after the supervisor starts looking for the server it left.
 		const restarted = new Promise<boolean>((resolve, reject) =>
 			launcher.once("exit", () => {

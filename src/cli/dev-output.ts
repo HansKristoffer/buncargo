@@ -31,7 +31,6 @@ export function openDevOutput(
 	options: { tui: "auto" | "on" | "off" },
 ): {
 	output: RunOutput;
-	tui: boolean;
 	start(): void;
 	stop(): Promise<void>;
 } {
@@ -41,24 +40,25 @@ export function openDevOutput(
 	} catch (error) {
 		log.warn(`App output is not logged to files: ${String(error)}`);
 	}
-	const output = new RunOutput(logs);
 	const names = Object.keys(apps);
 	const terminal = isInteractive();
 	if (options.tui === "on" && !terminal)
 		log.warn("--tui needs a terminal; printing prefixed lines instead.");
 
 	const actions = appActions(apps);
-	const tui =
-		options.tui !== "off" && terminal && names.length > 0
-			? new RunTui({
-					output,
-					apps: names,
-					urlFor: (app) => environmentOpenUrl(env, app),
-					actions,
-					logPath: (app) => (app ? logs?.file(app) : logs?.dir),
-					quit: () => process.kill(process.pid, "SIGINT"),
-				})
-			: undefined;
+	const useTui = options.tui !== "off" && terminal && names.length > 0;
+	// In the TUI every app gets a terminal of its own, sized to its pane.
+	const output = new RunOutput({ terminals: useTui ? "pty" : "pipe", logs });
+	const tui = useTui
+		? new RunTui({
+				output,
+				apps: names,
+				urlFor: (app) => environmentOpenUrl(env, app),
+				actions,
+				logPath: (app) => (app ? logs?.file(app) : logs?.dir),
+				quit: () => process.kill(process.pid, "SIGINT"),
+			})
+		: undefined;
 	const stopPrinting = tui
 		? undefined
 		: printStream(output, { width: prefixWidth(names) });
@@ -113,8 +113,6 @@ export function openDevOutput(
 
 	return {
 		output,
-		/** The TUI shows run events; stream mode only writes them to the logs. */
-		tui: tui !== undefined,
 		start: () => tui?.start(),
 		stop: async () => {
 			// Before either view goes: what the apps left on screen reaches it,

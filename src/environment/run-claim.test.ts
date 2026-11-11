@@ -3,6 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readLeases } from "../core/leases";
+import {
+	type AppEvent,
+	AppFailure,
+	type AppLife,
+	initialLife,
+	transition,
+} from "../core/process/app-lifecycle";
 import { flushRunPatches, type RunSource } from "../core/run-publish";
 import {
 	findRunsByRoot,
@@ -28,6 +35,26 @@ afterAll(() => {
 	else process.env.HOME = realHome;
 	rmSync(home, { recursive: true, force: true });
 });
+
+/** Walk an app through its lifecycle as the spawner does, reporting each step. */
+function stepper(
+	claim: Pick<ReturnType<typeof createRunClaimApi>, "appEvents">,
+) {
+	const lives = new Map<string, AppLife>();
+	return (name: string, event: AppEvent) => {
+		const previous =
+			lives.get(name) ??
+			initialLife({
+				optional: false,
+				worker: true,
+				checked: false,
+				attached: false,
+			});
+		const life = transition(previous, event);
+		lives.set(name, life);
+		void claim.appEvents.onAppPhase?.(name, life, previous);
+	};
+}
 
 describe("resolveClaimHold", () => {
 	it("keeps a library run's containers unless something asks for a hold", () => {
@@ -250,12 +277,14 @@ describe("a claim's lifecycle and its apps", () => {
 				.find((run) => run.sessionId === claim.sessionId)
 				?.apps.find((app) => app.name === name)?.status;
 		await claim.claimApps({ web: worker(), jobs: worker() });
-		claim.appEvents.onAppSpawned?.("web", 1_000_011, false);
-		claim.appEvents.onAppSpawned?.("jobs", 1_000_012, false);
-		claim.appEvents.onAppReady?.("web");
+		const step = stepper(claim);
+		step("web", { type: "spawned", pid: 1_000_011, probation: false });
+		step("jobs", { type: "spawned", pid: 1_000_012, probation: false });
+		step("web", { type: "ready" });
 
-		claim.appEvents.onAppRestarting?.("web");
-		claim.appEvents.onAppFailed?.("jobs", new Error("did not respond"));
+		step("web", { type: "restarting", reason: "requested" });
+		const failure = new AppFailure("jobs", "not-ready", "did not respond");
+		step("jobs", { type: "failed", failure, park: true });
 		await flushRunPatches(session);
 
 		expect(await status("web")).toBe("starting");
@@ -302,11 +331,16 @@ describe("a claim's lifecycle and its apps", () => {
 			(await loadRuns()).find((run) => run.sessionId === claim.sessionId)
 				?.apps[0];
 		await claim.claimApps({ first: worker() });
-		claim.appEvents.onAppSpawned?.("first", 1_000_001, false);
-		claim.appEvents.onAppExit?.("first", 1, null, "failed");
+		const step = stepper(claim);
+		step("first", { type: "spawned", pid: 1_000_001, probation: false });
+		step("first", {
+			type: "exited",
+			exit: { code: 1, signal: null },
+			runEnding: false,
+		});
 		await flushRunPatches(session);
 		expect((await row())?.status).toBe("failed");
-		claim.appEvents.onAppSpawned?.("first", 1_000_002, false);
+		step("first", { type: "spawned", pid: 1_000_002, probation: false });
 
 		await claim.claimApps({ second: worker() });
 		await flushRunPatches(session);

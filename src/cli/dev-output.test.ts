@@ -35,7 +35,7 @@ it("closes the output before the TUI lets go of it", async () => {
 			{ api: { port: 3000, devCommand: "bun run api" } },
 			{ tui: "on" },
 		);
-		expect(view.tui).toBe(true);
+		expect(view.output.terminals).toBe("pty");
 		view.start();
 		await view.stop();
 		expect(order).toEqual(["output closed", "tui stopped"]);

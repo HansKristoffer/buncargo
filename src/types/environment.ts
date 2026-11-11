@@ -299,6 +299,8 @@ export interface DevEnvironment<
 		expandRequired?: boolean;
 		/** Defer the aggregate ready message until other preparation completes. */
 		logReady?: boolean;
+		/** Say "Waiting for servers to be ready..." when the wait is slow. Default: true */
+		verbose?: boolean;
 		/** Called as each app passes its health check, before the rest have. */
 		onAppReady?: (name: string) => void;
 	}): Promise<void>;

@@ -40,7 +40,7 @@ it("passes attached arguments literally, including shell syntax and empty values
 				extraArgs: args,
 				productionBuild: false,
 				waitForExit: true,
-				output: new RunOutput(),
+				output: new RunOutput({ terminals: "pipe" }),
 			},
 		) as EventEmitter;
 		const code = await new Promise((resolve, reject) => {
@@ -60,7 +60,7 @@ it("gives an attached app without a terminal one of its own: printed once, logge
 	const root = mkdtempSync(join(tmpdir(), "buncargo attached log "));
 	try {
 		const logs = new AppLogs(root, "attached");
-		const output = new RunOutput(logs);
+		const output = new RunOutput({ terminals: "pipe", logs });
 		let printed = "";
 		printStream(output, {
 			width: 3,

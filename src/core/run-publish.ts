@@ -526,37 +526,28 @@ export async function recordAppSpawn(
  */
 export function appRowEvents(
 	run: RunSession,
-): Required<
-	Pick<
-		StartDevServersOptions,
-		| "onAppSpawned"
-		| "onAppReady"
-		| "onAppRestarting"
-		| "onAppExit"
-		| "onAppFailed"
-		| "onAppRestartFailed"
-	>
-> {
+): Required<Pick<StartDevServersOptions, "onAppPhase">> {
 	return {
-		onAppSpawned: (name, pid, attached) => {
-			void recordAppSpawn(run, name, pid, attached);
-		},
-		onAppReady: (name) => {
-			void markApps(run, [name], "ready");
-		},
-		// Before the new process spawns, or `buncargo wait` answers from the
-		// process being replaced.
-		onAppRestarting: (name) => {
-			void markAppsRestarting(run, [name]);
-		},
-		onAppExit: (name, _code, _signal, state) => {
-			void markApps(run, [name], state);
-		},
-		onAppFailed: (name) => {
-			void markApps(run, [name], "failed");
-		},
-		onAppRestartFailed: (name) => {
-			void markApps(run, [name], "failed");
+		onAppPhase: (name, life, previous) => {
+			// A new pid: spawned, or a server its launcher detached.
+			if (life.pid !== undefined && life.pid !== previous.pid)
+				void recordAppSpawn(run, name, life.pid, life.attached);
+			if (life.phase === previous.phase && life.end === previous.end) return;
+			typedSwitch(life.phase, {
+				starting: () => {},
+				reused: () => {},
+				ready: () => {
+					void markApps(run, [name], "ready");
+				},
+				// Before the new process spawns, or `buncargo wait` answers from
+				// the process being replaced.
+				restarting: () => {
+					void markAppsRestarting(run, [name]);
+				},
+				down: () => {
+					void markApps(run, [name], life.end?.verdict ?? "stopped");
+				},
+			});
 		},
 	};
 }

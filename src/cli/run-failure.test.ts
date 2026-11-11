@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { AppFailure } from "../core/process/app-lifecycle";
 import type { AppStateDetail } from "../core/process/run-output";
 import { SeedFailedError } from "../environment/seed-startup";
 import { CliError } from "./errors";
@@ -51,7 +52,7 @@ describe("describeDevFailure", () => {
 	// saw its output.
 	it("names the app an error is about and shows its last lines", () => {
 		const failure = describeDevFailure(
-			new Error('App "api" exited with code 1'),
+			new AppFailure("api", "exited", 'App "api" exited with code 1'),
 			{
 				setupHints: [],
 				output: output({
@@ -69,7 +70,25 @@ describe("describeDevFailure", () => {
 		});
 	});
 
-	it("falls back to the app that failed when the message names none", () => {
+	// A health check's message names a URL, not the app; another app's row
+	// already said `failed`, and the block showed that app's output.
+	it("names the app of an app failure whose message does not", () => {
+		const failure = describeDevFailure(
+			new AppFailure(
+				"api",
+				"not-ready",
+				"Server at http://localhost:3000/ did not respond within 60s",
+			),
+			{
+				setupHints: [],
+				output: output({ web: ["crashed"], api: ["still booting"] }, ["web"]),
+			},
+		);
+		expect(failure.step).toBe("api");
+		expect(failure.output).toEqual(["still booting"]);
+	});
+
+	it("falls back to the app that failed when the error is about none", () => {
 		const failure = describeDevFailure(new Error("Startup failed"), {
 			setupHints: [],
 			output: output({ web: ["ok"], worker: ["Cannot find module"] }, [

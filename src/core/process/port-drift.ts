@@ -26,6 +26,8 @@ import {
  * port, and that alone is not drift.
  */
 
+const DRIFT_POLL_MS = 1000;
+
 export interface DriftTarget {
 	name: string;
 	pid: number;
@@ -66,12 +68,12 @@ export function formatDrift(
 	return `${target.name} listens on ${ports}, not its assigned :${target.port}; ${formatPortOwner(target.port, holder)}. Run dev again to move to a free port block.`;
 }
 
-/** One pass: the first target that drifted, as an error message. */
+/** One pass: the first target that drifted, with the message naming it. */
 export async function checkPortDrift(
 	targets: readonly DriftTarget[],
 	probe: DriftProbe,
 	signal: AbortSignal,
-): Promise<string | undefined> {
+): Promise<{ name: string; message: string } | undefined> {
 	if (targets.length === 0) return undefined;
 	const listeners = await probe.listeners(signal);
 	for (const target of targets) {
@@ -82,7 +84,11 @@ export async function checkPortDrift(
 			listeners,
 			probe.processTree(target.pid),
 		);
-		if (listening.length > 0) return formatDrift(target, listening, holder);
+		if (listening.length > 0)
+			return {
+				name: target.name,
+				message: formatDrift(target, listening, holder),
+			};
 	}
 	return undefined;
 }
@@ -115,23 +121,23 @@ export function systemDriftProbe(options: {
 }
 
 /**
- * Poll until `signal` aborts, rejecting the moment a target drifted.
- * Resolves (never rejects) on abort, so racing it cannot mask the real result.
+ * Poll until `signal` aborts, reporting each target that drifted. The
+ * targets are read every pass, so one that is reported (and stops coming
+ * up) drops out of the next. A pass that fails is skipped.
  */
 export async function watchPortDrift(
 	targets: () => readonly DriftTarget[],
 	probe: DriftProbe,
 	signal: AbortSignal,
-	intervalMs = 1000,
+	onDrift: (name: string, message: string) => void,
 ): Promise<void> {
-	try {
-		while (!signal.aborted) {
-			await abortableSleep(intervalMs, signal);
+	while (!signal.aborted) {
+		try {
+			await abortableSleep(DRIFT_POLL_MS, signal);
 			const drift = await checkPortDrift(targets(), probe, signal);
-			if (drift && !signal.aborted) throw new Error(drift);
+			if (drift && !signal.aborted) onDrift(drift.name, drift.message);
+		} catch {
+			// Aborted, or the listeners could not be read this time.
 		}
-	} catch (error) {
-		if (signal.aborted) return;
-		throw error;
 	}
 }

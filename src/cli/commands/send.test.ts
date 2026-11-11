@@ -43,7 +43,7 @@ it("exits by what became of the keys", async () => {
 		],
 	});
 	// The run's side, as `dev` answers: only expo has a terminal.
-	const output = new RunOutput();
+	const output = new RunOutput({ terminals: "pipe" });
 	const typed: string[] = [];
 	output.screen("expo").input = (text) => {
 		typed.push(text);
