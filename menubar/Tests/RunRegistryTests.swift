@@ -3,10 +3,22 @@ import Testing
 
 @testable import BuncargoBar
 
-private func fixtureRuns() throws -> [Run] {
+private func fixtureRuns(_ name: String = "runs.v1.json") throws -> [Run] {
     let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        .deletingLastPathComponent().appendingPathComponent("fixtures/runs.v1.json")
+        .deletingLastPathComponent().appendingPathComponent("fixtures/\(name)")
     return try JSONDecoder().decode(RunsFile.self, from: Data(contentsOf: path)).runs
+}
+
+/// One entry this build could not decode emptied the whole menu.
+/// `src/core/run-registry.fixture.test.ts` reads the same fixture.
+@Test func entriesThatDoNotDecodeAreDroppedAndTheRestKept() throws {
+    let runs = try fixtureRuns("runs.v1.lossy.json")
+    #expect(
+        runs.map(\.sessionId) == ["first-valid-session", "unknown-status-session", "last-valid-session"])
+
+    let unknown = try #require(runs.first(where: { $0.sessionId == "unknown-status-session" }))
+    #expect(unknown.apps.first?.state == .starting)
+    #expect(unknown.services.first?.state == .starting)
 }
 
 /// The CLI hashes what `ps -o lstart=` prints in the C locale and UTC; these
