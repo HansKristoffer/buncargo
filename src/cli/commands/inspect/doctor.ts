@@ -64,7 +64,7 @@ import { type HostsMode, hostsMode } from "../../../core/runtime-flags";
 import { invokingUserIdentity } from "../../../core/state-paths";
 import { describeSwept } from "../../../core/watchdog-loop";
 import { loadDevEnv } from "../../../loader";
-import type { AnyDevEnvironment } from "../../../types";
+import type { AnyDevEnvironment, BuncargoVolume } from "../../../types";
 import { describeCheckFailures, isWarning, runChecks } from "../../checks";
 import { BASE_EXITS, defineCommand } from "../../command-spec";
 import { allChecks } from "../../core-checks";
@@ -315,16 +315,70 @@ export async function prunableVolumesNote(
 	const volumes = (
 		await Promise.all(runtimes.map((runtime) => runtime.listVolumes()))
 	).flat();
-	const count = orphanedVolumes(
+	const orphaned = orphanedVolumes(
 		planVolumePrune({
 			volumes,
 			containers: await listBuncargoContainers([...runtimes]),
 			runs: await readAllRuns(),
 			checkouts: claimedCheckouts(readAllOffsetClaims()),
 		}),
-	).length;
-	if (count === 0) return undefined;
-	return `warning: ${count} volume${count === 1 ? "" : "s"} of deleted checkouts can be reclaimed. Review them with \`buncargo prune --dry-run\`; removing them destroys their data.`;
+	);
+	if (orphaned.length === 0) return undefined;
+
+	const size = describeVolumeSize(
+		orphaned.map((volume) => volume.name),
+		await readVolumeSizes(runtimes, orphaned),
+	);
+	const count = orphaned.length;
+	const noun = count === 1 ? "volume" : "volumes";
+	return `warning: ${count} ${noun} of deleted checkouts (${size}) can be reclaimed. Review them with \`buncargo prune --dry-run\`; removing them destroys their data.`;
+}
+
+/**
+ * The sizes of the runtimes that hold one of `volumes`. A runtime that fails
+ * to answer measures nothing: the size only enriches the note.
+ */
+async function readVolumeSizes(
+	runtimes: readonly ContainerRuntimeAdapter[],
+	volumes: readonly BuncargoVolume[],
+): Promise<Map<string, number>> {
+	const holding = runtimes.filter((runtime) =>
+		volumes.some((volume) => volume.runtime === runtime.name),
+	);
+	const sizes = await Promise.all(
+		holding.map((runtime) =>
+			runtime.volumeSizes().catch(() => new Map<string, number>()),
+		),
+	);
+	return new Map(sizes.flatMap((map) => [...map]));
+}
+
+/** "1.3 GB", "1.3 GB, 2 of unknown size", or "size unknown". */
+function describeVolumeSize(
+	names: readonly string[],
+	sizes: ReadonlyMap<string, number>,
+): string {
+	const measured = names.flatMap((name) => {
+		const bytes = sizes.get(name);
+		return bytes === undefined ? [] : [bytes];
+	});
+	if (measured.length === 0) return "size unknown";
+	const total = formatBytes(measured.reduce((sum, bytes) => sum + bytes, 0));
+	const unknown = names.length - measured.length;
+	return unknown === 0 ? total : `${total}, ${unknown} of unknown size`;
+}
+
+/** Decimal units, as Docker prints them. */
+function formatBytes(bytes: number): string {
+	const units = ["B", "kB", "MB", "GB", "TB"];
+	let value = bytes;
+	let unit = 0;
+	while (value >= 1000 && unit < units.length - 1) {
+		value /= 1000;
+		unit += 1;
+	}
+	const digits = unit === 0 ? 0 : 1;
+	return `${value.toFixed(digits)} ${units[unit]}`;
 }
 
 async function checkPrunableVolumes(

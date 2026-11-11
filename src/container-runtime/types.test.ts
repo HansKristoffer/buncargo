@@ -18,6 +18,7 @@ type PortMembers =
 	| "exec"
 	| "execArgv"
 	| "listVolumes"
+	| "volumeSizes"
 	| "removeVolumes"
 	| "listComposeProjectResources"
 	| "removeComposeProjectResource";

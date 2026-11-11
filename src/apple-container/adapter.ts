@@ -130,6 +130,11 @@ export function appleContainerRuntimeAdapter(
 			return listAppleVolumes(cli);
 		},
 
+		// `container volume list` reports no size.
+		volumeSizes() {
+			return Promise.resolve(new Map());
+		},
+
 		removeVolumes(names) {
 			return removeAppleVolumes(cli, names);
 		},

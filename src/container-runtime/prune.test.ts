@@ -8,6 +8,10 @@ function volume(name: string, project?: string): BuncargoVolume {
 	return { name, ...(project ? { project } : {}), runtime: "docker" };
 }
 
+function names(volumes: readonly BuncargoVolume[]): string[] {
+	return volumes.map((entry) => entry.name);
+}
+
 function container(project: string): BuncargoContainer {
 	return {
 		id: `${project}-id`,
@@ -61,7 +65,7 @@ describe("planVolumePrune", () => {
 			["held_data", "in-use"],
 			["stray_data", "unattributed"],
 		]);
-		expect(orphanedVolumes(reports)).toEqual(["gone_data"]);
+		expect(names(orphanedVolumes(reports))).toEqual(["gone_data"]);
 	});
 
 	it("keeps an idle checkout's volume, because `dev --down` is not `delete my database`", () => {
@@ -134,7 +138,7 @@ describe("planVolumePrune", () => {
 			],
 			deletedFor: { ms: 7 * DAY, now },
 		});
-		expect(orphanedVolumes(reports)).toEqual(["old_data"]);
+		expect(names(orphanedVolumes(reports))).toEqual(["old_data"]);
 		expect(reports[1]?.verdict.reason).toBe(
 			"its checkout /recent was found deleted less than 7d ago",
 		);

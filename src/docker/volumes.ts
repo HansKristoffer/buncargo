@@ -1,3 +1,4 @@
+import { isRecord, safeJsonParse, toArray } from "hanzio";
 import type { BuncargoVolume } from "../types";
 import { runDockerAsync } from "./binary";
 
@@ -55,6 +56,50 @@ export async function listDockerVolumes(
 			const parsed = parseDockerVolumeLine(line);
 			return parsed ? [parsed] : [];
 		});
+}
+
+/** Docker's sizes are decimal, as `docker system df` prints them. */
+const SIZE_UNITS: Record<string, number> = {
+	B: 1,
+	kB: 1e3,
+	MB: 1e6,
+	GB: 1e9,
+	TB: 1e12,
+	PB: 1e15,
+};
+
+/** `"2.477kB"` as bytes, or undefined for `"N/A"` and anything unreadable. */
+function parseDockerSize(text: string): number | undefined {
+	const match = /^([\d.]+)\s*([kMGTP]?B)$/.exec(text.trim());
+	const unit = match?.[2] ? SIZE_UNITS[match[2]] : undefined;
+	if (!match?.[1] || unit === undefined) return undefined;
+	return Math.round(Number(match[1]) * unit);
+}
+
+/** Each volume's size in bytes, from `docker system df -v`. */
+export async function readDockerVolumeSizes(
+	binary?: string,
+): Promise<Map<string, number>> {
+	const result = await runDockerAsync(
+		binary,
+		["system", "df", "-v", "--format", "{{json .Volumes}}"],
+		{ timeoutMs: 60_000 },
+	);
+	if (!result.ok)
+		throw new Error(
+			result.stderr.trim() || `docker system df exited ${result.exitCode}`,
+		);
+	const parsed = safeJsonParse(result.stdout.trim() || "[]");
+	const sizes = new Map<string, number>();
+	if (!parsed.ok) return sizes;
+	for (const row of toArray(parsed.data)) {
+		if (!isRecord(row)) continue;
+		const { Name: name, Size: size } = row;
+		if (typeof name !== "string" || typeof size !== "string") continue;
+		const bytes = parseDockerSize(size);
+		if (bytes !== undefined) sizes.set(name, bytes);
+	}
+	return sizes;
 }
 
 /**

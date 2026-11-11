@@ -17,7 +17,11 @@ import {
 	listDockerComposeProjectResources,
 	removeDockerComposeProjectResource,
 } from "./project-resources";
-import { listDockerVolumes, removeDockerVolumes } from "./volumes";
+import {
+	listDockerVolumes,
+	readDockerVolumeSizes,
+	removeDockerVolumes,
+} from "./volumes";
 
 export interface DockerAdapterOptions {
 	/** Path to the `docker` binary; falls back to a PATH lookup. */
@@ -93,6 +97,10 @@ export function dockerRuntimeAdapter(
 
 		listVolumes() {
 			return listDockerVolumes(binary);
+		},
+
+		volumeSizes() {
+			return readDockerVolumeSizes(binary);
 		},
 
 		removeVolumes(names) {
