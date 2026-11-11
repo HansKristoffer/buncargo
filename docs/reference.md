@@ -899,6 +899,11 @@ same offset only collided while both ran, so which got which ports depended on
 which started first. `buncargo ports` lists the claims, and it and `doctor` report
 two claims whose blocks overlap, naming both checkouts and the ports they share.
 
+A claiming run that finds `offsets.json` unreadable, or written by a newer buncargo,
+stops with an error naming the file and leaves it as it is: rewriting it would drop
+every other checkout's claim. Update buncargo, or move the file aside to let every
+checkout be assigned its ports again.
+
 A suffixed environment (`withSuffix()`, `buncargo ci`, an E2E stack) claims its
 own offset next to its checkout's dev claim, and gives it back when it is stopped.
 In CI the dev claim goes the same way: `dev --down` or `stop()` frees the block, so
@@ -1711,7 +1716,7 @@ On a machine on a [Tailscale](https://tailscale.com) network, the watchdog also 
 
 A finished run keeps its registry entry until its containers are gone — that entry is what says they may still be reused, and for how long. `buncargo runs` and the menu bar filter it out; the sweep and `stop` see it, and `stop --all` removes its containers now. `dev --down`, `stop --all` and `stop()` remove the entry straight away, since they have just removed the containers.
 
-**Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes whose project has no containers, no run and no checkout that still exists, and removes them only after you confirm. An idle checkout's database stays until its directory is deleted; a `ci` or E2E stack's volume is listed once its run is gone:
+**Volumes are never removed automatically.** A container costs nothing to recreate; a volume is the database. `buncargo prune` lists the volumes of checkouts whose directory was deleted, when no container, no run and no other checkout uses their project, and removes them only after you confirm. A volume nothing on record ties to a deleted checkout stays, and so does an idle checkout's database. Before removing, it checks each volume again, so one a run or checkout took up since the listing is kept. A project's `ci` stacks and deleted worktrees are `buncargo prune --project`'s (below):
 
 ```bash
 bunx buncargo prune --dry-run   # List what would go
@@ -1723,7 +1728,7 @@ Volumes carry no buncargo labels on purpose: Compose compares a volume against t
 
 A machine where worktrees come and go all day, such as a server agents work on, can opt in with `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`: the sweep then also removes the volumes of a checkout whose directory was deleted, once a pass at least 10 minutes after the first still finds it gone. It works for checkouts whose containers are already gone, and leaves the volumes whenever another checkout or a run still uses the same project name. A checkout your user cannot read never counts as deleted.
 
-The watchdog also reports the volumes `buncargo prune --dry-run` would propose, in `~/.buncargo/watchdog.log`. It checks at most once an hour and writes only when that set changes, and it never removes anything: a project whose checkout has no port claim is invisible to the sweep, so its volumes stay until you run `prune`. Only the runtimes that answered that pass are judged, each against its own containers.
+The watchdog also reports the volumes `buncargo prune --dry-run` would propose, in `~/.buncargo/watchdog.log`. It checks at most once an hour and writes only when that set changes, and it never removes anything. Only the runtimes that answered that pass are judged, each against its own containers.
 
 The watchdog exits when nothing is left to watch, and the next `buncargo dev` starts one from its own checkout. A machine that wants a standing watchdog on a pinned release, rather than one that follows whichever worktree last ran, can run it as a systemd user service. Use `on-failure`, not `always`: the watchdog exits with status 0 when idle, and `always` would restart it every 30 seconds to find nothing to do.
 
