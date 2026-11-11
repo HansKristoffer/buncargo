@@ -31,9 +31,9 @@ it("prefers the selected backend and resolves independent backends concurrently"
 		runtime: adapter("apple", 3000),
 		fallbackRuntimes: [adapter("docker", 3000)],
 	});
-	expect(snapshot.owner(3000)?.container).toMatchObject({
-		id: "apple",
-		runtime: "apple",
+	expect(snapshot.owner(3000)).toMatchObject({
+		kind: "container",
+		container: { id: "apple", runtime: "apple" },
 	});
 });
 
@@ -48,6 +48,7 @@ it("resolves supplied cwd data for a process-held port", async () => {
 		cwds: new Map([[42, "/checkout"]]),
 	});
 	expect(snapshot.owner(3000)).toMatchObject({
+		kind: "process",
 		pids: [42],
 		command: "bun",
 		cwd: "/checkout",

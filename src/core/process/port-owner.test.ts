@@ -19,7 +19,7 @@ describe("classifyPortOccupant", () => {
 		expect(
 			classifyPortOccupant(
 				{
-					pids: [],
+					kind: "container",
 					container: {
 						id: "abc",
 						name: "gey-postgres-1",
@@ -42,7 +42,7 @@ describe("classifyPortOccupant", () => {
 		expect(
 			classifyPortOccupant(
 				{
-					pids: [],
+					kind: "container",
 					container: {
 						id: "abc",
 						name: `supabase_db_${stackName}`,
@@ -58,7 +58,7 @@ describe("classifyPortOccupant", () => {
 		expect(
 			classifyPortOccupant(
 				{
-					pids: [],
+					kind: "container",
 					container: {
 						id: "abc",
 						name: "other-postgres-1",
@@ -74,7 +74,7 @@ describe("classifyPortOccupant", () => {
 		expect(
 			classifyPortOccupant(
 				{
-					pids: [],
+					kind: "container",
 					container: {
 						id: "abc",
 						name: "gey-postgres-1",
@@ -91,7 +91,7 @@ describe("classifyPortOccupant", () => {
 		expect(
 			classifyPortOccupant(
 				{
-					pids: [],
+					kind: "container",
 					container: {
 						id: "abc",
 						name: "gey-postgres-1",
@@ -107,7 +107,7 @@ describe("classifyPortOccupant", () => {
 	it("kills an orphan whose cwd is under this repo", () => {
 		expect(
 			classifyPortOccupant(
-				{ pids: [12], command: "vite", cwd: "/repo/apps/web" },
+				{ kind: "process", pids: [12], command: "vite", cwd: "/repo/apps/web" },
 				{ root: "/repo", projectName: "gey-main" },
 			),
 		).toBe("kill");
@@ -116,7 +116,7 @@ describe("classifyPortOccupant", () => {
 	it("fails on a process from another repo", () => {
 		expect(
 			classifyPortOccupant(
-				{ pids: [12], command: "vite", cwd: "/elsewhere" },
+				{ kind: "process", pids: [12], command: "vite", cwd: "/elsewhere" },
 				{ root: "/repo", projectName: "gey-main" },
 			),
 		).toBe("fail");
@@ -127,7 +127,7 @@ describe("formatPortOwner", () => {
 	it("names a container and compose project", () => {
 		expect(
 			formatPortOwner(5173, {
-				pids: [],
+				kind: "container",
 				container: {
 					id: "abc",
 					name: "gey-other-platform-1",
@@ -144,7 +144,7 @@ describe("formatPortOwner", () => {
 			formatPortOwner(
 				5173,
 				{
-					pids: [],
+					kind: "container",
 					container: {
 						id: "abc",
 						name: "gey-other-platform-1",
@@ -163,8 +163,7 @@ describe("formatPortOwner", () => {
 		const message = formatPortOwner(
 			13233,
 			{
-				pids: [84706],
-				command: "com.docker.backend",
+				kind: "container",
 				container: {
 					id: "abc",
 					name: "playground-postgres-1",
@@ -178,15 +177,13 @@ describe("formatPortOwner", () => {
 		expect(message).toContain("running on Docker");
 		expect(message).toContain("configured for Apple container");
 		expect(message).toContain("buncargo dev --down --runtime=docker");
-		// The daemon process is what made the old message useless.
-		expect(message).not.toContain("84706");
 	});
 
 	it("reads correctly when the holder is Apple, whose name is not an adjective", () => {
 		const message = formatPortOwner(
 			13333,
 			{
-				pids: [17513],
+				kind: "container",
 				container: {
 					id: "abc",
 					name: "playground-postgres",
@@ -228,7 +225,7 @@ describe("stale stacks of this checkout", () => {
 	it("names the Docker command that removes it, before any runtime mismatch", () => {
 		const message = formatPortOwner(
 			13379,
-			{ pids: [], container: { ...stale, runtime: "docker" } },
+			{ kind: "container", container: { ...stale, runtime: "docker" } },
 			{ runtime: "apple", checkout },
 		);
 		expect(message).toBe(
@@ -239,7 +236,7 @@ describe("stale stacks of this checkout", () => {
 	it("has no command to name on Apple container, only --replace-stale", () => {
 		const message = formatPortOwner(
 			13379,
-			{ pids: [], container: { ...stale, runtime: "apple" } },
+			{ kind: "container", container: { ...stale, runtime: "apple" } },
 			{ runtime: "apple", checkout },
 		);
 		expect(message).toContain("`buncargo dev --replace-stale`");
@@ -253,7 +250,7 @@ describe("stale stacks of this checkout", () => {
 		expect(
 			describePortConflict(
 				13379,
-				{ pids: [], container: stale },
+				{ kind: "container", container: stale },
 				"docker",
 				checkout,
 			),
@@ -261,7 +258,7 @@ describe("stale stacks of this checkout", () => {
 		expect(
 			describePortConflict(
 				13379,
-				{ pids: [], container: { ...stale, root: "/work/t3-other" } },
+				{ kind: "container", container: { ...stale, root: "/work/t3-other" } },
 				"docker",
 				checkout,
 			),
@@ -291,13 +288,13 @@ describe("signalProcessTree", () => {
 it("does not classify a neighboring checkout sharing a prefix as ours", () => {
 	expect(
 		classifyPortOccupant(
-			{ pids: [123], cwd: "/repo-other/app" },
+			{ kind: "process", pids: [123], cwd: "/repo-other/app" },
 			{ root: "/repo", projectName: "demo" },
 		),
 	).toBe("fail");
 	expect(
 		classifyPortOccupant(
-			{ pids: [123], cwd: "/repo/app" },
+			{ kind: "process", pids: [123], cwd: "/repo/app" },
 			{ root: "/repo", projectName: "demo" },
 		),
 	).toBe("kill");
@@ -307,7 +304,7 @@ it("does not classify a worktree checked out inside the root as ours", () => {
 	const checkouts = new Set(["/repo/.claude/worktrees/x", "/repo/vendor/tool"]);
 	const classify = (cwd: string) =>
 		classifyPortOccupant(
-			{ pids: [123], cwd },
+			{ kind: "process", pids: [123], cwd },
 			{
 				root: "/repo",
 				projectName: "demo",
@@ -331,8 +328,7 @@ describe("killPortOwner", () => {
 			await expect(
 				killPortOwnerFoundBy(
 					async () => ({
-						pids: [pid],
-						command: "com.docker.backend",
+						kind: "container",
 						container: { id: "abc", name: "web-1", composeProject: "shop" },
 					}),
 					5432,
@@ -369,17 +365,17 @@ describe("bind probe", () => {
 		);
 		expect(lookup(8020)).toBeNull();
 		const owner = lookup(8021);
-		expect(owner?.unidentified).toBe(true);
+		expect(owner).toEqual({ kind: "unidentified" });
 		expect(
 			classifyPortOccupant(owner, { root: "/repo", projectName: "app" }),
 		).toBe("fail");
-		expect(formatPortOwner(8021, owner as PortOwner)).toContain(
+		expect(formatPortOwner(8021, { kind: "unidentified" })).toContain(
 			"unidentified process",
 		);
 	});
 
 	it("never binds a port the lookup already explained", () => {
-		const ours = { pids: [1], cwd: "/repo" };
+		const ours: PortOwner = { kind: "process", pids: [1], cwd: "/repo" };
 		const lookup = withBindProbe(
 			() => ours,
 			() => {

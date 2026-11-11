@@ -198,11 +198,11 @@ async function checkPortOwnership(
 		});
 		// A dev server whose checkout was thrown away is nobody's any more, as
 		// the sweep treats that checkout's containers.
-		const discarded =
-			!owner.container &&
-			owner.cwd !== undefined &&
-			inDiscardedCheckout(owner.cwd);
-		if (!discarded) {
+		if (
+			owner.kind !== "process" ||
+			owner.cwd === undefined ||
+			!inDiscardedCheckout(owner.cwd)
+		) {
 			report.issue(described);
 			continue;
 		}
@@ -219,7 +219,8 @@ async function checkPortOwnership(
 			options: PortOwnerLookupOptions,
 		) => {
 			const current = await getPortOwnerAsync(port, options);
-			return current && current.pids.join() === owner.pids.join()
+			return current?.kind === "process" &&
+				current.pids.join() === owner.pids.join()
 				? current
 				: null;
 		};

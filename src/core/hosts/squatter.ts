@@ -7,8 +7,10 @@ export function describePortSquatter(
 	const owner = getPortOwner(port, options);
 	if (!owner) return undefined;
 
-	const command = (owner.command ?? "").toLowerCase();
-	const name = owner.container?.name?.toLowerCase() ?? "";
+	const command =
+		owner.kind === "process" ? (owner.command ?? "").toLowerCase() : "";
+	const name =
+		owner.kind === "container" ? owner.container.name.toLowerCase() : "";
 	const haystack = `${command} ${name}`;
 
 	if (haystack.includes("portless")) {
@@ -20,10 +22,10 @@ export function describePortSquatter(
 	if (haystack.includes("nginx")) {
 		return `nginx is serving :${port}. Stop it or set hosts: false.`;
 	}
-	if (owner.container) {
+	if (owner.kind === "container") {
 		return `Docker container ${owner.container.name} is publishing :${port}. Stop it or set hosts: false.`;
 	}
-	if (owner.command) {
+	if (owner.kind === "process" && owner.command) {
 		return `${owner.command} is serving :${port}. Stop it or set hosts: false.`;
 	}
 	return `Port ${port} is already in use.`;

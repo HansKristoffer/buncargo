@@ -1,4 +1,3 @@
-import type { EventEmitter } from "node:events";
 import { toError } from "hanzio";
 import { abortError, withSignal } from "../deadline";
 import {
@@ -19,7 +18,21 @@ import {
 	terminateOwnedProcess,
 } from "./terminate";
 
+/** A process this run owns: one it spawned, or a server one of those left running detached. */
 type OwnedChild = AppChild | DetachedApp;
+
+/** The events supervision listens for, which every kind of owned child emits. */
+interface OwnedChildEvents {
+	once(
+		event: "exit",
+		listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+	): unknown;
+	once(event: "error", listener: (error: Error) => void): unknown;
+}
+
+function events(child: OwnedChild): OwnedChildEvents {
+	return child;
+}
 
 const activeSessions = new Map<number, AppSupervision>();
 
@@ -411,7 +424,7 @@ export class AppSupervision {
 		entry.process = new AbortController();
 		this.children.add(child);
 		this.live.add(child);
-		(child as EventEmitter).once("error", (error: Error) => {
+		events(child).once("error", (error) => {
 			this.live.delete(child);
 			const message = `Failed to start app "${name}": ${error.message}`;
 			this.controller.abort(new AppFailure(name, "start", message));
@@ -431,7 +444,7 @@ export class AppSupervision {
 		// while its ownership was being claimed. Its exit counts all the same.
 		if (child.exitCode !== null || child.signalCode !== null)
 			queueMicrotask(() => onExit(child.exitCode, child.signalCode));
-		else (child as EventEmitter).once("exit", onExit);
+		else events(child).once("exit", onExit);
 	}
 
 	private async exited(
