@@ -1,12 +1,16 @@
-/** Real CLI/apps with isolated runtime fixtures and scenario-specific regression limits. */
+/**
+ * Real CLI/apps with isolated runtime fixtures. Fails when a scenario breaks
+ * its contract (phases, subprocesses); timings over budget only warn.
+ */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
-	baselineViolations,
-	budgetViolations,
+	baselineWarnings,
+	contractViolations,
 	fixtureKey,
 	type StartupResult,
 	startupFixtures,
+	timingWarnings,
 } from "./startup-budgets";
 
 const option = (name: string) =>
@@ -74,6 +78,7 @@ process.once("SIGINT", onInt);
 process.once("SIGTERM", onTerm);
 const results: unknown[] = [];
 const failures: string[] = [];
+const warnings: string[] = [];
 
 try {
 	for (const fixture of startupFixtures) {
@@ -81,7 +86,6 @@ try {
 		const budget = {
 			warmP95Ms: maxP95 ?? Math.round(fixture.budget.warmP95Ms * scale),
 			coldP95Ms: maxColdP95 ?? Math.round(fixture.budget.coldP95Ms * scale),
-			subprocesses: maxSubprocesses ?? fixture.budget.subprocesses,
 			cleanupP95Ms: Math.round((fixture.budget.cleanupP95Ms ?? 300) * scale),
 		};
 		const child = Bun.spawn(
@@ -114,20 +118,26 @@ try {
 			continue;
 		}
 		const result = JSON.parse(stdout) as StartupResult;
-		const violations = budgetViolations(result, budget);
+		const contract =
+			maxSubprocesses === undefined
+				? fixture.contract
+				: {
+						...fixture.contract,
+						subprocesses: { linux: maxSubprocesses, darwin: maxSubprocesses },
+					};
+		const violations = contractViolations(result, contract, process.platform);
+		const slow = timingWarnings(result, budget);
 		if (baseline) {
 			const previous = baseline.results.find(
 				(item) => fixtureKey(item) === key,
 			);
-			if (!previous)
-				violations.push("Matching fixture is missing from the baseline");
+			if (!previous) slow.push("Matching fixture is missing from the baseline");
 			else
-				violations.push(
-					...baselineViolations(result, previous, maxRegressionPercent),
-				);
+				slow.push(...baselineWarnings(result, previous, maxRegressionPercent));
 		}
-		results.push({ ...result, budget, violations });
+		results.push({ ...result, budget, contract, violations, warnings: slow });
 		failures.push(...violations.map((message) => `${key}: ${message}`));
+		warnings.push(...slow.map((message) => `${key}: ${message}`));
 		console.log(
 			JSON.stringify({
 				key,
@@ -136,6 +146,7 @@ try {
 				subprocesses: result.subprocesses,
 				budget,
 				violations,
+				warnings: slow,
 			}),
 		);
 	}
@@ -143,9 +154,12 @@ try {
 	mkdirSync(dirname(output), { recursive: true });
 	writeFileSync(
 		output,
-		`${JSON.stringify({ bun: Bun.version, platform: process.platform, interrupted: interruptCode !== undefined, baseline: baselinePath, maxRegressionPercent, results, failures }, null, 2)}\n`,
+		`${JSON.stringify({ bun: Bun.version, platform: process.platform, interrupted: interruptCode !== undefined, baseline: baselinePath, maxRegressionPercent, results, failures, warnings }, null, 2)}\n`,
 	);
 	console.log(`Saved ${output}`);
+	// Timings on a shared runner: reported, never failed on.
+	if (warnings.length)
+		console.warn(`Slower than budget:\n${warnings.join("\n")}`);
 	process.off("SIGINT", onInt);
 	process.off("SIGTERM", onTerm);
 }

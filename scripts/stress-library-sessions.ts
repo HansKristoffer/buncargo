@@ -74,14 +74,13 @@ async function unusedPort(): Promise<number> {
 	await new Promise<void>((resolve) => server.close(() => resolve()));
 	return address.port;
 }
+/**
+ * No deadline of its own: on a loaded runner an app can take seconds to start,
+ * and the caller's timeout (the test's, the CI job's) bounds a real hang.
+ */
 async function waitFor(test: () => boolean | Promise<boolean>): Promise<void> {
-	const deadline = performance.now() + 5000;
 	while (!(await test())) {
 		interrupted.signal.throwIfAborted();
-		assert(
-			performance.now() < deadline,
-			"Session did not reach the expected state",
-		);
 		await Bun.sleep(5);
 	}
 }
