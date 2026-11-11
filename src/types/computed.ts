@@ -261,8 +261,7 @@ export type ComputedEnvVars<
  * Env names the spawner injects into an app process only while named hosts are
  * active, so they cannot be guaranteed present.
  */
-export type AppHostOnlyEnvVarNames =
-	"BUNCARGO_APP_HOSTNAME" | "BUNCARGO_HOSTS_PORT";
+export type AppHostOnlyEnvVarNames = "BUNCARGO_APP_HOSTNAME";
 
 /**
  * The environment one app's own process receives: the shared surface plus that

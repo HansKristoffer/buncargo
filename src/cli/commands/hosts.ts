@@ -5,7 +5,6 @@ import {
 	OUTDATED_DAEMON_MESSAGE,
 	pruneHostRoutes,
 	RELOAD_STALL_MS,
-	readDaemonConfig,
 	readHostsDaemonHealth,
 	runHostsDaemon,
 	runHostsInstall,
@@ -17,6 +16,7 @@ import {
 	isCaTrusted,
 	resolvedMkcertPath,
 } from "../../core/hosts/mkcert";
+import { HOSTS_HTTPS_PORT } from "../../core/hosts/protocol";
 import {
 	describeStaleHostsService,
 	isHostsServiceInstalled,
@@ -64,14 +64,30 @@ export const hostsCommand = defineGroup({
 	subcommands: {
 		// Always reloads the service: this is the command users are told to run
 		// when named hosts are broken, so it has to replace a stale daemon.
-		install: hostsStep(
-			"install",
-			"One-time CA + :443 proxy (non-interactive)",
-			async () => {
-				await runHostsInstall({ reinstallService: true });
-				log.done("Named hosts are ready");
+		// Never a newer one without --force: another project installed it.
+		install: defineCommand({
+			spec: {
+				name: "hosts install",
+				summary: "One-time CA + :443 proxy (non-interactive)",
+				flags: {
+					force: {
+						kind: "boolean",
+						description:
+							"Replace the service even when a newer buncargo installed it",
+					},
+				},
 			},
-		),
+			exits: BASE_EXITS,
+			run: async ({ values }) => {
+				const notes = await runHostsInstall({
+					reinstallService: true,
+					force: values.force,
+				});
+				for (const note of notes) log.warn(note);
+				log.done("Named hosts are ready");
+				return 0;
+			},
+		}),
 		status: statusCommand,
 		sync: hostsStep(
 			"sync",
@@ -138,8 +154,7 @@ async function printHostsStatus(): Promise<void> {
 		await printTailscaleStatus();
 		return;
 	}
-	const config = readDaemonConfig();
-	const health = await readHostsDaemonHealth(config.httpsPort);
+	const health = await readHostsDaemonHealth();
 	const healthy = health !== undefined;
 	const mkcertPath = resolvedMkcertPath();
 	log.line(
@@ -148,6 +163,7 @@ async function printHostsStatus(): Promise<void> {
 	if (health?.outdated) {
 		log.line(`  ${OUTDATED_DAEMON_MESSAGE}`);
 	} else if (health) {
+		log.line(`  protocol: ${health.protocol}`);
 		const ageMs = Date.now() - health.lastReloadAt;
 		const stale = ageMs > RELOAD_STALL_MS ? "  (stale)" : "";
 		log.line(`  refreshed: ${Math.round(ageMs / 1000)}s ago${stale}`);
@@ -155,10 +171,12 @@ async function printHostsStatus(): Promise<void> {
 		if (health.bindError)
 			log.line(`  certificate: cannot load the new one (${health.bindError})`);
 	}
-	log.line(`httpsPort: ${config.httpsPort}`);
 	log.line(`service: ${isHostsServiceInstalled() ? "installed" : "missing"}`);
 	const manifest = readHostsServiceManifest();
 	if (manifest) {
+		log.line(
+			`  buncargo: ${manifest.buncargoVersion} (protocol ${manifest.protocol})`,
+		);
 		log.line(`  exec: ${[manifest.program, ...manifest.args].join(" ")}`);
 	}
 	log.line(`mkcert: ${mkcertPath ?? "missing"}`);
@@ -174,12 +192,12 @@ async function printHostsStatus(): Promise<void> {
 			: `${caPath} (not trusted)`;
 	log.line(`ca: ${ca}`);
 	if (!healthy) {
-		const squatter = describePortSquatter(config.httpsPort);
+		const squatter = describePortSquatter(HOSTS_HTTPS_PORT);
 		if (squatter) {
 			log.line(`port: ${squatter}`);
 		}
 	} else {
-		const hijack = await describeLoopbackHijack(config.httpsPort);
+		const hijack = await describeLoopbackHijack();
 		if (hijack) {
 			log.line(`port: ${hijack}`);
 		}
@@ -197,7 +215,7 @@ async function printHostsStatus(): Promise<void> {
 	const served =
 		health && !health.outdated ? new Set(health.hostnames) : undefined;
 	for (const route of routes) {
-		const owner = route.pid === undefined ? "static" : `pid ${route.pid}`;
+		const owner = route.kind === "app" ? `pid ${route.pid}` : "static";
 		const unserved =
 			served && !served.has(route.hostname)
 				? "  ← not served by the daemon"

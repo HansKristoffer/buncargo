@@ -5,12 +5,13 @@ import { join } from "node:path";
 import type { NamedHost } from "../../types";
 import {
 	certificateFingerprint,
+	certificateServes,
 	machineMkcert,
+	readCertificatePair,
 	syncCertificateForRoutes,
 } from "./certificates";
 import { createHostsReloader } from "./daemon";
 import { waitForDaemonRoutes } from "./daemon-client";
-import { writeDaemonConfig } from "./daemon-config";
 import { resolvedMkcertPath } from "./mkcert";
 import { certificateHostnames } from "./plan";
 import { type LocalProxy, startLocalProxy } from "./proxy";
@@ -85,27 +86,23 @@ describeSoak("named hosts under worktree churn", () => {
 		process.env.CAROOT = join(home, "ca");
 
 		// A stand-in for the installed service: the same reloader the daemon
-		// runs, over the same registry and certificate, on an unprivileged port.
+		// runs, over the same registry and minted certificate, on an
+		// unprivileged port.
 		const reloader = createHostsReloader({
 			pruneRoutes: () => pruneHostRoutes(),
 			certificateFingerprint,
 			describeCertificateGap: () => undefined,
-			readCertificatePair: async () => ({ cert: "", key: "" }),
-			// Plain HTTP here: every route the map holds is served.
-			certificateServes: () => () => true,
-			startProxy: async (input) => {
+			readCertificatePair,
+			certificateServes,
+			startProxy: async ({ cert, key, ...input }) => {
 				const started = await startLocalProxy({
-					lookup: input.lookup,
-					routes: input.routes,
+					...input,
+					tls: { cert, key },
+					refresh: () => reloader.refresh().catch(() => {}),
 					httpsPort: proxy?.httpsPort ?? 0,
 					hostname: "127.0.0.1",
 				});
 				proxy = started;
-				writeDaemonConfig({
-					httpsPort: started.httpsPort,
-					httpPort: 0,
-					tls: false,
-				});
 				return started;
 			},
 			log: () => {},
@@ -152,10 +149,9 @@ describeSoak("named hosts under worktree churn", () => {
 			root,
 		});
 
-		await upsertHostRoutes(
-			routesFromPlan(plan, { root, pid: process.pid, kinds: ["app"] }),
-			{ owners: pidRouteOwners },
-		);
+		await upsertHostRoutes(routesFromPlan(plan, { root, pid: process.pid }), {
+			owners: pidRouteOwners,
+		});
 
 		await syncCertificateForRoutes(machineMkcert, {
 			include: certificateHostnames(plan, "localhost"),
@@ -163,6 +159,7 @@ describeSoak("named hosts under worktree churn", () => {
 		});
 		const serving = await waitForDaemonRoutes(
 			plan.map((entry) => entry.hostname),
+			{ port: proxy?.httpsPort },
 		);
 		return serving.ok;
 	}

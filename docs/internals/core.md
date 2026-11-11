@@ -25,7 +25,7 @@ Cross-cutting utilities in `src/core/` that most features touch.
 ## Persisted files and locks
 
 - `registry-file.ts` reads and writes the persisted state files (`routes.json`,
-  `hosts-daemon.json`, `hosts-service.json`, `offsets.json`) through typed
+  `hosts-service.json`, `offsets.json`) through typed
   validators. Writes go via temp file + rename: the hosts daemon re-reads `routes.json` every
   second, and a truncating write would let it read the file empty and conclude there is no state.
   A read is lenient by default and `strict` for a consumer that only reads: a missing file is "no
