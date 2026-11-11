@@ -47,6 +47,8 @@ export interface OpenUrlSource {
 export function environmentOpenUrl(
 	env: OpenUrlSource,
 	app: string,
+	/** `false` for this machine's own browser (`url --local`), whatever `BUNCARGO_URL_HOST` says. */
+	urlHostSet?: boolean,
 ): string | undefined {
 	const read = (urls: object | undefined) =>
 		(urls as Record<string, string | undefined> | undefined)?.[app];
@@ -60,6 +62,7 @@ export function environmentOpenUrl(
 			),
 		},
 		env.hosts?.active === true,
+		urlHostSet,
 	);
 }
 

@@ -1,5 +1,6 @@
 import { environmentOpenUrl } from "../../core/app-url";
 import { openUrl } from "../../core/open-url";
+import { urlHostOverride } from "../../core/runtime-flags";
 import {
 	type CommandSpec,
 	findUnknownFlags,
@@ -25,12 +26,23 @@ const HELP = {
 	description: "Show this help message",
 } as const;
 
+const LOCAL = {
+	name: "--local",
+	kind: "boolean",
+	description:
+		"The URL for a browser on this machine: loopback instead of BUNCARGO_URL_HOST",
+} as const;
+
 export const URL_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo url [<name>]",
-	flags: [HELP],
+	usage: "buncargo url [<name>] [--local]",
+	flags: [LOCAL, HELP],
 	examples: [
 		{ command: "buncargo url", description: "List every URL, by name" },
 		{ command: "buncargo url api", description: "Print one" },
+		{
+			command: "buncargo url api --local",
+			description: "The one your own browser opens",
+		},
 		{
 			command: "buncargo url postgres",
 			description: "A service's URL, or its connection URL",
@@ -77,7 +89,11 @@ const isAnyUrl = (value: string | undefined): value is string =>
  */
 export function openTargets(
 	env: OpenSource,
-	options: { connectionUrls: boolean },
+	options: {
+		connectionUrls: boolean;
+		/** Whether app URLs carry `BUNCARGO_URL_HOST` instead of loopback. */
+		urlHostSet: boolean;
+	},
 ): Record<string, string> {
 	const targets: Record<string, string> = {};
 	const seen = new Set<string>();
@@ -93,14 +109,44 @@ export function openTargets(
 
 	// The app's own URL is the one the TUI's `o` and BuncargoBar open.
 	for (const app of Object.keys(env.apps)) {
-		add(app, environmentOpenUrl(env, app));
+		add(app, environmentOpenUrl(env, app, options.urlHostSet));
 	}
 	const serviceAccepts = options.connectionUrls ? isAnyUrl : isHttpUrl;
 	for (const service of Object.keys(env.services))
-		add(service, environmentOpenUrl(env, service), serviceAccepts);
+		add(
+			service,
+			environmentOpenUrl(env, service, options.urlHostSet),
+			serviceAccepts,
+		);
 	for (const [name, value] of Object.entries(env.captured)) add(name, value);
 	for (const [label, value] of Object.entries(env.details())) add(label, value);
 	return targets;
+}
+
+const LOOPBACK_HOST = /^(localhost|.+\.localhost|127(\.\d+){3}|\[::1\])$/;
+
+/**
+ * A plain `http://` URL on a host other than this machine. A browser gives a
+ * page there no secure context: no `crypto.randomUUID`, clipboard or service
+ * workers. `BUNCARGO_URL_HOST` makes every app URL one of these.
+ */
+function isInsecureRemoteUrl(url: string): boolean {
+	const parsed = URL.parse(url);
+	if (!parsed) return false;
+	const { protocol, hostname } = parsed;
+	return protocol === "http:" && !LOOPBACK_HOST.test(hostname);
+}
+
+function insecureWarning(names: string[]): string | undefined {
+	if (names.length === 0) return undefined;
+	const command =
+		names.length === 1
+			? `buncargo url ${names[0]} --local`
+			: "buncargo url <name> --local";
+	const what = `Plain HTTP on a remote host (${names.join(", ")})`;
+	const why =
+		"pages there get no secure context (crypto.randomUUID, clipboard, service workers)";
+	return `${what}: ${why}. A browser on this machine wants \`${command}\`.`;
 }
 
 /** Exact name first, then case-insensitive, so `open "shopify admin"` works. */
@@ -153,26 +199,51 @@ export function resolveTarget(
 	throw new CliError(`The service "${name}" has ${why}.`, [available]);
 }
 
+/**
+ * What `url` prints: the lines for stdout, and a warning for stderr when one
+ * of them is plain HTTP on a remote host. `urlHost` is `BUNCARGO_URL_HOST`,
+ * which `--local` sets aside.
+ */
+export function urlOutput(
+	env: OpenSource,
+	request: { name: string | undefined; local: boolean },
+	urlHost: string | undefined,
+): { lines: string[]; warning?: string } {
+	const targets = openTargets(env, {
+		connectionUrls: true,
+		urlHostSet: !request.local && urlHost !== undefined,
+	});
+	if (request.name !== undefined) {
+		const url = resolveTarget(env, targets, request.name, "url");
+		const insecure = isInsecureRemoteUrl(url) ? [request.name] : [];
+		return { lines: [url], warning: insecureWarning(insecure) };
+	}
+
+	const entries = Object.entries(targets);
+	if (entries.length === 0)
+		throw new CliError("Nothing has a URL yet: is `buncargo dev` running?");
+	const width = Math.max(...entries.map(([key]) => key.length));
+	const insecure = entries
+		.filter(([, url]) => isInsecureRemoteUrl(url))
+		.map(([key]) => key);
+	return {
+		lines: entries.map(([key, url]) => `${key.padEnd(width)}  ${url}`),
+		warning: insecureWarning(insecure),
+	};
+}
+
 export async function handleUrl(args: string[]): Promise<number> {
 	if (readBooleanFlag(args, HELP)) {
 		console.log(formatCommandHelp(URL_COMMAND_SPEC));
 		return 0;
 	}
 	const [name] = parseNames(URL_COMMAND_SPEC, args, "url", 1);
+	const local = readBooleanFlag(args, LOCAL);
 	const env = await loadLiveEnv();
-	const targets = openTargets(env, { connectionUrls: true });
 
-	if (name !== undefined) {
-		log.line(resolveTarget(env, targets, name, "url"));
-		return 0;
-	}
-	const entries = Object.entries(targets);
-	if (entries.length === 0) {
-		log.error("Nothing has a URL yet: is `buncargo dev` running?");
-		return 1;
-	}
-	const width = Math.max(...entries.map(([key]) => key.length));
-	for (const [key, url] of entries) log.line(`${key.padEnd(width)}  ${url}`);
+	const { lines, warning } = urlOutput(env, { name, local }, urlHostOverride());
+	for (const line of lines) log.line(line);
+	if (warning) log.warn(warning);
 	return 0;
 }
 
@@ -195,7 +266,10 @@ export async function handleOpen(args: string[]): Promise<number> {
 			]);
 		return openOrFail(url);
 	}
-	const targets = openTargets(env, { connectionUrls: false });
+	const targets = openTargets(env, {
+		connectionUrls: false,
+		urlHostSet: urlHostOverride() !== undefined,
+	});
 
 	const target = name ?? env.resolvePrimaryApp();
 	if (target === undefined) {
