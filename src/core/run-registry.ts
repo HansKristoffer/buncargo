@@ -1,9 +1,20 @@
 import { basename } from "node:path";
-import { isOneOf, isRecord, typedSwitch } from "hanzio";
-import type { ExpoAppIdentity } from "../expo/app-identity";
-import type { ContainerRuntimeName } from "../types";
-import { buncargoCli, type CliInvocation } from "./cli-entry";
+import { isBoolean, isOneOf, isRecord, isString, typedSwitch } from "hanzio";
+import { buncargoCli } from "./cli-entry";
 import { withFileLock } from "./file-lock";
+import {
+	arrayOf,
+	type Guarded,
+	isFiniteNumber,
+	isPort,
+	isPositiveInteger,
+	nullable,
+	object,
+	oneOf,
+	optional,
+	recordOf,
+	refine,
+} from "./json-shape";
 import { getWorktreeName } from "./ports";
 import { isProcessAlive } from "./process/lifecycle";
 import {
@@ -16,6 +27,8 @@ import {
 	defineListRegistry,
 	type ListRegistryReadOptions,
 	readJsonDocumentSync,
+	StateFileUnreadableError,
+	StateFileVersionError,
 } from "./registry-file";
 import { chownToInvokingUser, stateFilePath } from "./state-paths";
 
@@ -51,109 +64,168 @@ import { chownToInvokingUser, stateFilePath } from "./state-paths";
  * read the file, which is why `core/menubar.ts` compares it against the
  * installed bundle's `BuncargoRegistryVersion` and updates the app.
  */
-export const REGISTRY_VERSION = 1;
+export const REGISTRY_VERSION = 2;
 const RUNS_FILENAME = "runs.json";
 
-export type RunAppStatus =
-	| "starting"
-	| "ready"
-	/** Served by a process this run did not spawn, so it also cannot stop it. */
-	| "reused"
-	| "failed"
-	| "stopped";
+const isProtocol = isOneOf(["http", "tcp"]);
 
-export type RunServiceStatus = "starting" | "ready" | "stopped";
-
-export interface RunAppEntry {
-	/** Transport used when sharing this endpoint through frp. */
-	protocol?: "http" | "tcp";
-	kind?: "server" | "worker";
-	name: string;
-	port?: number;
-	/** The spawned dev server. Absent when the app was reused from another run. */
-	pid?: number;
-	processIdentity?: string;
-	/** Holds the TTY; stopping it tears the whole run down. */
-	attached?: boolean;
-	url?: string;
-	loopbackUrl?: string;
-	publicUrl?: string;
-	/** What "open" opens for this app (`preferredAppUrl`), so every reader agrees. */
-	openUrl?: string;
-	hostname?: string;
-	/** Present on Expo apps: what `buncargo expo sim` needs without loading the config. */
-	expo?: ExpoAppIdentity;
-	/** The exclusive lease this app holds (`AppConfig.exclusive`). */
-	exclusive?: string;
-	/** `AppConfig.stopGraceMs`: how long `stop` waits for it after SIGTERM. */
-	stopGraceMs?: number;
-	status: RunAppStatus;
-}
-
-export interface RunServiceEntry {
-	kind?: "service" | "job";
-	protocol?: "http" | "tcp";
-	name: string;
-	/** Built-in preset, or absent for `service.custom()`. */
-	preset?: string;
+/** An endpoint has a port and both URLs, or none of the three. */
+function endpointComplete(row: {
 	port?: number;
 	url?: string;
 	loopbackUrl?: string;
-	publicUrl?: string;
-	hostname?: string;
-	tablePlusUrl?: string;
-	/** The integration stack providing it (see {@link RunEntry.stacks}); it has no container of ours. */
-	stack?: string;
-	/** What `stop` needs to reach the container without loading the config. */
-	container?: {
-		runtime: ContainerRuntimeName;
-		name: string;
-		service?: string;
-		binary?: string;
-	};
-	status: RunServiceStatus;
-	/**
-	 * Set by the run when the container stopped, was removed or turned
-	 * unhealthy under it, and cleared when it recovers. A separate field rather
-	 * than a status: an older reader drops an entry whose status it does not
-	 * know, and `status` stays what the run last set.
-	 */
-	problem?: RunServiceProblem;
+}): boolean {
+	const fields = [row.port, row.url, row.loopbackUrl];
+	return (
+		fields.every((field) => field === undefined) ||
+		fields.every((field) => field !== undefined)
+	);
 }
 
-export interface RunServiceProblem {
-	state: "stopped" | "missing" | "unhealthy";
+const isRunApp = refine(
+	object({
+		/** Transport used when sharing this endpoint through frp. */
+		protocol: optional(isProtocol),
+		kind: optional(isOneOf(["server", "worker"])),
+		name: isString,
+		port: optional(isPort),
+		/** The spawned dev server. Absent when the app was reused from another run. */
+		pid: optional(isPositiveInteger),
+		processIdentity: optional(isString),
+		/** Holds the TTY; stopping it tears the whole run down. */
+		attached: optional(isBoolean),
+		url: optional(isString),
+		loopbackUrl: optional(isString),
+		publicUrl: optional(isString),
+		/** What "open" opens for this app (`preferredAppUrl`), so every reader agrees. */
+		openUrl: optional(isString),
+		hostname: optional(isString),
+		/**
+		 * What each integration's `describeApp` recorded, by integration name
+		 * (`integrations.expo` is what `buncargo expo sim` and BuncargoBar read).
+		 * Its own key, so an integration cannot overwrite `pid` or `status`.
+		 */
+		integrations: optional(recordOf(isRecord)),
+		/** The exclusive lease this app holds (`AppConfig.exclusive`). */
+		exclusive: optional(isString),
+		/** `AppConfig.stopGraceMs`: how long `stop` waits for it after SIGTERM. */
+		stopGraceMs: optional(refine(isFiniteNumber, (ms) => ms > 0)),
+		/** `reused`: served by a process this run did not spawn, so it cannot stop it either. */
+		status: isOneOf(["starting", "ready", "reused", "failed", "stopped"]),
+	}),
+	(app) =>
+		endpointComplete(app) && (app.port !== undefined || app.kind === "worker"),
+);
+
+const isRunServiceProblem = object({
+	state: isOneOf(["stopped", "missing", "unhealthy"]),
 	/** The line the run printed: "postgres stopped (exit 0)", and who did it. */
-	detail: string;
-	since: string;
-}
+	detail: isString,
+	since: isString,
+});
 
-export interface RunStackEntry {
-	name: string;
+const isRunService = refine(
+	object({
+		kind: optional(isOneOf(["service", "job"])),
+		protocol: optional(isProtocol),
+		name: isString,
+		/** Built-in preset, or absent for `service.custom()`. */
+		preset: optional(isString),
+		port: optional(isPort),
+		url: optional(isString),
+		loopbackUrl: optional(isString),
+		publicUrl: optional(isString),
+		hostname: optional(isString),
+		tablePlusUrl: optional(isString),
+		/** The integration stack providing it (see {@link RunEntry.stacks}); it has no container of ours. */
+		stack: optional(isString),
+		/** What `stop` needs to reach the container without loading the config. */
+		container: optional(
+			object({
+				runtime: isOneOf(["docker", "apple"]),
+				name: isString,
+				service: optional(isString),
+				binary: optional(isString),
+			}),
+		),
+		status: isOneOf(["starting", "ready", "stopped"]),
+		/**
+		 * Set by the run when the container stopped, was removed or turned
+		 * unhealthy under it, and cleared when it recovers. A separate field
+		 * rather than a status: an older reader drops an entry whose status it
+		 * does not know, and `status` stays what the run last set.
+		 */
+		problem: optional(isRunServiceProblem),
+	}),
+	endpointComplete,
+);
+
+const isRunStack = object({
+	name: isString,
 	/** argv, run from the checkout (or home once it is gone). Keeps data. */
-	down: string[];
+	down: refine(arrayOf(isString), (argv) => argv.length > 0),
 	/**
 	 * The `com.docker.compose.project` label its containers carry. What stops
 	 * them when `down` cannot run: a CLI that lived in a deleted checkout.
 	 */
-	composeProject?: string;
-}
+	composeProject: optional(isString),
+});
 
-export interface RunEntry {
+const isRunTask = object({ name: isString, description: optional(isString) });
+
+const isRunDetail = object({ label: isString, value: isString });
+
+/**
+ * Where a run is in its life, as its owner and the sweep recorded it.
+ *
+ * - `live`: the owner has not said it finished. It may have crashed since;
+ *   only a liveness read tells, which is why readers ask {@link runPhase}.
+ * - `released`: the owner exited on purpose, so its containers wait out the
+ *   hold for the next run. A deliberate Ctrl-C has to be distinguishable from
+ *   a crash: the crash grace is seconds, the hold minutes, and without the
+ *   distinction every restart paid for a container recreate.
+ * - `lost`: the sweep found the owner gone without releasing. The crash grace
+ *   counts from `at`, stamped once by the sweep, so no live run pays for an
+ *   accurate clock; `updatedAt` would not do, because a quiet run may not
+ *   have written anything for hours before it crashed.
+ */
+const isRunLifecycle = oneOf(
+	object({ state: isOneOf(["live"]) }),
+	object({ state: isOneOf(["released", "lost"]), at: isString }),
+);
+
+/**
+ * How long the containers outlive the run.
+ *
+ * - `checkout`: as long as the checkout exists, however the run ended
+ *   (`--keep-containers`, the one-shot modes, a library `start()`).
+ * - `timed`: `ms` after release; after a crash the grace applies instead.
+ *   `inherited` is the hold of an earlier run whose held containers this run,
+ *   which asked for none, reused: it applies from when this run ends,
+ *   released or lost. Without it the newest entry said "keep forever" and a
+ *   one-second script pinned a CLI run's stack for days.
+ */
+const isRunHold = oneOf(
+	object({ kind: isOneOf(["checkout"]) }),
+	object({
+		kind: isOneOf(["timed"]),
+		ms: refine(isFiniteNumber, (ms) => ms >= 0),
+		inherited: isBoolean,
+	}),
+);
+
+const isRunEntry = object({
 	/**
 	 * Identifies this run; every write addresses an entry by it.
-	 *
-	 * Required: the entries that predated it were written by versions whose
-	 * runs are long over, and dropping them on read is the clean swap.
 	 */
-	sessionId: string;
-	processIdentity?: string;
-	projectPrefix: string;
-	projectName: string;
-	root: string;
+	sessionId: isString,
+	processIdentity: optional(isString),
+	projectPrefix: isString,
+	projectName: isString,
+	root: isString,
 	/** Worktree directory name, or `null` in the main checkout. */
-	worktree: string | null;
-	branch?: string;
+	worktree: nullable(isString),
+	branch: optional(isString),
 	/**
 	 * The process that owns this run.
 	 *
@@ -163,55 +235,25 @@ export interface RunEntry {
 	 * Never zeroed on release: the menu bar asks `kill(pid, 0)`, and pid 0
 	 * is that app's own process group.
 	 */
-	pid: number;
-	startedAt: string;
-	updatedAt: string;
-	/**
-	 * When the owner exited on purpose, so its containers may be reused.
-	 *
-	 * Absent while the run is live. Set instead of withdrawing the entry,
-	 * because a deliberate Ctrl-C has to be distinguishable from a crash: the
-	 * crash grace is seconds, this hold is minutes, and without the
-	 * distinction every restart paid for a container recreate.
-	 */
-	releasedAt?: string;
-	/**
-	 * When the sweep first found this run's owner gone without releasing.
-	 *
-	 * The crash grace is measured from here. Stamped once, by the sweep, so no
-	 * live run pays for an accurate clock; `updatedAt` would not do, because a
-	 * quiet run may not have written anything for hours before it crashed.
-	 */
-	ownerLostAt?: string;
-	/**
-	 * How long the containers are held after {@link RunEntry.releasedAt}.
-	 *
-	 * Absent means "as long as the checkout exists", which is what
-	 * `--keep-containers` and the one-shot modes ask for.
-	 */
-	idleTimeoutMs?: number;
-	/**
-	 * The hold of an earlier run whose containers were held when this run,
-	 * which asked for none (a library `start()`), claimed them. They come down
-	 * this long after this run ends, released or exited, as they would have
-	 * after the earlier one: without it the newest entry said "keep forever"
-	 * and a one-second script pinned a CLI run's stack for days.
-	 */
-	inheritedIdleTimeoutMs?: number;
-	primaryApp?: string;
+	pid: isPositiveInteger,
+	startedAt: isString,
+	updatedAt: isString,
+	lifecycle: isRunLifecycle,
+	hold: isRunHold,
+	primaryApp: optional(isString),
 	/**
 	 * Started by `dev --detach`: no terminal shows its servers, so stopping it
 	 * kills nothing anyone is watching and `stop` does not ask first.
 	 */
-	detached?: boolean;
+	detached: optional(isBoolean),
 	/**
 	 * A detached run's idle limit: the watchdog stops it after this long with
 	 * no request through buncargo's proxy and no buncargo command in its
-	 * checkout (`core/run-limits.ts`). Absent for a run in a terminal, for
-	 * `dev --detach --keep`, and for runs of a buncargo that had no limit.
+	 * checkout (`core/run-limits.ts`). Absent for a run in a terminal, and for
+	 * `dev --detach --keep`.
 	 */
-	idleLimitMs?: number;
-	hosts: { active: boolean; tld: string } | null;
+	idleLimitMs: optional(isPositiveInteger),
+	hosts: nullable(object({ active: isBoolean, tld: isString })),
 	/**
 	 * How to invoke this same buncargo again.
 	 *
@@ -219,170 +261,102 @@ export interface RunEntry {
 	 * whatever `buncargo` resolves to in its own environment — in a worktree
 	 * those are routinely different versions.
 	 */
-	cli: CliInvocation;
-	apps: RunAppEntry[];
-	services: RunServiceEntry[];
+	cli: object({ program: isString, script: optional(isString) }),
+	apps: arrayOf(isRunApp),
+	services: arrayOf(isRunService),
 	/**
 	 * Integration stacks (the Supabase CLI) this run started, with the command
 	 * that stops each. The sweep runs it when it would tear the run's
 	 * containers down: it has no config to ask.
 	 */
-	stacks?: RunStackEntry[];
+	stacks: optional(arrayOf(isRunStack)),
 	/** The config's tasks, which the menu bar runs with `buncargo run <name>`. */
-	tasks?: RunTaskEntry[];
+	tasks: optional(arrayOf(isRunTask)),
 	/** Values apps printed (`captures`), by name: what `env --get captured.*` reads. */
-	captures?: Record<string, string>;
+	captures: optional(recordOf(isString)),
 	/** Labelled captures and integrations' `describe` values (e.g. "Shopify preview"). */
-	details?: RunDetailEntry[];
+	details: optional(arrayOf(isRunDetail)),
+});
+
+export type RunEntry = Guarded<typeof isRunEntry>;
+export type RunAppEntry = Guarded<typeof isRunApp>;
+export type RunAppStatus = RunAppEntry["status"];
+export type RunServiceEntry = Guarded<typeof isRunService>;
+export type RunServiceStatus = RunServiceEntry["status"];
+export type RunServiceProblem = Guarded<typeof isRunServiceProblem>;
+export type RunStackEntry = Guarded<typeof isRunStack>;
+export type RunTaskEntry = Guarded<typeof isRunTask>;
+export type RunDetailEntry = Guarded<typeof isRunDetail>;
+export type RunLifecycle = Guarded<typeof isRunLifecycle>;
+export type RunHold = Guarded<typeof isRunHold>;
+
+/** A run nobody has said finished. */
+export const LIVE: RunLifecycle = { state: "live" };
+
+/** Containers kept for as long as the checkout exists. */
+export const CHECKOUT_HOLD: RunHold = { kind: "checkout" };
+
+/**
+ * Where a run is, for every reader of the registry: `live` while its owner
+ * is alive and has not released, `released` once it exited on purpose, `lost`
+ * once its owner is gone without releasing, whether or not the sweep has
+ * stamped that yet.
+ *
+ * `alive` is the reader's own reading of the owner process (an identity
+ * match, `kill(pid, 0)`); a released run is never live whatever its pid says,
+ * and a run the sweep stamped lost is live again once its owner reads as
+ * itself. BuncargoBar's `Run.phase(alive:)` is the same rule.
+ */
+export type RunPhase = "live" | "released" | "lost";
+
+export function runPhase(
+	entry: Pick<RunEntry, "lifecycle">,
+	alive: boolean,
+): RunPhase {
+	if (entry.lifecycle.state === "released") return "released";
+	return alive ? "live" : "lost";
 }
 
-export interface RunDetailEntry {
-	label: string;
-	value: string;
+/** When a finished run's containers are due to come down: see {@link holdExpiry}. */
+export interface HoldExpiry {
+	ended: "released" | "lost";
+	/** Epoch ms of the release or of the sweep first finding the owner gone. */
+	endedAt: number;
+	/** How long after `endedAt`. */
+	holdMs: number;
+	/** The hold is one this run reused from an earlier run. */
+	inherited: boolean;
 }
 
-export interface RunTaskEntry {
-	name: string;
-	description?: string;
+/**
+ * When a finished run's containers are due to come down, or `undefined`
+ * while nothing dates that: a run with no recorded end (live, or lost but not
+ * yet stamped by the sweep), a hold of the checkout, or an end time that does
+ * not parse.
+ *
+ * A crash leaves nobody to come back for the containers, so a run's own hold
+ * gives way to `ownerDeadGraceMs`; a hold reused from an earlier run applies
+ * however this one ended.
+ */
+export function holdExpiry(
+	run: Pick<RunEntry, "lifecycle" | "hold">,
+	ownerDeadGraceMs: number,
+): HoldExpiry | undefined {
+	const { lifecycle, hold } = run;
+	if (lifecycle.state === "live" || hold.kind === "checkout") return undefined;
+	const endedAt = Date.parse(lifecycle.at);
+	if (Number.isNaN(endedAt)) return undefined;
+	const crashed = lifecycle.state === "lost" && !hold.inherited;
+	return {
+		ended: lifecycle.state,
+		endedAt,
+		holdMs: crashed ? ownerDeadGraceMs : hold.ms,
+		inherited: hold.inherited,
+	};
 }
 
 export function getRunsPath(): string {
 	return stateFilePath(RUNS_FILENAME);
-}
-
-function isPort(value: unknown): boolean {
-	return (
-		typeof value === "number" &&
-		Number.isInteger(value) &&
-		value > 0 &&
-		value <= 65535
-	);
-}
-function isPid(value: unknown): boolean {
-	return typeof value === "number" && Number.isInteger(value) && value > 0;
-}
-
-function isRunApp(value: unknown): value is RunAppEntry {
-	if (!isRecord(value)) return false;
-	return (
-		typeof value.name === "string" &&
-		(value.protocol === undefined ||
-			value.protocol === "http" ||
-			value.protocol === "tcp") &&
-		(value.port !== undefined || value.kind === "worker") &&
-		((value.port === undefined &&
-			value.url === undefined &&
-			value.loopbackUrl === undefined) ||
-			(isPort(value.port) &&
-				typeof value.url === "string" &&
-				typeof value.loopbackUrl === "string")) &&
-		isOneOf(
-			["starting", "ready", "reused", "failed", "stopped"],
-			value.status,
-		) &&
-		(value.pid === undefined || isPid(value.pid)) &&
-		(value.processIdentity === undefined ||
-			typeof value.processIdentity === "string") &&
-		(value.expo === undefined || isRecord(value.expo)) &&
-		(value.exclusive === undefined || typeof value.exclusive === "string") &&
-		(value.stopGraceMs === undefined ||
-			(typeof value.stopGraceMs === "number" && value.stopGraceMs > 0))
-	);
-}
-
-function isRunService(value: unknown): value is RunServiceEntry {
-	if (!isRecord(value)) return false;
-	return (
-		typeof value.name === "string" &&
-		(value.protocol === undefined ||
-			value.protocol === "http" ||
-			value.protocol === "tcp") &&
-		((value.port === undefined &&
-			value.url === undefined &&
-			value.loopbackUrl === undefined) ||
-			(isPort(value.port) &&
-				typeof value.url === "string" &&
-				typeof value.loopbackUrl === "string")) &&
-		isOneOf(["starting", "ready", "stopped"], value.status) &&
-		(value.problem === undefined ||
-			(isRecord(value.problem) &&
-				typeof value.problem.state === "string" &&
-				typeof value.problem.detail === "string")) &&
-		(value.stack === undefined || typeof value.stack === "string") &&
-		(value.container === undefined ||
-			(isRecord(value.container) &&
-				isOneOf(["docker", "apple"], value.container.runtime) &&
-				typeof value.container.name === "string" &&
-				(value.container.binary === undefined ||
-					typeof value.container.binary === "string") &&
-				(value.container.service === undefined ||
-					typeof value.container.service === "string")))
-	);
-}
-
-function isRunEntry(value: unknown): value is RunEntry {
-	if (!isRecord(value)) return false;
-	return (
-		typeof value.projectName === "string" &&
-		typeof value.root === "string" &&
-		isPid(value.pid) &&
-		typeof value.sessionId === "string" &&
-		(typeof value.processIdentity === "string" ||
-			value.processIdentity === undefined) &&
-		typeof value.projectPrefix === "string" &&
-		typeof value.startedAt === "string" &&
-		typeof value.updatedAt === "string" &&
-		(value.releasedAt === undefined || typeof value.releasedAt === "string") &&
-		(value.ownerLostAt === undefined ||
-			typeof value.ownerLostAt === "string") &&
-		(value.detached === undefined || typeof value.detached === "boolean") &&
-		(value.idleLimitMs === undefined ||
-			(typeof value.idleLimitMs === "number" && value.idleLimitMs > 0)) &&
-		(value.idleTimeoutMs === undefined ||
-			(typeof value.idleTimeoutMs === "number" &&
-				Number.isFinite(value.idleTimeoutMs))) &&
-		(value.inheritedIdleTimeoutMs === undefined ||
-			(typeof value.inheritedIdleTimeoutMs === "number" &&
-				Number.isFinite(value.inheritedIdleTimeoutMs))) &&
-		isRecord(value.cli) &&
-		typeof value.cli.program === "string" &&
-		Array.isArray(value.apps) &&
-		value.apps.every(isRunApp) &&
-		Array.isArray(value.services) &&
-		value.services.every(isRunService) &&
-		(value.stacks === undefined ||
-			(Array.isArray(value.stacks) &&
-				value.stacks.every(
-					(stack) =>
-						isRecord(stack) &&
-						typeof stack.name === "string" &&
-						Array.isArray(stack.down) &&
-						stack.down.length > 0 &&
-						stack.down.every((arg) => typeof arg === "string"),
-				))) &&
-		(value.captures === undefined ||
-			(isRecord(value.captures) &&
-				Object.values(value.captures).every(
-					(capture) => typeof capture === "string",
-				))) &&
-		(value.details === undefined ||
-			(Array.isArray(value.details) &&
-				value.details.every(
-					(detail) =>
-						isRecord(detail) &&
-						typeof detail.label === "string" &&
-						typeof detail.value === "string",
-				))) &&
-		(value.tasks === undefined ||
-			(Array.isArray(value.tasks) &&
-				value.tasks.every(
-					(task) =>
-						isRecord(task) &&
-						typeof task.name === "string" &&
-						(task.description === undefined ||
-							typeof task.description === "string"),
-				)))
-	);
 }
 
 const registry = defineListRegistry<RunEntry>({
@@ -392,10 +366,36 @@ const registry = defineListRegistry<RunEntry>({
 	afterWrite: chownToInvokingUser,
 });
 
+/**
+ * The registry's entries. A file an older buncargo wrote (`runs.json` v1)
+ * reads as empty, strict or not: its entries cannot be read, and the next
+ * write replaces it, keeping its bytes in a `runs.json.recovery-*` file.
+ */
 export async function loadRuns(
 	options: ListRegistryReadOptions = {},
 ): Promise<RunEntry[]> {
-	return registry.read(getRunsPath(), options);
+	try {
+		return await registry.read(getRunsPath(), options);
+	} catch (error) {
+		const older =
+			error instanceof StateFileUnreadableError &&
+			!(error instanceof StateFileVersionError) &&
+			olderRegistryOnDisk();
+		if (older) return [];
+		throw error;
+	}
+}
+
+function olderRegistryOnDisk(): boolean {
+	return (
+		readJsonDocumentSync(getRunsPath(), (value) =>
+			isRecord(value) &&
+			typeof value.version === "number" &&
+			value.version < REGISTRY_VERSION
+				? true
+				: undefined,
+		) ?? false
+	);
 }
 
 /**
@@ -415,9 +415,7 @@ export function readLiveCapturesSync(root: string): Record<string, string> {
 		) ?? []
 	).filter(
 		(run) =>
-			run.root === root &&
-			run.releasedAt === undefined &&
-			isProcessAlive(run.pid),
+			run.root === root && runPhase(run, isProcessAlive(run.pid)) === "live",
 	);
 	const identities = readProcessIdentitiesCached(
 		runs.flatMap((run) => (run.processIdentity ? [run.pid] : [])),
@@ -443,8 +441,8 @@ export function readLiveCapturesSync(root: string): Record<string, string> {
  * Whether each entry's run is still going, answered with one `ps`.
  *
  * The sweep asks this of every entry several times a tick. Asked one entry
- * at a time, each answer was a fork on macOS. A released entry never reads
- * as live, whatever its pid.
+ * at a time, each answer was a fork on macOS. Live means {@link runPhase}
+ * says so: a released entry never reads as live, whatever its pid.
  */
 export async function runLivenessAsync(
 	runs: readonly RunEntry[],
@@ -452,7 +450,7 @@ export async function runLivenessAsync(
 ): Promise<(run: RunEntry) => boolean> {
 	const matches = await processIdentityMatcherAsync(runs, signal);
 	return (run) =>
-		run.releasedAt === undefined && matches(run.pid, run.processIdentity);
+		runPhase(run, matches(run.pid, run.processIdentity)) === "live";
 }
 
 /**
@@ -474,7 +472,7 @@ function prunedForPublish(runs: readonly RunEntry[]): RunEntry[] {
 	return runs.filter(
 		(run) =>
 			run.services.length > 0 ||
-			(run.releasedAt === undefined && isProcessAlive(run.pid)),
+			runPhase(run, isProcessAlive(run.pid)) === "live",
 	);
 }
 
@@ -510,6 +508,8 @@ export function buildRunEntry(input: {
 		pid: process.pid,
 		startedAt: now,
 		updatedAt: now,
+		lifecycle: LIVE,
+		hold: CHECKOUT_HOLD,
 		hosts: null,
 		cli: buncargoCli(),
 		apps: [],
@@ -563,7 +563,7 @@ async function updateRuns(
  *
  * - `claim`: the containers are this run's from now (`run-claim.ts`). It
  *   decides the lifecycle: the selected services, their stacks, the hold, and
- *   that the run is live again (no `releasedAt`, no `ownerLostAt`).
+ *   that the run is live again.
  * - `describe`: what the run serves (`run-publish.ts`): apps, hosts, URLs,
  *   tasks. It never touches the lifecycle, so a describe that lands after a
  *   release cannot reopen it, and it never drops what other writers recorded:
@@ -574,8 +574,8 @@ export type RunPublishKind = "claim" | "describe";
 /**
  * The entry a publish leaves, from the one it lands on.
  *
- * Every write of an entry is its owner's, so a publish clears `ownerLostAt`:
- * the owner is demonstrably alive.
+ * Every write of an entry is its owner's, so a publish turns `lost` back to
+ * `live`: the owner is demonstrably alive.
  */
 export function mergePublishedRun(
 	existing: RunEntry | undefined,
@@ -583,21 +583,13 @@ export function mergePublishedRun(
 	kind: RunPublishKind,
 ): RunEntry {
 	if (!existing) return run;
-	const { ownerLostAt: _lost, ...current } = existing;
 	return typedSwitch(kind, {
 		claim: (): RunEntry => {
-			const {
-				releasedAt: _released,
-				idleTimeoutMs: _hold,
-				inheritedIdleTimeoutMs: _inherited,
-				stacks: _stacks,
-				...kept
-			} = current;
+			const { stacks: _stacks, ...kept } = existing;
 			// A claim reopening a finished entry (`releaseRun()`, then `start()`
 			// again) starts a new run: ranking (`newestLifecycleFirst`) and the
 			// claims a teardown releases date from it.
-			const reopens =
-				existing.releasedAt !== undefined || existing.ownerLostAt !== undefined;
+			const reopens = existing.lifecycle.state !== "live";
 			const stacks = mergedStacks(existing.stacks, run.stacks);
 			return {
 				...kept,
@@ -611,8 +603,8 @@ export function mergePublishedRun(
 				pid: run.pid,
 				updatedAt: run.updatedAt,
 				cli: run.cli,
-				// Exactly the claim's: one hold, or none.
-				...holdFields(run),
+				lifecycle: LIVE,
+				hold: run.hold,
 				...(stacks === undefined ? {} : { stacks }),
 				// The claim's selection, over what a describe said about each.
 				services: run.services.map((service) => {
@@ -626,18 +618,19 @@ export function mergePublishedRun(
 		},
 		describe: (): RunEntry => ({
 			...run,
-			startedAt: current.startedAt,
-			...holdFields(current),
-			...(current.releasedAt === undefined
+			startedAt: existing.startedAt,
+			lifecycle:
+				existing.lifecycle.state === "released" ? existing.lifecycle : LIVE,
+			hold: existing.hold,
+			...(existing.stacks === undefined ? {} : { stacks: existing.stacks }),
+			...(existing.captures === undefined
 				? {}
-				: { releasedAt: current.releasedAt }),
-			...(current.stacks === undefined ? {} : { stacks: current.stacks }),
-			...(current.captures === undefined ? {} : { captures: current.captures }),
-			...(run.details === undefined && current.details !== undefined
-				? { details: current.details }
+				: { captures: existing.captures }),
+			...(run.details === undefined && existing.details !== undefined
+				? { details: existing.details }
 				: {}),
-			apps: run.apps.map((app) => describedApp(current.apps, app)),
-			services: describedServices(current.services, run.services),
+			apps: run.apps.map((app) => describedApp(existing.apps, app)),
+			services: describedServices(existing.services, run.services),
 		}),
 	});
 }
@@ -655,16 +648,6 @@ function mergedStacks(
 	if (claimed === undefined) return recorded;
 	const names = new Set(claimed.map((stack) => stack.name));
 	return [...recorded.filter((stack) => !names.has(stack.name)), ...claimed];
-}
-
-function holdFields(
-	run: Pick<RunEntry, "idleTimeoutMs" | "inheritedIdleTimeoutMs">,
-): Pick<RunEntry, "idleTimeoutMs" | "inheritedIdleTimeoutMs"> {
-	if (run.idleTimeoutMs !== undefined)
-		return { idleTimeoutMs: run.idleTimeoutMs };
-	if (run.inheritedIdleTimeoutMs !== undefined)
-		return { inheritedIdleTimeoutMs: run.inheritedIdleTimeoutMs };
-	return {};
 }
 
 /**
@@ -757,11 +740,16 @@ export async function releaseRun(sessionId: string): Promise<void> {
 	await updateRuns(getRunsPath(), (runs) => {
 		const index = runs.findIndex((entry) => entry.sessionId === sessionId);
 		const current = runs[index];
-		if (!current || current.releasedAt !== undefined) return undefined;
+		if (!current || current.lifecycle.state === "released") return undefined;
 		const next = [...runs];
 		const now = new Date().toISOString();
 		if (current.services.length === 0) next.splice(index, 1);
-		else next[index] = { ...current, releasedAt: now, updatedAt: now };
+		else
+			next[index] = {
+				...current,
+				lifecycle: { state: "released", at: now },
+				updatedAt: now,
+			};
 		return next;
 	});
 }
@@ -775,15 +763,15 @@ export async function releaseRun(sessionId: string): Promise<void> {
  * reporting ready, made it the stack's owner and its hold the stack's.
  */
 function runLifecycleAt(
-	run: Pick<RunEntry, "releasedAt" | "ownerLostAt" | "startedAt">,
+	run: Pick<RunEntry, "lifecycle" | "startedAt">,
 ): string {
-	return run.releasedAt ?? run.ownerLostAt ?? run.startedAt;
+	return run.lifecycle.state === "live" ? run.startedAt : run.lifecycle.at;
 }
 
 /** Sort order for {@link runLifecycleAt}, newest first. */
 export function newestLifecycleFirst(
-	a: Pick<RunEntry, "releasedAt" | "ownerLostAt" | "startedAt">,
-	b: Pick<RunEntry, "releasedAt" | "ownerLostAt" | "startedAt">,
+	a: Pick<RunEntry, "lifecycle" | "startedAt">,
+	b: Pick<RunEntry, "lifecycle" | "startedAt">,
 ): number {
 	return runLifecycleAt(b).localeCompare(runLifecycleAt(a));
 }
@@ -791,13 +779,14 @@ export function newestLifecycleFirst(
 /**
  * The hold a run that asks for none takes over, when it is about to reuse a
  * stack another run left in its hold: the newest finished entry for the same
- * project and checkout that has one. Finished means released or found gone,
- * so the answer needs no liveness read (and no `ps`) on the start path.
+ * project and checkout, when its hold is timed. Finished is {@link runPhase}
+ * with the owner read by `kill(pid, 0)`, as a publish prunes, so the start
+ * path forks no `ps` for it.
  */
 export function holdToInherit(
 	runs: readonly RunEntry[],
 	target: { projectName: string; root: string },
-): number | undefined {
+): RunHold {
 	// The newest decides: one that kept its containers on purpose
 	// (`--keep-containers`) is not overruled by an older hold.
 	const [newest] = runs
@@ -805,17 +794,20 @@ export function holdToInherit(
 			(run) =>
 				run.projectName === target.projectName &&
 				run.root === target.root &&
-				(run.releasedAt !== undefined || run.ownerLostAt !== undefined) &&
+				runPhase(run, isProcessAlive(run.pid)) !== "live" &&
 				run.services.length > 0,
 		)
 		.sort(newestLifecycleFirst);
-	return newest?.idleTimeoutMs ?? newest?.inheritedIdleTimeoutMs;
+	if (newest?.hold.kind !== "timed") return CHECKOUT_HOLD;
+	return { kind: "timed", ms: newest.hold.ms, inherited: true };
 }
 
-type LifecycleFields = Pick<
-	RunEntry,
-	"sessionId" | "startedAt" | "releasedAt" | "ownerLostAt"
->;
+type LifecycleFields = Pick<RunEntry, "sessionId" | "startedAt" | "lifecycle">;
+
+function sameLifecycle(a: RunLifecycle, b: RunLifecycle): boolean {
+	if (a.state === "live" || b.state === "live") return a.state === b.state;
+	return a.state === b.state && a.at === b.at;
+}
 
 /**
  * Whether an entry is still one of those read: it has not started again,
@@ -830,8 +822,7 @@ function unchangedSince(
 	return (
 		expected !== undefined &&
 		expected.startedAt === current.startedAt &&
-		expected.releasedAt === current.releasedAt &&
-		expected.ownerLostAt === current.ownerLostAt
+		sameLifecycle(expected.lifecycle, current.lifecycle)
 	);
 }
 
@@ -932,38 +923,59 @@ export async function clearRunStacks(
 }
 
 /**
- * Record when the sweep first found each session's owner gone, and forget it
- * for those whose owner it found running again.
+ * What a sweep's reading of an owner changes: a `live` entry whose owner is
+ * gone is now `lost`, a `lost` one whose owner reads as itself again is
+ * `live`, and nothing else moves (a released run stays released).
+ */
+export function ownerChange(
+	run: Pick<RunEntry, "lifecycle">,
+	alive: boolean,
+): "lost" | "back" | undefined {
+	if (run.lifecycle.state === "live" && !alive) return "lost";
+	if (run.lifecycle.state === "lost" && alive) return "back";
+	return undefined;
+}
+
+/**
+ * Record when the sweep first found each owner in `lost` gone, and make the
+ * entries in `back`, whose owner it found running again, live. Once written,
+ * the same entries in memory change too, so the pass decides from what is on
+ * disk; a write that fails throws and changes nothing.
  *
- * Only ever stamps an entry that has no stamp yet, so the grace keeps
+ * Only ever stamps an entry that is still `live` on disk, so the grace keeps
  * counting from the first time it was noticed however many sweeps see it. A
- * stamp is cleared as soon as the owner reads as itself again: one wrong
- * "gone" (a `ps` that timed out) otherwise stayed for good, and
- * `holdToInherit` counted the live run as finished.
+ * stamp goes as soon as the owner reads as itself again: one wrong "gone" (a
+ * `ps` that timed out) otherwise stayed for good, and `holdToInherit`
+ * counted the live run as finished.
  */
 export async function markOwnersLost(input: {
-	lost: readonly string[];
-	back: readonly string[];
+	lost: readonly Pick<RunEntry, "sessionId" | "lifecycle">[];
+	back: readonly Pick<RunEntry, "sessionId" | "lifecycle">[];
 	at: string;
 }): Promise<void> {
 	if (input.lost.length === 0 && input.back.length === 0) return;
-	const lost = new Set(input.lost);
-	const back = new Set(input.back);
+	const lost = new Set(input.lost.map((run) => run.sessionId));
+	const back = new Set(input.back.map((run) => run.sessionId));
+	const stamped: RunLifecycle = { state: "lost", at: input.at };
+	const moved = (entry: RunEntry): RunLifecycle | undefined => {
+		if (lost.has(entry.sessionId) && ownerChange(entry, false) === "lost")
+			return stamped;
+		if (back.has(entry.sessionId) && ownerChange(entry, true) === "back")
+			return LIVE;
+		return undefined;
+	};
 	await updateRuns(getRunsPath(), (runs) => {
 		let changed = false;
 		const next = runs.map((entry) => {
-			if (back.has(entry.sessionId) && entry.ownerLostAt !== undefined) {
-				changed = true;
-				const { ownerLostAt: _lost, ...rest } = entry;
-				return rest;
-			}
-			if (!lost.has(entry.sessionId) || entry.ownerLostAt !== undefined)
-				return entry;
+			const lifecycle = moved(entry);
+			if (lifecycle === undefined) return entry;
 			changed = true;
-			return { ...entry, ownerLostAt: input.at };
+			return { ...entry, lifecycle };
 		});
 		return changed ? next : undefined;
 	});
+	for (const run of input.lost) run.lifecycle = stamped;
+	for (const run of input.back) run.lifecycle = LIVE;
 }
 
 export type RunAppUpdate = Partial<RunAppEntry> & { name: string };

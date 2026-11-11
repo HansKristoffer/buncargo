@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { RunEntry } from "./run-registry";
+import { REGISTRY_VERSION, type RunEntry } from "./run-registry";
 import { serveTailnetDirectory } from "./tailnet-directory";
 import { tailscaleAddress } from "./tailscale";
 
@@ -56,7 +56,10 @@ describe("serveTailnetDirectory", () => {
 
 		try {
 			const response = await fetch(url);
-			expect(await response.json()).toEqual({ version: 1, runs: [run] });
+			expect(await response.json()).toEqual({
+				version: REGISTRY_VERSION,
+				runs: [run],
+			});
 			expect((await fetch(url.replace("/v1/runs", "/"))).status).toBe(404);
 		} finally {
 			stopServing();

@@ -27,7 +27,9 @@ import {
 import { readProcessIdentity } from "../core/process-identity";
 import { readRemovals } from "../core/removal-log";
 import {
+	CHECKOUT_HOLD,
 	holdToInherit,
+	LIVE,
 	loadRuns,
 	markOwnersLost,
 	publishRun,
@@ -95,6 +97,8 @@ function entry(extra: Partial<RunEntry> = {}): RunEntry {
 		pid: 1,
 		startedAt: AGES_AGO,
 		updatedAt: AGES_AGO,
+		lifecycle: LIVE,
+		hold: CHECKOUT_HOLD,
 		hosts: null,
 		cli: { program: "bun" },
 		apps: [],
@@ -115,7 +119,9 @@ describe("decideSweep", () => {
 	const limits = { ownerDeadGraceMs: 15_000 };
 
 	it("removes a stack whose checkout is gone once no live run owns it", () => {
-		const held = entry({ releasedAt: new Date(NOW).toISOString() });
+		const held = entry({
+			lifecycle: { state: "released", at: new Date(NOW).toISOString() },
+		});
 		expect(
 			decideSweep({ ...base, checkout: "deleted", run: held }, limits),
 		).toEqual({ kind: "down", reason: "checkout deleted" });
@@ -128,7 +134,7 @@ describe("decideSweep", () => {
 	});
 
 	it("never reads a checkout it cannot read as deleted", () => {
-		const exited = entry({ ownerLostAt: AGES_AGO });
+		const exited = entry({ lifecycle: { state: "lost", at: AGES_AGO } });
 		expect(
 			decideSweep({ ...base, checkout: "unknown", run: exited }, limits),
 		).toEqual({ kind: "keep" });
@@ -165,8 +171,11 @@ describe("decideSweep", () => {
 
 	it("holds a released stack for its idle timeout, then removes it", () => {
 		const released = entry({
-			releasedAt: new Date(NOW - 60_000).toISOString(),
-			idleTimeoutMs: 120_000,
+			lifecycle: {
+				state: "released",
+				at: new Date(NOW - 60_000).toISOString(),
+			},
+			hold: { kind: "timed", ms: 120_000, inherited: false },
 		});
 		expect(decideSweep({ ...base, run: released }, limits)).toEqual({
 			kind: "keep",
@@ -177,7 +186,7 @@ describe("decideSweep", () => {
 	});
 
 	it("keeps a released stack forever when no idle timeout was set", () => {
-		const kept = entry({ releasedAt: AGES_AGO });
+		const kept = entry({ lifecycle: { state: "released", at: AGES_AGO } });
 		expect(decideSweep({ ...base, run: kept }, limits)).toEqual({
 			kind: "keep",
 		});
@@ -185,8 +194,8 @@ describe("decideSweep", () => {
 
 	it("gives a crashed owner a grace counted from when a sweep first noticed", () => {
 		const crashed = entry({
-			idleTimeoutMs: 180_000,
-			ownerLostAt: new Date(NOW - 10_000).toISOString(),
+			hold: { kind: "timed", ms: 180_000, inherited: false },
+			lifecycle: { state: "lost", at: new Date(NOW - 10_000).toISOString() },
 		});
 		expect(decideSweep({ ...base, run: crashed }, limits)).toEqual({
 			kind: "keep",
@@ -199,7 +208,10 @@ describe("decideSweep", () => {
 	it("keeps a crashed owner nobody has stamped yet, however quiet it was", () => {
 		// Measured from `updatedAt`, a run quiet for hours before it crashed
 		// lost its containers on the very next pass, with no grace at all.
-		const quiet = entry({ idleTimeoutMs: 180_000, updatedAt: AGES_AGO });
+		const quiet = entry({
+			hold: { kind: "timed", ms: 180_000, inherited: false },
+			updatedAt: AGES_AGO,
+		});
 		expect(decideSweep({ ...base, run: quiet }, limits)).toEqual({
 			kind: "keep",
 		});
@@ -207,8 +219,8 @@ describe("decideSweep", () => {
 
 	it("applies a hold a run without one reused, counted from when that run ended", () => {
 		const script = entry({
-			inheritedIdleTimeoutMs: 180_000,
-			ownerLostAt: new Date(NOW - 60_000).toISOString(),
+			hold: { kind: "timed", ms: 180_000, inherited: true },
+			lifecycle: { state: "lost", at: new Date(NOW - 60_000).toISOString() },
 		});
 		expect(decideSweep({ ...base, run: script }, limits)).toEqual({
 			kind: "keep",
@@ -220,7 +232,9 @@ describe("decideSweep", () => {
 			reason: "ended 180s ago, past the hold it reused",
 		});
 		// Still running: nothing has ended yet.
-		const running = entry({ inheritedIdleTimeoutMs: 180_000 });
+		const running = entry({
+			hold: { kind: "timed", ms: 180_000, inherited: true },
+		});
 		expect(
 			decideSweep({ ...base, run: running, now: NOW + 10_000_000 }, limits),
 		).toEqual({ kind: "keep" });
@@ -230,7 +244,7 @@ describe("decideSweep", () => {
 		// `--keep-containers`, a one-shot mode, or a script that brought a
 		// stack up and exited: to the sweep the last looks exactly like a
 		// crash, and tearing it down seconds later is not what anyone asked.
-		const exited = entry({ ownerLostAt: AGES_AGO });
+		const exited = entry({ lifecycle: { state: "lost", at: AGES_AGO } });
 		expect(decideSweep({ ...base, run: exited }, limits)).toEqual({
 			kind: "keep",
 		});
@@ -395,8 +409,8 @@ describe("sweepOrphanedContainers", () => {
 			entry({
 				sessionId: "last-job",
 				projectName: "demo-e2e",
-				releasedAt: AGES_AGO,
-				idleTimeoutMs: 1_000,
+				lifecycle: { state: "released", at: AGES_AGO },
+				hold: { kind: "timed", ms: 1_000, inherited: false },
 			}),
 		);
 		claimOffset({
@@ -621,8 +635,11 @@ describe("sweepOrphanedContainers", () => {
 				pid: 4242,
 				worktree: "feature",
 				branch: "feature/login",
-				releasedAt: new Date(now - 120_000).toISOString(),
-				idleTimeoutMs: 60_000,
+				lifecycle: {
+					state: "released",
+					at: new Date(now - 120_000).toISOString(),
+				},
+				hold: { kind: "timed", ms: 60_000, inherited: false },
 			}),
 		);
 		const { runtime } = stubRuntime([
@@ -682,8 +699,8 @@ describe("sweepOrphanedContainers", () => {
 			entry({
 				sessionId: "held",
 				projectName: "held",
-				releasedAt: new Date().toISOString(),
-				idleTimeoutMs: 60_000,
+				lifecycle: { state: "released", at: new Date().toISOString() },
+				hold: { kind: "timed", ms: 60_000, inherited: false },
 			}),
 		);
 		const { runtime, downs } = stubRuntime([
@@ -707,7 +724,7 @@ describe("sweepOrphanedContainers", () => {
 				sessionId: "cli",
 				projectName: "reused",
 				detached: true,
-				idleTimeoutMs: 180_000,
+				hold: { kind: "timed", ms: 180_000, inherited: false },
 				startedAt: new Date(released - 600_000).toISOString(),
 				updatedAt: new Date(released - 600_000).toISOString(),
 			}),
@@ -720,7 +737,7 @@ describe("sweepOrphanedContainers", () => {
 				projectName: "reused",
 				startedAt: claimedAt,
 				updatedAt: claimedAt,
-				inheritedIdleTimeoutMs: holdToInherit(await loadRuns(), {
+				hold: holdToInherit(await loadRuns(), {
 					projectName: "reused",
 					root: checkout,
 				}),
@@ -753,8 +770,11 @@ describe("sweepOrphanedContainers", () => {
 		await publishRun(
 			entry({
 				projectName: "pinned",
-				releasedAt: new Date(Date.now() - 120_000).toISOString(),
-				idleTimeoutMs: 60_000,
+				lifecycle: {
+					state: "released",
+					at: new Date(Date.now() - 120_000).toISOString(),
+				},
+				hold: { kind: "timed", ms: 60_000, inherited: false },
 				services: [
 					{
 						name: "db",
@@ -848,8 +868,11 @@ describe("sweepOrphanedContainers", () => {
 			entry({
 				sessionId: "held",
 				projectName: "held",
-				releasedAt: new Date(Date.now() - 30_000).toISOString(),
-				idleTimeoutMs: 60_000,
+				lifecycle: {
+					state: "released",
+					at: new Date(Date.now() - 30_000).toISOString(),
+				},
+				hold: { kind: "timed", ms: 60_000, inherited: false },
 				stacks,
 			}),
 		);
@@ -857,8 +880,11 @@ describe("sweepOrphanedContainers", () => {
 			entry({
 				sessionId: "expired",
 				projectName: "expired",
-				releasedAt: new Date(Date.now() - 120_000).toISOString(),
-				idleTimeoutMs: 60_000,
+				lifecycle: {
+					state: "released",
+					at: new Date(Date.now() - 120_000).toISOString(),
+				},
+				hold: { kind: "timed", ms: 60_000, inherited: false },
 				stacks,
 			}),
 		);
@@ -891,7 +917,7 @@ describe("sweepOrphanedContainers", () => {
 			entry({
 				sessionId: "crashed",
 				projectName: "crashed",
-				idleTimeoutMs: 180_000,
+				hold: { kind: "timed", ms: 180_000, inherited: false },
 				services: [DB],
 			}),
 		);
@@ -901,15 +927,15 @@ describe("sweepOrphanedContainers", () => {
 		const first = await sweepOrphanedContainers({ runtimes: [runtime] });
 		expect(first.swept).toEqual([]);
 		expect(downs).toEqual([]);
-		const stamped = (await loadRuns())[0]?.ownerLostAt;
-		expect(stamped).toBeString();
+		const stamped = (await loadRuns())[0]?.lifecycle;
+		if (stamped?.state !== "lost") throw new Error("the owner was not stamped");
 
 		// A later pass counts from the same stamp, not from its own clock.
 		await sweepOrphanedContainers({
 			runtimes: [runtime],
-			now: Date.parse(stamped ?? "") + 60_000,
+			now: Date.parse(stamped.at) + 60_000,
 		});
-		expect((await loadRuns())[0]?.ownerLostAt).toBe(stamped);
+		expect((await loadRuns())[0]?.lifecycle).toEqual(stamped);
 		expect(downs.map((request) => request.projectName)).toEqual(["crashed"]);
 	});
 
@@ -922,18 +948,18 @@ describe("sweepOrphanedContainers", () => {
 			entry({
 				sessionId: "earlier",
 				projectName: "shared",
-				releasedAt: released(600_000),
+				lifecycle: { state: "released", at: released(600_000) },
 				updatedAt: released(1_000),
-				idleTimeoutMs: 1_000,
+				hold: { kind: "timed", ms: 1_000, inherited: false },
 			}),
 		);
 		await publishRun(
 			entry({
 				sessionId: "later",
 				projectName: "shared",
-				releasedAt: released(60_000),
+				lifecycle: { state: "released", at: released(60_000) },
 				updatedAt: released(60_000),
-				idleTimeoutMs: 180_000,
+				hold: { kind: "timed", ms: 180_000, inherited: false },
 			}),
 		);
 		const { runtime, downs } = stubRuntime([
@@ -944,7 +970,11 @@ describe("sweepOrphanedContainers", () => {
 
 		expect(downs).toEqual([]);
 		const target = { projectName: "shared", root: checkout };
-		expect(holdToInherit(await loadRuns(), target)).toBe(180_000);
+		expect(holdToInherit(await loadRuns(), target)).toEqual({
+			kind: "timed",
+			ms: 180_000,
+			inherited: true,
+		});
 	});
 
 	it("forgets a lost-owner stamp once the owner reads as itself again", async () => {
@@ -956,11 +986,15 @@ describe("sweepOrphanedContainers", () => {
 				projectName: "live",
 				pid: process.pid,
 				processIdentity: readProcessIdentity(process.pid),
-				idleTimeoutMs: 180_000,
+				hold: { kind: "timed", ms: 180_000, inherited: false },
 				services: [DB],
 			}),
 		);
-		await markOwnersLost({ lost: ["live"], back: [], at: AGES_AGO });
+		await markOwnersLost({
+			lost: [entry({ sessionId: "live" })],
+			back: [],
+			at: AGES_AGO,
+		});
 		const { runtime, downs } = stubRuntime([
 			container("live", checkout, "running"),
 		]);
@@ -968,7 +1002,7 @@ describe("sweepOrphanedContainers", () => {
 		await sweepOrphanedContainers({ runtimes: [runtime], now: NOW });
 
 		expect(downs).toEqual([]);
-		expect((await loadRuns())[0]?.ownerLostAt).toBeUndefined();
+		expect((await loadRuns())[0]?.lifecycle).toEqual(LIVE);
 	});
 
 	it("touches nothing when the registry cannot be read", async () => {
@@ -1022,8 +1056,11 @@ describe("sweepOrphanedContainers", () => {
 			entry({
 				sessionId: "expired",
 				projectName: "reused",
-				releasedAt: new Date(Date.now() - 600_000).toISOString(),
-				idleTimeoutMs: 60_000,
+				lifecycle: {
+					state: "released",
+					at: new Date(Date.now() - 600_000).toISOString(),
+				},
+				hold: { kind: "timed", ms: 60_000, inherited: false },
 				services: [DB],
 			}),
 		);
@@ -1092,8 +1129,11 @@ describe("sweepOrphanedContainers, against a registry that changes under it", ()
 			entry({
 				sessionId: "older",
 				startedAt: new Date(Date.now() - 3_600_000).toISOString(),
-				releasedAt: new Date(Date.now() - 600_000).toISOString(),
-				idleTimeoutMs: 60_000,
+				lifecycle: {
+					state: "released",
+					at: new Date(Date.now() - 600_000).toISOString(),
+				},
+				hold: { kind: "timed", ms: 60_000, inherited: false },
 				stacks: [
 					{ name: "supabase", down: ["sh", "-c", `echo down >> '${marker}'`] },
 				],
@@ -1103,8 +1143,11 @@ describe("sweepOrphanedContainers, against a registry that changes under it", ()
 			entry({
 				sessionId: "newer",
 				startedAt: new Date(Date.now() - 300_000).toISOString(),
-				releasedAt: new Date(Date.now() - 60_000).toISOString(),
-				idleTimeoutMs: 3_600_000,
+				lifecycle: {
+					state: "released",
+					at: new Date(Date.now() - 60_000).toISOString(),
+				},
+				hold: { kind: "timed", ms: 3_600_000, inherited: false },
 			}),
 		);
 		const result = await sweepOrphanedContainers({
@@ -1122,8 +1165,8 @@ describe("sweepOrphanedContainers, for a deleted checkout's integration stack", 
 		entry({
 			sessionId: "deleted",
 			root: gone,
-			releasedAt: AGES_AGO,
-			idleTimeoutMs: 60_000,
+			lifecycle: { state: "released", at: AGES_AGO },
+			hold: { kind: "timed", ms: 60_000, inherited: false },
 			stacks: [{ name: "supabase", ...stack }],
 		});
 

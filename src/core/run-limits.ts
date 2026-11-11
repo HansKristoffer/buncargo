@@ -21,10 +21,13 @@ import { getErrorMessage, typedSwitch } from "hanzio";
 import type { CheckoutPresence } from "./checkout-presence";
 import type { ProxyActivity } from "./hosts/proxy-activity";
 import { runStopGraceMs, terminateProcessGroup } from "./process/terminate";
+import {
+	type RunStopReason,
+	type RunStopRecord,
+	runStopRecord,
+} from "./removal-log";
 import { lastCheckoutCommandAt } from "./run-activity";
-import type { RunEntry } from "./run-registry";
-import type { RunStopReason, RunStopRecord } from "./run-stops";
-import { runStopRecord } from "./run-stops";
+import { type RunEntry, runPhase } from "./run-registry";
 import { DELETED_CHECKOUT_SETTLE_MS } from "./watchdog-constants";
 
 /** Where a detached run stands against its idle limit. */
@@ -318,8 +321,10 @@ export function createRunLimiter(
 	const deletedSince = new Map<string, number>();
 
 	return async () => {
+		// The runs that may be live, before any process is asked: a released
+		// run is not, whatever its pid.
 		const all = (await deps.readRuns()).filter(
-			(run) => run.releasedAt === undefined,
+			(run) => runPhase(run, true) === "live",
 		);
 		const runs = all.filter((run) => run.detached);
 		const now = deps.now();

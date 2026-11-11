@@ -67,7 +67,7 @@ export interface RunSource {
 	readonly loopbackUrls: object;
 	readonly publicUrls: object;
 	readonly services: Readonly<Record<string, ResolvedService>>;
-	/** Integrations add their own fields to each app's entry (`expo`, …). */
+	/** Integrations record their own fields on each app's entry, by name (`integrations.expo`). */
 	readonly integrations?: readonly BuncargoIntegration[];
 	readonly workspaceId?: string;
 	details?(): Record<string, string>;
@@ -129,28 +129,28 @@ function runDetails(env: Pick<RunSource, "details">): {
 	}
 }
 
-/** What each integration records about one app, merged in integration order. */
+/**
+ * What each integration records about one app, under the integration's name,
+ * or nothing when none records anything.
+ */
 function integrationFields(
 	env: RunSource,
 	name: string,
-	config: ResolvedApp | undefined,
+	config: ResolvedApp,
 	port: number | undefined,
-): Record<string, unknown> {
-	if (!config) return {};
-	const fields: Record<string, unknown> = {};
+): Pick<RunAppEntry, "integrations"> {
+	const integrations: Record<string, Record<string, unknown>> = {};
 	for (const integration of env.integrations ?? []) {
-		Object.assign(
-			fields,
-			integration.describeApp?.({
-				name,
-				config,
-				port,
-				root: env.root,
-				workspaceId: env.workspaceId ?? "",
-			}),
-		);
+		const fields = integration.describeApp?.({
+			name,
+			config,
+			port,
+			root: env.root,
+			workspaceId: env.workspaceId ?? "",
+		});
+		if (fields) integrations[integration.name] = fields;
 	}
-	return fields;
+	return Object.keys(integrations).length > 0 ? { integrations } : {};
 }
 
 /**

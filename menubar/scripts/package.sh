@@ -16,9 +16,9 @@ BUILD_NUMBER="${BUILD_NUMBER:-1}"
 # Swift decoder enforces cannot drift apart. `buncargo dev` reads it back out of
 # Info.plist to decide whether an installed app is too old for the CLI.
 REGISTRY_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' \
-  "$ROOT/fixtures/runs.v1.json" | head -1)"
+  "$ROOT/fixtures/runs.v2.json" | head -1)"
 if [[ -z "$REGISTRY_VERSION" ]]; then
-  echo "Could not read the registry version from fixtures/runs.v1.json" >&2
+  echo "Could not read the registry version from fixtures/runs.v2.json" >&2
   exit 1
 fi
 # Universal by default: Intel Macs still exist and the target is small enough

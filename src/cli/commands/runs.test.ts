@@ -1,7 +1,12 @@
 import { afterEach, expect, it, spyOn } from "bun:test";
 import { rmSync } from "node:fs";
 import { readCurrentProcessIdentity } from "../../core/process-identity";
-import { getRunsPath, publishRun } from "../../core/run-registry";
+import {
+	CHECKOUT_HOLD,
+	getRunsPath,
+	LIVE,
+	publishRun,
+} from "../../core/run-registry";
 import { DETACHED_IDLE_LIMIT_MS } from "../../core/watchdog-constants";
 import { runCommand } from "../command-spec";
 import { runsCommand } from "./runs";
@@ -21,6 +26,8 @@ it("prints the RunsJson document, saying when a detached run stops if nothing us
 		processIdentity: readCurrentProcessIdentity(),
 		startedAt,
 		updatedAt: startedAt,
+		lifecycle: LIVE,
+		hold: CHECKOUT_HOLD,
 		detached: true,
 		idleLimitMs: DETACHED_IDLE_LIMIT_MS,
 		hosts: null,

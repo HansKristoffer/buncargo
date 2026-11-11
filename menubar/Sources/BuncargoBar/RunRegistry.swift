@@ -2,7 +2,7 @@ import CryptoKit
 import Darwin
 import Foundation
 
-/// The `~/.buncargo/runs.json` contract, version 1.
+/// The `~/.buncargo/runs.json` contract, version 2.
 ///
 /// Written by `buncargo dev` and read here. Every field the CLI marks optional
 /// is optional here too: an app decodes a registry written by an older or newer
@@ -34,9 +34,8 @@ struct RunApp: Codable, Identifiable, Hashable {
     /// What "open" opens, decided by the CLI (`preferredAppUrl`); absent from older runs.
     var openUrl: String?
     var hostname: String?
-    /// Present on Expo apps. Its fields belong to the CLI; here it only means
-    /// "offer the simulator button".
-    var expo: RunExpo?
+    /// What each integration recorded about the app, by integration name.
+    var integrations: RunIntegrations?
     /// The exclusive lease this app holds, e.g. `shopify-app:<client_id>`.
     var exclusive: String?
     var status: RunStatus?
@@ -45,12 +44,19 @@ struct RunApp: Codable, Identifiable, Hashable {
     var state: RunStatus { status ?? .starting }
     /// A dev server this run spawned, and can therefore stop on its own.
     var isOwned: Bool { pid != nil }
-    var hasSimulator: Bool { expo != nil && state != .stopped }
+    var hasSimulator: Bool { integrations?.expo != nil && state != .stopped }
 
     /// The CLI's choice when it recorded one, the old rule otherwise.
     func preferredURL(hostsActive: Bool) -> String {
         openUrl ?? Actions.preferredURL(named: url, loopback: loopbackUrl, hostsActive: hostsActive)
     }
+}
+
+/// The integrations this build knows; any other key is ignored.
+struct RunIntegrations: Codable, Hashable {
+    /// Present on Expo apps. Its fields belong to the CLI; here it only means
+    /// "offer the simulator button".
+    var expo: RunExpo?
 }
 
 struct RunExpo: Codable, Hashable {
@@ -121,6 +127,55 @@ struct RunCLI: Codable, Hashable {
     var script: String?
 }
 
+/// Where a run is in its life, as its owner and the CLI's sweep recorded it
+/// (`lifecycle` in `src/core/run-registry.ts`).
+enum RunLifecycle: Codable, Hashable {
+    /// The owner has not said it finished; it may have crashed since.
+    case live
+    /// The owner exited on purpose; only its containers remain, in the hold.
+    case released(at: String)
+    /// The sweep found the owner gone without releasing.
+    case lost(at: String)
+
+    private enum CodingKeys: String, CodingKey { case state, at }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let state = try container.decode(String.self, forKey: .state)
+        switch state {
+        case "live":
+            self = .live
+        case "released":
+            self = try .released(at: container.decode(String.self, forKey: .at))
+        case "lost":
+            self = try .lost(at: container.decode(String.self, forKey: .at))
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .state, in: container, debugDescription: "Unknown lifecycle state \(state)")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .live:
+            try container.encode("live", forKey: .state)
+        case .released(let at):
+            try container.encode("released", forKey: .state)
+            try container.encode(at, forKey: .at)
+        case .lost(let at):
+            try container.encode("lost", forKey: .state)
+            try container.encode(at, forKey: .at)
+        }
+    }
+}
+
+/// `runPhase` in `src/core/run-registry.ts`: every reader of the registry
+/// decides with the same rule.
+enum RunPhase: Equatable {
+    case live, released, lost
+}
+
 struct Run: Codable, Identifiable, Hashable {
     var sessionId: String?
     let projectPrefix: String
@@ -131,16 +186,12 @@ struct Run: Codable, Identifiable, Hashable {
     let pid: Int
     let startedAt: String
     let updatedAt: String
-    /// Set once the run has finished and only its containers remain.
-    ///
-    /// The CLI keeps such an entry so its sweep knows those containers may
+    /// A released run is kept so the CLI's sweep knows its containers may
     /// still be reused, and for how long. Nothing here should show it: the
     /// run is over. Checked rather than relying on the pid being dead,
     /// because these entries outlive their process and a reused pid would
     /// otherwise put a finished run back in the menu.
-    var releasedAt: String?
-    /// When the CLI's sweep found this run's owner gone without releasing.
-    var ownerLostAt: String?
+    var lifecycle: RunLifecycle
     /// The owner's birth identity (`v2:` + SHA-256 of its start time), which
     /// tells the process that published this entry from a later one that
     /// reused its pid.
@@ -182,31 +233,45 @@ struct Run: Codable, Identifiable, Hashable {
 
     /// Is this a run the menu should show?
     ///
-    /// The CLI's rule (`runLivenessAsync`): not released, and the pid still
-    /// the process that published the entry. A pid alone is not enough: a
-    /// reused one showed a finished run as live, and its Stop then took down
+    /// The CLI's rule (`runPhase`): live while not released and the pid is
+    /// still the process that published the entry. A pid alone is not enough:
+    /// a reused one showed a finished run as live, and its Stop then took down
     /// the containers it had left in the idle hold. The registry is pruned by
     /// the CLI, but only when a CLI runs; between runs this is the only thing
     /// that retires a crashed run from the menu.
     var isAlive: Bool {
-        guard releasedAt == nil else { return false }
+        if case .released = lifecycle { return false }
         return isLive(owner: OwnerProbe.read(pid: pid, identity: processIdentity != nil))
     }
 
     /// ``isAlive`` for an owner already probed. Pure, so it is tested
     /// without processes.
+    func isLive(owner: OwnerProbe) -> Bool {
+        phase(alive: ownerIsAlive(owner)) == .live
+    }
+
+    /// `runPhase(entry, alive)`: a released run is never live whatever its
+    /// pid says, and a run the sweep stamped lost is live again once its
+    /// owner reads as itself.
+    func phase(alive: Bool) -> RunPhase {
+        if case .released = lifecycle { return .released }
+        return alive ? .live : .lost
+    }
+
+    /// Whether the probed owner is the process that published this entry.
     ///
     /// Like the CLI, an identity that cannot be read does not make a live run
     /// dead, unless the sweep has found the owner gone: then this reader has
-    /// no better evidence than that. The sweep clears the stamp once the owner
-    /// reads as itself again.
-    func isLive(owner: OwnerProbe) -> Bool {
-        guard releasedAt == nil else { return false }
+    /// no better evidence than that.
+    func ownerIsAlive(_ owner: OwnerProbe) -> Bool {
         switch owner {
         case .gone:
             return false
         case .running(let identity):
-            guard let recorded = processIdentity, let identity else { return ownerLostAt == nil }
+            guard let recorded = processIdentity, let identity else {
+                if case .lost = lifecycle { return false }
+                return true
+            }
             return identity == recorded
         }
     }
@@ -302,16 +367,20 @@ private struct Skippable<T: Decodable>: Decodable {
 }
 
 /// The app cannot read this registry, and no amount of retrying will change
-/// that: the CLI writing it is newer than this build.
+/// that: the CLI writing it is another version than this build reads.
 ///
 /// Distinct from a decode failure, which is usually a half-written file and
-/// fixes itself on the next read. This one needs a new app.
+/// fixes itself on the next read. A newer registry needs a new app; an older
+/// one, served by another machine's CLI, needs that CLI updated.
 struct UnsupportedRegistryVersion: LocalizedError {
     let found: Int
     let supported: Int
 
     var errorDescription: String? {
-        "This BuncargoBar reads runs.json v\(supported), but buncargo now writes v\(found)."
+        if found < supported {
+            return "This BuncargoBar reads runs.json v\(supported), but that buncargo writes v\(found). Update buncargo there."
+        }
+        return "This BuncargoBar reads runs.json v\(supported), but buncargo now writes v\(found)."
     }
 }
 
@@ -319,10 +388,10 @@ enum RunRegistry {
     /// The `runs.json` schema this build decodes.
     ///
     /// `scripts/package.sh` stamps the same number into `Info.plist` as
-    /// `BuncargoRegistryVersion` — read from `fixtures/runs.v1.json`, which is
+    /// `BuncargoRegistryVersion` — read from `fixtures/runs.v2.json`, which is
     /// also what `--status` decodes in CI, so a bump that misses one of the
     /// three fails the build rather than shipping.
-    static let supportedVersion = 1
+    static let supportedVersion = 2
 
     static var url: URL {
         stateDirectory.appendingPathComponent("runs.json")
@@ -345,10 +414,13 @@ enum RunRegistry {
     /// Live runs, grouped and ordered for display.
     ///
     /// A missing file is the normal "nothing is running" state, not an error:
-    /// the CLI deletes it once the last run exits.
+    /// the CLI deletes it once the last run exits. So is a file an older CLI
+    /// wrote: the first newer CLI to write replaces it, and its runs are ones
+    /// this build cannot read.
     static func load() throws -> [Run] {
         guard let data = try? Data(contentsOf: url) else { return [] }
         let file = try JSONDecoder().decode(RunsFile.self, from: data)
+        if file.version < supportedVersion { return [] }
         guard file.version == supportedVersion else {
             // Not an empty list: an app that silently shows nothing reads as a
             // broken `buncargo dev`, and the user would debug the wrong thing.

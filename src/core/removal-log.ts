@@ -1,12 +1,16 @@
 /**
- * A record of every container stack and volume buncargo removed, kept so the
- * run that loses them can say who did it.
+ * The events log: every container stack and volume buncargo removed, every
+ * service it stopped, and every detached run the watchdog stopped, kept so
+ * the run that loses them, and `stop` and `ls` after a run is gone, can say
+ * who did it and why.
  *
  * A container cannot be relabelled once it exists, and once removed there is
  * nothing left to label, so the trace has to be on our side. Without it a
  * run whose database vanished saw `ECONNREFUSED`, then "No resource found to
  * remove" from its own teardown, and the one line that explained both sat in
- * whichever watchdog's log happened to do it.
+ * whichever watchdog's log happened to do it. A run's entry does not outlive
+ * it either: without a record, "where did my detached run go?" had no answer
+ * but the watchdog's log.
  *
  * Per user, like the rest of `~/.buncargo`: another user's watchdog records
  * in its own home, which is why an unexplained loss points at those logs.
@@ -14,38 +18,101 @@
 
 import { userInfo } from "node:os";
 import { basename, dirname } from "node:path";
-import { truncate } from "hanzio";
+import { isOneOf, isString, truncate } from "hanzio";
 import { withFileLock } from "./file-lock";
+import {
+	arrayOf,
+	type Guarded,
+	isFiniteNumber,
+	nullable,
+	object,
+	oneOf,
+	optional,
+} from "./json-shape";
 import { readJsonDocumentSync, writeJsonDocument } from "./registry-file";
 import type { RunEntry } from "./run-registry";
 import { chownToInvokingUser, stateFilePath } from "./state-paths";
 import { buncargoVersion } from "./version";
 
 /** Enough for weeks of a busy machine, small enough to rewrite whole. */
-export const REMOVAL_LOG_LIMIT = 500;
+export const EVENT_LOG_LIMIT = 500;
+
+const EVENT_LOG_VERSION = 1;
+
+/** How far back `stop` and `ls` report a stopped run. */
+const RECENT_RUN_STOP_MS = 24 * 60 * 60_000;
 
 /** Who removed something: the process, its user and its buncargo. */
-export interface RemovalActor {
+const isRemovalActor = object({
 	/** As a person would type it: `buncargo watchdog`, `buncargo ls`, `seed.ts (library)`. */
-	command: string;
-	pid: number;
-	user: string;
-	version?: string;
+	command: isString,
+	pid: isFiniteNumber,
+	user: isString,
+	version: optional(isString),
 	/**
 	 * What started the command: `BuncargoBar`, `zsh`, an agent's harness.
 	 * The menu bar shells out to `buncargo stop`, so only this tells its
 	 * buttons from a terminal.
 	 */
-	parent?: string;
-}
+	parent: optional(isString),
+});
 
 /** The run a removal was decided against, as the registry recorded it. */
-export interface RemovalOwner {
-	sessionId: string;
-	pid: number;
-	worktree?: string | null;
-	branch?: string;
-}
+const isRemovalOwner = object({
+	sessionId: isString,
+	pid: isFiniteNumber,
+	worktree: optional(nullable(isString)),
+	branch: optional(isString),
+});
+
+const removalFields = {
+	at: isString,
+	projectName: isString,
+	root: isString,
+	/** The container runtime, or the integration stack's name (`supabase`). */
+	runtime: isString,
+	reason: isString,
+	owner: optional(isRemovalOwner),
+	by: isRemovalActor,
+};
+
+const isRemovalRecord = oneOf(
+	object({ kind: isOneOf(["containers"]), ...removalFields }),
+	object({
+		kind: isOneOf(["volumes"]),
+		...removalFields,
+		volumes: arrayOf(isString),
+	}),
+	/** Only these services' containers were stopped (`buncargo stop <service>`). */
+	object({
+		kind: isOneOf(["services"]),
+		...removalFields,
+		services: arrayOf(isString),
+	}),
+);
+
+/** A detached run the watchdog stopped. */
+const isRunStopRecord = object({
+	kind: isOneOf(["run-stopped"]),
+	at: isString,
+	reason: isOneOf(["idle", "checkout deleted"]),
+	/** The sentence `stop` and `ls` print: "idle for 2h 0m (…)". */
+	detail: isString,
+	sessionId: isString,
+	projectName: isString,
+	root: isString,
+	worktree: nullable(isString),
+	pid: isFiniteNumber,
+});
+
+const isLogEvent = oneOf(isRemovalRecord, isRunStopRecord);
+
+export type RemovalActor = Guarded<typeof isRemovalActor>;
+export type RemovalOwner = Guarded<typeof isRemovalOwner>;
+export type RemovalRecord = Guarded<typeof isRemovalRecord>;
+export type RunStopRecord = Guarded<typeof isRunStopRecord>;
+export type RunStopReason = RunStopRecord["reason"];
+export type LogEvent = Guarded<typeof isLogEvent>;
 
 /** The parts of a run entry a removal record keeps. */
 export function removalOwner(
@@ -60,23 +127,27 @@ export function removalOwner(
 	};
 }
 
-export interface RemovalRecord {
-	at: string;
-	projectName: string;
-	root: string;
-	/** The container runtime, or the integration stack's name (`supabase`). */
-	runtime: string;
-	reason: string;
-	owner?: RemovalOwner;
-	/** Set when volumes were removed; absent for containers. */
-	volumes?: string[];
-	/** Set when only these services' containers were stopped (`buncargo stop <service>`). */
-	services?: string[];
-	by: RemovalActor;
+/** The record of one stopped run, from its entry. */
+export function runStopRecord(
+	run: Pick<
+		RunEntry,
+		"sessionId" | "projectName" | "root" | "worktree" | "pid"
+	>,
+	stop: { at: string; reason: RunStopReason; detail: string },
+): RunStopRecord {
+	return {
+		kind: "run-stopped",
+		...stop,
+		sessionId: run.sessionId,
+		projectName: run.projectName,
+		root: run.root,
+		worktree: run.worktree,
+		pid: run.pid,
+	};
 }
 
-export function getRemovalLogFile(): string {
-	return stateFilePath("removals.json");
+export function getEventLogFile(): string {
+	return stateFilePath("events.json");
 }
 
 /**
@@ -138,54 +209,53 @@ export function removalActor(
 	};
 }
 
-function isRemovalRecord(value: unknown): value is RemovalRecord {
-	if (typeof value !== "object" || value === null) return false;
-	const record = value as Partial<RemovalRecord>;
-	return (
-		typeof record.at === "string" &&
-		typeof record.projectName === "string" &&
-		typeof record.root === "string" &&
-		typeof record.reason === "string" &&
-		typeof record.by === "object" &&
-		record.by !== null &&
-		typeof record.by.command === "string"
+function validateLog(value: unknown): LogEvent[] | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const document = value as { version?: unknown; events?: unknown };
+	if (document.version !== EVENT_LOG_VERSION) return undefined;
+	return Array.isArray(document.events)
+		? document.events.filter(isLogEvent)
+		: undefined;
+}
+
+export function readEvents(): LogEvent[] {
+	return readJsonDocumentSync(getEventLogFile(), validateLog) ?? [];
+}
+
+/** What buncargo removed or stopped of containers, oldest first. */
+export function readRemovals(): RemovalRecord[] {
+	return readEvents().filter(
+		(event): event is RemovalRecord => event.kind !== "run-stopped",
 	);
 }
 
-function validateLog(value: unknown): RemovalRecord[] | undefined {
-	if (typeof value !== "object" || value === null) return undefined;
-	const removals = (value as { removals?: unknown }).removals;
-	return Array.isArray(removals) ? removals.filter(isRemovalRecord) : undefined;
-}
-
-export function readRemovals(file = getRemovalLogFile()): RemovalRecord[] {
-	return readJsonDocumentSync(file, validateLog) ?? [];
+/** The detached runs the watchdog stopped, oldest first. */
+export function readRunStops(): RunStopRecord[] {
+	return readEvents().filter(
+		(event): event is RunStopRecord => event.kind === "run-stopped",
+	);
 }
 
 /**
- * Append records, keeping the newest {@link REMOVAL_LOG_LIMIT}.
+ * Append events, keeping the newest {@link EVENT_LOG_LIMIT}.
  *
- * Never throws: a removal that happened must not read as failed because its
- * trace could not be written.
+ * Never throws: a removal or stop that happened must not read as failed
+ * because its trace could not be written.
  */
-export async function recordRemovals(
-	records: readonly RemovalRecord[],
-	file = getRemovalLogFile(),
-): Promise<void> {
-	if (records.length === 0) return;
+export async function recordEvents(events: readonly LogEvent[]): Promise<void> {
+	if (events.length === 0) return;
+	const file = getEventLogFile();
 	try {
 		await withFileLock(file, async () => {
-			const removals = [...readRemovals(file), ...records].slice(
-				-REMOVAL_LOG_LIMIT,
-			);
+			const kept = [...readEvents(), ...events].slice(-EVENT_LOG_LIMIT);
 			await writeJsonDocument(
 				file,
-				{ version: 1, removals },
+				{ version: EVENT_LOG_VERSION, events: kept },
 				{ afterWrite: chownToInvokingUser },
 			);
 		});
 	} catch {
-		// The removal stands; only its explanation is lost.
+		// The removal or stop stands; only its explanation is lost.
 	}
 }
 
@@ -218,16 +288,25 @@ export function describeActor(actor: RemovalActor): string {
 }
 
 export function describeRemoval(record: RemovalRecord): string {
-	const serviceNoun =
-		record.services?.length === 1 ? "container" : "containers";
-	const what = record.volumes
-		? `volumes ${record.volumes.join(", ")}`
-		: record.services
-			? `${record.services.join(", ")} ${serviceNoun}`
-			: "containers";
-	// A service stop leaves its container, stopped, for the next run.
-	const verb = record.services ? "stopped" : "removed";
+	const { verb, what } = removalAction(record);
 	return `${describeActor(record.by)} ${verb} ${record.projectName}'s ${what} at ${record.at}: ${record.reason}`;
+}
+
+function removalAction(record: RemovalRecord): { verb: string; what: string } {
+	switch (record.kind) {
+		case "containers":
+			return { verb: "removed", what: "containers" };
+		case "volumes":
+			return { verb: "removed", what: `volumes ${record.volumes.join(", ")}` };
+		case "services": {
+			// A service stop leaves its container, stopped, for the next run.
+			const noun = record.services.length === 1 ? "container" : "containers";
+			return {
+				verb: "stopped",
+				what: `${record.services.join(", ")} ${noun}`,
+			};
+		}
+	}
 }
 
 /**
@@ -272,7 +351,8 @@ export function explainServiceStop(input: {
 			candidate.projectName === input.projectName &&
 			candidate.root === input.root &&
 			Date.parse(candidate.at) >= input.since &&
-			(!candidate.services || candidate.services.includes(input.service)),
+			(candidate.kind !== "services" ||
+				candidate.services.includes(input.service)),
 	);
 	if (record) return describeRemoval(record);
 	const since = new Date(input.since).toISOString();
@@ -281,4 +361,32 @@ export function explainServiceStop(input: {
 			? `: \`docker events --since ${since} --filter label=com.docker.compose.project=${input.projectName}\``
 			: "";
 	return `No buncargo command of this user stopped it, so the runtime or another tool did; Docker Desktop restarting stops every container. Check other users' ~/.buncargo/watchdog.log and the runtime's events${events}.`;
+}
+
+/**
+ * The stops still worth reporting: of the last day, the newest per
+ * checkout, and only where no run on record has started since (that run is
+ * the news now).
+ */
+export function recentRunStops(
+	records: readonly RunStopRecord[],
+	runs: readonly Pick<RunEntry, "root" | "startedAt">[],
+	now: number,
+): RunStopRecord[] {
+	const newest = new Map<string, RunStopRecord>();
+	for (const record of records) {
+		const at = Date.parse(record.at);
+		const recent = !Number.isNaN(at) && now - at < RECENT_RUN_STOP_MS;
+		const restarted = runs.some(
+			(run) => run.root === record.root && Date.parse(run.startedAt) > at,
+		);
+		if (recent && !restarted) newest.set(record.root, record);
+		else if (restarted) newest.delete(record.root);
+	}
+	return [...newest.values()];
+}
+
+/** "The watchdog stopped demo's detached run at …: idle for 2h 0m (…)." */
+export function describeRunStop(record: RunStopRecord): string {
+	return `buncargo's watchdog stopped ${record.projectName}'s detached run (pid ${record.pid}) at ${record.at}: ${record.detail}.`;
 }

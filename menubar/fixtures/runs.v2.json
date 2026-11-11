@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "runs": [
     {
       "sessionId": "fixture-session",
@@ -11,10 +11,17 @@
       "pid": 1,
       "startedAt": "2026-09-03T10:47:56.971Z",
       "updatedAt": "2026-09-03T10:48:12.101Z",
+      "lifecycle": {
+        "state": "live"
+      },
+      "hold": {
+        "kind": "timed",
+        "ms": 180000,
+        "inherited": true
+      },
       "primaryApp": "platform",
       "detached": true,
       "idleLimitMs": 7200000,
-      "inheritedIdleTimeoutMs": 180000,
       "hosts": {
         "active": true,
         "tld": "localhost"
@@ -44,9 +51,11 @@
           "publicUrl": "https://example.trycloudflare.com",
           "openUrl": "https://example.trycloudflare.com",
           "hostname": "t3code-f003056f.api.lullu.localhost",
-          "expo": {
-            "scheme": "lullu",
-            "bundleId": "com.lullu.app"
+          "integrations": {
+            "expo": {
+              "scheme": "lullu",
+              "bundleId": "com.lullu.app"
+            }
           },
           "status": "starting"
         },
@@ -132,8 +141,15 @@
       "pid": 1,
       "startedAt": "2026-09-03T09:00:00.000Z",
       "updatedAt": "2026-09-03T09:30:00.000Z",
-      "releasedAt": "2026-09-03T09:30:00.000Z",
-      "idleTimeoutMs": 180000,
+      "lifecycle": {
+        "state": "released",
+        "at": "2026-09-03T09:30:00.000Z"
+      },
+      "hold": {
+        "kind": "timed",
+        "ms": 180000,
+        "inherited": false
+      },
       "hosts": null,
       "cli": {
         "program": "/bin/echo",
@@ -178,8 +194,15 @@
       "pid": 1,
       "startedAt": "2026-09-03T08:00:00.000Z",
       "updatedAt": "2026-09-03T08:10:00.000Z",
-      "ownerLostAt": "2026-09-03T08:20:00.000Z",
-      "idleTimeoutMs": 180000,
+      "lifecycle": {
+        "state": "lost",
+        "at": "2026-09-03T08:20:00.000Z"
+      },
+      "hold": {
+        "kind": "timed",
+        "ms": 180000,
+        "inherited": false
+      },
       "hosts": null,
       "cli": {
         "program": "/bin/echo",

@@ -11,9 +11,11 @@ import {
 } from "../core/run-publish";
 import {
 	buildRunEntryAsync,
+	CHECKOUT_HOLD,
 	holdToInherit,
 	loadRuns,
 	publishRun,
+	type RunHold,
 	type RunServiceEntry,
 	type RunStackEntry,
 	releaseRun,
@@ -198,8 +200,23 @@ export function createRunClaimApi<
 	// The hold of the last claim. A later claim that names none (a `start()`
 	// after a `stop()`) keeps it: resolving that afresh dropped a hold the
 	// first claim asked for, which kept the containers forever.
-	let lastHold:
-		{ value: number | undefined; inherited: number | undefined } | undefined;
+	let lastHold: RunHold | undefined;
+
+	/**
+	 * The hold a claim asks for: the one named, or, when none is (a library
+	 * `start()`), the hold of a stack another run left in its hold, which
+	 * applies after this run ends too.
+	 */
+	async function claimHold(options: ClaimOptions): Promise<RunHold> {
+		const namesHold =
+			options.idleTimeoutMs !== undefined ||
+			options.defaultIdleTimeoutMs !== undefined;
+		if (!namesHold) return lastHold ?? holdToInherit(await loadRuns(), ctx);
+		const ms = resolveClaimHold(options, ctx.config.options?.autoShutdown);
+		return ms === undefined
+			? CHECKOUT_HOLD
+			: { kind: "timed", ms, inherited: false };
+	}
 
 	function serviceEntries(): RunServiceEntry[] {
 		return ctx.selectedServiceKeys.map((name) => {
@@ -258,21 +275,8 @@ export function createRunClaimApi<
 				return;
 			}
 			if (!ctx.hasSelectedServices) return;
-			const namesHold =
-				options.idleTimeoutMs !== undefined ||
-				options.defaultIdleTimeoutMs !== undefined;
-			const hold =
-				lastHold && !namesHold
-					? lastHold.value
-					: resolveClaimHold(options, ctx.config.options?.autoShutdown);
-			// Asked for no hold at all (a library `start()`): a stack another
-			// run left in its hold keeps that hold after this run ends.
-			let inherited: number | undefined;
-			if (!namesHold)
-				inherited = lastHold
-					? lastHold.inherited
-					: holdToInherit(await loadRuns(), ctx);
-			lastHold = { value: hold, inherited };
+			const hold = await claimHold(options);
+			lastHold = hold;
 			const stacks = stackEntries();
 			const at = Date.now();
 			await publishRun({
@@ -286,10 +290,7 @@ export function createRunClaimApi<
 					},
 					options.signal,
 				)),
-				...(hold === undefined ? {} : { idleTimeoutMs: hold }),
-				...(hold === undefined && inherited !== undefined
-					? { inheritedIdleTimeoutMs: inherited }
-					: {}),
+				hold,
 				services: serviceEntries(),
 				...(stacks.length > 0 ? { stacks } : {}),
 			});

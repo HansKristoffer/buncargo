@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { RunEntry } from "../core/run-registry";
+import { CHECKOUT_HOLD, LIVE, type RunEntry } from "../core/run-registry";
 import type { BuncargoContainer, BuncargoVolume } from "../types";
 import { orphanedVolumes, planVolumePrune } from "./prune";
 
@@ -32,6 +32,8 @@ function run(projectName: string, extra: Partial<RunEntry> = {}): RunEntry {
 		pid: 1,
 		startedAt: "2026-09-22T10:00:00.000Z",
 		updatedAt: "2026-09-22T10:00:00.000Z",
+		lifecycle: LIVE,
+		hold: CHECKOUT_HOLD,
 		hosts: null,
 		cli: { program: "bun" },
 		apps: [],
@@ -50,7 +52,11 @@ describe("planVolumePrune", () => {
 				volume("stray_data"),
 			],
 			containers: [container("running")],
-			runs: [run("held", { releasedAt: "2026-09-22T10:00:00.000Z" })],
+			runs: [
+				run("held", {
+					lifecycle: { state: "released", at: "2026-09-22T10:00:00.000Z" },
+				}),
+			],
 			checkouts: [
 				{ projectName: "gone", root: "/gone", deleted: true },
 				{ projectName: "running", root: "/gone-too", deleted: true },

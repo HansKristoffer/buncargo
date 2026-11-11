@@ -70,6 +70,39 @@ function source(sessionId = "session-a"): RunSource {
 }
 
 describe("published run ownership", () => {
+	it("records each integration's app fields under its name, beside the row's own", async () => {
+		// Merged flat, a `describeApp` that returned `url` overwrote the row's.
+		const run = await publishCurrentRun(
+			{
+				...source(),
+				integrations: [
+					{
+						name: "phone",
+						describeApp: ({ name }) =>
+							name === "web"
+								? { scheme: "web", url: "phone://web" }
+								: undefined,
+					},
+				],
+			},
+			{
+				apps: resolveApps({
+					web: { port: 3000, devCommand: "bun dev" },
+					api: { port: 3001, devCommand: "bun api" },
+				}),
+				serviceNames: [],
+			},
+		);
+		const web = run?.apps.find((app) => app.name === "web");
+		expect(web?.integrations).toEqual({
+			phone: { scheme: "web", url: "phone://web" },
+		});
+		expect(web?.url).toBe("http://localhost:3000");
+		expect(run?.apps.find((app) => app.name === "api")).not.toHaveProperty(
+			"integrations",
+		);
+	});
+
 	it("publishes selected services with exact alias, runtime binary and process identity", async () => {
 		const env = source("session-a");
 		const run = await publishCurrentRun(env, {
@@ -94,7 +127,7 @@ describe("published run ownership", () => {
 		// record of what they are and how long they may be reused for. Every
 		// "what is running" reader filters it out; only the sweep sees it.
 		await releaseRun("session-a");
-		expect((await loadRuns())[0]?.releasedAt).toBeString();
+		expect((await loadRuns())[0]?.lifecycle.state).toBe("released");
 		expect(await readLiveRuns()).toEqual([]);
 	});
 

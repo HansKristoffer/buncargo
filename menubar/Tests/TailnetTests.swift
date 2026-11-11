@@ -5,7 +5,7 @@ import Testing
 
 private func runsFixture() throws -> Data {
     let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        .deletingLastPathComponent().appendingPathComponent("fixtures/runs.v1.json")
+        .deletingLastPathComponent().appendingPathComponent("fixtures/runs.v2.json")
     return try Data(contentsOf: path)
 }
 

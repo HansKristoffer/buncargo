@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { SweepResult } from "../container-runtime/sweep";
 import type { RunLimitPass } from "./run-limits";
-import type { RunEntry } from "./run-registry";
+import { type RunEntry, runPhase } from "./run-registry";
 import {
 	claimedSincePass,
 	describeSwept,
@@ -343,9 +343,11 @@ describe("claimedSincePass", () => {
 	const run = (sessionId: string, released = false) =>
 		({
 			sessionId,
-			releasedAt: released ? "2026-10-17T00:00:00.000Z" : undefined,
+			lifecycle: released
+				? { state: "released", at: "2026-10-17T00:00:00.000Z" }
+				: { state: "live" },
 		}) as RunEntry;
-	const alive = (entry: RunEntry) => entry.releasedAt === undefined;
+	const alive = (entry: RunEntry) => runPhase(entry, true) === "live";
 
 	it("stays for a run that claimed after the pass and has already released", () => {
 		// Released, so not live; but its containers were not in the pass.

@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { ConnectionDirectory } from "../../../server/connect/directory";
 import { createAPI } from "../../../server/connect/http";
 import { Store } from "../../../server/connect/store";
-import type { RunEntry } from "../run-registry";
+import { CHECKOUT_HOLD, LIVE, type RunEntry } from "../run-registry";
 import { newCredential } from "./credentials";
 import { createPublisher } from "./publisher";
 
@@ -46,6 +46,8 @@ const run: RunEntry = {
 	hosts: null,
 	startedAt: new Date().toISOString(),
 	updatedAt: new Date().toISOString(),
+	lifecycle: LIVE,
+	hold: CHECKOUT_HOLD,
 	apps: [],
 	services: [
 		{ name: "db", preset: "postgres", port: 5432, status: "starting" },

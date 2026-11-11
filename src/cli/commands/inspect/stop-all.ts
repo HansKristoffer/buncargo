@@ -9,7 +9,7 @@ import {
 } from "../../../container-runtime";
 import { readAllOffsetClaims } from "../../../core/offset-claims";
 import {
-	recordRemovals,
+	recordEvents,
 	removalActor,
 	removalOwner,
 } from "../../../core/removal-log";
@@ -76,8 +76,9 @@ export async function stopAllBuncargoEnvironments(
 			projectName: group.projectName,
 			verbose: false,
 		});
-		await recordRemovals([
+		await recordEvents([
 			{
+				kind: "containers",
 				at: new Date().toISOString(),
 				projectName: group.projectName,
 				root: group.root,

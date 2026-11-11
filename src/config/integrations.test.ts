@@ -170,9 +170,7 @@ describe("expo()", () => {
 			EXPO_PUBLIC_BUNCARGO_WORKSPACE_ID: "ws-1",
 			RCT_METRO_PORT: "8181",
 		});
-		expect(integration.describeApp?.(app)).toEqual({
-			expo: { scheme: "shop" },
-		});
+		expect(integration.describeApp?.(app)).toEqual({ scheme: "shop" });
 		expect(integration.appEnv?.({ ...app, name: "api" })).toBeUndefined();
 		expect(integration.commands?.sim).toBeDefined();
 	});

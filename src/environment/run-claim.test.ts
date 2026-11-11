@@ -17,6 +17,7 @@ import {
 	loadRuns,
 	patchRun,
 	type RunEntry,
+	type RunHold,
 } from "../core/run-registry";
 import { libraryLeasePolicy } from "./app-leases";
 import type { DevEnvContext } from "./context";
@@ -123,7 +124,7 @@ describe("createRunClaimApi", () => {
 	async function holdOf(sessionId: string) {
 		const entry = (await loadRuns()).find((run) => run.sessionId === sessionId);
 		expect(entry).toBeDefined();
-		return entry?.idleTimeoutMs;
+		return entry?.hold;
 	}
 
 	it("claims again after a claim that never reached the registry", async () => {
@@ -147,16 +148,17 @@ describe("createRunClaimApi", () => {
 		// Resolving that afresh lost the hold, so the containers were kept
 		// forever after a restart.
 		const claim = claimApi();
+		const fiveSeconds: RunHold = { kind: "timed", ms: 5_000, inherited: false };
 		await claim.claimRun({ idleTimeoutMs: 5_000 });
-		expect(await holdOf(claim.sessionId)).toBe(5_000);
+		expect(await holdOf(claim.sessionId)).toEqual(fiveSeconds);
 
 		await claim.retireRun({ containersDown: true });
 		await claim.claimRun({});
-		expect(await holdOf(claim.sessionId)).toBe(5_000);
+		expect(await holdOf(claim.sessionId)).toEqual(fiveSeconds);
 
 		await claim.retireRun({ containersDown: true });
 		await claim.claimRun({ idleTimeoutMs: false });
-		expect(await holdOf(claim.sessionId)).toBeUndefined();
+		expect(await holdOf(claim.sessionId)).toEqual({ kind: "checkout" });
 		await claim.retireRun({ containersDown: true });
 	});
 	it("takes over the hold of a stack another run left in its hold, unless it asked for a hold itself", async () => {
@@ -169,19 +171,16 @@ describe("createRunClaimApi", () => {
 
 		const script = claimApi();
 		await script.claimRun();
-		const entry = (await loadRuns()).find(
-			(run) => run.sessionId === script.sessionId,
-		);
-		expect(entry?.idleTimeoutMs).toBeUndefined();
-		expect(entry?.inheritedIdleTimeoutMs).toBe(180_000);
+		expect(await holdOf(script.sessionId)).toEqual({
+			kind: "timed",
+			ms: 180_000,
+			inherited: true,
+		});
 
 		// `--keep-containers` asks for no hold on purpose: nothing to inherit.
 		const kept = claimApi();
 		await kept.claimRun({ idleTimeoutMs: false });
-		expect(
-			(await loadRuns()).find((run) => run.sessionId === kept.sessionId)
-				?.inheritedIdleTimeoutMs,
-		).toBeUndefined();
+		expect(await holdOf(kept.sessionId)).toEqual({ kind: "checkout" });
 
 		for (const claim of [cli, script, kept])
 			await claim.retireRun({ containersDown: true });

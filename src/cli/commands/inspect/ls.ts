@@ -11,30 +11,41 @@ import {
 	tailscaleServeDeps,
 } from "../../../core/hosts/tailscale-serve";
 import {
+	describeRunStop,
+	readRunStops,
+	recentRunStops,
+} from "../../../core/removal-log";
+import {
 	describeIdleState,
 	readIdleState,
 	readRunConnections,
 } from "../../../core/run-limits";
-import { getRunsPath } from "../../../core/run-registry";
 import {
-	describeRunStop,
-	readRunStops,
-	recentRunStops,
-} from "../../../core/run-stops";
+	getRunsPath,
+	holdExpiry,
+	newestLifecycleFirst,
+	type RunEntry,
+	runPhase,
+} from "../../../core/run-registry";
+import { WATCHDOG_OWNER_DEAD_GRACE_MS } from "../../../core/watchdog-constants";
 import { describeSwept } from "../../../core/watchdog-loop";
 import { BASE_EXITS, defineCommand } from "../../command-spec";
 import * as log from "../../log";
 
-/** "held, 2m left" for a finished run, or nothing while one is live. */
-function describeHold(
-	releasedAt: string,
-	idleTimeoutMs: number | undefined,
-	now: number,
-): string {
-	if (idleTimeoutMs === undefined) return "held until this checkout is removed";
-	const left = Date.parse(releasedAt) + idleTimeoutMs - now;
-	if (left <= 0) return "held, removal due";
-	return `held, ${Math.ceil(left / 60_000)}m left`;
+/**
+ * "released; held, 2m left": how the containers of a run no live session
+ * speaks for wait, and for how long. A crashed run's grace shows the same way.
+ */
+export function describeFinishedRun(run: RunEntry, now: number): string {
+	const ended = runPhase(run, false) === "released" ? "released" : "owner gone";
+	const expiry = holdExpiry(run, WATCHDOG_OWNER_DEAD_GRACE_MS);
+	if (!expiry) {
+		const kept = run.hold.kind === "checkout";
+		return kept ? `${ended}; held until this checkout is removed` : ended;
+	}
+	const left = expiry.endedAt + expiry.holdMs - now;
+	if (left <= 0) return `${ended}; held, removal due`;
+	return `${ended}; held, ${Math.ceil(left / 60_000)}m left`;
 }
 
 async function ls(): Promise<void> {
@@ -84,11 +95,7 @@ async function ls(): Promise<void> {
 			(run) => run.projectName === group.projectName && run.root === group.root,
 		);
 		const live = owners.find((run) => result.liveSessions.has(run.sessionId));
-		const released = owners
-			.filter((run) => run.releasedAt !== undefined)
-			.sort((a, b) =>
-				(b.releasedAt ?? "").localeCompare(a.releasedAt ?? ""),
-			)[0];
+		const [newest] = owners.sort(newestLifecycleFirst);
 
 		log.line(group.projectName);
 		log.line(`  root: ${group.root || "(unknown)"}`);
@@ -101,10 +108,7 @@ async function ls(): Promise<void> {
 			);
 			const limit = idle ? `; ${idle}` : "";
 			log.line(`  run: active, pid ${live.pid}${limit}`);
-		} else if (released?.releasedAt)
-			log.line(
-				`  run: ${describeHold(released.releasedAt, released.idleTimeoutMs ?? released.inheritedIdleTimeoutMs, now)}`,
-			);
+		} else if (newest) log.line(`  run: ${describeFinishedRun(newest, now)}`);
 		const foreign = foreignStackOf(result, group);
 		if (foreign) {
 			log.line(`  owner: not this user's (${foreign.reason})`);

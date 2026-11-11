@@ -9,7 +9,7 @@ import {
 import type { ContainerDownRequest } from "../../../container-runtime/types";
 import { claimOffset } from "../../../core/offset-claims";
 import { readRemovals } from "../../../core/removal-log";
-import { publishRun } from "../../../core/run-registry";
+import { CHECKOUT_HOLD, LIVE, publishRun } from "../../../core/run-registry";
 import type { BuncargoContainer } from "../../../types";
 import { stopAllBuncargoEnvironments } from "./stop-all";
 
@@ -86,6 +86,8 @@ describe("dev --down --all", () => {
 			pid: 1,
 			startedAt: new Date().toISOString(),
 			updatedAt: new Date().toISOString(),
+			lifecycle: LIVE,
+			hold: CHECKOUT_HOLD,
 			hosts: null,
 			cli: { program: "bun" },
 			apps: [],

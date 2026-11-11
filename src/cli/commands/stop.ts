@@ -24,7 +24,10 @@ import {
 } from "../../core/process/terminate";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import {
-	recordRemovals,
+	describeRunStop,
+	readRunStops,
+	recentRunStops,
+	recordEvents,
 	removalActor,
 	removalOwner,
 } from "../../core/removal-log";
@@ -39,11 +42,6 @@ import {
 	recordedContainerRuntimes,
 	retireRuns,
 } from "../../core/run-registry";
-import {
-	describeRunStop,
-	readRunStops,
-	recentRunStops,
-} from "../../core/run-stops";
 // Not through `environment/index`: `stop` loads no config, and BuncargoBar's
 // buttons run it.
 import { runsKeepingServices } from "../../environment/run-keep";
@@ -428,8 +426,9 @@ async function stopServiceUnlocked(
 		if (containers.length > 0) {
 			await stopBuncargoContainers(containers, runtimes);
 			// So the run that notices its service stopped can say who did it.
-			await recordRemovals([
+			await recordEvents([
 				{
+					kind: "services",
 					at: new Date().toISOString(),
 					projectName: run.projectName,
 					root: run.root,
@@ -622,8 +621,9 @@ async function tearDown(
 	} finally {
 		const at = new Date().toISOString();
 		const by = removalActor();
-		await recordRemovals(
+		await recordEvents(
 			removed.map((runtime) => ({
+				kind: "containers" as const,
 				at,
 				projectName,
 				root,

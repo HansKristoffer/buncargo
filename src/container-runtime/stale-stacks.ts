@@ -3,7 +3,7 @@ import {
 	type PortContainerOwner,
 	staleStackProject,
 } from "../core/process";
-import { recordRemovals, removalActor } from "../core/removal-log";
+import { recordEvents, removalActor } from "../core/removal-log";
 import { readLiveRuns } from "../core/run-registry";
 import { formatStep, formatWarn } from "../core/style";
 import type { BuncargoContainer, ContainerRuntimeName } from "../types";
@@ -184,8 +184,9 @@ export async function replaceStaleStacks(
 			}
 
 			result.replaced.push(stack);
-			await recordRemovals([
+			await recordEvents([
 				{
+					kind: "containers",
 					at: new Date().toISOString(),
 					projectName: stack.projectName,
 					root: checkout.root,

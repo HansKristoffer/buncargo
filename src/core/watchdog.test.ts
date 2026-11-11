@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { withFileLock } from "./file-lock";
 import { isProcessAlive } from "./process/lifecycle";
 import { readProcessIdentity } from "./process-identity";
-import { publishRun } from "./run-registry";
+import { CHECKOUT_HOLD, LIVE, publishRun } from "./run-registry";
 import { buncargoVersion } from "./version";
 import {
 	ensureWatchdog,
@@ -69,6 +69,8 @@ async function claimSomething(): Promise<void> {
 		pid: process.pid,
 		startedAt: new Date().toISOString(),
 		updatedAt: new Date().toISOString(),
+		lifecycle: LIVE,
+		hold: CHECKOUT_HOLD,
 		hosts: null,
 		cli: { program: process.execPath },
 		apps: [],
