@@ -20,8 +20,8 @@ import { isProcessAlive } from "./process/lifecycle";
 
 /**
  * Reading and writing buncargo's persisted state files (`routes.json`,
- * `hosts-daemon.json`, `hosts-service.json`, `ports.json`,
- * `public-tunnels.json`), and the text writer the dotenv rewrite shares.
+ * `hosts-daemon.json`, `hosts-service.json`, `ports.json`), and the text
+ * writer the dotenv rewrite shares.
  *
  * Every read goes through a validator, so a hand-edited or half-written file
  * degrades to "no state" instead of surfacing as a nonsense value later. Every

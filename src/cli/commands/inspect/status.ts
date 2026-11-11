@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { getErrorMessage, typedSwitch, typedSwitchGroup } from "hanzio";
 import {
 	containerRuntimeForEnv,
@@ -18,10 +17,6 @@ import type { AnyDevEnvironment } from "../../../types";
 import { strayLoopbackUrls } from "../../core-checks";
 import { hasFlag } from "../../flags";
 import * as log from "../../log";
-import {
-	getTunnelRegistryPath,
-	readLiveTunnelRegistry,
-} from "../../tunnel-registry";
 import { loadLiveEnv } from "../runtime";
 
 /**
@@ -84,12 +79,22 @@ async function readStatus() {
 		};
 	}
 
-	const tunnels = existsSync(getTunnelRegistryPath(env.root))
-		? (await readLiveTunnelRegistry(env.root)).map((entry) => ({
-				name: entry.name,
-				publicUrl: entry.publicUrl,
-			}))
-		: [];
+	const runs = (await readLiveRuns().catch(() => [])).filter(
+		(run) => run.root === env.root,
+	);
+	// The public URLs the live runs publish: each run's tunnels, which close
+	// with it, and the URLs its apps printed.
+	const publicUrls = new Map(
+		runs
+			.flatMap((run) => [...run.apps, ...run.services])
+			.flatMap((row) =>
+				row.publicUrl === undefined ? [] : [[row.name, row.publicUrl] as const],
+			),
+	);
+	const tunnels = [...publicUrls].map(([name, publicUrl]) => ({
+		name,
+		publicUrl,
+	}));
 
 	// Before a run has persisted its block, the offset shown is the unprobed
 	// hash: say so when the next run would move it, or an agent tests ports
@@ -113,9 +118,7 @@ async function readStatus() {
 		// First: what an agent reads `status` for, and `| head` keeps the top.
 		// The live runs of this checkout, with each app's status, pid and URL,
 		// and `degraded` while a service container is down under it.
-		runs: (await readLiveRuns().catch(() => []))
-			.filter((run) => run.root === env.root)
-			.map((run) => ({ ...run, health: runHealth(run) })),
+		runs: runs.map((run) => ({ ...run, health: runHealth(run) })),
 		project: env.projectName,
 		root: env.root,
 		portOffset: env.portOffset,
@@ -244,13 +247,11 @@ function printStatus(status: Awaited<ReturnType<typeof readStatus>>): void {
 				log.line(`  ${entry.hostname} → :${entry.targetPort}`);
 		}
 	}
-	if (existsSync(getTunnelRegistryPath(status.root))) {
+	if (status.tunnels.length > 0) {
 		log.line();
 		log.line("tunnels:");
-		if (status.tunnels.length === 0) log.line("  (none)");
-		else
-			for (const entry of status.tunnels)
-				log.line(`  ${entry.name}: ${entry.publicUrl}`);
+		for (const entry of status.tunnels)
+			log.line(`  ${entry.name}: ${entry.publicUrl}`);
 	}
 	if (status.envOverrides.length > 0) {
 		log.line();

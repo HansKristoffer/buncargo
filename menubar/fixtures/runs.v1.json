@@ -154,6 +154,18 @@
             "service": "postgres"
           }
         }
+      ],
+      "stacks": [
+        {
+          "name": "supabase",
+          "down": [
+            "/tmp/buncargo-fixture/lullu-released/node_modules/.bin/supabase",
+            "stop",
+            "--project-id",
+            "lullu-t3code-released"
+          ],
+          "composeProject": "lullu-t3code-released"
+        }
       ]
     },
     {

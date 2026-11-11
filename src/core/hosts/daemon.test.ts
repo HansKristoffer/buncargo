@@ -20,11 +20,15 @@ import {
 	createStallRecoveryPolicy,
 	type HostsReloaderDeps,
 	nextReloadDelayMs,
+	RELOAD_STALL_MS,
 	truncateOversizedLog,
 	watchHostsState,
 } from "./daemon";
 import {
+	DAEMON_RESTART_GRACE_MS,
 	describeLoopbackHijack,
+	ensureHostsDaemonRunning,
+	type HostsDaemonProbe,
 	SERVICE_START_TIMEOUT_MS,
 	waitForDaemonHealthy,
 	waitForDaemonRoutes,
@@ -756,16 +760,88 @@ describe("createHostsReloader", () => {
 		expect(state.stops).toBe(0);
 	});
 
-	it("advances the reload timestamp only on a successful load", async () => {
+	// `routes.json` is user-writable and the daemon is root: a newline in a
+	// hostname was lines of anyone's choosing in /etc/hosts.
+	it("keeps a hostname that is not a DNS name out of the map and /etc/hosts, and says so once", async () => {
+		const injected = "evil.localhost\n203.0.113.7 bank.example";
 		const { state, reloader } = reloaderHarness();
+		state.routes = [route("web.demo.localhost", 5173), route(injected, 4000)];
+
+		await reloader.reload();
+		await reloader.reload();
+
+		expect(state.syncedHostnames.at(-1)).toEqual(["web.demo.localhost"]);
+		expect(reloader.routes().hostnames).toEqual(["web.demo.localhost"]);
+		const said = state.logs.filter((line) => line.includes("not a DNS name"));
+		expect(said).toEqual([expect.stringContaining(JSON.stringify(injected))]);
+	});
+
+	// Advanced on success alone, a registry the daemon could not read looked
+	// like a loop that had stopped, and stall recovery exited the daemon.
+	it("advances the reload timestamp on every reload that finishes", async () => {
+		let unreadable = false;
+		const { state, reloader } = reloaderHarness({
+			pruneRoutes: async () => {
+				if (unreadable) throw new Error("routes.json is not valid JSON");
+				return state.routes;
+			},
+		});
 		state.clock = 1_000;
 		state.routes = [route("web.demo.localhost", 5173)];
 		await reloader.reload();
 		expect(reloader.routes().lastReloadAt).toBe(1_000);
 
+		unreadable = true;
 		state.clock = 2_000;
-		await reloader.reload();
+		await expect(reloader.reload()).rejects.toThrow("not valid JSON");
 		expect(reloader.routes().lastReloadAt).toBe(2_000);
+	});
+
+	it("keeps a daemon whose registry cannot be read through stall recovery", async () => {
+		const { state, reloader } = reloaderHarness({
+			pruneRoutes: async () => {
+				throw new Error("routes.json is not valid JSON");
+			},
+		});
+		const exits: number[] = [];
+		const recovery = createStallRecovery({
+			reload: () => reloader.reload("recovery").catch(() => {}),
+			policy: createStallRecoveryPolicy({
+				lastReloadAt: () => reloader.routes().lastReloadAt,
+				now: () => state.clock,
+			}),
+			log: () => {},
+			exit: (code) => exits.push(code),
+		});
+
+		for (let attempt = 0; attempt < 4; attempt += 1) {
+			state.clock += RELOAD_STALL_MS + 1;
+			await recovery.recover(RELOAD_STALL_MS + 1);
+		}
+
+		expect(exits).toEqual([]);
+	});
+
+	// Every remint binds again and meets the same holder of :80.
+	it("says once that https is serving without the http redirect", async () => {
+		const { state, reloader } = reloaderHarness({
+			startProxy: async () =>
+				({
+					httpsPort: 443,
+					redirectError: "could not bind :80 (EADDRINUSE)",
+					stop: () => {},
+				}) satisfies LocalProxy,
+		});
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+		state.fingerprint = "cert-v2";
+		await reloader.reload();
+
+		expect(reloader.isBound()).toBe(true);
+		const said = state.logs.filter((line) => line.includes(":80"));
+		expect(said).toEqual([
+			"[buncargo hosts] serving https without the http:// redirect: could not bind :80 (EADDRINUSE)",
+		]);
 	});
 
 	// mkcert runs under the certificate lock. A slow mint used to read as a
@@ -1059,6 +1135,41 @@ describe("waitForDaemonRoutes", () => {
 				"Run `buncargo hosts install` to update it.",
 			),
 		});
+	});
+});
+
+describe("ensureHostsDaemonRunning", () => {
+	/** An installed, current unit whose daemon first answers at `answersAt`. */
+	function restartingDaemon(answersAt: number) {
+		const clock = { now: 0 };
+		const probe: HostsDaemonProbe = {
+			healthy: async () => clock.now >= answersAt,
+			serviceInstalled: () => true,
+			staleService: () => undefined,
+			squatter: () => undefined,
+			now: () => clock.now,
+			sleep: async (ms) => {
+				clock.now += ms;
+			},
+		};
+		return { clock, probe };
+	}
+
+	// Down after its own stall exit, another project's reinstall, or login:
+	// one unanswered probe kept the run on localhost:port for its whole life.
+	it("attaches to a daemon that answers a second after the first probe", async () => {
+		const { probe } = restartingDaemon(1_000);
+		expect(await ensureHostsDaemonRunning({}, probe)).toEqual({ ok: true });
+	});
+
+	it("reports the service once the restart grace has passed", async () => {
+		const { clock, probe } = restartingDaemon(Number.POSITIVE_INFINITY);
+		const result = await ensureHostsDaemonRunning({}, probe);
+		expect(result).toMatchObject({
+			ok: false,
+			message: expect.stringContaining("did not answer"),
+		});
+		expect(clock.now).toBe(DAEMON_RESTART_GRACE_MS);
 	});
 });
 

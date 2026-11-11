@@ -25,6 +25,7 @@ import {
 	type RunEntry,
 } from "../core/run-registry";
 import { DETACHED_ENV, detachedRunEnv } from "../core/runtime-flags";
+import { DETACH_ONLY_FLAGS } from "./dev-flags";
 import * as log from "./log";
 import {
 	describeAppFailure,
@@ -100,8 +101,6 @@ export function detachedReportPath(root: string, pid: number): string {
 
 const REPORT_FILE = /^detached-report-(\d+)\.json$/;
 const LOG_FILE = /^detached-(\d+)\.log$/;
-/** What earlier versions shared between runs, before reports and logs were per pid. */
-const LEGACY_FILES = new Set(["detached-report.json", "detached.previous.log"]);
 
 /**
  * How long a run's report and log outlive the run: its parent polls every
@@ -137,8 +136,7 @@ export function pruneDetachedFiles(root: string, now: number): void {
 	}
 	const ended = names.flatMap((name) => {
 		const pid = runPid(name);
-		const candidate =
-			LEGACY_FILES.has(name) || (pid !== undefined && !isProcessAlive(pid));
+		const candidate = pid !== undefined && !isProcessAlive(pid);
 		const path = join(logsRoot(root), name);
 		const modified = candidate ? modifiedAt(path) : undefined;
 		return modified === undefined ? [] : [{ name, path, modified }];
@@ -201,17 +199,23 @@ function printFailure(failure: RunFailure): void {
 }
 
 /**
- * Argv for the background run: this same invocation without `--detach` and
- * `--keep`, so a script wrapping `runCli` is re-run the same way `buncargo
- * dev` is. `--keep` reaches the run through `BUNCARGO_DETACHED` instead.
+ * Argv for the background run: this same invocation without the flags only
+ * `dev --detach` reads ({@link DETACH_ONLY_FLAGS}), so a script wrapping
+ * `runCli` is re-run the same way `buncargo dev` is. Args after `--` are the
+ * attached app's and pass through untouched.
  */
 export function detachedArgv(
 	argv: readonly string[],
 	execPath = process.execPath,
 ): string[] {
+	const args = argv.slice(1);
+	const separator = args.indexOf("--");
+	const flagsEnd = separator === -1 ? args.length : separator;
+	const detachOnly = new Set(DETACH_ONLY_FLAGS.map((flag) => flag.name));
 	return [
 		execPath,
-		...argv.slice(1).filter((arg) => arg !== "--detach" && arg !== "--keep"),
+		...args.slice(0, flagsEnd).filter((arg) => !detachOnly.has(arg)),
+		...args.slice(flagsEnd),
 	];
 }
 

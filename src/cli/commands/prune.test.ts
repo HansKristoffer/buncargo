@@ -51,7 +51,9 @@ echo "$*" >> "${base}/calls"
 case "$1 $2" in
   "ps -a") if [ -f "${base}/listing/listed" ] && [ -f "${base}/listing/containers.next" ]; then cat "${base}/listing/containers.next"; else touch "${base}/listing/listed"; cat "${base}/listing/containers"; fi ;;
   "rm "*) grep -qx "$2" "${base}/listing/refuse" 2>/dev/null && { echo "container is restarting" >&2; exit 1; } ;;
-  "volume ls") [ -f "${base}/listing/fail" ] && { echo "daemon hung" >&2; exit 1; }; cat "${base}/listing/volumes" ;;
+  "volume ls") [ -f "${base}/listing/fail" ] && { echo "daemon hung" >&2; exit 1; }
+    if [ -f "${base}/listing/volumes-listed" ] && [ -f "${base}/listing/offsets.next" ]; then cp "${base}/listing/offsets.next" "$HOME/.buncargo/offsets.json"; else touch "${base}/listing/volumes-listed"; fi
+    cat "${base}/listing/volumes" ;;
   "network ls") cat "${base}/listing/networks" ;;
 esac
 exit 0
@@ -69,6 +71,8 @@ function listing(files: {
 	fail?: boolean;
 	/** What `ps` lists from its second call on: the state at removal. */
 	containersNext?: string[];
+	/** The `offsets.json` from the second `volume ls` on: the claims at removal. */
+	offsetsNext?: object;
 	refuse?: string[];
 }) {
 	rmSync(join(base, "listing"), { recursive: true, force: true });
@@ -84,6 +88,11 @@ function listing(files: {
 		writeFileSync(
 			join(base, "listing", "containers.next"),
 			files.containersNext.map((line) => `${line}\n`).join(""),
+		);
+	if (files.offsetsNext)
+		writeFileSync(
+			join(base, "listing", "offsets.next"),
+			JSON.stringify(files.offsetsNext),
 		);
 	writeFileSync(
 		join(base, "listing", "refuse"),
@@ -195,41 +204,30 @@ describe("buncargo prune --project", () => {
 });
 
 describe("buncargo prune", () => {
-	it("keeps the volumes of a checkout that still exists, even with no containers and no run", async () => {
-		listing({
-			volumes: [
-				"pp-app_postgres-data\tpp-app",
-				"pp-feature_postgres-data\tpp-feature",
-				"pp-app-ci_postgres-data\tpp-app-ci",
-				"pp-gone_postgres-data\tpp-gone",
-			],
-		});
-		const home = join(base, "home-machine");
-		mkdirSync(join(home, ".buncargo"), { recursive: true });
-		const claim = (projectName: string, extra: object = {}) => ({
-			offset: 100,
-			projectName,
-			updatedAt: "2026-10-01T00:00:00.000Z",
-			...extra,
-		});
-		writeFileSync(
-			join(home, ".buncargo", "offsets.json"),
-			JSON.stringify({
-				version: 1,
-				claims: {
-					[main]: claim("pp-app"),
-					[join(base, "feature")]: claim("pp-feature"),
-					[`${main}#ci`]: claim("pp-app-ci", { root: main, suffix: "ci" }),
-					[join(base, "gone")]: claim("pp-gone"),
-				},
-			}),
-		);
-
-		const result = await execAsync(
-			[...cli, "prune", "--dry-run"],
+	const home = () => join(base, "home-machine");
+	const offsetsPath = () => join(home(), ".buncargo", "offsets.json");
+	const claim = (projectName: string, extra: object = {}) => ({
+		offset: 100,
+		projectName,
+		updatedAt: "2026-10-01T00:00:00.000Z",
+		...extra,
+	});
+	const claims = (entries: Record<string, object>) => ({
+		version: 1,
+		claims: entries,
+	});
+	/** `offsets.json` as `bytes`, or absent when undefined. */
+	const writeOffsets = (bytes: string | undefined) => {
+		rmSync(home(), { recursive: true, force: true });
+		mkdirSync(join(home(), ".buncargo"), { recursive: true });
+		if (bytes !== undefined) writeFileSync(offsetsPath(), bytes);
+	};
+	const machinePrune = (...args: string[]) =>
+		execAsync(
+			[...cli, "prune", ...args],
 			base,
 			{
-				HOME: home,
+				HOME: home(),
 				BUNCARGO_CONTAINER_BINARY: fake,
 				BUNCARGO_CONTAINER_RUNTIME: "docker",
 				BUNCARGO_PRUNE_DELETED_CHECKOUTS: "0",
@@ -238,11 +236,91 @@ describe("buncargo prune", () => {
 			{ throwOnError: false },
 		);
 
+	it("proposes a deleted checkout's volumes, and keeps every existing checkout's", async () => {
+		listing({
+			volumes: [
+				"pp-app_postgres-data\tpp-app",
+				"pp-feature_postgres-data\tpp-feature",
+				"pp-app-ci_postgres-data\tpp-app-ci",
+				"pp-gone_postgres-data\tpp-gone",
+				"unclaimed_postgres-data\tunclaimed",
+			],
+		});
+		// Without the opt-in the sweep that runs first drops `gone`'s claim,
+		// which is the only record of the project it used.
+		writeOffsets(
+			JSON.stringify(
+				claims({
+					[main]: claim("pp-app"),
+					[join(base, "feature")]: claim("pp-feature"),
+					[`${main}#ci`]: claim("pp-app-ci", { root: main, suffix: "ci" }),
+					[join(base, "gone")]: claim("pp-gone"),
+				}),
+			),
+		);
+
+		const result = await machinePrune("--dry-run");
+
 		expect(result.exitCode).toBe(0);
-		expect(result.stdout).toContain("pp-app-ci_postgres-data  (pp-app-ci)");
-		expect(result.stdout).toContain("pp-gone_postgres-data  (pp-gone)");
-		expect(result.stdout).not.toContain("pp-app_postgres-data");
-		expect(result.stdout).not.toContain("pp-feature_postgres-data");
+		expect(result.stdout).toContain("pp-gone_postgres-data  (pp-gone:");
+		for (const kept of [
+			"pp-app_postgres-data",
+			"pp-feature_postgres-data",
+			"pp-app-ci_postgres-data",
+			"unclaimed_postgres-data",
+		])
+			expect(result.stdout).not.toContain(kept);
 		expect(removals()).toEqual([]);
+	});
+
+	it("proposes nothing when no claim names an idle checkout's volume", async () => {
+		// An idle checkout has no container and no run: an unreadable claims
+		// file read as empty made its database look orphaned.
+		listing({ volumes: ["pp-app_postgres-data\tpp-app"] });
+		writeOffsets(undefined);
+
+		const result = await machinePrune("--yes");
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("No volumes to reclaim.");
+		expect(removals()).toEqual([]);
+	});
+
+	it("removes nothing and leaves an unreadable claims file as it is", async () => {
+		listing({ volumes: ["pp-gone_postgres-data\tpp-gone"] });
+		writeOffsets("{ not json");
+
+		const result = await machinePrune("--yes");
+
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain("offsets.json could not be read");
+		expect(readFileSync(offsetsPath(), "utf-8")).toBe("{ not json");
+		expect(removals()).toEqual([]);
+	});
+
+	it("decides again under the lock after the prompt: a volume claimed since the listing is kept", async () => {
+		const gone = join(base, "gone");
+		const vanished = join(base, "vanished");
+		const before = {
+			[gone]: claim("pp-gone"),
+			[vanished]: claim("pp-vanished"),
+		};
+		listing({
+			volumes: [
+				"pp-gone_postgres-data\tpp-gone",
+				"pp-vanished_postgres-data\tpp-vanished",
+			],
+			// The main checkout took `pp-gone` between the listing and removal.
+			offsetsNext: claims({ ...before, [main]: claim("pp-gone") }),
+		});
+		writeOffsets(JSON.stringify(claims(before)));
+
+		const result = await machinePrune("--yes");
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain(
+			`Kept pp-gone_postgres-data: its checkout ${main} still exists.`,
+		);
+		expect(removals()).toEqual(["volume rm pp-vanished_postgres-data"]);
 	});
 });

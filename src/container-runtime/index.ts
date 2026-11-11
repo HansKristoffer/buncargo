@@ -33,6 +33,7 @@ export {
 	planProjectPrune,
 } from "./project-prune";
 export {
+	claimedCheckouts,
 	orphanedVolumes,
 	type PruneInput,
 	planVolumePrune,
@@ -85,3 +86,9 @@ export {
 	type EnsureRuntimeOptions,
 	type ExecInServiceRequest,
 } from "./types";
+export {
+	type ClaimedCheckout,
+	decideVolume,
+	type VolumeDecision,
+	type VolumeState,
+} from "./volume-decision";

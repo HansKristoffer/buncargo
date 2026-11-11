@@ -13,12 +13,53 @@ import {
 	readCoordinatorState,
 } from "./coordinator-state";
 
+/**
+ * How many coordinators one ensure adopts or starts. Each that goes away
+ * before it reports (it left idle, or another launcher replaced it) is
+ * replaced; past this many something keeps ending them, and waiting longer
+ * would only hide it.
+ */
+const ENSURE_ATTEMPTS = 3;
+
+interface LaunchedCoordinator {
+	owner: CoordinatorState;
+	adopted: boolean;
+}
+
 /** Copy a self-contained bundle out of the package cache; one launcher at a time can start it. */
-export async function ensureConnectCoordinator(
+export function ensureConnectCoordinator(signal?: AbortSignal): Promise<void> {
+	return ensureCoordinatorWith(() => launchCoordinator(signal), signal);
+}
+
+/**
+ * Adopt or start a coordinator with `launch`, and wait for it to report. One
+ * that went away meanwhile is launched again, up to {@link ENSURE_ATTEMPTS}
+ * times.
+ */
+export async function ensureCoordinatorWith(
+	launch: () => Promise<LaunchedCoordinator>,
 	signal?: AbortSignal,
 ): Promise<void> {
+	for (let attempt = 1; ; attempt++) {
+		const { owner, adopted } = await launch();
+		try {
+			await awaitCoordinator(owner, adopted, signal);
+			return;
+		} catch (error) {
+			if (!(error instanceof CoordinatorUnavailableError)) throw error;
+			if (attempt >= ENSURE_ATTEMPTS)
+				throw new Error(
+					`The connection coordinator went away ${ENSURE_ATTEMPTS} times before it reported. Run \`buncargo connect status\` to see what is ending it.`,
+				);
+		}
+	}
+}
+
+async function launchCoordinator(
+	signal?: AbortSignal,
+): Promise<LaunchedCoordinator> {
 	const bundle = installConnectBundle();
-	const { owner, adopted } = await withFileLock(
+	return withFileLock(
 		stateFilePath("connect-launch"),
 		async () => {
 			const existing = await readCoordinatorState();
@@ -67,14 +108,6 @@ export async function ensureConnectCoordinator(
 		},
 		{ timeoutMs: 5000 },
 	);
-	try {
-		await awaitCoordinator(owner, adopted, signal);
-	} catch (error) {
-		if (!(error instanceof CoordinatorUnavailableError)) throw error;
-		// It decided to leave idle, or another launcher replaced it, meanwhile:
-		// launching again adopts or replaces it.
-		await ensureConnectCoordinator(signal);
-	}
 }
 
 /** A running coordinator heartbeats every second; one silent for this long after adoption is wedged. */

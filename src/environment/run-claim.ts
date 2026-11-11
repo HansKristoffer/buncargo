@@ -1,4 +1,5 @@
 import { releaseLeases } from "../core/leases";
+import { externalStackProjectName } from "../core/ports";
 import type { StartDevServersOptions } from "../core/process/dev-servers";
 import {
 	appRowEvents,
@@ -216,6 +217,7 @@ export function createRunClaimApi<
 					removeVolumes: false,
 				}),
 			],
+			composeProject: externalStackProjectName(ctx.projectName),
 		}));
 	}
 
