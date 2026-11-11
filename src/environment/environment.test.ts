@@ -151,6 +151,24 @@ describe("createDevEnvironment compose generation", () => {
 	});
 });
 
+describe("withSuffix ports: assigned", () => {
+	// Apple's `--publish` needs a host port: there the stack keeps its block.
+	for (const [runtime, published] of [
+		["docker", "127.0.0.1::5432"],
+		["apple", "127.0.0.1:$" + "{POSTGRES_PORT:-5432}:5432"],
+	] as const) {
+		it(`publishes ${published} on ${runtime}`, () => {
+			const env = createDevEnvironment(createBaseConfig(), {
+				containerRuntime: runtime,
+			}).withSuffix("ci-1a2b3c", { ports: "assigned" });
+
+			expect(internalsOf(env).composeModel().services.postgres?.ports).toEqual([
+				published,
+			]);
+		});
+	}
+});
+
 describe("createDevEnvironment env builders", () => {
 	it("keeps shared env separate from app-local env", () => {
 		const root = createWorktreeRoot("Feature_App_Env");

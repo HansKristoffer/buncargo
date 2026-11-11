@@ -9,6 +9,7 @@ import {
 	runSeedIfNeeded,
 	type SeedContext,
 } from "./seeding";
+import { TERMINAL_OUTPUT } from "./status-output";
 
 describe("resolveBunSeedSpecifier", () => {
 	it("extracts a Bun script path", () => {
@@ -36,6 +37,7 @@ function stubSeedContext(input: {
 	const ctx: SeedContext = {
 		root: input.root,
 		urls: {},
+		output: TERMINAL_OUTPUT,
 		config: { seed: { command: input.command, check: input.check } },
 	};
 	const envVars = {
@@ -49,7 +51,12 @@ function stubSeedContext(input: {
 
 describe("runSeedIfNeeded", () => {
 	it("reports a missing seed block instead of guessing a command", async () => {
-		const ctx: SeedContext = { root: "/", urls: {}, config: {} };
+		const ctx: SeedContext = {
+			root: "/",
+			urls: {},
+			output: TERMINAL_OUTPUT,
+			config: {},
+		};
 		const envVars = {} as unknown as DevEnvVarsApi;
 
 		expect(await runSeedIfNeeded(ctx, envVars)).toEqual({

@@ -254,14 +254,19 @@ it("leaves stdout to the command, byte for byte", async () => {
  * A checkout with one Postgres service and a `docker` that records every call
  * as `<pid of its caller> <args>` and runs `onCall` (shell, with `$*` the args).
  */
-function stubbedCheckout(prefix: string, onCall = "", extraConfig = "") {
+function stubbedCheckout(
+	prefix: string,
+	onCall = "",
+	extraConfig = "",
+	postgres = "{port:5432,healthCheck:false}",
+) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-ci-")));
 	const log = join(root, "docker.log");
 	const docker = join(root, "docker");
 	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
 	writeFileSync(
 		join(root, "dev.config.ts"),
-		`export default {projectPrefix:'${prefix}',services:{postgres:{port:5432,healthCheck:false}},apps:{}${extraConfig}};`,
+		`export default {projectPrefix:'${prefix}',services:{postgres:${postgres}},apps:{}${extraConfig}};`,
 	);
 	writeFileSync(
 		docker,
@@ -288,11 +293,12 @@ function stubbedCheckout(prefix: string, onCall = "", extraConfig = "") {
 			stdout: "pipe",
 			stderr: "pipe",
 		});
-		const [stderr, exitCode] = await Promise.all([
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(child.stdout).text(),
 			new Response(child.stderr).text(),
 			child.exited,
 		]);
-		return { exitCode, stderr };
+		return { exitCode, stdout, stderr };
 	};
 	return {
 		root,
@@ -413,6 +419,22 @@ function stubPrisma(root: string, exitCode: number) {
 	);
 }
 
+it("prints what its own commands print on stderr, leaving stdout to the command", async () => {
+	using checkout = stubbedCheckout(
+		"cicmdout",
+		"",
+		",prisma:{generate:'echo generated'},seed:{command:'echo seeded'}",
+	);
+	stubPrisma(checkout.root, 0);
+
+	const result = await checkout.run(["--seed", "--", "printf", "ok"]);
+
+	expect(result.exitCode).toBe(0);
+	expect(result.stdout).toBe("ok");
+	expect(result.stderr).toContain("generated");
+	expect(result.stderr).toContain("seeded");
+});
+
 describe("ci --migrate-check", () => {
 	const cases = [
 		{ name: "runs the command when they match", prisma: 0, exitCode: 0 },
@@ -499,4 +521,55 @@ Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("prod") })
 	expect(readFileSync(fetched, "utf-8")).toBe("prod");
 	const pid = Number(readFileSync(join(checkout.root, "server.pid"), "utf-8"));
 	expect(() => process.kill(pid, 0)).toThrow();
+});
+
+it("publishes on Docker-assigned ports and uses the ones it reads back", async () => {
+	// Stands in for the port Docker picked: readiness passes only by
+	// connecting here, never to the claimed port.
+	const assigned = Bun.listen({
+		hostname: "127.0.0.1",
+		port: 0,
+		socket: { data() {} },
+	});
+	// Keeps the model `up` was given, and lists the service on the
+	// assigned port under the project `up` named.
+	using checkout = stubbedCheckout(
+		"ciassign",
+		`dir=$(dirname "$0")
+case "$*" in
+  *" up "*) cat "$dir"/.buncargo/docker-compose.ci-*.generated.yml > "$dir/up.yml"
+    for a; do [ "$prev" = "-p" ] && echo "$a" > "$dir/project"; prev=$a; done ;;
+  "ps "*) [ -f "$dir/project" ] && printf 'cid1\\tpg\\trunning\\tUp 1 second\\t127.0.0.1:${assigned.port}->5432/tcp\\tp\\t\\t%s\\t\\t\\tpostgres\\t\\n' "$(cat "$dir/project")" ;;
+esac`,
+		",prisma:{}",
+		"{port:5432,healthCheck:'tcp',healthTimeout:2000}",
+	);
+	const bin = join(checkout.root, "packages/prisma/node_modules/.bin");
+	mkdirSync(bin, { recursive: true });
+	writeFileSync(
+		join(bin, "prisma"),
+		`#!/bin/sh\necho "$DATABASE_URL" >> "${checkout.root}/migrated"\n`,
+		{ mode: 0o755 },
+	);
+	const seen = join(checkout.root, "env");
+
+	try {
+		const result = await checkout.run([
+			"--migrate",
+			"--",
+			"sh",
+			"-c",
+			`echo "$POSTGRES_PORT" > "${seen}"`,
+		]);
+
+		expect(result.exitCode).toBe(0);
+		expect(readFileSync(join(checkout.root, "up.yml"), "utf-8")).toContain(
+			'- "127.0.0.1::5432"',
+		);
+		expect(readFileSync(seen, "utf-8").trim()).toBe(String(assigned.port));
+		const migrated = readFileSync(join(checkout.root, "migrated"), "utf-8");
+		expect(migrated).toContain(`:${assigned.port}/`);
+	} finally {
+		assigned.stop(true);
+	}
 });

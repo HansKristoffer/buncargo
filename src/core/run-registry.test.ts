@@ -175,11 +175,17 @@ describe("publishRun", () => {
 		expect((await loadRuns())[0]?.lifecycle).toEqual(LIVE);
 	});
 
-	it("keeps each app's process and state through a describe", async () => {
+	it("keeps each app's process, state and tunnel through a describe", async () => {
 		await publishRun(makeRun());
 		await patchRun("s1", {
 			apps: [
-				{ name: "api", pid: 42, processIdentity: "v2:x", status: "ready" },
+				{
+					name: "api",
+					pid: 42,
+					processIdentity: "v2:x",
+					status: "ready",
+					tunnelUrl: "https://api.trycloudflare.com",
+				},
 			],
 		});
 		await describeRun(makeRun());
@@ -187,6 +193,7 @@ describe("publishRun", () => {
 			pid: 42,
 			processIdentity: "v2:x",
 			status: "ready",
+			tunnelUrl: "https://api.trycloudflare.com",
 		});
 	});
 

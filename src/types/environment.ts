@@ -361,6 +361,13 @@ export interface SuffixedEnvironmentOptions {
 	 * Default: `"volumes"`.
 	 */
 	data?: "volumes" | "tmpfs";
+	/**
+	 * Where its services publish. `"assigned"` lets the runtime pick each
+	 * host port (`127.0.0.1::5432`); `ports`, `urls` and the environment use
+	 * the ports read back once the containers are up. Docker only: on Apple
+	 * `container` the stack keeps its claimed ports. Default: `"claimed"`.
+	 */
+	ports?: "claimed" | "assigned";
 }
 
 /**

@@ -20,6 +20,7 @@ export function fakeRuntime(
 			jobExitCodes: true,
 			hostPortProbe: true,
 			composeProjectResources: true,
+			assignedHostPorts: true,
 		},
 		availability: () => ({ state: "up" }),
 		ensureRunning: async () => {},
@@ -54,6 +55,7 @@ export function fakeAppleRuntime(
 			jobExitCodes: false,
 			hostPortProbe: false,
 			composeProjectResources: false,
+			assignedHostPorts: false,
 		},
 		...overrides,
 	});

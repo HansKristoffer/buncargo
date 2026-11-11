@@ -81,6 +81,27 @@ export function parseDockerPublishedPorts(portsField: string): number[] {
 	return ports;
 }
 
+/**
+ * The container port behind each published host port that differs from it:
+ * `127.0.0.1:55001->5432/tcp` maps 55001 to 5432. A range maps
+ * position by position.
+ */
+function parseDockerTargetPorts(portsField: string): Record<number, number> {
+	const targets: Record<number, number> = {};
+	for (const match of portsField.matchAll(
+		/:(\d{1,5})(?:-(\d{1,5}))?->(\d{1,5})(?:-\d{1,5})?\//g,
+	)) {
+		const first = Number.parseInt(match[1] ?? "", 10);
+		const last = match[2] === undefined ? first : Number.parseInt(match[2], 10);
+		const target = Number.parseInt(match[3] ?? "", 10);
+		for (let port = first; port <= last; port++) {
+			const mapped = target + (port - first);
+			if (mapped !== port) targets[port] = mapped;
+		}
+	}
+	return targets;
+}
+
 /** One line of {@link DOCKER_LIST_ARGS} output, or undefined for one without an id. */
 export function parseDockerContainer(
 	line: string,
@@ -93,6 +114,7 @@ export function parseDockerContainer(
 		labels;
 	const healthy = parseDockerHealth(status);
 	const exitCode = parseDockerExitCode(status);
+	const targetPorts = parseDockerTargetPorts(portsText);
 	return {
 		id,
 		name: name || id,
@@ -102,6 +124,7 @@ export function parseDockerContainer(
 		...(healthy === undefined ? {} : { healthy }),
 		...(exitCode === undefined ? {} : { exitCode }),
 		ports: parseDockerPublishedPorts(portsText),
+		...(Object.keys(targetPorts).length > 0 ? { targetPorts } : {}),
 		portsText,
 		labels: {
 			...(composeProject ? { composeProject } : {}),

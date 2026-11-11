@@ -104,6 +104,9 @@ export type LifecycleContext = Pick<
 	| "logInfo"
 	| "onSecretsWait"
 	| "ownedServerPids"
+	| "output"
+	| "assignedPortTargets"
+	| "adoptAssignedPorts"
 > &
 	SeedContext &
 	GeneratedFilesContext;
@@ -198,7 +201,7 @@ export function createLifecycleApi(
 		const { migrations } = plan;
 		if (migrations.length > 0) {
 			if (verbose) {
-				console.log(formatStep("📦 Running migrations..."));
+				ctx.output.log(formatStep("📦 Running migrations..."));
 			}
 
 			const elapsed = startTimer();
@@ -219,7 +222,7 @@ export function createLifecycleApi(
 			}
 
 			if (verbose) {
-				console.log(formatDone("Migrations complete"));
+				ctx.output.log(formatDone("Migrations complete"));
 			}
 		}
 
@@ -241,7 +244,7 @@ export function createLifecycleApi(
 			(await generateNeeded(resolvePrismaConfig(config.prisma).cwd))
 		) {
 			if (verbose) {
-				console.log(formatStep("📦 Generating Prisma client..."));
+				ctx.output.log(formatStep("📦 Generating Prisma client..."));
 			}
 
 			const elapsed = startTimer();
@@ -249,14 +252,18 @@ export function createLifecycleApi(
 				const command = config.prisma.generate;
 				const { cwd } = resolvePrismaConfig(config.prisma);
 				await generatePrismaClient(ctx.root, cwd, () =>
-					execute(command, { cwd, verbose }),
+					execute(command, {
+						cwd,
+						verbose,
+						onOutputLine: ctx.output.commandLine,
+					}),
 				);
 			} finally {
 				onPhase?.("generation", elapsed());
 			}
 
 			if (verbose) {
-				console.log(formatDone("Prisma generate complete"));
+				ctx.output.log(formatDone("Prisma generate complete"));
 			}
 		}
 	}
@@ -286,7 +293,7 @@ export function createLifecycleApi(
 			signal,
 		});
 		if (count === undefined) return false;
-		if (verbose) console.log(formatDone(`Migrations up to date (${count})`));
+		if (verbose) ctx.output.log(formatDone(`Migrations up to date (${count})`));
 		return true;
 	}
 
@@ -342,7 +349,7 @@ export function createLifecycleApi(
 		}
 
 		if (result.absent) {
-			console.log(
+			ctx.output.log(
 				formatWarn(`No ${relative(ctx.root, result.path)} to sync; skipped`),
 			);
 			return;
@@ -352,7 +359,7 @@ export function createLifecycleApi(
 			const what = result.created
 				? "Created"
 				: `Synced ${result.changed.length} value${result.changed.length === 1 ? "" : "s"} in`;
-			console.log(formatDone(`${what} ${relative(ctx.root, result.path)}`));
+			ctx.output.log(formatDone(`${what} ${relative(ctx.root, result.path)}`));
 		}
 	}
 
@@ -383,10 +390,10 @@ export function createLifecycleApi(
 						signal: options.signal,
 						onSeedReady: () => {
 							if (prepared.verbose)
-								console.log(formatDone("All servers ready"));
+								ctx.output.log(formatDone("All servers ready"));
 						},
 					});
-					if (prepared.verbose) console.log(formatDone("Environment ready"));
+					if (prepared.verbose) ctx.output.log(formatDone("Environment ready"));
 					return pids;
 				} catch (error) {
 					containersStillRunning(prepared.hasServices);
@@ -572,13 +579,13 @@ export function createLifecycleApi(
 					return;
 				}
 
-				function composeUp() {
+				async function composeUp() {
 					if (!artifactReady) {
 						ctx.ensureComposeFile();
 						artifactReady = true;
 					}
 
-					return ensureServicesRunning({
+					const { assignedHostPorts } = await ensureServicesRunning({
 						signal,
 						runtime: ctx.runtime,
 						root: ctx.root,
@@ -594,7 +601,11 @@ export function createLifecycleApi(
 						wait,
 						autoStartRuntime: autoStartDocker,
 						runtimeStartCommand: config.docker?.startCommand,
+						assignedPorts: ctx.assignedPortTargets(Object.keys(compose)),
 					});
+					// Before the dotenv, migrations and anything else that reads a
+					// service's port.
+					ctx.adoptAssignedPorts(assignedHostPorts);
 				}
 
 				// One hold over Compose and the stacks: the sweep and `stop` take the
@@ -638,7 +649,7 @@ export function createLifecycleApi(
 			// Before anything reads them: values not known yet (a tunnel URL, a
 			// capture) render as the file's placeholder and re-render later.
 			for (const path of renderGeneratedFiles(ctx, envVars)) {
-				if (verbose) console.log(formatDone(`Generated ${path}`));
+				if (verbose) ctx.output.log(formatDone(`Generated ${path}`));
 			}
 			if (mode === "containers") return prepared({ kind: "none" });
 
@@ -669,7 +680,7 @@ export function createLifecycleApi(
 					Object.keys(plan.lateServices).length > 0 &&
 					verbose
 				) {
-					console.log(
+					ctx.output.log(
 						formatStep(
 							"Seed will run before apps because selected services use afterPreparation.",
 						),
@@ -845,7 +856,7 @@ export function createLifecycleApi(
 							kept = true;
 							if (verbose) {
 								const pids = keepers.map((run) => run.pid).join(", ");
-								console.log(
+								ctx.output.log(
 									formatStep(
 										`Kept ${ctx.projectName}'s services: another run uses them (pid ${pids}). stop({ force: true }) tears them down anyway.`,
 									),
@@ -882,7 +893,7 @@ export function createLifecycleApi(
 									}),
 									{ secrets: false, signal, timeoutMs: 120_000 },
 								);
-								if (verbose) console.log(formatDone(`Stopped ${name}`));
+								if (verbose) ctx.output.log(formatDone(`Stopped ${name}`));
 							} catch (error) {
 								failures.push(error);
 							}

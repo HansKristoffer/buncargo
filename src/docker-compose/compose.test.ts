@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { buildAppleRunPlan } from "../apple-container/run-plan";
 import { resolveServices } from "../config/resolve";
 import {
+	assignedPortTargets,
 	buildComposeModel,
 	composeToYaml,
 	writeGeneratedComposeFile,
@@ -190,6 +191,44 @@ describe("buildComposeModel", () => {
 			ports: ["127.0.0.1:$" + "{POSTGRES_PORT:-5432}:5432"],
 		});
 		expect(compose.volumes).toBeUndefined();
+	});
+});
+
+describe("buildComposeModel with assigned ports", () => {
+	const services = resolveServices({
+		clickhouse: { port: 8123, secondaryPort: 9000 },
+		cache: service.custom({
+			port: 6380,
+			docker: { image: "redis:7", ports: ["127.0.0.1:6380:6379"] },
+		}),
+	});
+
+	it("lets the runtime pick the host port of every port it generates", () => {
+		const compose = buildComposeModel(
+			services,
+			undefined,
+			undefined,
+			"docker",
+			{
+				ports: "assigned",
+			},
+		);
+
+		expect(compose.services.clickhouse?.ports).toEqual([
+			"127.0.0.1::8123",
+			"127.0.0.1::9000",
+		]);
+		expect(compose.services.cache?.ports).toEqual(["127.0.0.1:6380:6379"]);
+		expect(assignedPortTargets(services, compose)).toEqual({
+			clickhouse: { service: "clickhouse", containerPort: 8123 },
+			clickhouseSecondary: { service: "clickhouse", containerPort: 9000 },
+		});
+	});
+
+	it("reads back nothing from a model on claimed ports", () => {
+		expect(assignedPortTargets(services, buildComposeModel(services))).toEqual(
+			{},
+		);
 	});
 });
 

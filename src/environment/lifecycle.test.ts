@@ -32,6 +32,7 @@ import { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { createAppPipeline } from "./pipeline";
 import { createServerHookRunner } from "./servers";
 import { createServiceWatch } from "./service-watch";
+import { TERMINAL_OUTPUT } from "./status-output";
 
 // Starting and stopping take the project's lifecycle lock and record the
 // removal under `~/.buncargo`: a home of the test's own, never the developer's.
@@ -113,6 +114,9 @@ function fixture() {
 		},
 		logInfo: () => {},
 		onSecretsWait: undefined,
+		output: TERMINAL_OUTPUT,
+		assignedPortTargets: () => ({}),
+		adoptAssignedPorts: () => {},
 	};
 
 	const envVars = {

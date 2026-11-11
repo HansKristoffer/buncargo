@@ -51,6 +51,7 @@ export function appleContainerRuntimeAdapter(
 			// whether or not anything listens inside, and holds it open.
 			hostPortProbe: false,
 			composeProjectResources: false,
+			assignedHostPorts: false,
 		},
 
 		availability() {

@@ -299,6 +299,7 @@ function registerStubInternals(
 		notify: (next) => {
 			report = next;
 		},
+		reportTo: () => {},
 		renderGeneratedFiles: () => [],
 		recordCapture: async () => [],
 		setNamedHostsActive: () => {},
@@ -631,6 +632,7 @@ async function publishTunnelOwner(
 				url: `http://localhost:${port}`,
 				loopbackUrl: `http://localhost:${port}`,
 				publicUrl: "https://api.example.com",
+				tunnelUrl: "https://api.example.com",
 				status: "ready",
 			},
 		],

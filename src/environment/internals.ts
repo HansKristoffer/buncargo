@@ -12,6 +12,7 @@ import type {
 import type { AnyApps, AnyServices } from "./context";
 import type { PrepareOptions } from "./lifecycle";
 import type { AppPipeline, Prepared } from "./pipeline";
+import type { StatusOutput } from "./status-output";
 
 /**
  * What `buncargo dev` and the commands drive that a library user does not:
@@ -28,6 +29,8 @@ export interface EnvironmentInternals extends AppPipeline {
 	 * the watchdog failing to start. Default: stderr.
 	 */
 	notify(report: (message: string, problem: boolean) => void): void;
+	/** Where its progress, and its own commands' output, go. Default: the terminal. */
+	reportTo(output: StatusOutput): void;
 	/** Render every generated file; returns the paths whose content changed. */
 	renderGeneratedFiles(): string[];
 	/**

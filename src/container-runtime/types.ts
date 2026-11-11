@@ -248,6 +248,12 @@ export interface RuntimeCapabilities {
 	 * `buncargo prune --project` and the sweep trace a checkout by. Apple: no.
 	 */
 	readonly composeProjectResources: boolean;
+	/**
+	 * It publishes on a host port it picks itself (`127.0.0.1::5432`), and
+	 * reports which in its listing. Apple: no, `--publish` needs a host
+	 * port, so a stack that asks for assigned ports keeps its claimed ones.
+	 */
+	readonly assignedHostPorts: boolean;
 }
 
 /**
