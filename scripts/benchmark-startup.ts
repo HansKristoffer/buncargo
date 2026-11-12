@@ -576,12 +576,11 @@ try {
 	rmSync(root, { recursive: true, force: true });
 }
 
-/** The offset the run under `home` claimed, once it has: its block moved off the hash. */
 /**
- * The offset `project` claimed. Every worker shares one HOME, so the claims
- * file holds every worker's checkout, and in CI the throwaway claims of runs
- * already torn down too: only this checkout's own, unreleased claim names its
- * ports.
+ * The offset `project` claimed, once it has: its block moved off the hash.
+ * Every worker shares one HOME, so the claims file holds every worker's
+ * checkout, and in CI the throwaway claims of runs already torn down too:
+ * only this checkout's own, unreleased claim names its ports.
  */
 function claimedOffset(home: string, project: string): number | undefined {
 	const file = join(home, ".buncargo/offsets.json");
