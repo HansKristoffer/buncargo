@@ -2,11 +2,10 @@ import { isRecord, typedSwitch } from "hanzio";
 import type { NamedHost } from "../../types";
 import { checkoutDeleted } from "../checkout-presence";
 import { withFileLock } from "../file-lock";
+import { isProcessAlive } from "../process/lifecycle";
 import {
 	defineListRegistry,
-	isRouteOwnerAlive,
 	type ListRegistryReadOptions,
-	readJsonDocumentSync,
 	StateFileUnreadableError,
 	StateFileVersionError,
 } from "../registry-file";
@@ -15,69 +14,94 @@ import { getRoutesPath } from "./paths";
 
 const REGISTRY_VERSION = 1;
 
-export interface HostsRoute {
+interface HostsRouteTarget {
 	hostname: string;
 	port: number;
-	kind: "app" | "service";
 	name: string;
 	root: string;
-	pid?: number;
+}
+
+/** An app's route: owned by the run serving it, and gone when that run is. */
+export interface AppHostsRoute extends HostsRouteTarget {
+	kind: "app";
+	pid: number;
 	/**
 	 * Birth identity of `pid` (`process-identity.ts`). A pid alone outlives a
 	 * reboot: reused by another process, it kept a dead run's route live and
 	 * held its hostname against the next run of that checkout.
 	 */
 	processIdentity?: string;
-	updatedAt: string;
 }
 
-/** Whether a route's owner is still the run that registered it. */
-export type RouteOwnerCheck = (route: HostsRoute) => boolean;
+/**
+ * A service's route: no owner, since its container outlives the run. It goes
+ * when its checkout does, or with `dev --down`.
+ */
+interface ServiceHostsRoute extends HostsRouteTarget {
+	kind: "service";
+}
+
+export type HostsRoute = AppHostsRoute | ServiceHostsRoute;
+
+/** The run holding a route, or `undefined` for a service route. */
+function routeOwnerPid(route: HostsRoute): number | undefined {
+	return route.kind === "app" ? route.pid : undefined;
+}
+
+/** Whether an app route's owner is still the run that registered it. */
+export type RouteOwnerCheck = (route: AppHostsRoute) => boolean;
 
 /**
  * Builds the owner check for the routes about to be judged, so a check that
  * reads process identity can read them all at once.
  */
 export type RouteOwners = (
-	routes: readonly HostsRoute[],
+	routes: readonly AppHostsRoute[],
 ) => Promise<RouteOwnerCheck>;
 
+/** Owner liveness by pid alone: the one place it is decided that way. */
+const pidOwnerAlive: RouteOwnerCheck = (route) => isProcessAlive(route.pid);
+
 /**
- * Owner liveness by pid alone. The daemon's check: it forks nothing, and
- * reading identity takes a `ps` on macOS. CLI writers pass
+ * {@link pidOwnerAlive} as {@link RouteOwners}. The daemon's check: it forks
+ * nothing, and reading identity takes a `ps` on macOS. CLI writers pass
  * `identityRouteOwners` and retire a reused pid's routes for it.
  */
-export const pidRouteOwners: RouteOwners = async () => (route) =>
-	isRouteOwnerAlive(route.pid);
+export const pidRouteOwners: RouteOwners = async () => pidOwnerAlive;
 
+/** A hostname a live route of another checkout, or another port, holds. */
 export class HostsRouteConflictError extends Error {
 	readonly hostname: string;
+	readonly ownerRoot: string;
 	readonly ownerPid?: number;
 
-	constructor(hostname: string, ownerPid?: number) {
+	constructor(hostname: string, owner: HostsRoute) {
+		const pid = routeOwnerPid(owner);
+		const by = pid === undefined ? owner.root : `${owner.root} (pid ${pid})`;
 		super(
-			ownerPid
-				? `Hostname ${hostname} is already registered by pid ${ownerPid}`
-				: `Hostname ${hostname} is already registered`,
+			`${hostname} is already registered by ${by}. Run \`buncargo stop\` in that checkout, or give one of the projects a different \`projectPrefix\`.`,
 		);
 		this.name = "HostsRouteConflictError";
 		this.hostname = hostname;
-		this.ownerPid = ownerPid;
+		this.ownerRoot = owner.root;
+		this.ownerPid = pid;
 	}
 }
 
 function isHostsRoute(value: unknown): value is HostsRoute {
-	if (typeof value !== "object" || value === null) return false;
-	const route = value as Partial<HostsRoute>;
+	if (!isRecord(value)) return false;
+	const target =
+		typeof value.hostname === "string" &&
+		typeof value.port === "number" &&
+		typeof value.name === "string" &&
+		typeof value.root === "string";
+	if (!target) return false;
+	if (value.kind === "service") return value.pid === undefined;
 	return (
-		typeof route.hostname === "string" &&
-		typeof route.port === "number" &&
-		(route.kind === "app" || route.kind === "service") &&
-		typeof route.name === "string" &&
-		typeof route.root === "string" &&
-		(route.pid === undefined || typeof route.pid === "number") &&
-		(route.processIdentity === undefined ||
-			typeof route.processIdentity === "string")
+		value.kind === "app" &&
+		typeof value.pid === "number" &&
+		(value.processIdentity === undefined ||
+			typeof value.processIdentity === "string")
 	);
 }
 
@@ -89,22 +113,14 @@ const registry = defineListRegistry<HostsRoute>({
 });
 
 export async function loadHostRoutes(
-	path = getRoutesPath(),
 	options: ListRegistryReadOptions = {},
 ): Promise<HostsRoute[]> {
-	return registry.read(path, options);
+	return registry.read(getRoutesPath(), options);
 }
 
 /** {@link loadHostRoutes} for `getEnvVar`, which is synchronous; lenient. */
-export function loadHostRoutesSync(path = getRoutesPath()): HostsRoute[] {
-	const routes = readJsonDocumentSync(path, (value) =>
-		isRecord(value) &&
-		value.version === REGISTRY_VERSION &&
-		Array.isArray(value.routes)
-			? value.routes.filter(isHostsRoute)
-			: undefined,
-	);
-	return routes ?? [];
+export function loadHostRoutesSync(): HostsRoute[] {
+	return registry.readSync(getRoutesPath());
 }
 
 /**
@@ -157,9 +173,9 @@ function checkoutStillThere(root: string): boolean {
 export function isRouteLive(
 	route: HostsRoute,
 	directoryExists: (path: string) => boolean = checkoutStillThere,
-	ownerAlive: RouteOwnerCheck = (owned) => isRouteOwnerAlive(owned.pid),
+	ownerAlive: RouteOwnerCheck = pidOwnerAlive,
 ): boolean {
-	if (route.pid !== undefined) return ownerAlive(route);
+	if (route.kind === "app") return ownerAlive(route);
 	return route.root === "" || directoryExists(route.root);
 }
 
@@ -183,46 +199,42 @@ async function readForRewrite(path: string): Promise<HostsRoute[]> {
 	}
 }
 
-/**
- * The registry is shared by every concurrent `buncargo dev` on the machine, so
- * each read-modify-write below runs under `withFileLock`. Without it two runs
- * starting together both read the same snapshot and the second write drops the
- * first one's routes, leaving that project's named URL 404ing with no error.
- *
- * This is the unlocked core so `upsertHostRoutes` can reuse it inside a lock it
- * already holds.
- */
-async function prune(
-	path: string,
+/** The routes still attached to something real ({@link isRouteLive}). */
+async function liveRoutes(
+	routes: HostsRoute[],
 	options: PruneOptions = {},
 ): Promise<HostsRoute[]> {
-	const directoryExists = options.directoryExists ?? checkoutStillThere;
-	const routes = options.strict
-		? await readForRewrite(path)
-		: await registry.read(path);
 	const ownerAlive = await (options.owners ?? pidRouteOwners)(
-		routes.filter((route) => route.pid !== undefined),
+		routes.filter((route) => route.kind === "app"),
 	);
-	const next = routes.filter((route) =>
-		isRouteLive(route, directoryExists, ownerAlive),
+	return routes.filter((route) =>
+		isRouteLive(route, checkoutStillThere, ownerAlive),
 	);
-	if (next.length !== routes.length) {
-		await registry.write(path, next);
-	}
-	return next;
 }
 
 interface PruneOptions extends ListRegistryReadOptions {
-	directoryExists?: (path: string) => boolean;
 	/** Defaults to {@link pidRouteOwners}. */
 	owners?: RouteOwners;
 }
 
+/**
+ * The registry is shared by every concurrent `buncargo dev` on the machine, so
+ * each read-modify-write here runs under `withFileLock`. Without it two runs
+ * starting together both read the same snapshot and the second write drops the
+ * first one's routes, leaving that project's named URL 404ing with no error.
+ */
 export async function pruneHostRoutes(
-	path = getRoutesPath(),
 	options: PruneOptions = {},
 ): Promise<HostsRoute[]> {
-	return withFileLock(path, () => prune(path, options));
+	const path = getRoutesPath();
+	return withFileLock(path, async () => {
+		const routes = options.strict
+			? await readForRewrite(path)
+			: await registry.read(path);
+		const next = await liveRoutes(routes, options);
+		if (next.length !== routes.length) await registry.write(path, next);
+		return next;
+	});
 }
 
 /**
@@ -263,18 +275,25 @@ export function classifyRouteClaim(
 	options: { takeover?: boolean } = {},
 ): RouteClaim {
 	if (existing.root !== incoming.root) return "conflict";
-	// The same run re-registering: refresh it.
-	if (existing.pid === incoming.pid) return "take";
+	// The same run re-registering, or a service route again: refresh it.
+	if (routeOwnerPid(existing) === routeOwnerPid(incoming)) return "take";
 	if (existing.port === incoming.port && existing.kind === incoming.kind) {
 		return options.takeover ? "take" : "keep";
 	}
 	return "conflict";
 }
 
+/**
+ * Register routes, and return the ones a live owner keeps
+ * ({@link classifyRouteClaim}). Those are skipped, not fatal: one name another
+ * checkout holds used to drop the whole plan to `localhost:port`.
+ *
+ * One read under the lock, and no write when nothing changed: an attach that
+ * registers what is already there leaves the file alone.
+ */
 export async function upsertHostRoutes(
 	routesToSave: HostsRoute[],
 	options: {
-		path?: string;
 		/**
 		 * Route names (apps) this run took over from another run of the same
 		 * checkout. Only those change owner: the other run still serves the rest.
@@ -286,18 +305,20 @@ export async function upsertHostRoutes(
 		 */
 		owners: RouteOwners;
 	},
-): Promise<void> {
-	const path = options.path ?? getRoutesPath();
-	await withFileLock(path, async () => {
-		const routes = await prune(path, { strict: true });
+): Promise<HostsRouteConflictError[]> {
+	const path = getRoutesPath();
+	return withFileLock(path, async () => {
+		const stored = await readForRewrite(path);
+		const routes = await liveRoutes(stored);
 		const byHost = new Map(routes.map((route) => [route.hostname, route]));
 		const held = routesToSave.flatMap((route) => {
 			const existing = byHost.get(route.hostname);
-			return existing?.pid !== undefined && existing.pid !== route.pid
+			return existing?.kind === "app" && existing.pid !== routeOwnerPid(route)
 				? [existing]
 				: [];
 		});
 		const ownerAlive = await options.owners(held);
+		const conflicts: HostsRouteConflictError[] = [];
 
 		for (const route of routesToSave) {
 			const existing = byHost.get(route.hostname);
@@ -309,7 +330,10 @@ export async function upsertHostRoutes(
 					take: () => true,
 					keep: () => false,
 					conflict: () => {
-						throw new HostsRouteConflictError(route.hostname, existing.pid);
+						conflicts.push(
+							new HostsRouteConflictError(route.hostname, existing),
+						);
+						return false;
 					},
 				});
 				if (!take) continue;
@@ -317,14 +341,18 @@ export async function upsertHostRoutes(
 			byHost.set(route.hostname, route);
 		}
 
-		await registry.write(path, Array.from(byHost.values()));
+		const next = Array.from(byHost.values());
+		if (JSON.stringify(next) !== JSON.stringify(stored)) {
+			await registry.write(path, next);
+		}
+		return conflicts;
 	});
 }
 
 export async function removeHostRoutes(
 	match: (route: HostsRoute) => boolean,
-	path = getRoutesPath(),
 ): Promise<void> {
+	const path = getRoutesPath();
 	await withFileLock(path, async () => {
 		const routes = await readForRewrite(path);
 		await registry.write(
@@ -347,24 +375,28 @@ export function routesAfterWithdraw(
 	const otherRunLive = routes.some(
 		(route) =>
 			route.root === run.root &&
-			route.pid !== undefined &&
+			route.kind === "app" &&
 			route.pid !== run.pid &&
-			isRouteOwnerAlive(route.pid),
+			pidOwnerAlive(route),
 	);
 	return routes.filter((route) => {
 		if (route.root !== run.root) return true;
-		if (route.pid === run.pid) return false;
-		return route.pid !== undefined || otherRunLive;
+		if (route.kind === "app") return route.pid !== run.pid;
+		return otherRunLive;
 	});
 }
 
-export async function withdrawHostRoutes(
-	run: { root: string; pid: number },
-	path = getRoutesPath(),
-): Promise<void> {
+export async function withdrawHostRoutes(run: {
+	root: string;
+	pid: number;
+}): Promise<void> {
+	const path = getRoutesPath();
 	await withFileLock(path, async () => {
 		const routes = await readForRewrite(path);
-		await registry.write(path, routesAfterWithdraw(routes, run));
+		const next = routesAfterWithdraw(routes, run);
+		// Most fallbacks registered nothing: no write, and no file created.
+		if (next.length === routes.length) return;
+		await registry.write(path, next);
 	});
 }
 
@@ -372,7 +404,8 @@ export async function withdrawHostRoutes(
  * Drop every route, readable or not: `hosts uninstall`. A file that cannot
  * be read is kept beside it as a recovery copy, never just deleted.
  */
-export async function clearHostRoutes(path = getRoutesPath()): Promise<void> {
+export async function clearHostRoutes(): Promise<void> {
+	const path = getRoutesPath();
 	await withFileLock(path, () => registry.write(path, []));
 }
 
@@ -387,28 +420,29 @@ export function routesDownRemoves(
 	return (route) => route.root === root && route.kind === "service";
 }
 
+/**
+ * A plan's routes: its apps' owned by the run `owner` names, its services'
+ * static.
+ */
 export function routesFromPlan(
-	plan: NamedHost[],
-	input: {
-		root: string;
-		pid?: number;
-		processIdentity?: string;
-		kinds?: Array<NamedHost["kind"]>;
-	},
+	plan: readonly NamedHost[],
+	owner: { root: string; pid: number; processIdentity?: string },
 ): HostsRoute[] {
-	const now = new Date().toISOString();
-	return plan
-		.filter((entry) => !input.kinds || input.kinds.includes(entry.kind))
-		.map((entry) => ({
+	return plan.map((entry): HostsRoute => {
+		const target = {
 			hostname: entry.hostname,
 			port: entry.targetPort,
-			kind: entry.kind,
 			name: entry.name,
-			root: input.root,
-			pid: input.pid,
-			...(input.pid !== undefined && input.processIdentity !== undefined
-				? { processIdentity: input.processIdentity }
-				: {}),
-			updatedAt: now,
-		}));
+			root: owner.root,
+		};
+		if (entry.kind === "service") return { ...target, kind: "service" };
+		return {
+			...target,
+			kind: "app",
+			pid: owner.pid,
+			...(owner.processIdentity === undefined
+				? {}
+				: { processIdentity: owner.processIdentity }),
+		};
+	});
 }

@@ -139,7 +139,7 @@ describe("dependencies check", () => {
 				JSON.stringify({ devDependencies: { typescript: "5" } }),
 			);
 			const env = { root, services: {}, apps: {} } as AnyDevEnvironment;
-			const deps = allChecks(env).filter(
+			const deps = allChecks(env, undefined).filter(
 				(check) => check.name === "Dependencies are installed",
 			);
 			expect(deps).toHaveLength(1);
@@ -159,7 +159,7 @@ describe("dependencies check", () => {
 describe("loopback URLs check", () => {
 	// Joined with "; " the warning was kilobytes on one line, and it fired in a
 	// fresh worktree whose ports were never allocated.
-	async function loopbackWarning(provenance: "hash" | "lockfile") {
+	async function loopbackWarning(provenance: "hash" | "claim") {
 		const { allChecks } = await import("./core-checks");
 		const env = {
 			root: "/nonexistent-buncargo-checkout",
@@ -172,7 +172,7 @@ describe("loopback URLs check", () => {
 				WEB_URL: "http://localhost:5273/app",
 			}),
 		} as unknown as AnyDevEnvironment;
-		const checks = allChecks(env).filter(
+		const checks = allChecks(env, undefined).filter(
 			(check) => check.name === "Loopback URLs point at this checkout",
 		);
 		const results = await runChecks(checks, { root: env.root, env });
@@ -180,7 +180,7 @@ describe("loopback URLs check", () => {
 	}
 
 	it("lists each stray variable on a line of its own", async () => {
-		const [warning] = await loopbackWarning("lockfile");
+		const [warning] = await loopbackWarning("claim");
 		const lines = warning?.split("\n") ?? [];
 		expect(lines[0]).toBe("Loopback URLs point at this checkout:");
 		expect(lines.slice(1).map((line) => line.trim().split(" ")[0])).toEqual([

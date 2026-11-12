@@ -1,15 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { NamedHost } from "../../types";
+import { useTempHome } from "../test-env.testing";
 import {
 	certificateFingerprint,
+	certificateServes,
+	machineMkcert,
+	readCertificatePair,
 	syncCertificateForRoutes,
 } from "./certificates";
 import { createHostsReloader } from "./daemon";
 import { waitForDaemonRoutes } from "./daemon-client";
-import { writeDaemonConfig } from "./daemon-config";
 import { resolvedMkcertPath } from "./mkcert";
 import { certificateHostnames } from "./plan";
 import { type LocalProxy, startLocalProxy } from "./proxy";
@@ -64,47 +66,42 @@ function planFor(worktree: string): NamedHost[] {
 }
 
 describeSoak("named hosts under worktree churn", () => {
-	let home: string;
 	let proxy: LocalProxy | undefined;
 	let stopReloading: (() => void) | undefined;
-	const originalHome = process.env.HOME;
 	const originalMkcert = process.env.BUNCARGO_MKCERT_PATH;
 	const originalCaroot = process.env.CAROOT;
 
-	beforeAll(async () => {
+	beforeAll(() => {
 		// Resolve mkcert before HOME moves, then pin it: the temp home has no
 		// tool cache, and without a real binary nothing is ever reminted — which
 		// is the event that makes the daemon rebind, and the rebind is half of
 		// what this test exists to cover.
 		const mkcert = resolvedMkcertPath();
 		if (mkcert) process.env.BUNCARGO_MKCERT_PATH = mkcert;
+	});
+	const home = useTempHome("all");
 
-		home = mkdtempSync(join(tmpdir(), "buncargo-soak-"));
-		process.env.HOME = home;
-		process.env.CAROOT = join(home, "ca");
+	beforeAll(async () => {
+		process.env.CAROOT = join(home(), "ca");
 
 		// A stand-in for the installed service: the same reloader the daemon
-		// runs, over the same registry and certificate, on an unprivileged port.
+		// runs, over the same registry and minted certificate, on an
+		// unprivileged port.
 		const reloader = createHostsReloader({
 			pruneRoutes: () => pruneHostRoutes(),
 			certificateFingerprint,
 			describeCertificateGap: () => undefined,
-			readCertificatePair: async () => ({ cert: "", key: "" }),
-			// Plain HTTP here: every route the map holds is served.
-			certificateServes: () => () => true,
-			startProxy: async (input) => {
+			readCertificatePair,
+			certificateServes,
+			startProxy: async ({ cert, key, ...input }) => {
 				const started = await startLocalProxy({
-					lookup: input.lookup,
-					routes: input.routes,
+					...input,
+					tls: { cert, key },
+					refresh: () => reloader.refresh().catch(() => {}),
 					httpsPort: proxy?.httpsPort ?? 0,
 					hostname: "127.0.0.1",
 				});
 				proxy = started;
-				writeDaemonConfig({
-					httpsPort: started.httpsPort,
-					httpPort: 0,
-					tls: false,
-				});
 				return started;
 			},
 			log: () => {},
@@ -127,7 +124,6 @@ describeSoak("named hosts under worktree churn", () => {
 	afterAll(() => {
 		stopReloading?.();
 		proxy?.stop();
-		process.env.HOME = originalHome;
 		if (originalCaroot === undefined) delete process.env.CAROOT;
 		else process.env.CAROOT = originalCaroot;
 		if (originalMkcert === undefined) {
@@ -135,7 +131,6 @@ describeSoak("named hosts under worktree churn", () => {
 		} else {
 			process.env.BUNCARGO_MKCERT_PATH = originalMkcert;
 		}
-		rmSync(home, { recursive: true, force: true });
 	});
 
 	/** One worktree's activation, the same order `activateNamedHosts` uses. */
@@ -143,25 +138,25 @@ describeSoak("named hosts under worktree churn", () => {
 		const plan = planFor(worktree);
 		// A real directory: a checkout that is gone has its remembered
 		// certificate names pruned, which is a different rule from this one.
-		const root = join(home, "checkouts", worktree);
+		const root = join(home(), "checkouts", worktree);
 		mkdirSync(root, { recursive: true });
 
-		await syncCertificateForRoutes({
+		await syncCertificateForRoutes(machineMkcert, {
 			include: certificateHostnames(plan, "localhost"),
 			root,
 		});
 
-		await upsertHostRoutes(
-			routesFromPlan(plan, { root, pid: process.pid, kinds: ["app"] }),
-			{ owners: pidRouteOwners },
-		);
+		await upsertHostRoutes(routesFromPlan(plan, { root, pid: process.pid }), {
+			owners: pidRouteOwners,
+		});
 
-		await syncCertificateForRoutes({
+		await syncCertificateForRoutes(machineMkcert, {
 			include: certificateHostnames(plan, "localhost"),
 			root,
 		});
 		const serving = await waitForDaemonRoutes(
 			plan.map((entry) => entry.hostname),
+			{ port: proxy?.httpsPort },
 		);
 		return serving.ok;
 	}

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { typedSwitch, typedSwitchGroup } from "hanzio";
-import { containerRuntimeForEnv } from "../container-runtime";
+import { containerRuntimeForEnv, isRuntimeUp } from "../container-runtime";
 import {
 	type CheckoutFileStatus,
 	checkoutFileErrors,
@@ -24,15 +24,16 @@ import {
 	type StrayLoopbackUrl,
 } from "../core/loopback-env";
 import { canBindPort } from "../core/process";
-import {
-	describeSecretsError,
-	fetchScopeSecrets,
-} from "../core/secrets/infisical";
+import { describeSecretsError, fetchScopeSecrets } from "../core/secrets/index";
 import {
 	prismaSchemaHash,
 	readGeneratedPrismaHash,
 } from "../prisma/schema-hash";
 import type { AnyDevEnvironment, SetupCheck } from "../types";
+import {
+	bunInstallCommand,
+	pinnedBunVersion,
+} from "./commands/check/bun-version";
 import { configSecretScopes } from "./secrets-scopes";
 
 /**
@@ -42,16 +43,6 @@ import { configSecretScopes } from "./secrets-scopes";
  * every worktree, and the runtime and Prisma are already handled by `dev`
  * itself (it starts the runtime and runs `prisma.generate`).
  */
-
-/** The version `.bun-version` pins, when the checkout has one. */
-function pinnedBunVersion(root: string): string | undefined {
-	try {
-		const pinned = readFileSync(join(root, ".bun-version"), "utf8").trim();
-		return pinned.replace(/^v/, "") || undefined;
-	} catch {
-		return undefined;
-	}
-}
 
 /** Whether the root `package.json` declares anything to install. */
 function declaresDependencies(root: string): boolean {
@@ -151,7 +142,7 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 					ok: false,
 					detail: `running ${Bun.version}`,
 				},
-			fix: `curl -fsSL https://bun.sh/install | bash -s "bun-v${pinned}"`,
+			fix: bunInstallCommand(pinned),
 		});
 	}
 
@@ -167,7 +158,7 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 		checks.push({
 			name: "Container runtime is running",
 			fast: false,
-			check: () => containerRuntimeForEnv(env).isAvailable(),
+			check: () => isRuntimeUp(containerRuntimeForEnv(env)),
 			fix: () => containerRuntimeForEnv(env).ensureRunning(),
 			fixDescription: "start the container runtime",
 		});
@@ -254,9 +245,9 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 		severity: "warning",
 		check: () => {
 			// A preview (hashed, shifted past a claim, or unallocated) is no
-			// block of this checkout's yet; a lockfile or BUNCARGO_PORT_OFFSET is.
+			// block of this checkout's yet; its claim or BUNCARGO_PORT_OFFSET is.
 			if (
-				env.portOffsetProvenance !== "lockfile" &&
+				env.portOffsetProvenance !== "claim" &&
 				env.portOffsetProvenance !== "env"
 			)
 				return true;
@@ -328,7 +319,10 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 	return checks;
 }
 
-/** Core checks, then the config's own, then its integrations' (already appended there). */
-export function allChecks(env: AnyDevEnvironment): SetupCheck[] {
-	return [...coreChecks(env), ...(env.checks ?? [])];
+/** Core checks, then the config's `setupChecks` (its integrations' already appended there). */
+export function allChecks(
+	env: AnyDevEnvironment,
+	configured: readonly SetupCheck[] | undefined,
+): SetupCheck[] {
+	return [...coreChecks(env), ...(configured ?? [])];
 }

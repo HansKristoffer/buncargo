@@ -1,32 +1,33 @@
 import { describe, expect, it } from "bun:test";
+import { resolveService } from "../config/resolve";
 import { serviceHashEnv } from "../docker-compose/interpolate";
-import type { ComposeDocument, ServiceConfig } from "../types";
+import type { ComposeDocument } from "../types";
 import { ensureServicesRunning } from "./ensure-services";
-import type {
-	ContainerRuntimeAdapter,
-	ContainerUpRequest,
-	ServiceRuntimeState,
-} from "./types";
+import { fakeRuntime, runtimeContainer } from "./fake-runtime.testing";
+import type { ContainerUpRequest, RuntimeContainer } from "./types";
 
 function harness() {
-	const states = new Map<string, ServiceRuntimeState>();
+	const states = new Map<string, RuntimeContainer>();
 	const requests: ContainerUpRequest[] = [];
-	const runtime = {
-		name: "docker",
-		displayName: "Docker",
-		ensureRunning: async () => {},
-		projectServiceStates: () => [...states.values()],
-		up: (request: ContainerUpRequest) => {
+	const runtime = fakeRuntime({
+		containers: async () => [...states.values()],
+		up: async (request: ContainerUpRequest) => {
 			requests.push(request);
-			for (const service of request.serviceNames)
-				states.set(service, {
+			for (const service of request.serviceNames) {
+				const serviceHash = request.envVars[serviceHashEnv(service)];
+				states.set(
 					service,
-					state: "running",
-					running: true,
-					serviceHash: request.envVars[serviceHashEnv(service)],
-				});
+					runtimeContainer({
+						labels: {
+							project: request.projectName,
+							service,
+							...(serviceHash ? { serviceHash } : {}),
+						},
+					}),
+				);
+			}
 		},
-	} as unknown as ContainerRuntimeAdapter;
+	});
 	return {
 		requests,
 		run: (
@@ -45,7 +46,7 @@ function harness() {
 				services: Object.fromEntries(
 					selected.map((name) => [
 						name,
-						{ port: 5432, healthCheck: false } satisfies ServiceConfig,
+						resolveService(name, { port: 5432, healthCheck: false }),
 					]),
 				),
 				wait: false,

@@ -83,7 +83,7 @@ others. Before calling work done, walk this list and say which entries applied:
 - **Output modes.** Stream mode and the TUI both render app output, answer `restart` and `send`,
   and write the per-run logs.
 - **Run registry readers.** `runs.json` is read by `stop`, `ls`, `status`, the sweep, `dev --detach`
-  and BuncargoBar. A field change updates `menubar/fixtures/runs.v1.json`, which both sides test
+  and BuncargoBar. A field change updates `menubar/fixtures/runs.v2.json`, which both sides test
   against.
 - **Machine-readable output.** `--json`, exit codes and `buncargo help agents` are contracts agents
   depend on.
@@ -132,7 +132,9 @@ How a run fits together, and the startup invariants: `docs/internals/overview.md
 
 - While iterating, run the tests you touched: `bun test <files>`.
 - Before finishing a substantive change, run all three: `bun run build`, `bun run lint:write`
-  (`bun check`, Biome lint, then `bun fmt`) and `bun test`. Leave the repo with all three passing.
+  (`bun check`, Biome lint, then `bun fmt`) and `bun run test`. Leave the repo with all three
+  passing. `bun run test` runs the files in parallel (about 15 s); plain `bun test` runs them one
+  after another, for a failure that only shows serially.
 - A branch of several commits: `bun scripts/check-commits.ts <base>` runs `bun run lint` on each
   commit on its own (`--test` adds `bun test`).
 - Before handing back a branch, or merging commits another agent made, review the diff with the
@@ -195,7 +197,9 @@ gitignored for them. A merged PR is the implementation record.
 
 All library source is under `src/`; tests sit beside the module they test.
 
-- `index.ts`: the public API. New public exports are added here on purpose.
+- `index.ts`: `buncargo`, what a `dev.config.ts` imports; every config load pays for its graph.
+  `api/`: `buncargo/api`, the environment, loader and CLI for code. New public exports are added
+  to one of the two on purpose.
 - `cli/`: the CLI. `bin.ts` is the executable, `run-cli.ts` the dev flow, `commands/` one module
   per command, `tui/` the TUI.
 - `config/`: `defineDevConfig`, validation and integration application. Definition, validation and

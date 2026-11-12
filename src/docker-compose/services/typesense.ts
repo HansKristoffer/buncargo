@@ -3,7 +3,11 @@ import {
 	defineDockerService,
 	type PresetServiceSharedOptions,
 } from "./define-docker-service";
-import { getDefaultPortBindings, resolveHealthcheck } from "./shared";
+import {
+	composeLiteral,
+	getDefaultPortBindings,
+	resolveHealthcheck,
+} from "./shared";
 
 export type TypesenseServiceOptions = PresetServiceSharedOptions & {
 	/** Bootstrap API key (default: `xyz`) */
@@ -30,6 +34,7 @@ export const typesenseDockerService = defineDockerService<
 	env: {
 		TYPESENSE_URL: "url",
 	},
+	url: ({ host, port }) => `http://${host}:${port}`,
 	enhanceServiceConfig: (base, options): TypesenseServiceConfig => ({
 		...base,
 		staticEnv: {
@@ -37,7 +42,9 @@ export const typesenseDockerService = defineDockerService<
 		},
 	}),
 	build: ({ serviceKey, config }) => {
-		const apiKey = config.staticEnv?.TYPESENSE_API_KEY ?? "xyz";
+		const apiKey = composeLiteral(
+			String(config.staticEnv?.TYPESENSE_API_KEY ?? "xyz"),
+		);
 
 		return {
 			service: {

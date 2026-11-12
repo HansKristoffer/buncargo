@@ -1,7 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { beforeEach, describe, expect, it } from "bun:test";
 import {
 	barDecline,
 	isBarOfferDisabled,
@@ -12,20 +9,12 @@ import {
 	claimFirstRunPrompt,
 	resetFirstRunPrompt,
 } from "../core/prompt";
+import { useTempHome } from "../core/test-env.testing";
 
-let home: string;
-const realHome = process.env.HOME;
+useTempHome();
 
 beforeEach(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-bar-offer-"));
-	process.env.HOME = home;
 	resetFirstRunPrompt();
-});
-
-afterEach(() => {
-	if (realHome === undefined) delete process.env.HOME;
-	else process.env.HOME = realHome;
-	rmSync(home, { recursive: true, force: true });
 });
 
 describe("the menu bar offer's gates", () => {

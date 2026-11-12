@@ -1,11 +1,16 @@
+import { getErrorMessage } from "hanzio";
 import { environmentOpenUrl } from "../core/app-url";
 import { AppLogs } from "../core/process/app-logs";
 import { printStream, RunOutput } from "../core/process/run-output";
 import { isInteractive } from "../core/prompt";
 import { prefixWidth } from "../core/style";
-import type { AppConfig } from "../types";
+import type { ResolvedApp } from "../types";
 import * as log from "./log";
-import { watchRestartRequests, watchSendRequests } from "./restart-requests";
+import {
+	type RestartReply,
+	watchRestartRequests,
+	watchSendRequests,
+} from "./restart-requests";
 import { RunTui, type TuiAction } from "./tui/run-tui";
 
 /** What `runDevFlow` needs of the environment to show a run's output. */
@@ -27,11 +32,10 @@ export interface DevOutputSource {
  */
 export function openDevOutput(
 	env: DevOutputSource,
-	apps: Record<string, AppConfig>,
+	apps: Record<string, ResolvedApp>,
 	options: { tui: "auto" | "on" | "off" },
 ): {
 	output: RunOutput;
-	tui: boolean;
 	start(): void;
 	stop(): Promise<void>;
 } {
@@ -41,24 +45,25 @@ export function openDevOutput(
 	} catch (error) {
 		log.warn(`App output is not logged to files: ${String(error)}`);
 	}
-	const output = new RunOutput(logs);
 	const names = Object.keys(apps);
 	const terminal = isInteractive();
 	if (options.tui === "on" && !terminal)
 		log.warn("--tui needs a terminal; printing prefixed lines instead.");
 
 	const actions = appActions(apps);
-	const tui =
-		options.tui !== "off" && terminal && names.length > 0
-			? new RunTui({
-					output,
-					apps: names,
-					urlFor: (app) => environmentOpenUrl(env, app),
-					actions,
-					logPath: (app) => (app ? logs?.file(app) : logs?.dir),
-					quit: () => process.kill(process.pid, "SIGINT"),
-				})
-			: undefined;
+	const useTui = options.tui !== "off" && terminal && names.length > 0;
+	// In the TUI every app gets a terminal of its own, sized to its pane.
+	const output = new RunOutput({ terminals: useTui ? "pty" : "pipe", logs });
+	const tui = useTui
+		? new RunTui({
+				output,
+				apps: names,
+				urlFor: (app) => environmentOpenUrl(env, app),
+				actions,
+				logPath: (app) => (app ? logs?.file(app) : logs?.dir),
+				quit: () => process.kill(process.pid, "SIGINT"),
+			})
+		: undefined;
 	const stopPrinting = tui
 		? undefined
 		: printStream(output, { width: prefixWidth(names) });
@@ -90,9 +95,7 @@ export function openDevOutput(
 	const stopRestarts = watchRestartRequests(
 		env.root,
 		env.sessionId,
-		(app) => {
-			void output.controls?.restart(app).catch(() => {});
-		},
+		(app) => restartReply(output, app),
 		() => output.controls !== undefined,
 	);
 	// Keys for an app under a pseudo-terminal: one in the TUI, or an
@@ -113,8 +116,6 @@ export function openDevOutput(
 
 	return {
 		output,
-		/** The TUI shows run events; stream mode only writes them to the logs. */
-		tui: tui !== undefined,
 		start: () => tui?.start(),
 		stop: async () => {
 			// Before either view goes: what the apps left on screen reaches it,
@@ -125,6 +126,26 @@ export function openDevOutput(
 			stopWatching();
 		},
 	};
+}
+
+/** What came of `buncargo restart <app>`, for the command waiting on it. */
+export async function restartReply(
+	output: Pick<RunOutput, "controls" | "states">,
+	app: string,
+): Promise<RestartReply> {
+	if (!output.states.has(app) || !output.controls)
+		return { status: "not-ours", reason: `this run started no app "${app}"` };
+	try {
+		return (await output.controls.restart(app))
+			? { status: "began" }
+			: {
+					status: "not-ours",
+					reason:
+						"its process is not this run's (reused from another terminal), or the run is ending",
+				};
+	} catch (error) {
+		return { status: "failed", reason: getErrorMessage(error) };
+	}
 }
 
 /** Why `app` cannot take keys from `buncargo send`, or `undefined` when it can. */
@@ -140,7 +161,7 @@ export function sendRefusal(
 	return undefined;
 }
 
-function appActions(apps: Record<string, AppConfig>): TuiAction[] {
+function appActions(apps: Record<string, ResolvedApp>): TuiAction[] {
 	return Object.entries(apps).flatMap(([app, config]) =>
 		(config.actions ?? []).map((action) => ({ app, ...action })),
 	);

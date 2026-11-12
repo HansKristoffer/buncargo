@@ -7,6 +7,7 @@ import {
 } from "../style";
 import type { AppLogs } from "./app-logs";
 import { AppScreen } from "./app-screen";
+import { forEachLine } from "./line-splitter";
 import { type CapturedValue, stripTerminalOutput } from "./output-capture";
 
 /**
@@ -29,6 +30,8 @@ export interface OutputLine {
 	event: boolean;
 	/** Already on the user's terminal (a stream-mode attached app): log it, do not print it. */
 	echoed?: boolean;
+	/** An event stream mode prints too, styled as `raw`; other events reach only the logs and the TUI. */
+	announced?: boolean;
 	level?: "error" | "warn";
 }
 
@@ -164,11 +167,29 @@ export function createErrorFilter(): (text: string) => boolean {
 	};
 }
 
+const SCREEN_DROPPED =
+	"Output dropped: the app printed faster than its screen could parse, so lines of this burst are missing here and in its log.";
+
+/**
+ * How apps get their output to the run: `pty`, every app under a
+ * pseudo-terminal of its own (the TUI); `pipe`, prefixed pipes, with the
+ * attached app on the real terminal (stream mode).
+ */
+export type AppTerminals = "pty" | "pipe";
+
+/** What an app terminal gets with no pane to be sized to. */
+export const defaultScreenSize = () => ({ cols: 80, rows: 24 });
+
 export class RunOutput {
-	/** Set when every app runs under its own pseudo-terminal of this size (the TUI). */
-	terminalSize?: () => { cols: number; rows: number };
-	/** Bound by the spawner: what a view may ask of the run. */
-	controls?: { restart(name: string): Promise<void> };
+	readonly terminals: AppTerminals;
+	/** The size a new app terminal gets. The TUI sizes them to its pane while it runs. */
+	screenSize: () => { cols: number; rows: number } = defaultScreenSize;
+	/**
+	 * Bound by the spawner: what a view may ask of the run. `restart`
+	 * resolves to whether the app's process was replaced, and rejects when
+	 * the replacement failed.
+	 */
+	controls?: { restart(name: string): Promise<boolean> };
 	readonly screens = new Map<string, AppScreen>();
 	readonly states = new Map<string, AppStateDetail>();
 	/** Captured values per app, by capture name. */
@@ -176,7 +197,12 @@ export class RunOutput {
 	private listeners = new Set<RunOutputListener>();
 	private tails = new Map<string, string[]>();
 
-	constructor(readonly logs?: AppLogs) {}
+	readonly logs?: AppLogs;
+
+	constructor(options: { terminals: AppTerminals; logs?: AppLogs }) {
+		this.terminals = options.terminals;
+		this.logs = options.logs;
+	}
 
 	subscribe(listener: RunOutputListener): () => void {
 		this.listeners.add(listener);
@@ -202,6 +228,17 @@ export class RunOutput {
 	/** A line buncargo says about an app. */
 	event(app: string, text: string, level?: OutputLine["level"]): void {
 		this.emit({ app, raw: text, text, time: new Date(), event: true, level });
+	}
+
+	/** An event stream mode prints as well, as `raw`. */
+	announce(
+		app: string,
+		text: string,
+		options: { raw: string; level?: OutputLine["level"] },
+	): void {
+		const { raw, level } = options;
+		const time = new Date();
+		this.emit({ app, raw, text, time, event: true, announced: true, level });
 	}
 
 	state(app: string, state: AppStateDetail): void {
@@ -234,8 +271,13 @@ export class RunOutput {
 	screen(app: string): AppScreen {
 		let screen = this.screens.get(app);
 		if (!screen) {
-			const { cols, rows } = this.terminalSize?.() ?? { cols: 80, rows: 24 };
-			screen = new AppScreen(cols, rows, (text) => this.line(app, text));
+			const { cols, rows } = this.screenSize();
+			screen = new AppScreen(
+				cols,
+				rows,
+				(text) => this.line(app, text),
+				() => this.event(app, SCREEN_DROPPED, "warn"),
+			);
 			this.screens.set(app, screen);
 		}
 		return screen;
@@ -248,18 +290,9 @@ export class RunOutput {
 		onText?: (text: string) => void,
 		options: { echoed?: boolean } = {},
 	): void {
-		if (!stream) return;
-		let buffer = "";
-		stream.on("data", (chunk: Buffer | string) => {
-			onText?.(String(chunk));
-			buffer += String(chunk);
-			const lines = buffer.split("\n");
-			buffer = lines.pop() ?? "";
-			for (const line of lines) this.line(app, line, options);
-		});
-		stream.on("end", () => {
-			if (buffer) this.line(app, buffer, options);
-			buffer = "";
+		forEachLine(stream, {
+			onText,
+			onLine: (line) => this.line(app, line, options),
 		});
 	}
 
@@ -302,6 +335,10 @@ export function printStream(
 	let headerPrinted = false;
 	return output.subscribe({
 		line(line) {
+			if (line.announced) {
+				write(`${line.raw}\n`);
+				return;
+			}
 			if (line.event || line.echoed) return;
 			if (!headerPrinted) {
 				headerPrinted = true;

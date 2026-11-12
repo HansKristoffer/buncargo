@@ -1,4 +1,4 @@
-import { getErrorMessage, typedSwitch } from "hanzio";
+import { getErrorMessage } from "hanzio";
 import {
 	BAR_APP_NAME,
 	BAR_SOURCE_VERSION,
@@ -17,9 +17,19 @@ import {
 } from "../../core/menubar";
 import { findMonorepoRoot } from "../../core/ports";
 import { REGISTRY_VERSION } from "../../core/run-registry";
-import { hasFlag } from "../flags";
+import {
+	type AnyCommand,
+	BASE_EXITS,
+	defineCommand,
+	defineGroup,
+} from "../command-spec";
 import * as log from "../log";
-import { barSubcommandList, resolveBarSubcommand } from "./registry";
+
+/**
+ * Never fires: Ctrl-C ends a `bar` command's process, and the download's own
+ * deadline bounds the rest.
+ */
+const COMMAND_SIGNAL = new AbortController().signal;
 
 /**
  * `buncargo bar` — the menu bar app, from the CLI side.
@@ -28,50 +38,99 @@ import { barSubcommandList, resolveBarSubcommand } from "./registry";
  * app ships no update checker — so `update` here and the background check in
  * `dev` are the two ways an installed app ever moves forward.
  */
-export async function handleBar(args: string[]): Promise<void> {
-	const requested = args[0] ?? "status";
-	const subcommand = resolveBarSubcommand(requested);
-	if (!subcommand) {
-		log.fail(`Unknown bar command: ${requested}`, [
-			`Use: buncargo bar ${barSubcommandList()}`,
-		]);
-	}
-
-	if (!isBarSupported() && subcommand !== "reset") {
-		log.fail(`${BAR_APP_NAME} is macOS only.`);
-	}
-
-	await typedSwitch(subcommand, {
-		install: () => runInstall(hasFlag(args, "--source")),
-		update: () => runUpdate(),
-		status: () => printStatus(),
-		open: async () => {
-			const installed = findInstalledBar();
-			if (!installed) {
-				log.info(`${BAR_APP_NAME} is not installed yet — installing it now.`);
-				await runInstall(false);
-				return;
-			}
-			await rememberBarCli();
-			openBar(installed);
+function barStep(
+	name: string,
+	summary: string,
+	run: () => Promise<void> | void,
+): AnyCommand {
+	return defineCommand({
+		spec: { name: `bar ${name}`, summary, flags: {} },
+		exits: BASE_EXITS,
+		run: async () => {
+			requireMacOS();
+			await run();
+			return 0;
 		},
-		uninstall: async () => {
-			// Deliberately does not persist a decline: removing the app is not
-			// the same as never wanting to be asked, and the next `dev` offering
-			// it again is the honest reading of an uninstall.
+	});
+}
+
+function requireMacOS(): void {
+	if (!isBarSupported()) log.fail(`${BAR_APP_NAME} is macOS only.`);
+}
+
+const statusCommand = barStep(
+	"status",
+	"Installed version, and whether it is running",
+	() => printStatus(),
+);
+
+export const barCommand = defineGroup({
+	spec: { name: "bar", summary: "The BuncargoBar menu bar app" },
+	subcommands: {
+		install: defineCommand({
+			spec: {
+				name: "bar install",
+				summary: "Download and install the menu bar app",
+				flags: {
+					source: {
+						kind: "boolean",
+						description: "Build it from this checkout's menubar/ instead",
+					},
+				},
+			},
+			exits: BASE_EXITS,
+			run: async ({ values }) => {
+				requireMacOS();
+				await runInstall(values.source);
+				return 0;
+			},
+		}),
+		update: barStep("update", "Update the app to the latest release", () =>
+			runUpdate(),
+		),
+		status: statusCommand,
+		open: barStep(
+			"open",
+			"Open the app, installing it first if needed",
+			async () => {
+				const installed = findInstalledBar();
+				if (!installed) {
+					log.info(`${BAR_APP_NAME} is not installed yet — installing it now.`);
+					await runInstall(false);
+					return;
+				}
+				await rememberBarCli();
+				openBar(installed);
+			},
+		),
+		// Deliberately does not persist a decline: removing the app is not the
+		// same as never wanting to be asked, and the next `dev` offering it
+		// again is the honest reading of an uninstall.
+		uninstall: barStep("uninstall", "Quit and remove the app", async () => {
 			const removed = await uninstallBar();
 			log.done(
 				removed
 					? `Removed ${BAR_APP_NAME}`
 					: `${BAR_APP_NAME} was not installed`,
 			);
-		},
-		reset: () => {
-			barDecline.clear();
-			log.done(`buncargo dev will offer ${BAR_APP_NAME} again`);
-		},
-	});
-}
+		}),
+		// The one that works anywhere: it only forgets a decline.
+		reset: defineCommand({
+			spec: {
+				name: "bar reset",
+				summary: "Offer the app again after declining it",
+				flags: {},
+			},
+			exits: BASE_EXITS,
+			run: () => {
+				barDecline.clear();
+				log.done(`buncargo dev will offer ${BAR_APP_NAME} again`);
+				return 0;
+			},
+		}),
+	},
+	fallback: statusCommand,
+});
 
 async function runInstall(fromSource: boolean): Promise<void> {
 	if (fromSource) {
@@ -81,7 +140,7 @@ async function runInstall(fromSource: boolean): Promise<void> {
 	}
 
 	log.info(`Downloading ${BAR_APP_NAME}…`);
-	const result = await installBar();
+	const result = await installBar({ signal: COMMAND_SIGNAL });
 	log.done(`Installed ${BAR_APP_NAME} ${result.version} to ${result.path}`);
 	openBar(result.path);
 }
@@ -117,7 +176,10 @@ async function runUpdate(): Promise<void> {
 	log.info(
 		`Updating ${BAR_APP_NAME} ${installed.version ?? "?"} → ${release.version}…`,
 	);
-	const result = await installBar({ minRegistryVersion: REGISTRY_VERSION });
+	const result = await installBar({
+		signal: COMMAND_SIGNAL,
+		minRegistryVersion: REGISTRY_VERSION,
+	});
 	log.done(
 		result.relaunched
 			? `Updated ${BAR_APP_NAME} to ${result.version} and restarted it`

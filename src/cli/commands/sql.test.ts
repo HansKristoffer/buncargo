@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { execAsync } from "../../core/process";
 import { loadDevEnv } from "../../loader";
 import { CliError } from "../errors";
 import {
@@ -14,6 +15,7 @@ import {
 	sqlClientCommand,
 } from "./sql";
 
+const cli = resolve(import.meta.dir, "../bin.ts");
 const credentials = { user: "app", password: "secret", database: "appdb" };
 const psql = ["env", "PGPASSWORD=secret", "psql", "-X", "-U", "app", "-d"];
 
@@ -185,19 +187,19 @@ describe("runSql", () => {
 			rmSync(root, { recursive: true, force: true });
 	});
 
-	function fixture(): string {
+	function fixture(services = "{postgres:{port:5432,database:'app'}}"): string {
 		const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-sql-")));
 		roots.push(root);
 		writeFileSync(join(root, "package.json"), "{}");
 		writeFileSync(
 			join(root, "dev.config.ts"),
-			"export default {projectPrefix:'sqlcli',services:{postgres:{port:5432,database:'app'}}};",
+			`export default {projectPrefix:'sqlcli',services:${services}};`,
 		);
 		return root;
 	}
 
 	interface Recorded {
-		loads: boolean[];
+		loads: number;
 		started: string[];
 		spawned: { argv: string[]; stdin?: string; stdout: string }[];
 		stdinReads: number;
@@ -212,11 +214,12 @@ describe("runSql", () => {
 		files?: Record<string, string>;
 		stderr?: string;
 		exitCode?: number;
+		services?: string;
 	}) {
-		const root = fixture();
+		const root = fixture(options.services);
 		let running = !options.down;
 		const recorded: Recorded = {
-			loads: [],
+			loads: 0,
 			started: [],
 			spawned: [],
 			printed: [],
@@ -224,9 +227,9 @@ describe("runSql", () => {
 			warned: [],
 		};
 		const deps: SqlDeps = {
-			loadEnv: async (readOnly) => {
-				recorded.loads.push(readOnly);
-				return loadDevEnv({ cwd: root, readOnly: true });
+			loadEnv: async () => {
+				recorded.loads += 1;
+				return loadDevEnv({ cwd: root });
 			},
 			execArgv: async (_env, request) =>
 				running ? ["exec", request.serviceName, ...request.command] : undefined,
@@ -261,7 +264,7 @@ describe("runSql", () => {
 	}
 
 	async function port(root: string): Promise<number> {
-		const env = await loadDevEnv({ cwd: root, readOnly: true });
+		const env = await loadDevEnv({ cwd: root });
 		return (env.ports as Record<string, number>).postgres as number;
 	}
 
@@ -270,7 +273,7 @@ describe("runSql", () => {
 
 		expect(await runSql(["--create-scratch=perf"], deps)).toBe(0);
 
-		expect(recorded.loads).toEqual([true, false]);
+		expect(recorded.loads).toBe(1);
 		expect(recorded.started).toEqual(["postgres"]);
 		expect(recorded.spawned[0]?.argv.at(-1)).toBe(
 			"create database scratch_perf",
@@ -413,5 +416,38 @@ describe("runSql", () => {
 			'ERROR:  column "nope" does not exist\nLINE 1: select nope from users\n               ^',
 		]);
 		expect(recorded.warned.join("")).not.toContain("json_agg");
+	});
+
+	it("takes the Postgres service for Postgres-only flags when ClickHouse comes first", async () => {
+		const { deps, recorded } = harness({
+			services:
+				"{clickhouse:{port:8123,secondaryPort:9000},postgres:{port:5432,database:'app'}}",
+		});
+
+		expect(await runSql(["--db=app", "-c", "select 1"], deps)).toBe(0);
+		expect(await runSql(["-c", "select 1"], deps)).toBe(0);
+
+		const [postgresOnly, unnamed] = recorded.spawned.map(({ argv }) => argv);
+		expect(postgresOnly?.slice(0, 2)).toEqual(["exec", "postgres"]);
+		expect(unnamed?.slice(0, 2)).toEqual(["exec", "clickhouse"]);
+	});
+
+	it("leaves stdout to the client, byte for byte", async () => {
+		const root = fixture();
+		const docker = join(root, "docker");
+		// `ps` finds the container; `exec` is the client printing its rows.
+		writeFileSync(
+			docker,
+			"#!/bin/sh\ncase \"$1\" in\n  ps) echo f00 ;;\n  exec) printf ' ?column? \\n----------\\n        1\\n' ;;\nesac\n",
+			{ mode: 0o755 },
+		);
+
+		const result = await execAsync(
+			[process.execPath, cli, "sql", "-c", "select 1"],
+			root,
+			{ BUNCARGO_CONTAINER_BINARY: docker },
+		);
+
+		expect(result.stdout).toBe(" ?column? \n----------\n        1\n");
 	});
 });

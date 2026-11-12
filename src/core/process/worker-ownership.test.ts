@@ -1,14 +1,23 @@
 import { afterEach, expect, it } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../../config";
+import { resolveApps } from "../../config/resolve";
 import { createDevEnvironment } from "../../environment";
-import { isolateHome } from "../test-env.testing";
+import { readCurrentProcessIdentity } from "../process-identity";
+import { useTempHome } from "../test-env.testing";
+import { AppSupervision } from "./app-supervision";
 import { startDevServers } from "./dev-servers";
-import { ProcessOwner } from "./process-owner";
 import type { AppChild } from "./pty-app";
 import {
 	decideWorkerClaim,
@@ -17,7 +26,7 @@ import {
 	stopWorker,
 } from "./worker-ownership";
 
-isolateHome("buncargo-worker-home-");
+useTempHome("all");
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -71,7 +80,7 @@ it("serializes simultaneous worker starts and supports explicit takeover", async
 	const root = fixture();
 	const run = () =>
 		startDevServers(
-			{ jobs: { kind: "worker", devCommand: command } },
+			resolveApps({ jobs: { kind: "worker", devCommand: command } }),
 			root,
 			{ jobs: {} },
 			{},
@@ -96,12 +105,12 @@ it("an unexpected zero exit fails supervision and reports the worker", async () 
 	const exits: string[] = [];
 	await expect(
 		startDevServers(
-			{
+			resolveApps({
 				jobs: {
 					kind: "worker",
 					devCommand: `${process.execPath} -e 'setTimeout(()=>process.exit(0),250)'`,
 				},
-			},
+			}),
 			root,
 			{ jobs: {} },
 			{},
@@ -109,8 +118,8 @@ it("an unexpected zero exit fails supervision and reports the worker", async () 
 				verbose: false,
 				skipContainers: true,
 				waitForExit: true,
-				onAppExit: (name) => {
-					exits.push(name);
+				onAppPhase: (name, life) => {
+					if (life.phase === "down") exits.push(name);
 				},
 			},
 		),
@@ -122,7 +131,7 @@ it("cancels an owned worker while readiness is pending", async () => {
 	const root = fixture();
 	const controller = new AbortController();
 	const running = startDevServers(
-		{ jobs: { kind: "worker", devCommand: command } },
+		resolveApps({ jobs: { kind: "worker", devCommand: command } }),
 		root,
 		{ jobs: {} },
 		{},
@@ -130,7 +139,10 @@ it("cancels an owned worker while readiness is pending", async () => {
 			verbose: false,
 			skipContainers: true,
 			signal: controller.signal,
-			onAppSpawned: () => controller.abort(new Error("cancel worker")),
+			onAppPhase: (_name, life) => {
+				if (life.pid !== undefined)
+					controller.abort(new Error("cancel worker"));
+			},
 			waitForHealth: () => new Promise(() => {}),
 		},
 	);
@@ -190,18 +202,22 @@ it("hands a non-essential worker that died while being claimed to the supervisor
 	expect(await findWorker(root, "jobs")).toBeUndefined();
 
 	// The supervisor reports its exit although it never sees an `exit` event.
-	const exits: (number | null)[] = [];
-	const owner = new ProcessOwner({
-		isOptional: (name) => name === "jobs",
-		onAppExit: (_name, code) => exits.push(code),
-	});
+	const exits: (number | null | undefined)[] = [];
+	const session = new AppSupervision(
+		{ jobs: { optional: true, worker: true, checked: false, attached: false } },
+		{
+			onPhase: (_name, life) => {
+				if (life.phase === "down") exits.push(life.end?.exit?.code);
+			},
+		},
+	);
 	try {
-		owner.register("jobs", child, false, true);
+		await session.register("jobs", child, { probation: false });
 		await Bun.sleep(0);
 		expect(exits).toEqual([3]);
-		expect(owner.controller.signal.aborted).toBe(false);
+		expect(session.controller.signal.aborted).toBe(false);
 	} finally {
-		owner.dispose();
+		session.dispose();
 	}
 });
 
@@ -325,4 +341,25 @@ it("keeps a claim whose identity cannot be read, and refuses its name", () => {
 		kind: "claim",
 		standing: [jobs, mail],
 	});
+});
+
+it("skips recorded workers whose pid or identity is malformed", async () => {
+	const root = fixture();
+	mkdirSync(join(root, ".buncargo"));
+	const identity = readCurrentProcessIdentity() ?? "";
+	const valid = { name: "mail", pid: process.pid, identity };
+	writeFileSync(
+		join(root, ".buncargo", "workers.json"),
+		JSON.stringify({
+			version: 1,
+			workers: [
+				{ name: "mail", pid: 1, identity },
+				{ name: "mail", pid: 4242.5, identity },
+				{ name: "mail", pid: String(process.pid), identity },
+				{ name: "mail", pid: process.pid, identity: 7 },
+				valid,
+			],
+		}),
+	);
+	expect(await findWorker(root, "mail")).toEqual(valid);
 });

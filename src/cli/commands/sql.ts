@@ -7,83 +7,73 @@ import { isInteractive } from "../../core/prompt";
 import {
 	type Credentials,
 	postgresCredentials,
-	serviceCredentials,
 } from "../../core/service-identity";
-import { inferDockerPreset } from "../../core/service-presets";
 import { loadDevEnv } from "../../loader";
 import type {
 	AnyDevEnvironment,
 	DockerPresetName,
-	ServiceConfig,
+	ResolvedService,
 } from "../../types";
 import {
+	BASE_EXITS,
+	type Command,
 	type CommandSpec,
-	findUnknownFlags,
+	defineCommand,
 	formatCommandHelp,
-	readBooleanFlag,
-	readPositionals,
-	readStringFlag,
+	type Parsed,
+	parseArgs,
 } from "../command-spec";
 import { argumentsError, CliError } from "../errors";
-import { splitCliArgs } from "../flags";
 import { assertDatabaseName, databaseUrl } from "./database-url";
 import { planJsonQuery, unwrapJsonErrors } from "./sql-statements";
 
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
-	},
-	command: {
-		name: "--command",
-		kind: "string",
-		valueHint: "=<query>",
-		description:
-			"Run one query and exit (-c); without it, an interactive shell",
-	},
-	createScratch: {
-		name: "--create-scratch",
-		kind: "string",
-		valueHint: "=<name>",
-		description:
-			"(Re)create an empty Postgres database scratch_<name> and print its URL",
-	},
-	dropScratch: {
-		name: "--drop-scratch",
-		kind: "string",
-		valueHint: "=<name>",
-		description: "Drop the database scratch_<name>",
-	},
-	json: {
-		name: "--json",
-		kind: "boolean",
-		description:
-			"With --command, print the rows as JSON (Postgres, ClickHouse)",
-	},
-	db: {
-		name: "--db",
-		kind: "string",
-		valueHint: "=<database>",
-		description:
-			"Use another database of this checkout's Postgres, as it is (e.g. scratch_<name>)",
-	},
-	url: {
-		name: "--url",
-		kind: "boolean",
-		description: "Print the Postgres database's URL instead of connecting",
-	},
-} as const;
-
-export const SQL_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo sql [<service>] [options]",
-	flags: Object.values(FLAGS),
-	notes: [
-		{
-			command: "-- <args>",
-			description:
-				"Passed to the client (psql -tA, -v ON_ERROR_STOP=0, -f <host file>)",
+const SQL_SPEC = {
+	name: "sql",
+	summary: "Open the database's own client in this checkout's container",
+	flags: {
+		command: {
+			kind: "string",
+			short: "c",
+			value: "<query>",
+			description: "Run one query and exit; without it, an interactive shell",
 		},
+		"create-scratch": {
+			kind: "string",
+			value: "<name>",
+			description:
+				"(Re)create an empty Postgres database scratch_<name> and print its URL",
+		},
+		"drop-scratch": {
+			kind: "string",
+			value: "<name>",
+			description: "Drop the database scratch_<name>",
+		},
+		json: {
+			kind: "boolean",
+			description:
+				"With --command, print the rows as JSON (Postgres, ClickHouse)",
+		},
+		db: {
+			kind: "string",
+			value: "<database>",
+			description:
+				"Use another database of this checkout's Postgres, as it is (e.g. scratch_<name>)",
+		},
+		url: {
+			kind: "boolean",
+			description: "Print the Postgres database's URL instead of connecting",
+		},
+	},
+	args: [
+		{
+			name: "<service>",
+			description:
+				"The database service (default: the config's first database)",
+		},
+	],
+	passthrough:
+		"Passed to the client (psql -tA, -v ON_ERROR_STOP=0, -f <host file>)",
+	notes: [
 		{
 			command: "stdin",
 			description:
@@ -114,7 +104,7 @@ export const SQL_COMMAND_SPEC: CommandSpec = {
 			description: "A script from a heredoc",
 		},
 	],
-};
+} as const satisfies CommandSpec;
 
 const SCRATCH_NAME = /^[a-z][a-z0-9_]{0,40}$/;
 
@@ -167,6 +157,10 @@ export function scratchUrl(
 
 /** Presets picked when no service is named: the SQL databases. */
 const DEFAULT_PRESETS: readonly DockerPresetName[] = ["postgres", "clickhouse"];
+const PRESET_LABELS: Partial<Record<DockerPresetName, string>> = {
+	postgres: "Postgres",
+	clickhouse: "ClickHouse",
+};
 
 /**
  * SQL for the client: one `-c` query, or a script on its stdin. A script's
@@ -358,13 +352,17 @@ export function psqlHasOwnInput(clientArgs: readonly string[]): boolean {
 	});
 }
 
-/** The named service, or the first SQL database in the config. */
+/**
+ * The named service, or the config's first service of one of `presets`:
+ * `--db` in a config that lists ClickHouse first means its Postgres.
+ */
 function pickService(
-	services: Record<string, ServiceConfig>,
+	services: Record<string, ResolvedService>,
 	name: string | undefined,
-): { name: string; preset: DockerPresetName; service: ServiceConfig } {
+	presets: readonly DockerPresetName[],
+): { name: string; preset: DockerPresetName; service: ResolvedService } {
 	const candidates = Object.entries(services).flatMap(([key, service]) => {
-		const preset = inferDockerPreset(key, service);
+		const { preset } = service;
 		return preset ? [{ name: key, preset, service }] : [];
 	});
 	if (name !== undefined) {
@@ -378,12 +376,16 @@ function pickService(
 		);
 	}
 	const found = candidates.find((candidate) =>
-		DEFAULT_PRESETS.includes(candidate.preset),
+		presets.includes(candidate.preset),
 	);
-	if (!found)
-		throw new CliError("This config has no Postgres or ClickHouse service.", [
+	if (!found) {
+		const wanted = presets
+			.map((preset) => PRESET_LABELS[preset] ?? preset)
+			.join(" or ");
+		throw new CliError(`This config has no ${wanted} service.`, [
 			"Name one: buncargo sql <service>",
 		]);
+	}
 	return found;
 }
 
@@ -418,17 +420,16 @@ interface SqlRequest {
 	clientArgs: string[];
 }
 
-function parseSqlArgs(rawArgs: string[]): SqlRequest | "help" {
-	const { flags: ownArgs, passthrough } = splitCliArgs(rawArgs);
-	const args = ownArgs.map((arg) => (arg === "-c" ? FLAGS.command.name : arg));
-	if (readBooleanFlag(args, FLAGS.help)) return "help";
-
+function sqlRequest({
+	values,
+	positionals: [service],
+	passthrough,
+}: Parsed<typeof SQL_SPEC>): SqlRequest {
+	const query = values.command;
+	const createScratch = values["create-scratch"];
+	const dropScratch = values["drop-scratch"];
+	const { db, url } = values;
 	const problems: string[] = [];
-	const query = readStringFlag(args, FLAGS.command, problems);
-	const createScratch = readStringFlag(args, FLAGS.createScratch, problems);
-	const dropScratch = readStringFlag(args, FLAGS.dropScratch, problems);
-	const db = readStringFlag(args, FLAGS.db, problems);
-	const url = readBooleanFlag(args, FLAGS.url);
 	const scratch = createScratch ?? dropScratch;
 	if (createScratch !== undefined && dropScratch !== undefined)
 		problems.push("Choose either --create-scratch or --drop-scratch.");
@@ -446,30 +447,23 @@ function parseSqlArgs(rawArgs: string[]): SqlRequest | "help" {
 		problems.push(
 			"--url prints a URL and runs nothing: drop --command, --drop-scratch and arguments after --.",
 		);
-	const [service, ...extra] = readPositionals(SQL_COMMAND_SPEC, args);
-	problems.push(
-		...findUnknownFlags(SQL_COMMAND_SPEC, args).map(
-			(f) => `Unknown flag: ${f}`,
-		),
-		...extra.map((arg) => `Unexpected argument: ${arg}`),
-	);
 	if (problems.length > 0) throw argumentsError(problems, "sql");
 
 	return {
 		service,
 		query,
-		json: readBooleanFlag(args, FLAGS.json),
+		json: values.json,
 		createScratch,
 		dropScratch,
 		db,
 		url,
-		clientArgs: passthrough,
+		clientArgs: [...passthrough],
 	};
 }
 
 /** What `buncargo sql` reaches outside itself. */
 export interface SqlDeps {
-	loadEnv(readOnly: boolean): Promise<AnyDevEnvironment>;
+	loadEnv(): Promise<AnyDevEnvironment>;
 	/** The argv into the service's container, or undefined when it is not running. */
 	execArgv(
 		env: AnyDevEnvironment,
@@ -569,18 +563,26 @@ export async function runSql(
 	rawArgs: string[],
 	deps: SqlDeps,
 ): Promise<number> {
-	const request = parseSqlArgs(rawArgs);
-	if (request === "help") {
-		deps.print(formatCommandHelp(SQL_COMMAND_SPEC));
+	const parsed = parseArgs(SQL_SPEC, rawArgs);
+	if (parsed.help) {
+		deps.print(formatCommandHelp(sqlCommand));
 		return 0;
 	}
+	return sql(sqlRequest(parsed), deps);
+}
+
+async function sql(request: SqlRequest, deps: SqlDeps): Promise<number> {
 	const { createScratch, dropScratch, db } = request;
 	const scratch = createScratch ?? dropScratch;
 	if (db !== undefined) assertDatabaseName(db, "--db");
 
-	let env = await deps.loadEnv(true);
-	const target = pickService(env.services, request.service);
+	const env = await deps.loadEnv();
 	const postgresOnly = scratch !== undefined || db !== undefined || request.url;
+	const target = pickService(
+		env.services,
+		request.service,
+		postgresOnly ? ["postgres"] : DEFAULT_PRESETS,
+	);
 	if (postgresOnly && target.preset !== "postgres")
 		throw new CliError(
 			`Scratch databases, --db and --url are Postgres only, and ${target.name} is ${target.preset}.`,
@@ -606,11 +608,12 @@ export async function runSql(
 			: { clientArgs: [] };
 	const invocation =
 		scratch === undefined
-			? sqlClientCommand(
-					target.preset,
-					serviceCredentials(target.preset, target.service),
-					{ input, json: request.json, database: db, clientArgs },
-				)
+			? sqlClientCommand(target.preset, target.service.credentials, {
+					input,
+					json: request.json,
+					database: db,
+					clientArgs,
+				})
 			: {
 					command: scratchCommand(
 						postgresCredentials(target.service),
@@ -634,7 +637,6 @@ export async function runSql(
 	// one service it lives in, as `dev --up-only` would, rather than send the
 	// caller off to start the whole stack.
 	if (!argv && createScratch !== undefined) {
-		env = await deps.loadEnv(false);
 		await deps.startService(env, target.name);
 		argv = await deps.execArgv(env, execRequest);
 	}
@@ -678,27 +680,21 @@ async function startOneService(
 
 	console.error(`Starting ${serviceName} for ${env.projectName}…`);
 	try {
-		await env.prepareStartAsync(undefined, [serviceName], signal);
-		await env.claimRun({ idleTimeoutMs: false, signal });
-		await env.start({
-			onlyServices: [serviceName],
-			startServers: false,
-			prepare: "containers",
-			skipEnvironmentLog: true,
+		await env.withServices(
+			[serviceName],
 			// stdout carries the URL alone.
-			verbose: false,
-			signal,
-		});
+			{ claim: { idleTimeoutMs: false }, verbose: false, signal },
+			async () => {},
+		);
 	} finally {
-		await env.releaseRun();
 		for (const name of signals) process.off(name, cancel);
 	}
 }
 
 const PRODUCTION_SQL_DEPS: SqlDeps = {
-	loadEnv: (readOnly) => loadDevEnv({ readOnly }),
+	loadEnv: () => loadDevEnv(),
 	execArgv: (env, request) =>
-		containerRuntimeForEnv(env).interactiveExecArgv({
+		containerRuntimeForEnv(env).execArgv({
 			projectName: env.projectName,
 			root: env.root,
 			...request,
@@ -724,6 +720,11 @@ const PRODUCTION_SQL_DEPS: SqlDeps = {
 	warn: (line) => console.error(line),
 };
 
-export function handleSql(rawArgs: string[]): Promise<number> {
-	return runSql(rawArgs, PRODUCTION_SQL_DEPS);
-}
+export const sqlCommand: Command<typeof SQL_SPEC> = defineCommand({
+	spec: SQL_SPEC,
+	exits: {
+		...BASE_EXITS,
+		1: "bad arguments, or nothing to connect to; otherwise the client's own code",
+	},
+	run: (parsed) => sql(sqlRequest(parsed), PRODUCTION_SQL_DEPS),
+});

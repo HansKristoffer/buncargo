@@ -11,87 +11,28 @@ import {
 	offsetClaimRoot,
 	offsetClaimsOf,
 	overlappingOffsetClaims,
+	readHeldOffsetClaims,
 	readOffsetClaims,
-	releaseOffsetClaimsIfUnchanged,
+	retireOffsetClaimsIfUnchanged,
 } from "../../core/offset-claims";
-import {
-	PORT_OFFSET_STEP,
-	pinOffset,
-	readOffsetClaimsWithPorts,
-} from "../../core/port-allocation";
+import { PORT_OFFSET_STEP, pinOffset } from "../../core/port-allocation";
 import {
 	CLAIM_STATE_LABELS,
 	formatClaimAge,
 	idleClaims,
 	unallocatedPortsMessage,
 } from "../../core/port-exhaustion";
-import { getPortOwner, withBindProbe } from "../../core/process";
+import {
+	createPortOwnerSnapshotAsync,
+	withBindProbe,
+} from "../../core/process";
 import { askConfirm, isInteractive } from "../../core/prompt";
 import { findCheckoutRuns, findRunsByRoot } from "../../core/run-registry";
 import { hostsMode } from "../../core/runtime-flags";
 import { loadDevEnv } from "../../loader";
-import {
-	type CommandSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
-	readPositionals,
-	readStringFlag,
-} from "../command-spec";
+import { BASE_EXITS, defineCommand, defineGroup } from "../command-spec";
 import { argumentsError, CliError } from "../errors";
 import * as log from "../log";
-
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
-	},
-	root: {
-		name: "--root",
-		kind: "string",
-		valueHint: "=<path>",
-		description: "ports release: the checkout whose claims to drop",
-	},
-	idle: {
-		name: "--idle",
-		kind: "string",
-		valueHint: "=<duration>",
-		description:
-			"ports release: free the blocks of checkouts idle longer than this (7d, 12h; a bare number is days) with no run and no containers; each keeps its project name. Deleted checkouts' claims are left to the sweep",
-	},
-	yes: {
-		name: "--yes",
-		kind: "boolean",
-		description: "ports release: skip the confirmation (for scripts)",
-	},
-} as const;
-
-export const PORTS_COMMAND_SPEC: CommandSpec = {
-	usage:
-		"buncargo ports [pin <offset> | release (--root <path> | --idle=<duration>) [--yes]]",
-	flags: Object.values(FLAGS),
-	examples: [
-		{
-			command: "buncargo ports",
-			description: "This checkout's ports, and every checkout's offset",
-		},
-		{
-			command: "buncargo ports pin 2500",
-			description: "Keep this checkout on offset 2500 from now on",
-		},
-		{
-			command: "buncargo ports release --root ../old-worktree",
-			description:
-				"Drop another checkout's claims on its ports and project name",
-		},
-		{
-			command: "buncargo ports release --idle=7d",
-			description:
-				"Free the blocks of every checkout not started for a week, with no run and no containers",
-		},
-	],
-};
 
 const DURATION_UNIT_MS: Record<string, number> = {
 	d: 86_400_000,
@@ -130,58 +71,12 @@ export function parsePinnedOffset(value: string | undefined): number {
 
 /**
  * `buncargo ports`: where this checkout's ports are, and every checkout's
- * offset on the machine. `ports pin <offset>` moves this checkout to a block
- * and keeps it there: it checks every port of the block first (by binding
- * it, so a holder `lsof` cannot see counts), writes the lockfile and claims
- * the offset, so no other checkout is given it.
+ * offset on the machine.
  */
-export async function handlePorts(args: string[]): Promise<number> {
-	if (readBooleanFlag(args, FLAGS.help)) {
-		console.log(formatCommandHelp(PORTS_COMMAND_SPEC));
-		return 0;
-	}
-	const [subcommand, value, ...extra] = readPositionals(
-		PORTS_COMMAND_SPEC,
-		args,
-	);
-	const problems = [
-		...findUnknownFlags(PORTS_COMMAND_SPEC, args).map(
-			(f) => `Unknown flag: ${f}`,
-		),
-		...extra.map((arg) => `Unexpected argument: ${arg}`),
-	];
-	if (
-		subcommand !== undefined &&
-		subcommand !== "pin" &&
-		subcommand !== "release"
-	)
-		problems.push(`Unknown subcommand: ${subcommand}`);
-	const root = readStringFlag(args, FLAGS.root, problems);
-	const idle = readStringFlag(args, FLAGS.idle, problems);
-	const idleFor = idle === undefined ? undefined : parseIdleDuration(idle);
-	const yes = readBooleanFlag(args, FLAGS.yes);
-	if (subcommand === "release") {
-		if (value !== undefined) problems.push(`Unexpected argument: ${value}`);
-		if ((root === undefined) === (idle === undefined))
-			problems.push(
-				"ports release needs either the checkout (--root <path>) or an idle time (--idle=7d).",
-			);
-		if (idle !== undefined && idleFor === undefined)
-			problems.push(
-				`--idle takes a duration such as 7d, 12h or 30m (a bare number is days): got "${idle}".`,
-			);
-	} else if (root !== undefined || idle !== undefined || yes)
-		problems.push("--root, --idle and --yes are only for ports release.");
-	if (problems.length > 0) throw argumentsError(problems, "ports");
-	if (subcommand === "release" && root !== undefined)
-		return releaseClaims(resolve(root), yes);
-	if (subcommand === "release" && idleFor !== undefined)
-		return releaseIdleClaims(idleFor, yes);
-
-	const env = await loadDevEnv({ readOnly: true });
-
-	if (subcommand === undefined) {
-		const claims = readOffsetClaimsWithPorts();
+async function showPorts(): Promise<number> {
+	const env = await loadDevEnv();
+	{
+		const claims = readHeldOffsetClaims();
 		const unallocated = env.portOffsetProvenance === "unallocated";
 		log.line(
 			`${env.projectName}: offset ${env.portOffset} (${env.portOffsetProvenance})`,
@@ -222,9 +117,19 @@ export async function handlePorts(args: string[]): Promise<number> {
 		}
 		return 0;
 	}
+}
 
+/**
+ * `ports pin <offset>` moves this checkout to a block and keeps it there: it
+ * checks every port of the block first (by binding it, so a holder `lsof`
+ * cannot see counts) and claims the offset, so no other checkout is given it.
+ */
+async function pinPorts(value: string): Promise<number> {
+	const env = await loadDevEnv();
 	const offset = parsePinnedOffset(value);
 	const runtime = containerRuntimeForEnv(env);
+	// One reading for every port the new block could take.
+	const owners = await createPortOwnerSnapshotAsync({ runtime });
 	const result = pinOffset({
 		root: env.root,
 		projectName: env.projectName,
@@ -233,7 +138,7 @@ export async function handlePorts(args: string[]): Promise<number> {
 		offset,
 		worktreeIsolation: env.worktreeIsolation,
 		runtime: runtime.name,
-		getOwner: withBindProbe((port) => getPortOwner(port, { runtime })),
+		getOwner: withBindProbe((port) => owners.owner(port)),
 		companionPorts: tailscaleBlockPorts({
 			mode: hostsMode(),
 			hosts: env.hosts !== null,
@@ -331,7 +236,7 @@ async function releaseClaims(root: string, yes: boolean): Promise<number> {
 
 	// Only what was listed and checked: a run that started since the check
 	// rewrote its claim, and keeps it.
-	const released = await releaseOffsetClaimsIfUnchanged(claims);
+	const released = await retireOffsetClaimsIfUnchanged(claims);
 	log.success(
 		`Released ${released.length} claim${released.length === 1 ? "" : "s"} of ${root}.`,
 	);
@@ -411,3 +316,105 @@ async function releaseIdleClaims(
 		);
 	return 0;
 }
+
+const showCommand = defineCommand({
+	spec: {
+		name: "ports",
+		summary:
+			"Show this checkout's ports and every claim; pin one, or release a stale one",
+		flags: {},
+	},
+	exits: BASE_EXITS,
+	run: () => showPorts(),
+});
+
+const pinCommand = defineCommand({
+	spec: {
+		name: "ports pin",
+		summary: "Keep this checkout on one offset from now on",
+		flags: {},
+		args: [
+			{
+				name: "<offset>",
+				description: "A multiple of the offset step, e.g. 2500",
+				required: true,
+			},
+		],
+		examples: [
+			{
+				command: "buncargo ports pin 2500",
+				description: "Keep this checkout on offset 2500 from now on",
+			},
+		],
+	},
+	exits: BASE_EXITS,
+	run: ({ positionals: [offset] }) => pinPorts(offset),
+});
+
+const releaseCommand = defineCommand({
+	spec: {
+		name: "ports release",
+		usage: "ports release (--root=<path> | --idle=<duration>) [--yes]",
+		summary: "Drop claims on ports and project names",
+		flags: {
+			root: {
+				kind: "string",
+				value: "<path>",
+				description: "The checkout whose claims to drop",
+			},
+			idle: {
+				kind: "string",
+				value: "<duration>",
+				description:
+					"Free the blocks of checkouts idle longer than this (7d, 12h; a bare number is days) with no run and no containers; each keeps its project name. Deleted checkouts' claims are left to the sweep",
+			},
+			yes: {
+				kind: "boolean",
+				description: "Skip the confirmation (for scripts)",
+			},
+		},
+		examples: [
+			{
+				command: "buncargo ports release --root ../old-worktree",
+				description:
+					"Drop another checkout's claims on its ports and project name",
+			},
+			{
+				command: "buncargo ports release --idle=7d",
+				description:
+					"Free the blocks of every checkout not started for a week, with no run and no containers",
+			},
+		],
+	},
+	exits: {
+		...BASE_EXITS,
+		[PORTS_RELEASE_REFUSED]: "a run started there meanwhile kept a claim",
+	},
+	run: ({ values: { root, idle, yes } }) => {
+		const idleFor = idle === undefined ? undefined : parseIdleDuration(idle);
+		const problems: string[] = [];
+		if ((root === undefined) === (idle === undefined))
+			problems.push(
+				"ports release needs either the checkout (--root <path>) or an idle time (--idle=7d).",
+			);
+		if (idle !== undefined && idleFor === undefined)
+			problems.push(
+				`--idle takes a duration such as 7d, 12h or 30m (a bare number is days): got "${idle}".`,
+			);
+		if (problems.length > 0) throw argumentsError(problems, "ports release");
+		if (root !== undefined) return releaseClaims(resolve(root), yes);
+		if (idleFor !== undefined) return releaseIdleClaims(idleFor, yes);
+		return 0;
+	},
+});
+
+export const portsCommand = defineGroup({
+	spec: {
+		name: "ports",
+		usage: "ports [pin <offset> | release [options]]",
+		summary:
+			"Show this checkout's ports and every claim; pin one, or release a stale one",
+	},
+	subcommands: { pin: pinCommand, release: releaseCommand },
+	fallback: showCommand,
+});

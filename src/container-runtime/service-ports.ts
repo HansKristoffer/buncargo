@@ -4,7 +4,7 @@ import {
 	createPortOwnerSnapshotAsync,
 	formatPortOwner,
 } from "../core/process";
-import type { ServiceConfig } from "../types";
+import type { PortContainerOwner, ResolvedService } from "../types";
 import { availableContainerRuntimes } from "./resolve";
 import type { ContainerRuntimeAdapter } from "./types";
 
@@ -13,9 +13,15 @@ import type { ContainerRuntimeAdapter } from "./types";
  */
 export async function assertServicePortsClaimable(
 	runtime: ContainerRuntimeAdapter,
-	services: Record<string, ServiceConfig>,
+	services: Record<string, ResolvedService>,
 	ports: Record<string, number>,
-	context: { root: string; projectName: string; projectPrefix?: string },
+	context: {
+		root: string;
+		projectName: string;
+		projectPrefix?: string;
+		/** The runtime's container owners, when the caller has just listed them. */
+		containerOwners?: Map<number, PortContainerOwner>;
+	},
 	signal?: AbortSignal,
 ): Promise<void> {
 	const targetPorts = Object.keys(services)
@@ -31,6 +37,7 @@ export async function assertServicePortsClaimable(
 	const snapshot = await createPortOwnerSnapshotAsync({
 		runtime,
 		ports: targetPorts,
+		containers: context.containerOwners,
 		signal,
 	});
 	let diagnosticSnapshot:

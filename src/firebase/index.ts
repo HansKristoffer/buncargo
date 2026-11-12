@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, normalize, resolve } from "node:path";
 import { isRecord, safeJsonParse } from "hanzio";
+import { publicEnvCopies } from "../core/integration-cli";
 import { findMonorepoRoot } from "../core/ports";
 import { isProcessAlive } from "../core/process/lifecycle";
 import { shellQuote } from "../core/shell-quote";
@@ -13,7 +14,7 @@ import type {
 	IntegrationConfig,
 } from "../types";
 import { firebaseChecks } from "./checks";
-import { resolveFirebaseBin } from "./cli";
+import { firebaseCli } from "./cli";
 import {
 	anchorPort,
 	emulatorEnv,
@@ -56,12 +57,6 @@ export {
 	type FirebaseProject,
 	readFirebaseProject,
 } from "./project";
-
-declare module "../types/all-types" {
-	interface IntegrationAppNames {
-		firebase: true;
-	}
-}
 
 /** The app the emulator suite runs as. */
 export const FIREBASE_APP = "firebase";
@@ -106,20 +101,6 @@ export interface FirebaseIntegrationOptions {
 	stopGraceMs?: number;
 }
 
-/** Each variable again under every prefix, for browser code. */
-function publicCopies(
-	env: Record<string, string>,
-	prefixes: readonly string[],
-): Record<string, string> {
-	return Object.fromEntries(
-		prefixes.flatMap((prefix) =>
-			FIREBASE_PUBLIC_ENV.flatMap((name) =>
-				env[name] === undefined ? [] : [[`${prefix}${name}`, env[name]]],
-			),
-		),
-	);
-}
-
 /**
  * The suite's temp dir, one per checkout (see `appEnv`). Short, under the
  * system's: the Functions emulator puts a Unix socket here, and a socket path
@@ -161,7 +142,7 @@ function removeStaleHubLocators(dir: string): void {
 
 export function firebase(
 	options: FirebaseIntegrationOptions = {},
-): BuncargoIntegration {
+): BuncargoIntegration<{ apps: typeof FIREBASE_APP }> {
 	const workdirOption = options.workdir;
 	const workdirOf = (root: string) => resolve(root, workdirOption ?? ".");
 	const dataDir =
@@ -193,13 +174,8 @@ export function firebase(
 			// Every port moves by the offset the app's own port did.
 			const offsetOf = (ports: Readonly<Record<string, number>>) =>
 				(ports[FIREBASE_APP] ?? base) - base;
-			const prefixes =
-				typeof options.publicEnvPrefix === "string"
-					? [options.publicEnvPrefix]
-					: (options.publicEnvPrefix ?? []);
-
 			const command = [
-				shellQuote(resolveFirebaseBin(root, workdirOf(root))),
+				shellQuote(firebaseCli.resolve([workdirOf(root), root])),
 				"emulators:start",
 				"--config",
 				FIREBASE_GENERATED_CONFIG_FILE,
@@ -262,7 +238,12 @@ export function firebase(
 					);
 					return {
 						...env,
-						...publicCopies(env, prefixes),
+						...publicEnvCopies(
+							Object.fromEntries(
+								FIREBASE_PUBLIC_ENV.map((name) => [name, env[name]]),
+							),
+							options.publicEnvPrefix,
+						),
 						...userEnv?.(ports, urls, ctx),
 					};
 				},
@@ -290,7 +271,7 @@ export function firebase(
 				? selected.join(", ")
 				: undefined,
 
-		checks: firebaseChecks({
+		setupChecks: firebaseChecks({
 			project: projectOf,
 			workdir: workdirOf,
 			emulators: (root) =>

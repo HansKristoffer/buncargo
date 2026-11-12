@@ -1,12 +1,16 @@
 import { EventEmitter } from "node:events";
-import {
-	processIdentityMatcherAsync,
-	readProcessIdentityAsync,
-} from "../process-identity";
+import { readProcessIdentityAsync } from "../process-identity";
 import { execAsync } from "./exec";
+import { isProcessAlive } from "./lifecycle";
 import { createPortOwnerSnapshotAsync } from "./port-owner";
 
-/** A daemonized server has no ChildProcess handle, but is still owned by this run. */
+/**
+ * A daemonized server has no ChildProcess handle, but is still owned by this
+ * run. Watched with `kill(pid, 0)`, which forks nothing; its identity is read
+ * only before it is signalled (`terminate.ts`), since a recycled pid must
+ * never be signalled, while a recycled pid that merely looks alive is only
+ * noticed late.
+ */
 export class DetachedApp extends EventEmitter {
 	exitCode: number | null = null;
 	signalCode: NodeJS.Signals | null = null;
@@ -18,24 +22,11 @@ export class DetachedApp extends EventEmitter {
 		super();
 	}
 	watch(): void {
-		let checking = false;
-		this.timer = setInterval(async () => {
-			if (checking) return;
-			checking = true;
-			try {
-				const alive = await processIdentityMatcherAsync([
-					{ pid: this.pid, processIdentity: this.identity },
-				]);
-				if (!alive(this.pid, this.identity)) {
-					this.dispose();
-					this.exitCode = 0;
-					this.emit("exit", 0, null);
-				}
-			} catch {
-				// Inspection failure preserves supervision; signalling remains strict.
-			} finally {
-				checking = false;
-			}
+		this.timer = setInterval(() => {
+			if (isProcessAlive(this.pid)) return;
+			this.dispose();
+			this.exitCode = 0;
+			this.emit("exit", 0, null);
 		}, 1000);
 	}
 	dispose(): void {
@@ -53,7 +44,7 @@ export async function findDetachedApp(
 		includeCwd: false,
 	});
 	const owner = snapshot.owner(port);
-	if (!owner?.pids.length) return;
+	if (owner?.kind !== "process") return;
 	const result = await execAsync(
 		["ps", "-o", "pid=,pgid=", "-p", owner.pids.join(",")],
 		process.cwd(),

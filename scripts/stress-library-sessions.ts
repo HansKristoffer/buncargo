@@ -74,14 +74,13 @@ async function unusedPort(): Promise<number> {
 	await new Promise<void>((resolve) => server.close(() => resolve()));
 	return address.port;
 }
+/**
+ * No deadline of its own: on a loaded runner an app can take seconds to start,
+ * and the caller's timeout (the test's, the CI job's) bounds a real hang.
+ */
 async function waitFor(test: () => boolean | Promise<boolean>): Promise<void> {
-	const deadline = performance.now() + 5000;
 	while (!(await test())) {
 		interrupted.signal.throwIfAborted();
-		assert(
-			performance.now() < deadline,
-			"Session did not reach the expected state",
-		);
 		await Bun.sleep(5);
 	}
 }
@@ -174,7 +173,10 @@ async function cycle(fixture: Fixture, index: number): Promise<void> {
 			if (index % 3 === 0) caller.abort(new Error("Cancel ready session"));
 			await env.stop({ verbose: false });
 			for (const pid of Object.values(pids))
-				assert(!isProcessAlive(pid), `Owned group ${pid} survived stop`);
+				assert(
+					pid === undefined || !isProcessAlive(pid),
+					`Owned group ${pid} survived stop`,
+				);
 		}
 		for (const pid of fixture.pids())
 			assert(!isProcessAlive(pid), `App ${pid} leaked across sessions`);

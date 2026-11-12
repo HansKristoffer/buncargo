@@ -10,13 +10,13 @@ Cross-cutting utilities in `src/core/` that most features touch.
   `GITLAB_CI`, `CIRCLECI`, `JENKINS_URL`), the same check for named hosts, Docker auto-start and
   readiness timeouts. `src/architecture.test.ts` enforces the single reader.
 - `child-env.ts` is the environment of every process started for the project (apps, `exec`,
-  `slot`, tasks, migrations, the seed, prisma): never the connect tokens, never the config's
-  `unsetEnv`. It is module state set by `createDevEnvironment`, because every spawn point reaches
-  here and none has the config. buncargo's own tools (the connect coordinator, frpc, cloudflared,
+  `slot`, tasks, migrations, the seed, prisma): never the connect tokens, and never the config's
+  `unsetEnv`, which the environment that spawns it passes down. It was module state once, and the
+  environment built last decided for every environment in the process. buncargo's own tools (the connect coordinator, frpc, cloudflared,
   the Infisical CLI) get `connectProcessEnv` from the same module: no connect tokens, but the full
   environment.
 - `state-paths.ts` owns both state directories: `~/.buncargo` (machine-wide: routes, runs,
-  certificates, downloaded tools) and `<root>/.buncargo` (per-checkout: port lockfile, tunnel
+  certificates, downloaded tools) and `<root>/.buncargo` (per-checkout: tunnel
   registry, typecheck artifacts), plus the `sudo`-aware home resolution and chown that make the
   first one correct when the root daemon writes it. Tests relocate it by pointing `HOME` elsewhere,
   deliberately *not* through a dedicated override: a second mechanism outranking `HOME` leaks
@@ -25,7 +25,7 @@ Cross-cutting utilities in `src/core/` that most features touch.
 ## Persisted files and locks
 
 - `registry-file.ts` reads and writes the persisted state files (`routes.json`,
-  `hosts-daemon.json`, `hosts-service.json`, `ports.json`, `public-tunnels.json`) through typed
+  `hosts-service.json`, `offsets.json`) through typed
   validators. Writes go via temp file + rename: the hosts daemon re-reads `routes.json` every
   second, and a truncating write would let it read the file empty and conclude there is no state.
   A read is lenient by default and `strict` for a consumer that only reads: a missing file is "no
@@ -45,9 +45,10 @@ Cross-cutting utilities in `src/core/` that most features touch.
   `PATH` with `access` rather than shelling out to `command -v`. That is a builtin, so it looked
   free, but it is still a fork and an exec, reached for `docker`, `container` and `mkcert` before a
   run starts anything.
-- `utils.ts` re-exports hanzio's `promiseTimeout` as `sleep`, because `buncargo/core/utils` is a
-  published entry point. Internal code imports `promiseTimeout` from `hanzio` directly: `utils.ts`
-  also holds `getEnvVar` and so imports port allocation, the host plan and the network helpers, and
+- `utils.ts` re-exports hanzio's `promiseTimeout` as `sleep`, because `buncargo/api` publishes it.
+  Internal code imports `promiseTimeout` from `hanzio` directly: `utils.ts`
+  also holds `getEnvVar` and so imports the checkout view (port allocation, the host plan, the
+  network helpers), and
   taking `sleep` from it once pulled that whole graph into the single file a root launchd job
   executes.
 - `timing.ts` measures CLI entry through actual app readiness (or startup failure), including
@@ -67,7 +68,14 @@ Cross-cutting utilities in `src/core/` that most features touch.
 - `primary-app.ts` answers "which app is this project about" once, from `options.primaryApp`.
   `resolvePrimaryApp` infers from the dependency graph when nothing is configured;
   `configuredPrimaryApp` never infers and is what named hosts use.
-- `service-identity.ts` decides what a service *is* from its preset rather than its name. The
-  banner used `name.includes("postgres")`, so a service keyed `db` from `service.postgres()` got no
-  TablePlus link while the Compose side knew the preset all along. The banner, run registry and menu
-  bar app share one answer, and `tablePlusUrl` lives here.
+- `config/resolve.ts` resolves a validated config's services and apps once, into one variant per
+  kind with every default filled, and the environment holds only that. Readers used to apply
+  their own defaults and disagreed: `healthEndpoint` was `/` to the readiness wait and "no probe"
+  to port reuse, and an app's `healthTimeout` meant four different numbers. A service's preset is
+  its only identity: URLs were built from the key, so `db: service.postgres()` got
+  `http://localhost:5432` while the Compose side knew the preset all along. A bare preset key
+  resolves to its helper's output. `service-identity.ts` answers the banner, run registry and menu
+  bar from the resolved preset, and `tablePlusUrl` lives there.
+- Validation keeps one key table per section (`config/validation/key-tables.ts`), pinned to its
+  type with `satisfies`, so a field added to a type without its check fails to compile. The
+  tables drive the unknown-key errors and the renamed-field hints.

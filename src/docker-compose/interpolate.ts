@@ -68,7 +68,10 @@ export function interpolate(
 				return found as string;
 			}
 
-			return missing ? (argument ?? "") : (found as string);
+			// A default is interpolated too; `$$` is the only `$` form one may
+			// hold here (see `readInterpolation`).
+			const fallback = (argument ?? "").replaceAll("$$", () => "$");
+			return missing ? fallback : (found as string);
 		},
 	);
 }
@@ -93,7 +96,7 @@ export function interpolateNode(
 	return node;
 }
 
-export function stableStringify(value: unknown): string {
+function stableStringify(value: unknown): string {
 	if (Array.isArray(value)) {
 		return `[${value.map(stableStringify).join(",")}]`;
 	}
@@ -137,16 +140,13 @@ function withoutHashLabels(
 		return {
 			...rest,
 			labels: labels.filter(
-				(entry) =>
-					![SERVICE_HASH_LABEL, "buncargo.config-hash"].includes(
-						String(entry).split("=")[0] ?? "",
-					),
+				(entry) => String(entry).split("=")[0] !== SERVICE_HASH_LABEL,
 			),
 		};
 	}
 	const userLabels = Object.fromEntries(
 		Object.entries(normalizeComposeLabels(labels)).filter(
-			([key]) => ![SERVICE_HASH_LABEL, "buncargo.config-hash"].includes(key),
+			([key]) => key !== SERVICE_HASH_LABEL,
 		),
 	);
 	return {
@@ -245,29 +245,55 @@ export function canProveServiceInputs(
 		const source = interpolate(rawSource, env);
 		if (model.volumes?.[source]) nodes.push(model.volumes[source]);
 	}
-	function complete(node: unknown): boolean {
-		if (Array.isArray(node)) return node.every(complete);
-		if (isRecord(node)) return Object.values(node).every(complete);
-		if (typeof node !== "string") return true;
-		let known = true;
-		const remainder = node.replace(
-			INTERPOLATION_PATTERN,
-			(
-				match,
-				braced: string | undefined,
-				_operator: string | undefined,
-				argument: string | undefined,
-				bare: string | undefined,
-			) => {
-				if (match === "$$") return "";
-				const variable = braced ?? bare;
-				if (!variable || env[variable] === undefined || argument?.includes("$"))
-					known = false;
-				return "";
-			},
-		);
-		// Unsupported operators and nested substitutions must go through Compose.
-		return known && !remainder.includes("$");
-	}
-	return nodes.every(complete);
+	const known = (variable: string) => env[variable] !== undefined;
+	return nodes.flatMap(stringsIn).every((value) => {
+		const { variables, understood } = readInterpolation(value);
+		return understood && variables.every(known);
+	});
+}
+
+/** Every string in a compose node, at any depth. */
+function stringsIn(node: unknown): string[] {
+	if (typeof node === "string") return [node];
+	if (Array.isArray(node)) return node.flatMap(stringsIn);
+	if (isRecord(node)) return Object.values(node).flatMap(stringsIn);
+	return [];
+}
+
+/**
+ * The variables a string names, and whether {@link interpolate} reads every
+ * `$` in it the way Compose does. Compose's other operators (`${VAR:+x}`) and
+ * a default that itself holds a `$` are left for Compose alone.
+ */
+function readInterpolation(value: string): {
+	variables: string[];
+	understood: boolean;
+} {
+	const variables: string[] = [];
+	let understood = true;
+	const remainder = value.replace(
+		INTERPOLATION_PATTERN,
+		(
+			match,
+			braced: string | undefined,
+			_operator: string | undefined,
+			argument: string | undefined,
+			bare: string | undefined,
+		) => {
+			if (match === "$$") return "";
+			const variable = braced ?? bare;
+			if (variable) variables.push(variable);
+			if (argument?.replaceAll("$$", "").includes("$")) understood = false;
+			return "";
+		},
+	);
+	return { variables, understood: understood && !remainder.includes("$") };
+}
+
+/**
+ * The first string in a compose node that {@link interpolate} cannot
+ * translate, for a backend that has no Compose to hand it to.
+ */
+export function findUninterpolable(node: unknown): string | undefined {
+	return stringsIn(node).find((value) => !readInterpolation(value).understood);
 }

@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { claimFirstRunPrompt, resetFirstRunPrompt } from "../prompt";
+import { useTempHome } from "../test-env.testing";
 import {
 	doctorFixHosts,
+	type HostsInstallDeps,
 	hostsServiceFix,
+	installHosts,
 	persistHostsDecline,
 	promptFirstRun,
 	repairStaleService,
@@ -14,7 +14,7 @@ import {
 } from "./onboarding";
 
 const REASON =
-	"Named-hosts service runs hostsd-6.1.1.js, but this buncargo installs hostsd-7.1.0.js. Run `buncargo hosts install` to update it.";
+	"Named-hosts service runs buncargo 15.1.0 (protocol 1), older than this buncargo needs (protocol 2). Run `buncargo hosts install` to update it.";
 
 describe("repairStaleService", () => {
 	// The stale daemon is still serving, so this path must never fail the run —
@@ -24,6 +24,7 @@ describe("repairStaleService", () => {
 		const result = await repairStaleService(REASON, {
 			reinstall: async () => {
 				reinstalls += 1;
+				return [];
 			},
 			caPath: () => "/ca.pem",
 		});
@@ -41,6 +42,7 @@ describe("repairStaleService", () => {
 			},
 			reinstall: async () => {
 				reinstalls += 1;
+				return [];
 			},
 			caPath: () => "/ca.pem",
 		});
@@ -55,12 +57,25 @@ describe("repairStaleService", () => {
 			prompt: async () => "skip",
 			reinstall: async () => {
 				reinstalls += 1;
+				return [];
 			},
 			caPath: () => "/ca.pem",
 		});
 		expect(reinstalls).toBe(0);
 		expect(result.ok).toBe(true);
 		expect(result.ok && result.notes).toEqual([REASON]);
+	});
+
+	// The update found a newer service another project installed and kept
+	// it: the run goes on, and says so.
+	it("carries what the reinstall kept as its note", async () => {
+		const kept = "Kept the named-hosts service from buncargo 16.1.0";
+		const result = await repairStaleService(REASON, {
+			prompt: async () => "update",
+			reinstall: async () => [kept],
+			caPath: () => "/ca.pem",
+		});
+		expect(result).toEqual({ ok: true, caPath: "/ca.pem", notes: [kept] });
 	});
 
 	// A failed reinstall leaves the old daemon serving, so the run continues
@@ -160,25 +175,16 @@ describe("hostsServiceFix", () => {
 });
 
 describe("doctorFixHosts", () => {
-	const originalHome = process.env.HOME;
-	afterEach(() => {
-		process.env.HOME = originalHome;
-	});
+	useTempHome();
 
 	// It installed and trusted for a machine that had declined, and every run
 	// then ignored the result: the decline is checked before anything else.
 	it("leaves a machine that declined named hosts alone", async () => {
-		const home = mkdtempSync(join(tmpdir(), "buncargo-onboarding-test-"));
-		process.env.HOME = home;
-		try {
-			persistHostsDecline();
-			expect(await doctorFixHosts({ interactive: false })).toEqual({
-				fixed: [],
-				issues: [],
-			});
-		} finally {
-			rmSync(home, { recursive: true, force: true });
-		}
+		persistHostsDecline();
+		expect(await doctorFixHosts({ interactive: false })).toEqual({
+			fixed: [],
+			issues: [],
+		});
 	});
 });
 
@@ -210,5 +216,76 @@ describe("uninstallHosts", () => {
 		expect(warnings).toHaveLength(1);
 		expect(warnings[0]).toContain("/etc/hosts");
 		expect(warnings[0]).toContain("buncargo hosts uninstall");
+	});
+});
+
+describe("installHosts", () => {
+	/** Every step recorded, the service already installed and current. */
+	function machine(overrides: Partial<HostsInstallDeps> = {}) {
+		const steps: string[] = [];
+		const deps: HostsInstallDeps = {
+			clearDecline: () => steps.push("clear decline"),
+			ensureMkcert: async () => {
+				steps.push("mkcert");
+				return "/bin/mkcert";
+			},
+			installTrust: (mkcert) => steps.push(`trust ${mkcert}`),
+			mintCertificate: async () => {
+				steps.push("certificate");
+			},
+			serviceCurrent: () => true,
+			installService: ({ force }) => {
+				steps.push(`service force=${force}`);
+				return {};
+			},
+			waitForDaemon: async () => {
+				steps.push("daemon");
+				return { ok: true };
+			},
+			...overrides,
+		};
+		return { steps, deps };
+	}
+
+	it("trusts and mints before it replaces the service, and passes --force through", async () => {
+		// The daemon cannot bind :443 without a leaf, and will not mint one.
+		const { steps, deps } = machine();
+		await installHosts(deps, { reinstallService: true, force: true });
+		expect(steps).toEqual([
+			"clear decline",
+			"mkcert",
+			"trust /bin/mkcert",
+			"certificate",
+			"service force=true",
+			"daemon",
+		]);
+	});
+
+	it("leaves a current service alone unless asked to reinstall it", async () => {
+		const { steps, deps } = machine();
+		await installHosts(deps, {});
+		expect(steps).toEqual([
+			"clear decline",
+			"mkcert",
+			"trust /bin/mkcert",
+			"certificate",
+			"daemon",
+		]);
+	});
+
+	it("returns why it kept a newer service, and fails when the daemon does not start", async () => {
+		const kept = machine({
+			installService: () => ({ kept: "A newer buncargo installed it" }),
+		});
+		expect(await installHosts(kept.deps, { reinstallService: true })).toEqual([
+			"A newer buncargo installed it",
+		]);
+
+		const down = machine({
+			waitForDaemon: async () => ({ ok: false, message: "port 443 is taken" }),
+		});
+		await expect(installHosts(down.deps, {})).rejects.toThrow(
+			"port 443 is taken",
+		);
 	});
 });

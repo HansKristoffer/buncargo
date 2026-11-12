@@ -5,15 +5,22 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	mkdir,
+	readFile,
+	rename,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { dirname } from "node:path";
 import { getErrorMessage, isRecord, safeJsonParse } from "hanzio";
-import { isProcessAlive } from "./process/lifecycle";
 
 /**
  * Reading and writing buncargo's persisted state files (`routes.json`,
- * `hosts-daemon.json`, `hosts-service.json`, `ports.json`,
- * `public-tunnels.json`).
+ * `hosts-service.json`, `offsets.json`), and the text
+ * writer the dotenv rewrite shares.
  *
  * Every read goes through a validator, so a hand-edited or half-written file
  * degrades to "no state" instead of surfacing as a nonsense value later. Every
@@ -96,30 +103,44 @@ export async function writeJsonDocument(
 	document: unknown,
 	options: { afterWrite?: (path: string) => void; mode?: number } = {},
 ): Promise<void> {
+	await writeTextFile(path, serialize(document), {
+		afterWrite: options.afterWrite,
+		mode: options.mode ?? 0o600,
+	});
+}
+
+/** The file's permission bits, or undefined when it does not exist. */
+async function existingMode(path: string): Promise<number | undefined> {
+	try {
+		return (await stat(path)).mode & 0o777;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+/**
+ * Write `text` through a temp file and a rename. Without `mode` the file keeps
+ * the mode it has (a `0600` dotenv stays `0600`); a new one is `0600`.
+ */
+export async function writeTextFile(
+	path: string,
+	text: string,
+	options: { afterWrite?: (path: string) => void; mode?: number } = {},
+): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
+	const mode = options.mode ?? (await existingMode(path)) ?? 0o600;
 	const temp = tempPathFor(path);
 	try {
-		await writeFile(temp, serialize(document), {
-			encoding: "utf-8",
-			mode: options.mode ?? 0o600,
-			flag: "wx",
-		});
+		await writeFile(temp, text, { encoding: "utf-8", mode, flag: "wx" });
+		// The umask narrows the mode `writeFile` creates with.
+		await chmod(temp, mode);
 		await rename(temp, path);
 	} catch (error) {
 		await rm(temp, { force: true }).catch(() => {});
 		throw error;
 	}
 	options.afterWrite?.(path);
-}
-
-/**
- * Is the process that registered an entry still around?
- *
- * A missing pid means the entry was registered without an owner (a static
- * route the user installed by hand), so it outlives any single dev run.
- */
-export function isRouteOwnerAlive(pid: number | undefined): boolean {
-	return pid === undefined || isProcessAlive(pid);
 }
 
 /**
@@ -167,8 +188,22 @@ export interface ListRegistryReadOptions {
 export interface ListRegistry<T> {
 	/** Entries on disk, or `[]` when the file is missing (see `strict`). */
 	read(path: string, options?: ListRegistryReadOptions): Promise<T[]>;
+	/**
+	 * {@link read} for a synchronous caller, always lenient: an unreadable
+	 * file or a newer version reads as `[]`.
+	 */
+	readSync(path: string): T[];
 	/** Persist entries, removing the file when none are left. */
 	write(path: string, entries: T[]): Promise<void>;
+	/**
+	 * Read the entries, change them and write the result, reading the file
+	 * once. `change` returns `undefined` to leave the file as it is. Reads
+	 * like a lenient {@link read}; serializing writers is the caller's lock.
+	 */
+	update(
+		path: string,
+		change: (entries: T[]) => T[] | undefined | Promise<T[] | undefined>,
+	): Promise<void>;
 }
 
 /**
@@ -208,16 +243,62 @@ export function defineListRegistry<T>(options: {
 		return value;
 	}
 
+	/** The file's text, or `undefined` when it does not exist. */
+	async function readRaw(path: string): Promise<string | undefined> {
+		try {
+			return await readFile(path, "utf-8");
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+			throw error;
+		}
+	}
+
+	/** Write `entries` over the file that read as `raw`. */
+	async function store(
+		path: string,
+		raw: string | undefined,
+		entries: T[],
+	): Promise<void> {
+		if (raw !== undefined) {
+			const value = checkVersion(path, raw);
+			const valid = validate(value);
+			const payload = isRecord(value) ? value[key] : undefined;
+			if (
+				!valid ||
+				!Array.isArray(payload) ||
+				valid.length !== payload.length
+			) {
+				// Preserve precisely the bytes being repaired, before destructive
+				// replacement (including an empty-list deletion). The caller's
+				// mutation lock covers this check and publication together.
+				const backup = `${path}.recovery-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`;
+				await writeFile(backup, raw, { encoding: "utf-8", mode, flag: "wx" });
+				afterWrite?.(backup);
+			}
+		}
+		if (entries.length > 0 && raw === serialize({ version, [key]: entries }))
+			return;
+		if (entries.length === 0) {
+			await rm(path, { force: true });
+			return;
+		}
+		await writeJsonDocument(
+			path,
+			{ version, [key]: entries },
+			{ afterWrite, mode },
+		);
+	}
+
 	return {
 		async read(path, readOptions = {}) {
-			let raw: string;
+			let raw: string | undefined;
 			try {
-				raw = await readFile(path, "utf-8");
+				raw = await readRaw(path);
 			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
 				if (!readOptions.strict) return [];
 				throw new StateFileUnreadableError(path, getErrorMessage(error));
 			}
+			if (raw === undefined) return [];
 			checkVersion(path, raw);
 			const entries = parse(raw, validate);
 			if (entries) return entries;
@@ -227,41 +308,18 @@ export function defineListRegistry<T>(options: {
 				`not a valid version ${version} ${key} document`,
 			);
 		},
+		readSync(path) {
+			return readJsonDocumentSync(path, validate) ?? [];
+		},
 		async write(path, entries) {
-			let raw: string | undefined;
-			try {
-				raw = await readFile(path, "utf-8");
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			}
-			if (raw !== undefined) {
-				const value = checkVersion(path, raw);
-				const valid = validate(value);
-				const payload = isRecord(value) ? value[key] : undefined;
-				if (
-					!valid ||
-					!Array.isArray(payload) ||
-					valid.length !== payload.length
-				) {
-					// Preserve precisely the bytes being repaired, before destructive
-					// replacement (including an empty-list deletion). The caller's
-					// mutation lock covers this check and publication together.
-					const backup = `${path}.recovery-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`;
-					await writeFile(backup, raw, { encoding: "utf-8", mode, flag: "wx" });
-					afterWrite?.(backup);
-				}
-			}
-			if (entries.length > 0 && raw === serialize({ version, [key]: entries }))
-				return;
-			if (entries.length === 0) {
-				await rm(path, { force: true });
-				return;
-			}
-			await writeJsonDocument(
-				path,
-				{ version, [key]: entries },
-				{ afterWrite, mode },
-			);
+			await store(path, await readRaw(path), entries);
+		},
+		async update(path, change) {
+			const raw = await readRaw(path);
+			if (raw !== undefined) checkVersion(path, raw);
+			const entries = raw === undefined ? [] : (parse(raw, validate) ?? []);
+			const next = await change(entries);
+			if (next) await store(path, raw, next);
 		},
 	};
 }

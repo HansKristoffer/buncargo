@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	claimOffset,
+	offsetClaimHoldsBlock,
 	offsetClaimKey,
 	readOffsetClaims,
 	withOffsetClaimsLock,
@@ -18,15 +19,18 @@ import {
 import { CI_PROJECT_SUFFIX } from "../core/ports";
 import * as runRegistry from "../core/run-registry";
 import { CI_ENV_VARS } from "../core/runtime-flags";
+import { useTempHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "./create-dev-environment";
 
 // A CI runner's directory persists between jobs, and a claim lives as long as
 // its directory: claims of throwaway environments filled every block of the
-// machine and stayed. Its teardown gives the block back; a developer's dev
-// checkout keeps its block while it is stopped.
+// machine and stayed. Its teardown gives the block back and keeps the claim,
+// the record of whose project its volumes are; a developer's dev checkout
+// keeps its block while it is stopped.
 
+useTempHome();
 const saved = Object.fromEntries(
-	["HOME", "BUNCARGO_PORT_OFFSET", ...CI_ENV_VARS].map((name) => [
+	["BUNCARGO_PORT_OFFSET", ...CI_ENV_VARS].map((name) => [
 		name,
 		process.env[name],
 	]),
@@ -34,7 +38,6 @@ const saved = Object.fromEntries(
 let scratch: string;
 beforeEach(() => {
 	scratch = mkdtempSync(join(tmpdir(), "buncargo-throwaway-claims-"));
-	process.env.HOME = join(scratch, "home");
 	delete process.env.BUNCARGO_PORT_OFFSET;
 	for (const name of CI_ENV_VARS) delete process.env[name];
 });
@@ -57,6 +60,13 @@ function fakeDocker(): string {
 	return docker;
 }
 
+/** The claim under `key`: whether it is there, and holds its block. */
+function claimState(key: string): "holds" | "released" | "none" {
+	const claim = readOffsetClaims()[key];
+	if (!claim) return "none";
+	return offsetClaimHoldsBlock(claim) ? "holds" : "released";
+}
+
 function checkout() {
 	const root = join(scratch, "runner-9", "app");
 	mkdirSync(root, { recursive: true });
@@ -72,30 +82,34 @@ function checkout() {
 	return { root, env };
 }
 
-it("gives a suffixed environment's block back when it is stopped", async () => {
+it("gives a suffixed environment's block back when it is stopped, and keeps who owns its project", async () => {
 	const { root, env } = checkout();
 	const ci = env.withSuffix(CI_PROJECT_SUFFIX);
 	await ci.prepareStartAsync();
 	const key = offsetClaimKey(root, CI_PROJECT_SUFFIX);
-	expect(readOffsetClaims()[key]).toBeDefined();
+	expect(claimState(key)).toBe("holds");
 
-	await ci.stop({ verbose: false, removeVolumes: true });
+	await ci.stop({ verbose: false });
 
-	expect(readOffsetClaims()[key]).toBeUndefined();
+	expect(claimState(key)).toBe("released");
+	expect(readOffsetClaims()[key]).toMatchObject({
+		projectName: ci.projectName,
+		root,
+	});
 	// Its next start claims again.
 	await ci.prepareStartAsync();
-	expect(readOffsetClaims()[key]).toBeDefined();
+	expect(claimState(key)).toBe("holds");
 });
 
 it("gives a dev environment's block back when it is stopped in CI", async () => {
 	process.env.CI = "true";
 	const { root, env } = checkout();
 	await env.prepareStartAsync();
-	expect(readOffsetClaims()[root]).toBeDefined();
+	expect(claimState(root)).toBe("holds");
 
 	await env.stop({ verbose: false });
 
-	expect(readOffsetClaims()[root]).toBeUndefined();
+	expect(claimState(root)).toBe("released");
 });
 
 it("claims a block again for Prisma once a stop gave the last one back", async () => {
@@ -114,11 +128,11 @@ it("claims a block again for Prisma once a stop gave the last one back", async (
 	const key = offsetClaimKey(root, CI_PROJECT_SUFFIX);
 	await ci.prepareStartAsync();
 	await ci.stop({ verbose: false, removeVolumes: true });
-	expect(readOffsetClaims()[key]).toBeUndefined();
+	expect(claimState(key)).toBe("released");
 
 	// Not the released block, which another environment may have claimed since.
 	await ci.prisma?.ensureDatabase();
-	expect(readOffsetClaims()[key]).toBeDefined();
+	expect(claimState(key)).toBe("holds");
 });
 
 it("keeps a developer's dev block claimed while it is stopped", async () => {
@@ -149,7 +163,7 @@ it("keeps the block a run claimed while the stop checked for runs", async () => 
 					root,
 					suffix: CI_PROJECT_SUFFIX,
 					offset: claimed.offset,
-					ports: claimed.ports ?? [],
+					ports: claimed.ports,
 					projectName: claimed.projectName,
 				}),
 			);
@@ -164,4 +178,42 @@ it("keeps the block a run claimed while the stop checked for runs", async () => 
 	}
 
 	expect(readOffsetClaims()[key]?.offset).toBe(claimed.offset);
+});
+
+it("keeps the block another run of the environment claimed during the teardown", async () => {
+	const root = join(scratch, "runner-9", "app");
+	mkdirSync(root, { recursive: true });
+	const config = {
+		projectPrefix: "gey",
+		services: { postgres: { port: 5432 } },
+		docker: { runtime: "docker" as const, binary: fakeDocker() },
+		options: { verbose: false },
+	};
+	const next = createDevEnvironment(config, { root }).withSuffix(
+		CI_PROJECT_SUFFIX,
+	);
+	// The next job of this directory allocates while this one tears down,
+	// before it has published its run.
+	const ci = createDevEnvironment(
+		{
+			...config,
+			hooks: {
+				beforeStop: async () => {
+					setSystemTime(new Date(Date.now() + 60_000));
+					try {
+						await next.prepareStartAsync();
+					} finally {
+						setSystemTime();
+					}
+				},
+			},
+		},
+		{ root },
+	).withSuffix(CI_PROJECT_SUFFIX);
+	await ci.prepareStartAsync();
+	const key = offsetClaimKey(root, CI_PROJECT_SUFFIX);
+
+	await ci.stop({ verbose: false, removeVolumes: true });
+
+	expect(readOffsetClaims()[key]).toBeDefined();
 });

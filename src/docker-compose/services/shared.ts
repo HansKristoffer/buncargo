@@ -1,8 +1,11 @@
 import { typedSwitch, typedSwitchGroup } from "hanzio";
+import { envName } from "../../core/ports";
 import type {
+	BuiltInHealthCheck,
 	DockerComposeHealthcheckRaw,
 	DockerPresetName,
-	ServiceConfig,
+	HealthCheckFn,
+	ResolvedComposeService,
 } from "../../types";
 
 const DEFAULT_HEALTHCHECK_SETTINGS = {
@@ -11,8 +14,17 @@ const DEFAULT_HEALTHCHECK_SETTINGS = {
 	retries: 20,
 } as const;
 
-export function getPortEnvName(portKey: string): string {
-	return `${portKey.toUpperCase()}_PORT`;
+/**
+ * A value typed into a preset option, written so Compose reads it literally:
+ * Compose interpolates every `$` in the file, while the connection URL is
+ * built from the raw value.
+ */
+export function composeLiteral(value: string): string {
+	return value.replaceAll("$", () => "$$");
+}
+
+function getPortEnvName(portKey: string): string {
+	return `${envName(portKey)}_PORT`;
 }
 
 function resolveInternalPort(
@@ -26,6 +38,7 @@ function resolveInternalPort(
 		clickhouse: () => 8123,
 		mailpit: () => 8025,
 		typesense: () => 8108,
+		minio: () => 9000,
 	});
 }
 
@@ -38,48 +51,77 @@ function resolveSecondaryInternalPort(
 		mailpit: () => 1025,
 		...typedSwitchGroup(
 			preset,
-			[undefined, "postgres", "redis", "typesense"],
+			[undefined, "postgres", "redis", "typesense", "minio"],
 			() => fallback,
 		),
 	});
 }
 
-export function getDefaultPortBindings(
+/** One port buncargo publishes for a service, in both of its forms. */
+export interface PortBinding {
+	/** The port map key: the service's own, or `<service>Secondary`. */
+	portKey: string;
+	containerPort: number;
+	/** On the claimed host port, through its `<NAME>_PORT` variable. */
+	claimed: string;
+	/** On a host port the runtime picks (`127.0.0.1::5432`). */
+	assigned: string;
+}
+
+/**
+ * A service's published ports, on its `bind` address. Compose would
+ * otherwise publish on every interface, where another machine reaches a
+ * database with its default credentials.
+ */
+export function portBindings(
 	serviceKey: string,
-	config: ServiceConfig,
+	config: ResolvedComposeService,
 	preset?: DockerPresetName,
-): string[] {
-	if (config.port === undefined) return [];
-	const envName = getPortEnvName(serviceKey);
-	const bindings: string[] = [];
-
-	const defaultInternalPort = resolveInternalPort(preset, config.port);
-
-	bindings.push(`\${${envName}:-${config.port}}:${defaultInternalPort}`);
-
-	if (config.secondaryPort !== undefined) {
-		const secondaryEnv = getPortEnvName(`${serviceKey}Secondary`);
-		const secondaryInternal = resolveSecondaryInternalPort(
-			preset,
-			config.secondaryPort,
-		);
+): PortBinding[] {
+	if (config.kind !== "container") return [];
+	// An IPv6 address is bracketed, so its colons do not split the entry.
+	const host = config.bind.includes(":") ? `[${config.bind}]` : config.bind;
+	const binding = (
+		portKey: string,
+		hostPort: number,
+		containerPort: number,
+	): PortBinding => ({
+		portKey,
+		containerPort,
+		claimed: `${host}:\${${getPortEnvName(portKey)}:-${hostPort}}:${containerPort}`,
+		assigned: `${host}::${containerPort}`,
+	});
+	const bindings = [
+		binding(serviceKey, config.port, resolveInternalPort(preset, config.port)),
+	];
+	if (config.secondaryPort !== undefined)
 		bindings.push(
-			`\${${secondaryEnv}:-${config.secondaryPort}}:${secondaryInternal}`,
+			binding(
+				`${serviceKey}Secondary`,
+				config.secondaryPort,
+				resolveSecondaryInternalPort(preset, config.secondaryPort),
+			),
 		);
-	}
-
 	return bindings;
 }
 
+/** A service's `ports` entries on its claimed host ports. */
+export function getDefaultPortBindings(
+	serviceKey: string,
+	config: ResolvedComposeService,
+	preset?: DockerPresetName,
+): string[] {
+	return portBindings(serviceKey, config, preset).map(({ claimed }) => claimed);
+}
+
 export function resolveHealthcheck(
-	healthCheck: ServiceConfig["healthCheck"] | undefined,
+	healthCheck: BuiltInHealthCheck | HealthCheckFn | false,
 	fallback: DockerComposeHealthcheckRaw | undefined,
 	options: { internalPort: number; user?: string },
 ): DockerComposeHealthcheckRaw | undefined {
 	if (healthCheck === false) return undefined;
 	if (typeof healthCheck === "function") return fallback;
 	return typedSwitch(healthCheck, {
-		undefined: () => fallback,
 		// The image's bootstrap server accepts Unix sockets before TCP is ready.
 		pg_isready: () => ({
 			test: [

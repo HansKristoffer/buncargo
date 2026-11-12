@@ -1,4 +1,4 @@
-import { afterAll, beforeAll } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,36 +25,66 @@ export function withoutCiEnv<T>(body: () => T): T {
 		saved.set(name, process.env[name]);
 		delete process.env[name];
 	}
-	try {
-		return body();
-	} finally {
+	const restore = () => {
 		for (const [name, value] of saved) {
 			if (value === undefined) delete process.env[name];
 			else process.env[name] = value;
 		}
+	};
+	let result: T;
+	try {
+		result = body();
+	} catch (error) {
+		restore();
+		throw error;
 	}
+	// An async body reads the environment after its first await, so the
+	// signals stay cleared until it settles.
+	if (result instanceof Promise) return result.finally(restore) as T;
+	restore();
+	return result;
 }
 
 /**
- * Give the calling test file a temporary `HOME` for all of its tests, so the
- * run entries, leases and port claims its library starts write never reach
- * the developer's `~/.buncargo`.
+ * Give each test in the calling scope a fresh temporary `HOME`, or with
+ * `"all"` one `HOME` that the scope's tests share, and put the previous one
+ * back afterwards. Returns the current home's path.
  *
- * A start there still ensures a watchdog unless it passes `watchdog: false`,
- * and one spawned from a test outlives it with this `HOME` and, once the
- * preload's stubs are gone, the real container runtime: every real stack
- * would look unowned to it. Pass `watchdog: false` as well.
+ * The preload already gives every test file a temporary `HOME`, so a test
+ * calls this only when it must not see what earlier tests in the file left
+ * under `~/.buncargo`, or needs the path.
+ *
+ * A start under it still ensures a watchdog unless it passes
+ * `watchdog: false`, and one spawned from a test outlives it with this `HOME`
+ * and, once the preload's stubs are gone, the real container runtime: every
+ * real stack would look unowned to it. Pass `watchdog: false` as well.
  */
-export function isolateHome(prefix = "buncargo-home-"): void {
-	const saved = process.env.HOME;
+export function useTempHome(scope: "each" | "all" = "each"): () => string {
+	let saved: string | undefined;
 	let home = "";
-	beforeAll(() => {
-		home = mkdtempSync(join(tmpdir(), prefix));
+	(scope === "each" ? beforeEach : beforeAll)(() => {
+		saved = process.env.HOME;
+		home = mkdtempSync(join(tmpdir(), "buncargo-home-"));
 		process.env.HOME = home;
 	});
-	afterAll(() => {
+	(scope === "each" ? afterEach : afterAll)(() => {
 		if (saved === undefined) delete process.env.HOME;
 		else process.env.HOME = saved;
 		rmSync(home, { recursive: true, force: true });
 	});
+	return () => home;
+}
+
+/**
+ * `count` different ports the OS just handed out and nothing listens on now.
+ * A random port in a fixed range collides with other projects on the machine
+ * and, in a parallel run, with other test files.
+ */
+export function freePorts(count: number): number[] {
+	const listeners = Array.from({ length: count }, () =>
+		Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } }),
+	);
+	const ports = listeners.map((listener) => listener.port);
+	for (const listener of listeners) listener.stop(true);
+	return ports;
 }

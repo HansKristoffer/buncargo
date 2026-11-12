@@ -1,37 +1,32 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import {
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { withFileLock } from "./file-lock";
 import { isProcessAlive } from "./process/lifecycle";
 import { readProcessIdentity } from "./process-identity";
 import { publishRun } from "./run-registry";
+import { runEntry } from "./run-registry.testing";
+import { useTempHome } from "./test-env.testing";
 import { buncargoVersion } from "./version";
 import {
 	ensureWatchdog,
 	getWatchdogLockFile,
-	getWatchdogPid,
+	getWatchdogLogFile,
+	getWatchdogPidAsync,
 	getWatchdogPidFile,
 	isOutdatedWatchdog,
 	resolveWatchdogRunnerPath,
 } from "./watchdog";
 
-const isolated = ["HOME", "DOCKER_HOST", "DOCKER_CONTEXT"] as const;
+// One home for the file: the watchdog a test starts is what later tests find.
+const home = useTempHome("all");
+const isolated = ["DOCKER_HOST", "DOCKER_CONTEXT"] as const;
 const saved = Object.fromEntries(
 	isolated.map((key) => [key, process.env[key]]),
 );
-let home = "";
 
 beforeAll(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-watchdog-"));
-	process.env.HOME = home;
 	// The runner sweeps as soon as it starts, inherits this environment, and
 	// with an empty registry reads every stack it can list as unowned. It
 	// finds the failing `docker` the test preload puts first on PATH; an
@@ -48,7 +43,6 @@ afterAll(() => {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;
 	}
-	rmSync(home, { recursive: true, force: true });
 });
 
 /**
@@ -58,21 +52,15 @@ afterAll(() => {
  * wants to inspect the process has to own something first.
  */
 async function claimSomething(): Promise<void> {
-	await publishRun({
-		sessionId: `watchdog-test-${crypto.randomUUID()}`,
-		processIdentity: readProcessIdentity(process.pid),
-		projectPrefix: "demo",
-		projectName: "demo",
-		root: home,
-		worktree: null,
-		pid: process.pid,
-		startedAt: new Date().toISOString(),
-		updatedAt: new Date().toISOString(),
-		hosts: null,
-		cli: { program: process.execPath },
-		apps: [],
-		services: [{ name: "db", status: "ready" }],
-	});
+	await publishRun(
+		runEntry({
+			sessionId: `watchdog-test-${crypto.randomUUID()}`,
+			processIdentity: readProcessIdentity(process.pid),
+			root: home(),
+			pid: process.pid,
+			services: [{ name: "db", status: "ready" }],
+		}),
+	);
 }
 
 /**
@@ -82,9 +70,10 @@ async function claimSomething(): Promise<void> {
  * held, so nothing started, and read no pid.
  */
 async function stopWatchdog(): Promise<void> {
-	const pid = getWatchdogPid();
+	const pid = await getWatchdogPidAsync();
 	if (pid) process.kill(pid, "SIGTERM");
-	for (let i = 0; i < 200 && getWatchdogPid(); i++) await Bun.sleep(10);
+	for (let i = 0; i < 200 && (await getWatchdogPidAsync()); i++)
+		await Bun.sleep(10);
 	for (let i = 0; pid && i < 200 && isProcessAlive(pid); i++)
 		await Bun.sleep(10);
 }
@@ -125,16 +114,16 @@ describe("ensureWatchdog", () => {
 				ensureWatchdog({ verbose: false }),
 				ensureWatchdog({ verbose: false }),
 			]);
-			const pid = getWatchdogPid();
+			const pid = await getWatchdogPidAsync();
 			expect(pid).not.toBeNull();
 			expect(JSON.parse(readFileSync(getWatchdogPidFile(), "utf8")).pid).toBe(
 				pid,
 			);
 			await ensureWatchdog({ verbose: false });
-			expect(getWatchdogPid()).toBe(pid);
+			expect(await getWatchdogPidAsync()).toBe(pid);
 		} finally {
 			await stopWatchdog();
-			expect(getWatchdogPid()).toBeNull();
+			expect(await getWatchdogPidAsync()).toBeNull();
 		}
 	});
 
@@ -146,13 +135,36 @@ describe("ensureWatchdog", () => {
 		try {
 			await claimSomething();
 			await ensureWatchdog({ verbose: false });
-			const pid = getWatchdogPid();
+			const pid = await getWatchdogPidAsync();
 			expect(pid).not.toBeNull();
 			const ancestors = ancestorsOf(pid as number);
 			expect(ancestors[0]).not.toBe(process.pid);
 			// Reparented the moment the intermediate exited: to init/launchd, or
 			// to a subreaper such as a systemd user manager, never to us.
 			expect(ancestors).not.toContain(process.pid);
+		} finally {
+			await stopWatchdog();
+		}
+	});
+
+	// The log was truncated at every start, so it rarely still covered the
+	// incident it was read for.
+	it("keeps the log across watchdogs, moving one past its cap aside", async () => {
+		const logFile = getWatchdogLogFile();
+		try {
+			await claimSomething();
+			writeFileSync(logFile, "an earlier watchdog's line\n");
+			await ensureWatchdog({ verbose: false });
+			expect(readFileSync(logFile, "utf8")).toStartWith(
+				"an earlier watchdog's line\n",
+			);
+			await stopWatchdog();
+
+			const full = "x".repeat(1024 * 1024 + 1);
+			writeFileSync(logFile, full);
+			await ensureWatchdog({ verbose: false });
+			expect(readFileSync(`${logFile}.1`, "utf8")).toBe(full);
+			expect(readFileSync(logFile, "utf8")).not.toContain("xxxx");
 		} finally {
 			await stopWatchdog();
 		}
@@ -177,7 +189,7 @@ describe("ensureWatchdog", () => {
 		await isHeld;
 		try {
 			await ensureWatchdog({ verbose: false });
-			expect(getWatchdogPid()).toBeNull();
+			expect(await getWatchdogPidAsync()).toBeNull();
 		} finally {
 			release();
 			await held;
@@ -186,6 +198,9 @@ describe("ensureWatchdog", () => {
 });
 
 describe("the watchdog runner", () => {
+	// A watchdog an earlier test started still holds the shared home's lock.
+	useTempHome();
+
 	it("exits without sweeping once the process it may not outlive has ended", async () => {
 		// A watchdog a test run started outlived it and, from a temporary HOME,
 		// swept real stacks on the machine's daemon.
@@ -193,7 +208,7 @@ describe("the watchdog runner", () => {
 		await parent.exited;
 
 		const runner = Bun.spawn([process.execPath, resolveWatchdogRunnerPath()], {
-			cwd: home,
+			cwd: home(),
 			env: { ...process.env, BUNCARGO_WATCHDOG_PARENT: `${parent.pid}:` },
 			stdio: ["ignore", "pipe", "inherit"],
 		});
@@ -234,7 +249,7 @@ async function startStubRunner(
 	version: string | undefined,
 	options: { identity?: boolean; ignoresTerm?: boolean } = {},
 ) {
-	const script = join(home, "stub-runner.ts");
+	const script = join(home(), "stub-runner.ts");
 	writeFileSync(
 		script,
 		`import { writeFileSync } from "node:fs";
@@ -252,7 +267,7 @@ await withFileLock(lockFile, async () => {
 }, { timeoutMs: 0 });
 `,
 	);
-	const ready = join(home, `stub-ready-${crypto.randomUUID()}`);
+	const ready = join(home(), `stub-ready-${crypto.randomUUID()}`);
 	const stub = Bun.spawn(
 		[
 			process.execPath,
@@ -276,6 +291,10 @@ await withFileLock(lockFile, async () => {
 }
 
 describe("ensureWatchdog and an older watchdog", () => {
+	// Each with a state directory of its own: a stub still letting go of the
+	// runner lock is no later test's business.
+	useTempHome();
+
 	for (const version of ["12.4.0", undefined]) {
 		it(`replaces a watchdog of ${version ?? "no recorded version"} with this buncargo's`, async () => {
 			// An older runner sweeps every checkout on the machine with its own
@@ -285,7 +304,7 @@ describe("ensureWatchdog and an older watchdog", () => {
 			try {
 				await ensureWatchdog({ verbose: false });
 				expect(await stub.exited).toBe(0);
-				const pid = getWatchdogPid();
+				const pid = await getWatchdogPidAsync();
 				expect(pid).not.toBeNull();
 				expect(pid).not.toBe(stub.pid);
 				expect(
@@ -293,6 +312,7 @@ describe("ensureWatchdog and an older watchdog", () => {
 				).toBe(buncargoVersion());
 			} finally {
 				stub.kill();
+				await stub.exited;
 				await stopWatchdog();
 			}
 		});
@@ -304,7 +324,7 @@ describe("ensureWatchdog and an older watchdog", () => {
 			try {
 				await ensureWatchdog({ verbose: false });
 				expect(stub.exitCode).toBeNull();
-				expect(getWatchdogPid()).toBe(stub.pid);
+				expect(await getWatchdogPidAsync()).toBe(stub.pid);
 			} finally {
 				stub.kill();
 				await stub.exited;
@@ -320,7 +340,7 @@ describe("ensureWatchdog and an older watchdog", () => {
 		const stub = await startStubRunner("12.4.0", { ignoresTerm: true });
 		try {
 			await ensureWatchdog({ verbose: false });
-			const pid = getWatchdogPid();
+			const pid = await getWatchdogPidAsync();
 			expect(pid).not.toBeNull();
 			expect(pid).not.toBe(stub.pid);
 		} finally {
@@ -337,7 +357,7 @@ describe("ensureWatchdog and an older watchdog", () => {
 		try {
 			await ensureWatchdog({ verbose: false });
 			expect(stub.exitCode).toBeNull();
-			expect(getWatchdogPid()).toBe(stub.pid);
+			expect(await getWatchdogPidAsync()).toBe(stub.pid);
 		} finally {
 			stub.kill();
 			await stub.exited;

@@ -2,11 +2,11 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { getErrorMessage, typedSwitch } from "hanzio";
 import type {
-	AppConfig,
 	BuncargoIntegration,
 	ContainerRuntimeName,
 	NamedHost,
-	ServiceConfig,
+	ResolvedApp,
+	ResolvedService,
 } from "../types";
 import { environmentOpenUrl, preferredAppUrl } from "./app-url";
 import type { StartDevServersOptions } from "./process/dev-servers";
@@ -66,12 +66,11 @@ export interface RunSource {
 	readonly urls: object;
 	readonly loopbackUrls: object;
 	readonly publicUrls: object;
-	readonly services: Record<string, ServiceConfig>;
-	/** Integrations add their own fields to each app's entry (`expo`, …). */
+	readonly services: Readonly<Record<string, ResolvedService>>;
+	/** Integrations record their own fields on each app's entry, by name (`integrations.expo`). */
 	readonly integrations?: readonly BuncargoIntegration[];
 	readonly workspaceId?: string;
 	details?(): Record<string, string>;
-	readonly tasks?: Readonly<Record<string, { readonly description?: string }>>;
 	readonly hosts: {
 		readonly active: boolean;
 		readonly tld: string;
@@ -129,28 +128,28 @@ function runDetails(env: Pick<RunSource, "details">): {
 	}
 }
 
-/** What each integration records about one app, merged in integration order. */
+/**
+ * What each integration records about one app, under the integration's name,
+ * or nothing when none records anything.
+ */
 function integrationFields(
 	env: RunSource,
 	name: string,
-	config: AppConfig | undefined,
+	config: ResolvedApp,
 	port: number | undefined,
-): Record<string, unknown> {
-	if (!config) return {};
-	const fields: Record<string, unknown> = {};
+): Pick<RunAppEntry, "integrations"> {
+	const integrations: Record<string, Record<string, unknown>> = {};
 	for (const integration of env.integrations ?? []) {
-		Object.assign(
-			fields,
-			integration.describeApp?.({
-				name,
-				config,
-				port,
-				root: env.root,
-				workspaceId: env.workspaceId ?? "",
-			}),
-		);
+		const fields = integration.describeApp?.({
+			name,
+			config,
+			port,
+			root: env.root,
+			workspaceId: env.workspaceId ?? "",
+		});
+		if (fields) integrations[integration.name] = fields;
 	}
-	return fields;
+	return Object.keys(integrations).length > 0 ? { integrations } : {};
 }
 
 /**
@@ -174,7 +173,7 @@ function namedHostnames(hosts: RunSource["hosts"]): Map<string, string> {
 function appEntries(
 	env: RunSource,
 	input: {
-		apps: Record<string, AppConfig>;
+		apps: Readonly<Record<string, ResolvedApp>>;
 		statusFor: (name: string) => RunAppStatus;
 		attached?: string;
 	},
@@ -185,9 +184,11 @@ function appEntries(
 	const publicUrls = env.publicUrls as Record<string, string>;
 	const hostnameFor = namedHostnames(env.hosts);
 
-	return Object.keys(input.apps).flatMap((name) => {
+	return Object.entries(input.apps).flatMap(([name, app]) => {
 		const port = ports[name];
-		if (port === undefined && input.apps[name]?.kind !== "worker") return [];
+		// The registry records only a worker's kind; an app with a port is a server.
+		const kind = app.port === undefined ? ("worker" as const) : undefined;
+		if (port === undefined && kind === undefined) return [];
 		const loopbackUrl =
 			port === undefined
 				? undefined
@@ -195,8 +196,8 @@ function appEntries(
 		return [
 			{
 				name,
-				kind: input.apps[name]?.kind,
-				protocol: input.apps[name]?.exposeProtocol ?? "http",
+				kind,
+				protocol: app.port === undefined ? "http" : app.exposeProtocol,
 				port,
 				attached: input.attached === name ? true : undefined,
 				url: urls[name] ?? loopbackUrl,
@@ -207,14 +208,14 @@ function appEntries(
 						url: urls[name] ?? loopbackUrl,
 						loopbackUrl,
 						publicUrl: publicUrls[name],
-						entryPath: input.apps[name]?.entryPath,
+						entryPath: app.entryPath,
 					},
 					env.hosts?.active ?? false,
 				),
 				hostname: hostnameFor.get(name),
-				...integrationFields(env, name, input.apps[name], port),
-				exclusive: input.apps[name]?.exclusive,
-				stopGraceMs: input.apps[name]?.stopGraceMs,
+				...integrationFields(env, name, app, port),
+				exclusive: app.exclusive,
+				stopGraceMs: app.stopGraceMs,
 				status: input.statusFor(name),
 			},
 		];
@@ -253,18 +254,20 @@ function serviceEntries(
 			return [
 				{
 					name,
-					kind: service.kind,
+					kind: service.kind === "job" ? ("job" as const) : undefined,
 					preset: identity.preset,
 					protocol:
-						service.exposeProtocol ?? defaultServiceProtocol(identity.preset),
-					stack: service.external?.stack,
+						service.port === undefined
+							? defaultServiceProtocol(service.preset)
+							: service.exposeProtocol,
+					stack: service.kind === "external" ? service.stack : undefined,
 					container:
-						env.containerRuntime && !service.external
+						env.containerRuntime && service.kind !== "external"
 							? {
 									runtime: env.containerRuntime,
 									binary: env.containerRuntimeBinary,
-									service: service.serviceName ?? name,
-									name: `${env.projectName}-${service.serviceName ?? name}`,
+									service: service.serviceName,
+									name: `${env.projectName}-${service.serviceName}`,
 								}
 							: undefined,
 					port,
@@ -282,7 +285,7 @@ function serviceEntries(
 export interface PublishRunInput {
 	serviceNames?: readonly string[];
 	/** Apps this run is responsible for, spawned or reused. */
-	apps: Record<string, AppConfig>;
+	apps: Readonly<Record<string, ResolvedApp>>;
 	/** Apps served by someone else, so this run cannot stop them. */
 	reusedNames?: readonly string[];
 	attached?: string;
@@ -291,6 +294,8 @@ export interface PublishRunInput {
 	 * has waited for every container, so by then they are up by construction.
 	 */
 	serviceStatus?: RunServiceStatus;
+	/** The config's tasks, which BuncargoBar offers to run. */
+	tasks?: Readonly<Record<string, { readonly description?: string }>>;
 }
 
 /**
@@ -358,9 +363,9 @@ async function writeRun(
 			input.serviceNames,
 		),
 		...runDetails(env),
-		...(env.tasks && Object.keys(env.tasks).length > 0
+		...(input.tasks && Object.keys(input.tasks).length > 0
 			? {
-					tasks: Object.entries(env.tasks).map(([name, task]) => ({
+					tasks: Object.entries(input.tasks).map(([name, task]) => ({
 						name,
 						...(task.description ? { description: task.description } : {}),
 					})),
@@ -471,7 +476,7 @@ export async function markApps(
  * retired, so its readiness can only come after; `buncargo restart` waits
  * for this rather than writing it.
  */
-export async function markAppsRestarting(
+async function markAppsRestarting(
 	run: RunSession,
 	names: readonly string[],
 ): Promise<void> {
@@ -526,37 +531,28 @@ export async function recordAppSpawn(
  */
 export function appRowEvents(
 	run: RunSession,
-): Required<
-	Pick<
-		StartDevServersOptions,
-		| "onAppSpawned"
-		| "onAppReady"
-		| "onAppRestarting"
-		| "onAppExit"
-		| "onAppFailed"
-		| "onAppRestartFailed"
-	>
-> {
+): Required<Pick<StartDevServersOptions, "onAppPhase">> {
 	return {
-		onAppSpawned: (name, pid, attached) => {
-			void recordAppSpawn(run, name, pid, attached);
-		},
-		onAppReady: (name) => {
-			void markApps(run, [name], "ready");
-		},
-		// Before the new process spawns, or `buncargo wait` answers from the
-		// process being replaced.
-		onAppRestarting: (name) => {
-			void markAppsRestarting(run, [name]);
-		},
-		onAppExit: (name, _code, _signal, state) => {
-			void markApps(run, [name], state);
-		},
-		onAppFailed: (name) => {
-			void markApps(run, [name], "failed");
-		},
-		onAppRestartFailed: (name) => {
-			void markApps(run, [name], "failed");
+		onAppPhase: (name, life, previous) => {
+			// A new pid: spawned, or a server its launcher detached.
+			if (life.pid !== undefined && life.pid !== previous.pid)
+				void recordAppSpawn(run, name, life.pid, life.attached);
+			if (life.phase === previous.phase && life.end === previous.end) return;
+			typedSwitch(life.phase, {
+				starting: () => {},
+				reused: () => {},
+				ready: () => {
+					void markApps(run, [name], "ready");
+				},
+				// Before the new process spawns, or `buncargo wait` answers from
+				// the process being replaced.
+				restarting: () => {
+					void markAppsRestarting(run, [name]);
+				},
+				down: () => {
+					void markApps(run, [name], life.end?.verdict ?? "stopped");
+				},
+			});
 		},
 	};
 }
@@ -586,13 +582,18 @@ export async function recordAppUrls(
 /**
  * Record a captured value: in `captures`, and as the app's `publicUrl` when
  * it is one, so BuncargoBar shows the preview URL like a tunnel's. Refreshes
- * the labelled rows too, since those are mostly captures.
+ * the labelled rows too, since those are mostly captures. A `secret` capture
+ * is not recorded at all.
  */
 export async function recordRunCapture(
-	env: RunSession & Pick<RunSource, "details">,
+	env: RunSession &
+		Pick<RunSource, "details"> & {
+			readonly apps: Readonly<Record<string, ResolvedApp>>;
+		},
 	app: string,
 	captured: CapturedValue,
 ): Promise<void> {
+	if (env.apps[app]?.captures?.[captured.name]?.secret) return;
 	const { details } = runDetails(env);
 	const captures = { [captured.name]: captured.value };
 	const recorded: RunPatch = typedSwitch(captured.as, {

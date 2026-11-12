@@ -10,30 +10,30 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateConfig } from "../config";
+import { resolveServices } from "../config/resolve";
 import {
 	projectLockPath,
 	withProjectLifecycleLock,
 } from "../container-runtime";
 import { FileLockTimeoutError } from "../core/file-lock";
+import { externalStackProjectName } from "../core/ports";
 import { loadRuns } from "../core/run-registry";
+import { useTempHome } from "../core/test-env.testing";
 import { buildComposeModel } from "../docker-compose";
 import { service } from "../docker-compose/services";
 import type { BuncargoIntegration, DevConfig } from "../types";
 import { createDevEnvironment } from "./create-dev-environment";
 
+useTempHome("all");
 const saved = {
-	HOME: process.env.HOME,
 	BUNCARGO_PORT_OFFSET: process.env.BUNCARGO_PORT_OFFSET,
 	DOCKER_HOST: process.env.DOCKER_HOST,
 };
-let home = "";
 let root = "";
 
 beforeAll(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-stacks-home-"));
 	root = mkdtempSync(join(tmpdir(), "buncargo-stacks-"));
 	writeFileSync(join(root, "package.json"), "{}");
-	process.env.HOME = home;
 	// No probing, and no daemon to reach should anything try.
 	process.env.BUNCARGO_PORT_OFFSET = "100";
 	process.env.DOCKER_HOST = "unix:///nonexistent/docker.sock";
@@ -44,7 +44,6 @@ afterAll(() => {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;
 	}
-	rmSync(home, { recursive: true, force: true });
 	rmSync(root, { recursive: true, force: true });
 });
 
@@ -110,6 +109,8 @@ describe("integration stacks", () => {
 			{
 				name: "fake",
 				down: ["sh", "-c", `echo "down ${env.projectName} false" >> '${log}'`],
+				// The label its containers carry, for when `down` cannot run.
+				composeProject: externalStackProjectName(env.projectName),
 			},
 		]);
 
@@ -251,10 +252,12 @@ appendFileSync(log, held ? "down locked\\n" : "down free\\n");
 	});
 
 	it("leaves external services out of the Compose file", () => {
-		const model = buildComposeModel({
-			db: { port: 4101, external: { stack: "fake" } },
-			cache: service.redis(),
-		});
+		const model = buildComposeModel(
+			resolveServices({
+				db: { port: 4101, external: { stack: "fake" } },
+				cache: service.redis(),
+			}),
+		);
 		expect(Object.keys(model.services)).toEqual(["cache"]);
 	});
 

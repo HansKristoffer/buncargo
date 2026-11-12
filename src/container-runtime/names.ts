@@ -9,7 +9,7 @@ import type { ContainerRuntimeName, ContainerRuntimeSelection } from "../types";
  * only validating a string against.
  */
 
-export const CONTAINER_RUNTIME_NAMES = ["docker", "apple"] as const;
+const CONTAINER_RUNTIME_NAMES = ["docker", "apple"] as const;
 
 export const CONTAINER_RUNTIME_SELECTIONS = [
 	...CONTAINER_RUNTIME_NAMES,
@@ -17,12 +17,6 @@ export const CONTAINER_RUNTIME_SELECTIONS = [
 ] as const;
 
 export const DEFAULT_CONTAINER_RUNTIME: ContainerRuntimeName = "docker";
-
-export function isContainerRuntimeName(
-	value: unknown,
-): value is ContainerRuntimeName {
-	return isOneOf(CONTAINER_RUNTIME_NAMES, value);
-}
 
 export function isContainerRuntimeSelection(
 	value: unknown,

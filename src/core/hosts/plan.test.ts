@@ -1,4 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import {
+	resolveApps,
+	resolveService,
+	resolveServices,
+} from "../../config/resolve";
+import { service } from "../../docker-compose/services";
 import type { NamedHost } from "../../types";
 import {
 	applyHostPlanToUrls,
@@ -37,35 +43,52 @@ describe("sanitizeTld", () => {
 
 describe("isHttpService", () => {
 	it("treats postgres and redis as TCP", () => {
-		expect(isHttpService("postgres", { port: 5432 })).toBe(false);
-		expect(isHttpService("redis", { port: 6379 })).toBe(false);
+		expect(isHttpService(resolveService("postgres", { port: 5432 }))).toBe(
+			false,
+		);
+		expect(isHttpService(resolveService("redis", { port: 6379 }))).toBe(false);
 	});
 
 	it("treats mailpit and typesense as HTTP", () => {
-		expect(isHttpService("mailpit", { port: 8025 })).toBe(true);
-		expect(isHttpService("typesense", { port: 8108 })).toBe(true);
+		expect(isHttpService(resolveService("mailpit", { port: 8025 }))).toBe(true);
+		expect(isHttpService(resolveService("typesense", { port: 8108 }))).toBe(
+			true,
+		);
 	});
 
 	it("uses the docker preset when the key is custom", () => {
 		expect(
-			isHttpService("db", {
-				port: 5432,
-				docker: { kind: "preset", preset: "postgres" },
-			}),
+			isHttpService(
+				resolveService("db", {
+					port: 5432,
+					docker: { kind: "preset", preset: "postgres" },
+				}),
+			),
 		).toBe(false);
+		expect(isHttpService(resolveService("mail", service.mailpit()))).toBe(true);
+	});
+
+	it("names a custom container only when it says it speaks HTTP", () => {
+		const custom = { port: 9000, docker: { image: "docs" } };
+		expect(isHttpService(resolveService("docs", custom))).toBe(false);
+		expect(
+			isHttpService(
+				resolveService("docs", { ...custom, exposeProtocol: "http" }),
+			),
+		).toBe(true);
 	});
 });
 
 describe("planNamedHosts", () => {
-	const services = {
+	const services = resolveServices({
 		postgres: { port: 5432 },
 		mailpit: { port: 8025 },
 		typesense: { port: 8108 },
-	};
-	const apps = {
+	});
+	const apps = resolveApps({
 		web: { port: 3001, devCommand: "vite" },
 		api: { port: 3000, devCommand: "bun run api" },
-	};
+	});
 	const ports = {
 		postgres: 5432,
 		mailpit: 8025,

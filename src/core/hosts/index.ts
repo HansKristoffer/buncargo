@@ -1,4 +1,4 @@
-export { syncCertificateForRoutes } from "./certificates";
+export { machineMkcert, syncCertificateForRoutes } from "./certificates";
 export { RELOAD_STALL_MS, runHostsDaemon } from "./daemon";
 export {
 	describeLoopbackHijack,
@@ -6,9 +6,7 @@ export {
 	readHostsDaemonHealth,
 	waitForDaemonRoutes,
 } from "./daemon-client";
-export { readDaemonConfig } from "./daemon-config";
 export { syncHostsFile } from "./hosts-file";
-export { getCaPath } from "./mkcert";
 export {
 	doctorFixHosts,
 	ensureHostsReady,

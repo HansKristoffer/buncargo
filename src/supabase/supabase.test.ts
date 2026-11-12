@@ -9,16 +9,17 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { useTempHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "../environment";
 import type { AnyDevEnvironment, CheckContext, DevConfig } from "../types";
 import { supabaseChecks } from "./checks";
-import { supabaseVersion } from "./cli";
+import { supabaseCli } from "./cli";
 import { supabase } from "./index";
 import { supabaseKeys } from "./keys";
 import { readSupabaseProject } from "./project";
 
+useTempHome("all");
 const saved = {
-	HOME: process.env.HOME,
 	BUNCARGO_PORT_OFFSET: process.env.BUNCARGO_PORT_OFFSET,
 };
 const cwd = process.cwd();
@@ -51,7 +52,6 @@ site_url = "http://127.0.0.1:3000"
 additional_redirect_urls = ["myapp://callback"]
 `,
 	);
-	process.env.HOME = root;
 	process.env.BUNCARGO_PORT_OFFSET = "100";
 	process.chdir(root);
 });
@@ -126,14 +126,18 @@ describe("supabase()", () => {
 				"http://localhost:3100/**",
 			]),
 		);
-		expect(supabase().config?.(config)?.migrations?.[0]).toMatchObject({
+		expect(
+			supabase().config?.(config, { root })?.migrations?.[0],
+		).toMatchObject({
 			name: "supabase",
 			requiredServices: ["supabaseDb"],
 		});
 	});
 
 	it("has no service for a component `supabase start` is told to skip", () => {
-		const applied = supabase({ exclude: ["mailpit"] }).config?.(config);
+		const applied = supabase({ exclude: ["mailpit"] }).config?.(config, {
+			root,
+		});
 		expect(Object.keys(applied?.services ?? {}).sort()).toEqual([
 			"supabase",
 			"supabaseDb",
@@ -181,6 +185,29 @@ describe("supabase checks", () => {
 		const runtimeCheck = check("Supabase runs on Docker");
 		expect(await runtimeCheck.check(ctx("docker"))).toBe(true);
 		expect(await runtimeCheck.check(ctx("apple"))).toMatchObject({ ok: false });
+	});
+
+	it("passes once `supabase init` wrote the toml the config was loaded without", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-supabase-init-"));
+		try {
+			const integration = supabase();
+			integration.config?.(
+				{ projectPrefix: "myapp", services: {} },
+				{ root: dir },
+			);
+			const tomlCheck = integration.setupChecks?.find(
+				(entry) => entry.name === "supabase/config.toml exists",
+			);
+			const ctx = { root: dir } as CheckContext;
+			expect(await tomlCheck?.check(ctx)).toMatchObject({ ok: false });
+
+			mkdirSync(join(dir, "supabase"));
+			writeFileSync(join(dir, "supabase", "config.toml"), "");
+
+			expect(await tomlCheck?.check(ctx)).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -250,7 +277,7 @@ describe("supabase CLI runs", () => {
 		const saved = process.env.BUNCARGO_CONNECT_TOKENS;
 		process.env.BUNCARGO_CONNECT_TOKENS = "secret";
 		try {
-			expect(supabaseVersion(bin, root)).toBe("2.1.0");
+			expect(supabaseCli.version(bin, root)).toBe("2.1.0");
 		} finally {
 			if (saved === undefined) delete process.env.BUNCARGO_CONNECT_TOKENS;
 			else process.env.BUNCARGO_CONNECT_TOKENS = saved;

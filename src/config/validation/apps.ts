@@ -1,4 +1,4 @@
-import { isOneOf } from "hanzio";
+import { isOneOf, typedSwitch } from "hanzio";
 import { findCycle } from "../../planning";
 import type { AnyDevConfig } from "../../types";
 import type { ValidationContext } from "./context";
@@ -7,7 +7,7 @@ import type { ValidationContext } from "./context";
  * Keys the TUI keeps for itself, besides arrows, Enter and Esc (`run-tui.ts`).
  * A declared action may not use one.
  */
-export const BUILT_IN_KEYS = ["o", "e", "r", "l", "q", "j", "k"] as const;
+const BUILT_IN_KEYS = ["o", "e", "r", "l", "q", "j", "k"] as const;
 
 export function validateApps(
 	config: AnyDevConfig,
@@ -17,30 +17,34 @@ export function validateApps(
 	const captureOwners = new Map<string, string>();
 	for (const [name, app] of Object.entries(config.apps ?? {})) {
 		claimName(name, `apps.${name}`);
-		if (app.kind === "worker") {
-			for (const field of [
-				"port",
-				"extraPorts",
-				"expose",
-				"healthEndpoint",
-			] as const)
-				if (app[field] !== undefined) {
-					errors.push(`Worker "${name}" cannot set ${field}`);
-				}
-			if (typeof app.devCommand !== "string") {
-				errors.push(`Worker "${name}" requires a devCommand`);
-			}
-		} else {
-			if (app.kind !== undefined && app.kind !== "server") {
+		typedSwitch(
+			app.kind ?? "server",
+			{
+				worker: () => {
+					for (const field of [
+						"port",
+						"extraPorts",
+						"expose",
+						"healthEndpoint",
+					] as const)
+						if (app[field] !== undefined)
+							errors.push(`Worker "${name}" cannot set ${field}`);
+					if (typeof app.devCommand !== "string")
+						errors.push(`Worker "${name}" requires a devCommand`);
+				},
+				server: () => {
+					claimPort(app.port, `apps.${name}.port`);
+					if (app.extraPorts !== undefined && !Array.isArray(app.extraPorts))
+						errors.push(`apps.${name}.extraPorts must be an array of ports`);
+					else
+						for (const [index, port] of (app.extraPorts ?? []).entries())
+							claimPort(port, `apps.${name}.extraPorts[${index}]`);
+				},
+			},
+			() => {
 				errors.push(`App "${name}" has an invalid kind`);
-			}
-			claimPort(app.port, `apps.${name}.port`);
-			if (app.extraPorts !== undefined && !Array.isArray(app.extraPorts))
-				errors.push(`apps.${name}.extraPorts must be an array of ports`);
-			else
-				for (const [index, port] of (app.extraPorts ?? []).entries())
-					claimPort(port, `apps.${name}.extraPorts[${index}]`);
-		}
+			},
+		);
 
 		if (
 			config.secrets !== false &&
@@ -93,7 +97,7 @@ export function validateApps(
 				);
 			}
 			captureOwners.set(captureName, name);
-			if (capture.as === "publicUrl" && app.kind !== "worker" && app.expose) {
+			if (capture.as === "publicUrl" && app.expose) {
 				errors.push(
 					`apps.${name} captures its public URL and sets expose: a tunnel would overwrite it`,
 				);

@@ -1,9 +1,14 @@
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import {
 	type BarUpdateInput,
 	decideBarUpdate,
 	isCacheFresh,
+	readBarCheckCache,
 } from "./bar-update";
+import { stateFilePath } from "./state-paths";
+import { useTempHome } from "./test-env.testing";
 
 /**
  * The two-tier policy from `docs/bar-updates.md`, one assertion per row.
@@ -116,5 +121,33 @@ describe("isCacheFresh", () => {
 		expect(
 			isCacheFresh(at("2026-09-07T12:00:00.000Z"), { required: false, now }),
 		).toBe(false);
+	});
+});
+
+describe("readBarCheckCache", () => {
+	useTempHome();
+
+	const write = (document: unknown) => {
+		const path = stateFilePath("bar-check.json");
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, JSON.stringify(document));
+	};
+	const checkedAt = "2026-09-05T12:00:00.000Z";
+
+	it("refuses a cache of another version or without checkedAt", () => {
+		write({ version: 2, checkedAt });
+		expect(readBarCheckCache()).toBeUndefined();
+		write({ version: 1, checkedAt: 1 });
+		expect(readBarCheckCache()).toBeUndefined();
+	});
+
+	it("keeps a cache whose optional fields are malformed, without them", () => {
+		write({
+			version: 1,
+			checkedAt,
+			latest: { tag: "bar-v1.0.0", version: "1.0.0" },
+			hintedVersion: 1,
+		});
+		expect(readBarCheckCache()).toEqual({ version: 1, checkedAt });
 	});
 });

@@ -11,38 +11,21 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { RunEntry } from "../core/run-registry";
+import { freePorts, useTempHome } from "../core/test-env.testing";
+import { standInForWatchdog } from "../core/watchdog.testing";
 import {
 	detachedArgv,
 	detachedLogPath,
-	namedHostsFallbacks,
+	detachedReportPath,
 	pruneDetachedFiles,
+	readDetachedReport,
 	runDetached,
 	settledRun,
 	unreportedApps,
 } from "./dev-detach";
-
-describe("namedHostsFallbacks", () => {
-	// The parent prints only the app list, with localhost URLs, so the reason
-	// they are not named ones has to be lifted out of the run's own output.
-	it("finds the run's named-hosts warnings in its output", () => {
-		const output = [
-			"  ✓  Postgres ready",
-			"  \u001b[33m⚠\u001b[39m  Named URLs unavailable: the daemon on :443 stopped answering. Run `buncargo hosts install`.",
-			"  api  http://localhost:3000",
-		].join("\n");
-		expect(namedHostsFallbacks(output)).toEqual([
-			"Named URLs unavailable: the daemon on :443 stopped answering. Run `buncargo hosts install`.",
-		]);
-	});
-
-	it("finds nothing when named hosts came up", () => {
-		expect(namedHostsFallbacks("  api  https://api.app.localhost\n")).toEqual(
-			[],
-		);
-	});
-});
+import type { DetachedResultJson } from "./json-documents";
 
 describe("detachedArgv", () => {
 	it("re-runs the same invocation without --detach", () => {
@@ -61,6 +44,15 @@ describe("detachedArgv", () => {
 				"/bin/bun",
 			),
 		).toEqual(["/bin/bun", "/x/bin.js", "dev"]);
+	});
+
+	it("passes the attached app's args after -- through untouched", () => {
+		expect(
+			detachedArgv(
+				["bun", "/x/bin.js", "dev", "--detach", "--", "--detach"],
+				"/bin/bun",
+			),
+		).toEqual(["/bin/bun", "/x/bin.js", "dev", "--", "--detach"]);
 	});
 });
 
@@ -101,6 +93,8 @@ describe("settledRun", () => {
 });
 
 describe("runDetached", () => {
+	useTempHome();
+
 	/**
 	 * `runDetached` over a stand-in for the re-run `dev`: a script that prints
 	 * and exits. HOME and the systemd scope are the test's own, so it reads an
@@ -118,11 +112,7 @@ describe("runDetached", () => {
 	) {
 		const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-detach-")));
 		options.before?.(root);
-		const saved = {
-			HOME: process.env.HOME,
-			BUNCARGO_SYSTEMD_SCOPE: process.env.BUNCARGO_SYSTEMD_SCOPE,
-		};
-		process.env.HOME = join(root, "home");
+		const savedScope = process.env.BUNCARGO_SYSTEMD_SCOPE;
 		process.env.BUNCARGO_SYSTEMD_SCOPE = "0";
 		const printed: string[] = [];
 		const realLog = console.log;
@@ -137,8 +127,8 @@ describe("runDetached", () => {
 				writeFileSync(runScript, body);
 				code = await runDetached({
 					root,
-					expectApps: true,
 					keep: false,
+					json: false,
 					argv: ["bun", runScript],
 					timeoutMs: options.timeoutMs ?? 10_000,
 				});
@@ -148,10 +138,8 @@ describe("runDetached", () => {
 		} finally {
 			console.log = realLog;
 			console.error = realError;
-			for (const [name, value] of Object.entries(saved)) {
-				if (value === undefined) delete process.env[name];
-				else process.env[name] = value;
-			}
+			if (savedScope === undefined) delete process.env.BUNCARGO_SYSTEMD_SCOPE;
+			else process.env.BUNCARGO_SYSTEMD_SCOPE = savedScope;
 			rmSync(root, { recursive: true, force: true });
 		}
 	}
@@ -259,7 +247,7 @@ describe("pruneDetachedFiles", () => {
 		}
 	});
 
-	it("keeps a live run's report however old, and drops the unsuffixed one", async () => {
+	it("keeps a live run's report however old", async () => {
 		const { root, logs } = logsDir();
 		try {
 			const now = Date.now();
@@ -268,10 +256,8 @@ describe("pruneDetachedFiles", () => {
 				`detached-report-${process.pid}.json`,
 				now - 3_600_000,
 			);
-			const legacy = file(logs, "detached-report.json", now - 3_600_000);
 			pruneDetachedFiles(root, now);
 			expect(existsSync(live)).toBe(true);
-			expect(existsSync(legacy)).toBe(false);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -287,12 +273,10 @@ describe("pruneDetachedFiles", () => {
 			const olderLog = file(logs, `detached-${older}.log`, now - 7_200_000);
 			const newerLog = file(logs, `detached-${newer}.log`, now - 3_600_000);
 			const live = file(logs, `detached-${process.pid}.log`, now - 9_000_000);
-			const legacy = file(logs, "detached.previous.log", now - 3_600_000);
 			pruneDetachedFiles(root, now);
 			expect(existsSync(olderLog)).toBe(false);
 			expect(existsSync(newerLog)).toBe(true);
 			expect(existsSync(live)).toBe(true);
-			expect(existsSync(legacy)).toBe(false);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -308,6 +292,7 @@ describe("unreportedApps", () => {
 		expect(
 			unreportedApps(down, {
 				setupHints: [],
+				hostsWarnings: [],
 				failures: [{ cause: "", step: "web", output: [], hints: [], next: [] }],
 			}),
 		).toEqual(["api"]);
@@ -320,7 +305,10 @@ describe("unreportedApps", () => {
  * failure paths: their last lines are written past Bun's stderr buffer, which
  * no console patch in this process sees.
  */
-function detachInProcess(script: (root: string) => string) {
+function detachInProcess(
+	script: (root: string) => string,
+	options: { json?: boolean } = {},
+) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-detach-")));
 	try {
 		const detach = join(import.meta.dir, "dev-detach.ts");
@@ -330,8 +318,8 @@ function detachInProcess(script: (root: string) => string) {
 			`import { runDetached } from ${JSON.stringify(detach)};
 process.exitCode = await runDetached({
 	root: ${JSON.stringify(root)},
-	expectApps: true,
 	keep: false,
+	json: ${options.json === true},
 	argv: ["bun", ${JSON.stringify(join(root, "run.ts"))}],
 	timeoutMs: 10_000,
 });
@@ -369,6 +357,53 @@ it("exits 1 with the run's output, and the exit last, when it left no report", (
 		"❌ The run exited with code 3 before its apps came up.",
 	);
 	expect(stderr.at(-1)).toStartWith("Full output: ");
+});
+
+// `dev --detach` had no JSON, and learned of a named-hosts fallback by
+// grepping its run's log for one sentence; the run now reports it.
+it("prints the DetachedResultJson document, with the run's named-hosts warnings", () => {
+	const detach = join(import.meta.dir, "dev-detach.ts");
+	const registry = join(import.meta.dir, "..", "core", "run-registry.ts");
+	const { code, stdout } = detachInProcess(
+		(root) => `import { recordDetachedReport } from ${JSON.stringify(detach)};
+import { buildRunEntry, publishRun } from ${JSON.stringify(registry)};
+const root = ${JSON.stringify(root)};
+recordDetachedReport(root, (report) => ({
+	...report,
+	expectApps: true,
+	hostsWarnings: ["Named URLs unavailable: the daemon is down."],
+}));
+await publishRun({
+	...buildRunEntry({ sessionId: "json", projectPrefix: "stub", projectName: "stub-json", root, isWorktree: false }),
+	apps: [{ name: "api", port: 3000, url: "", loopbackUrl: "", openUrl: "http://localhost:3000", status: "ready" }],
+});
+setTimeout(() => {}, 30_000);
+`,
+		{ json: true },
+	);
+	const document = JSON.parse(stdout) as DetachedResultJson;
+	// The stand-in run waits to be stopped.
+	process.kill(document.pid, "SIGTERM");
+	expect(code).toBe(0);
+	expect(Object.keys(document).sort()).toEqual([
+		"apps",
+		"exitCode",
+		"failures",
+		"hostsWarnings",
+		"idleLimitMs",
+		"log",
+		"outcome",
+		"pid",
+		"version",
+	]);
+	expect(document).toMatchObject({
+		version: 1,
+		outcome: "up",
+		exitCode: 0,
+		apps: [{ name: "api", status: "ready", url: "http://localhost:3000" }],
+		hostsWarnings: ["Named URLs unavailable: the daemon is down."],
+		failures: [],
+	});
 });
 
 // `dev --detach | tail` showed "exited with code 1" first, a kilobyte-long
@@ -419,6 +454,7 @@ const entry = buildRunEntry({
 	root: ${JSON.stringify(root)},
 	isWorktree: false,
 });
+recordDetachedReport(${JSON.stringify(root)}, (report) => ({ ...report, expectApps: true }));
 await publishRun({
 	...entry,
 	apps: [{ name: "api", port: 3000, url: "", loopbackUrl: "", status: "stopped" }],
@@ -443,4 +479,107 @@ setTimeout(() => {}, 30_000);
 	if (pid) process.kill(pid, "SIGTERM");
 	expect(code).toBe(1);
 	expect(stderr).toContain("the real cause");
+});
+
+// The parent built the whole environment to learn whether the selection has
+// apps, and the background run built it again: twice the config load and
+// port reads on every `dev --detach`.
+it("loads the config once, in the background run", async () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-detach-")));
+	const loads = join(root, "loads");
+	const [port] = freePorts(1);
+	writeFileSync(join(root, "package.json"), "{}");
+	writeFileSync(
+		join(root, "serve.ts"),
+		'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("ok") });',
+	);
+	const config = {
+		projectPrefix: "detach-once",
+		services: {},
+		apps: { app: { port, devCommand: `${process.execPath} serve.ts` } },
+		options: { worktreeIsolation: false, hosts: false },
+	};
+	writeFileSync(
+		join(root, "dev.config.ts"),
+		`import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(loads)}, \`\${process.pid}\\n\`);
+export default ${JSON.stringify(config)};`,
+	);
+	await standInForWatchdog(root);
+	const cli = [process.execPath, resolve(import.meta.dir, "bin.ts")];
+	const env = {
+		...process.env,
+		HOME: root,
+		CI: "1",
+		BUNCARGO_PORT_OFFSET: "0",
+		BUNCARGO_HOSTS: "0",
+		BUNCARGO_SYSTEMD_SCOPE: "0",
+	};
+	const run = (args: string[]) =>
+		Bun.spawn([...cli, ...args], {
+			cwd: root,
+			env,
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+	try {
+		const detach = run(["dev", "--detach"]);
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(detach.stdout).text(),
+			new Response(detach.stderr).text(),
+			detach.exited,
+		]);
+		expect({ exitCode, stdout, stderr }).toMatchObject({ exitCode: 0 });
+		const loaders = readFileSync(loads, "utf8").trim().split("\n");
+		expect(loaders).toHaveLength(1);
+		expect(loaders[0]).not.toBe(String(detach.pid));
+	} finally {
+		await run(["stop", "--all"]).exited;
+		rmSync(root, { recursive: true, force: true });
+	}
+}, 60_000);
+
+describe("readDetachedReport", () => {
+	const report = (document: unknown) => {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-report-"));
+		try {
+			const path = detachedReportPath(root, 4242);
+			mkdirSync(dirname(path), { recursive: true });
+			writeFileSync(path, JSON.stringify(document));
+			return readDetachedReport(root, 4242);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	};
+	const lists = { setupHints: [], failures: [], hostsWarnings: [] };
+
+	it("refuses a report without one of its lists or with a non-boolean expectApps", () => {
+		expect(report({ setupHints: [], failures: [] })).toBeUndefined();
+		expect(report({ ...lists, hostsWarnings: "none" })).toBeUndefined();
+		expect(report({ ...lists, expectApps: "yes" })).toBeUndefined();
+		expect(report(null)).toBeUndefined();
+	});
+
+	it("keeps a report whose lists hold malformed entries, without them", () => {
+		const failure = {
+			cause: "api exited with code 1",
+			output: ["boom"],
+			hints: [],
+			next: ["buncargo logs api"],
+		};
+		expect(
+			report({
+				setupHints: ["run bun install", 3],
+				failures: [failure, { cause: "no output" }],
+				hostsWarnings: [null],
+				expectApps: false,
+			}),
+		).toEqual({
+			setupHints: ["run bun install"],
+			failures: [failure],
+			hostsWarnings: [],
+			expectApps: false,
+		});
+	});
 });

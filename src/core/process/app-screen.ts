@@ -16,7 +16,14 @@ function loadXterm(): typeof import("@xterm/headless") {
 }
 
 /** Scrollback each app's virtual screen keeps. */
-export const SCREEN_SCROLLBACK = 10_000;
+const SCREEN_SCROLLBACK = 10_000;
+
+/**
+ * Output written but not yet parsed past which an app's chunks are dropped.
+ * xterm throws past 50 MB pending, inside the pty's data callback; an app
+ * that floods faster than it parses would otherwise take the TUI down.
+ */
+export const MAX_PENDING_BYTES = 8 * 1024 * 1024;
 
 /** Commits in a row without an upward move before an app counts as line-oriented again. */
 const CALM_COMMITS = 3;
@@ -64,10 +71,17 @@ export class AppScreen {
 		line: number;
 	};
 
+	/** Bytes written whose parse has not finished. */
+	private pending = 0;
+	/** Chunks are being dropped; reset once the backlog drains. */
+	private dropping = false;
+
 	constructor(
 		cols: number,
 		rows: number,
 		private readonly onLine: (text: string) => void,
+		/** Once each time output starts being dropped. */
+		private readonly onDropped: () => void,
 	) {
 		this.term = new (loadXterm().Terminal)({
 			cols,
@@ -128,7 +142,17 @@ export class AppScreen {
 	}
 
 	write(data: Uint8Array | string): void {
-		this.term.write(data, () => this.commit(false));
+		if (this.pending + data.length > MAX_PENDING_BYTES) {
+			if (!this.dropping) this.onDropped();
+			this.dropping = true;
+			return;
+		}
+		this.pending += data.length;
+		this.term.write(data, () => {
+			this.pending -= data.length;
+			if (this.pending === 0) this.dropping = false;
+			this.commit(false);
+		});
 	}
 
 	input(data: string): void {

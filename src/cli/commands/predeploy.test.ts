@@ -1,4 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { execAsync } from "../../core/process";
 import type { PredeployContext } from "../../types";
 import { CliError } from "../errors";
 import {
@@ -13,6 +17,7 @@ function io(
 ) {
 	const ran: { command: string; cwd: string }[] = [];
 	const slept: number[] = [];
+	const logged: string[] = [];
 	const value: PredeployIo = {
 		env,
 		run: async (command, cwd) => {
@@ -23,11 +28,12 @@ function io(
 		sleep: async (ms) => {
 			slept.push(ms);
 		},
-		log: () => {},
+		log: (message) => void logged.push(message),
 	};
-	return { io: value, ran, slept };
+	return { io: value, ran, slept, logged };
 }
 
+const cli = resolve(import.meta.dir, "../bin.ts");
 const PRISMA = "bunx --no-install prisma migrate deploy";
 const config = {
 	prisma: { cwd: "packages/prisma" },
@@ -40,16 +46,18 @@ describe("predeploy", () => {
 		expect(predeployEnvironment({}, { NODE_ENV: "production" })).toEqual({
 			environment: "production",
 			production: true,
+			named: true,
 		});
 		expect(
 			predeployEnvironment(
 				{},
 				{ SECRETS_ENV: "staging", NODE_ENV: "production" },
 			),
-		).toEqual({ environment: "staging", production: false });
+		).toEqual({ environment: "staging", production: false, named: true });
 		expect(predeployEnvironment({}, {})).toEqual({
 			environment: "dev",
 			production: false,
+			named: false,
 		});
 		expect(
 			predeployEnvironment(
@@ -61,7 +69,11 @@ describe("predeploy", () => {
 
 	it("migrates then seeds outside production", async () => {
 		const run = io({ SECRETS_ENV: "staging" });
-		await runPredeploy("/repo", config, run.io);
+		await runPredeploy(
+			"/repo",
+			{ ...config, predeploy: { seed: true } },
+			run.io,
+		);
 		expect(run.ran).toEqual([
 			{ command: PRISMA, cwd: "/repo/packages/prisma" },
 			{ command: "bun ch:migrate", cwd: "/repo" },
@@ -132,13 +144,27 @@ describe("predeploy", () => {
 		expect(capped.slept).toEqual([10]);
 	});
 
-	it("stops before seeding when the seed is turned off", async () => {
-		const run = io({});
-		await runPredeploy(
+	it("never runs the dev seed.command unless predeploy.seed opts in, and says so", async () => {
+		const run = io({ SECRETS_ENV: "staging" });
+
+		await runPredeploy("/repo", { seed: config.seed }, run.io);
+
+		expect(run.ran).toEqual([]);
+		expect(run.logged).toContain(
+			"predeploy.seed is not set: not seeding. Set it to a command, or to true for the dev seed.command.",
+		);
+	});
+
+	it("refuses seed: true without a seed.command, before migrating", async () => {
+		const run = io({ SECRETS_ENV: "staging" });
+
+		const deploy = runPredeploy(
 			"/repo",
-			{ seed: config.seed, predeploy: { seed: false } },
+			{ prisma: config.prisma, predeploy: { seed: true } },
 			run.io,
 		);
+
+		await expect(deploy).rejects.toThrow("no seed.command to run");
 		expect(run.ran).toEqual([]);
 	});
 
@@ -155,5 +181,108 @@ describe("predeploy", () => {
 		expect(run.ran).toEqual([
 			{ command: "bun run seed --allow-remote", cwd: "/repo" },
 		]);
+	});
+
+	it("does not seed an environment no variable names, and says so", async () => {
+		const run = io({});
+
+		await runPredeploy(
+			"/repo",
+			{ seed: config.seed, predeploy: { seed: true } },
+			run.io,
+		);
+
+		expect(run.ran).toEqual([]);
+		expect(run.logged).toContain(
+			"no SECRETS_ENV or NODE_ENV names the environment: not seeding. Set one to seed it.",
+		);
+	});
+
+	it("seeds only the environments in predeploy.seedIn", async () => {
+		const inputs = {
+			seed: config.seed,
+			predeploy: { seed: true, seedIn: ["staging"] },
+		} as const;
+		const preview = io({ SECRETS_ENV: "eu-prod" });
+		const staging = io({ SECRETS_ENV: "staging" });
+
+		await runPredeploy("/repo", inputs, preview.io);
+		await runPredeploy("/repo", inputs, staging.io);
+
+		expect(preview.ran).toEqual([]);
+		expect(preview.logged).toContain(
+			'"eu-prod" is not in predeploy.seedIn: not seeding.',
+		);
+		expect(staging.ran.map((step) => step.command)).toEqual(["bun run seed"]);
+	});
+
+	// Every later deploy stops at the same migration until it is resolved.
+	const recordedFailures = [
+		{
+			code: "P3009",
+			output:
+				"Error: P3009\n\nmigrate found failed migrations in the target database, new migrations will not be applied.\nThe `20250101000000_add_orders` migration started at 2025-01-01 10:00:00 UTC failed",
+			name: "20250101000000_add_orders",
+		},
+		{
+			code: "P3018",
+			output:
+				"Error: P3018\n\nA migration failed to apply.\n\nMigration name: 20250102_backfill\n\nDatabase error code: 23502",
+			name: "20250102_backfill",
+		},
+	];
+	for (const { code, output, name } of recordedFailures)
+		it(`names the migration ${code} recorded as failed, with the command that unblocks deploys`, async () => {
+			const failures: unknown[] = [];
+			const run = io({}, { [PRISMA]: [{ exitCode: 1, output }] });
+
+			const error = await runPredeploy(
+				"/repo",
+				{
+					prisma: config.prisma,
+					predeploy: {
+						onFailure: (_ctx, failure) => void failures.push(failure),
+					},
+				},
+				run.io,
+			).catch((thrown: unknown) => thrown);
+
+			expect(error).toBeInstanceOf(CliError);
+			expect((error as CliError).hints.join("\n")).toContain(
+				`bunx prisma migrate resolve --rolled-back ${name}`,
+			);
+			expect(failures).toEqual([
+				{
+					step: "migrate",
+					migration: "prisma",
+					failedPrismaMigration: name,
+					message: "predeploy: migration prisma exited 1.",
+				},
+			]);
+		});
+
+	it("refuses a root config whose migrations are malformed, before running anything", async () => {
+		const root = realpathSync(
+			mkdtempSync(join(tmpdir(), "buncargo-predeploy-")),
+		);
+		writeFileSync(join(root, "package.json"), "{}");
+		writeFileSync(
+			join(root, "dev.config.ts"),
+			"export default {projectPrefix:'pd',services:{},migrations:[{name:'m',command:3}]};",
+		);
+
+		try {
+			const result = await execAsync(
+				[process.execPath, cli, "predeploy"],
+				root,
+				{},
+				{ throwOnError: false },
+			);
+
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("migrations.0.command");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });

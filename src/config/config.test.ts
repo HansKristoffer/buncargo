@@ -576,7 +576,7 @@ describe("validateConfig", () => {
 			const errors = validateConfig(config);
 
 			expect(errors).toContain(
-				'Service "nats" must define docker config (helper or raw) because it has no built-in preset.',
+				'Service "nats" needs docker: a preset (docker: service.postgres(), or a key named after one: postgres, redis, clickhouse, mailpit, typesense, minio) or a raw Compose definition.',
 			);
 		});
 
@@ -1084,49 +1084,40 @@ describe("defineDevConfig app dependency typing", () => {
 		expect(config.projectPrefix).toBe("typed");
 	});
 
+	// Each rejected config sits in a variable so the error lands on the call's
+	// line: tsc reports a failed overload at the call, `bun check` at the
+	// property, and one directive has to satisfy both.
 	it("rejects unknown requiredApps at compile time", () => {
-		defineDevConfig({
+		const config = {
 			projectPrefix: "typed",
-			services: {
-				postgres: {
-					port: 5432,
-				},
-			},
+			services: { postgres: { port: 5432 } },
 			apps: {
-				api: {
-					port: 3000,
-					devCommand: "bun run api",
-				},
+				api: { port: 3000, devCommand: "bun run api" },
 				web: {
 					port: 5173,
 					devCommand: "bun run web",
-					// @ts-expect-error - "missing" is not a configured app
 					requiredApps: ["missing"],
 				},
 			},
-		});
+		} as const;
+		// @ts-expect-error - "missing" is not a configured app
+		defineDevConfig(config);
 	});
 
 	it("rejects unknown requiredServices at compile time", () => {
-		defineDevConfig({
+		const config = {
 			projectPrefix: "typed",
-			services: {
-				postgres: {
-					port: 5432,
-				},
-				redis: {
-					port: 6379,
-				},
-			},
+			services: { postgres: { port: 5432 }, redis: { port: 6379 } },
 			apps: {
 				worker: {
 					port: 3001,
 					devCommand: "bun run worker",
-					// @ts-expect-error - "nats" is not a configured service
 					requiredServices: ["nats"],
 				},
 			},
-		});
+		} as const;
+		// @ts-expect-error - "nats" is not a configured service
+		defineDevConfig(config);
 	});
 });
 
@@ -1245,7 +1236,7 @@ describe("checks, tasks and profiles", () => {
 		expect(
 			validateConfig({
 				...base,
-				checks: [{ name: "types", check: () => true, fix: "bun codegen" }],
+				setupChecks: [{ name: "types", check: () => true, fix: "bun codegen" }],
 				tasks: {
 					"shop:seed": {
 						command: "bun scripts/seed.ts",
@@ -1264,13 +1255,13 @@ describe("checks, tasks and profiles", () => {
 		expect(
 			validateConfig({
 				...base,
-				checks: [{ name: "", check: "yes" }],
+				setupChecks: [{ name: "", check: "yes" }],
 				tasks: { "bad name": { command: "" } },
 				profiles: { empty: { apps: [] } },
 			}),
 		).toEqual([
-			"checks.0.name must be a nonempty string",
-			"checks.0.check must be a function",
+			"setupChecks.0.name must be a nonempty string",
+			"setupChecks.0.check must be a function",
 			"tasks.bad name has an invalid name",
 			"tasks.bad name.command must be a nonempty string",
 			"profiles.empty.apps must be a nonempty array of app names",
@@ -1301,7 +1292,7 @@ describe("checks, tasks and profiles", () => {
 				},
 			}),
 		).toEqual([
-			"typecheck.workspaces is not an option (include, exclude, concurrency, groups)",
+			"typecheck.workspaces is not an option (include, exclude, concurrency, groups, scripts)",
 			"typecheck.include must be an array of paths or globs relative to the root",
 			"typecheck.exclude must be an array of paths or globs relative to the root",
 		]);
@@ -1367,7 +1358,7 @@ describe("checks, tasks and profiles", () => {
 					docs: { paths: { exempt: [{ file: "a.md" }] } },
 				},
 				predeploy: {
-					seed: true,
+					seed: false,
 					retry: { attempts: -1 },
 					afterSeed: "bun seed",
 				},
@@ -1375,12 +1366,12 @@ describe("checks, tasks and profiles", () => {
 		).toEqual([
 			"typecheck.concurrency must be a positive integer",
 			"typecheck.groups.web.only must be an array of workspaces",
-			"check.tests is not an option (gates, testCommand, testExclude, docs, format)",
+			"check.tests is not an option (gates, testCommand, testExclude, testAlso, testDeferred, docs, format)",
 			"check.format must be a boolean or a nonempty array of globs",
 			"check.docs.paths.exempt.0.reason must be a nonempty string",
 			"check.gates.0.name must be a nonempty string",
 			'check.gates.0.when: "/abs" must be relative to the root and stay inside it',
-			"predeploy.seed must be false or a nonempty command",
+			"predeploy.seed must be true or a nonempty command",
 			"predeploy.afterSeed must be a function",
 			"predeploy.retry.attempts must be a positive integer",
 		]);
@@ -1426,16 +1417,18 @@ describe("checks, tasks and profiles", () => {
 	});
 
 	it("types task and profile keys against the config", () => {
-		defineDevConfig({
+		const withTask = {
 			...base,
-			// @ts-expect-error - "web" is not a configured app
 			tasks: { seed: { command: "x", app: "web" } },
-		});
-		defineDevConfig({
+		} as const;
+		// @ts-expect-error - "web" is not a configured app
+		defineDevConfig(withTask);
+		const withProfile = {
 			...base,
-			// @ts-expect-error - "web" is not a configured app
 			profiles: { full: { apps: ["web"] } },
-		});
+		} as const;
+		// @ts-expect-error - "web" is not a configured app
+		defineDevConfig(withProfile);
 	});
 });
 

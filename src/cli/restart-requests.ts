@@ -16,7 +16,8 @@ import { getProjectStateDir } from "../core/state-paths";
  * Asking a running `dev` to act on one of its apps from outside it:
  * `buncargo restart <app>` and `buncargo send <app> <keys>`.
  *
- * A request is a line in `.buncargo/<kind>/<session>` that the run polls.
+ * A request is a JSON line in `.buncargo/<kind>/<session>` that the run
+ * polls, with an id; the run answers it in `<session>.replies/<id>`.
  * Not a signal: SIGUSR2 to a run from an older buncargo, which has no
  * handler, would kill it.
  */
@@ -75,12 +76,15 @@ function watchRequests(
 	};
 }
 
+/** Ask the run to restart `app`; the id its answer is filed under. */
 export function requestRestart(
 	root: string,
 	sessionId: string,
 	app: string,
-): void {
-	appendRequest(root, sessionId, "restart", app);
+): string {
+	const id = randomUUID();
+	appendRequest(root, sessionId, "restart", JSON.stringify({ id, app }));
+	return id;
 }
 
 /**
@@ -104,14 +108,14 @@ export async function awaitRestartTaken(
 }
 
 /**
- * Take back one request for `app` nobody took, leaving any other request in
- * the file. Moved aside first, as the run does, so a request appended
- * meanwhile is not lost.
+ * Take back request `id` nobody took, leaving any other request in the
+ * file. Moved aside first, as the run does, so a request appended meanwhile
+ * is not lost.
  */
 export function withdrawRestartRequest(
 	root: string,
 	sessionId: string,
-	app: string,
+	id: string,
 ): void {
 	const file = requestFile(root, sessionId, "restart");
 	const aside = `${file}.withdrawn-${randomUUID()}`;
@@ -124,31 +128,75 @@ export function withdrawRestartRequest(
 		// Taken after all, or already withdrawn.
 		return;
 	}
-	const index = lines.indexOf(app);
-	if (index !== -1) lines.splice(index, 1);
-	if (lines.length > 0) appendFileSync(file, `${lines.join("\n")}\n`);
+	const kept = lines.filter((line) => parseRequest(line)?.id !== id);
+	if (kept.length > 0) appendFileSync(file, `${kept.join("\n")}\n`);
 }
 
 /**
- * Restart each requested app as it is asked for, until the returned stop.
- * Requests wait until `ready()`: the run can restart nothing before its
- * apps have spawned.
+ * The run's answer to one restart: the app's process was replaced, the
+ * replacement failed, or the app is not the run's to restart (reused from
+ * another terminal, or the run is ending).
+ */
+export type RestartReply =
+	| { status: "began" }
+	| { status: "failed"; reason: string }
+	| { status: "not-ours"; reason: string };
+
+/**
+ * Restart each requested app as it is asked for, until the returned stop,
+ * and answer each request with what came of it. Two requests for one app in
+ * a batch share one restart. Requests wait until `ready()`: the run can
+ * restart nothing before its apps have spawned.
  */
 export function watchRestartRequests(
 	root: string,
 	sessionId: string,
-	restart: (app: string) => void,
+	restart: (app: string) => Promise<RestartReply>,
 	ready: () => boolean,
 ): () => void {
-	return watchRequests(
+	const stop = watchRequests(
 		root,
 		sessionId,
 		"restart",
-		(names) => {
-			for (const name of new Set(names)) restart(name);
+		(lines) => {
+			const requests = lines.flatMap((line) => parseRequest(line) ?? []);
+			for (const [app, asked] of Map.groupBy(requests, (entry) => entry.app))
+				void restart(app).then((reply) => {
+					for (const { id } of asked)
+						writeReply(root, sessionId, "restart", id, reply);
+				});
 		},
 		ready,
 	);
+	return () => {
+		stop();
+		rmSync(repliesDir(root, sessionId, "restart"), {
+			recursive: true,
+			force: true,
+		});
+	};
+}
+
+function parseRequest(line: string): { id: string; app: string } | undefined {
+	try {
+		const { id, app } = JSON.parse(line) as { id?: unknown; app?: unknown };
+		return typeof id === "string" && typeof app === "string"
+			? { id, app }
+			: undefined;
+	} catch {
+		// A torn line: the request is lost, not the run.
+		return undefined;
+	}
+}
+
+/** The run's answer to restart request `id`, or `undefined` when none came in time. */
+export function awaitRestartReply(
+	root: string,
+	sessionId: string,
+	id: string,
+	timeoutMs: number,
+): Promise<RestartReply | undefined> {
+	return awaitReply(root, sessionId, "restart", id, timeoutMs);
 }
 
 /** Ask the run to type `text` into `app`; the id its answer is filed under. */
@@ -170,28 +218,33 @@ export function requestSend(
 export type SendReply =
 	{ delivered: true } | { delivered: false; reason: string };
 
-const SEND_ID = /^[\w-]+$/;
+const REQUEST_ID = /^[\w-]+$/;
 
-function repliesDir(root: string, sessionId: string): string {
-	return `${requestFile(root, sessionId, "send")}.replies`;
-}
-
-function writeSendReply(
+function repliesDir(
 	root: string,
 	sessionId: string,
+	kind: RequestKind,
+): string {
+	return `${requestFile(root, sessionId, kind)}.replies`;
+}
+
+function writeReply(
+	root: string,
+	sessionId: string,
+	kind: RequestKind,
 	id: string,
-	reply: SendReply,
+	reply: SendReply | RestartReply,
 ): void {
 	// A request line is not trusted to name a path.
-	if (!SEND_ID.test(id)) return;
-	const dir = repliesDir(root, sessionId);
+	if (!REQUEST_ID.test(id)) return;
+	const dir = repliesDir(root, sessionId, kind);
 	const path = join(dir, id);
 	try {
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(`${path}.tmp`, JSON.stringify(reply));
 		renameSync(`${path}.tmp`, path);
 	} catch {
-		// The keys were handled; only the answer is lost, and `send` says so.
+		// The request was handled; only the answer is lost, and the command says so.
 	}
 }
 
@@ -219,9 +272,10 @@ export function watchSendRequests(
 					if (typeof app !== "string" || typeof text !== "string") continue;
 					const refusal = send(app, text);
 					if (typeof id === "string")
-						writeSendReply(
+						writeReply(
 							root,
 							sessionId,
+							"send",
 							id,
 							refusal === undefined
 								? { delivered: true }
@@ -237,22 +291,35 @@ export function watchSendRequests(
 	);
 	return () => {
 		stop();
-		rmSync(repliesDir(root, sessionId), { recursive: true, force: true });
+		rmSync(repliesDir(root, sessionId, "send"), {
+			recursive: true,
+			force: true,
+		});
 	};
 }
 
-/** The run's answer to request `id`, or `undefined` when none came in time. */
-export async function awaitSendReply(
+/** The run's answer to send request `id`, or `undefined` when none came in time. */
+export function awaitSendReply(
 	root: string,
 	sessionId: string,
 	id: string,
 	timeoutMs: number,
 ): Promise<SendReply | undefined> {
-	const path = join(repliesDir(root, sessionId), id);
+	return awaitReply(root, sessionId, "send", id, timeoutMs);
+}
+
+async function awaitReply<T>(
+	root: string,
+	sessionId: string,
+	kind: RequestKind,
+	id: string,
+	timeoutMs: number,
+): Promise<T | undefined> {
+	const path = join(repliesDir(root, sessionId, kind), id);
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
 		try {
-			const reply = JSON.parse(readFileSync(path, "utf8")) as SendReply;
+			const reply = JSON.parse(readFileSync(path, "utf8")) as T;
 			rmSync(path, { force: true });
 			return reply;
 		} catch {

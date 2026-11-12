@@ -3,6 +3,7 @@ import { expo } from "../expo";
 import type { BuncargoIntegration, IntegrationConfig } from "../types";
 import { applyIntegrations } from "./integrations";
 import { mergeConfigs } from "./merge-configs";
+import { resolveApp } from "./resolve";
 import { validateConfig } from "./validate-config";
 
 const base: IntegrationConfig = {
@@ -83,12 +84,12 @@ describe("applyIntegrations", () => {
 	it("appends integration checks after the config's", () => {
 		const resolved = applyIntegrations({
 			...base,
-			checks: [{ name: "own", check: () => true }],
+			setupChecks: [{ name: "own", check: () => true }],
 			integrations: [
-				{ name: "shop", checks: [{ name: "theirs", check: () => true }] },
+				{ name: "shop", setupChecks: [{ name: "theirs", check: () => true }] },
 			],
 		});
-		expect(resolved.checks?.map((check) => check.name)).toEqual([
+		expect(resolved.setupChecks?.map((check) => check.name)).toEqual([
 			"own",
 			"theirs",
 		]);
@@ -160,7 +161,7 @@ describe("expo()", () => {
 		});
 		const app = {
 			name: "mobile",
-			config: { port: 8081, devCommand: "bunx expo start" },
+			config: resolveApp({ port: 8081, devCommand: "bunx expo start" }),
 			port: 8181,
 			root: "/nonexistent",
 			workspaceId: "ws-1",
@@ -169,9 +170,7 @@ describe("expo()", () => {
 			EXPO_PUBLIC_BUNCARGO_WORKSPACE_ID: "ws-1",
 			RCT_METRO_PORT: "8181",
 		});
-		expect(integration.describeApp?.(app)).toEqual({
-			expo: { scheme: "shop" },
-		});
+		expect(integration.describeApp?.(app)).toEqual({ scheme: "shop" });
 		expect(integration.appEnv?.({ ...app, name: "api" })).toBeUndefined();
 		expect(integration.commands?.sim).toBeDefined();
 	});
@@ -187,7 +186,7 @@ describe("expo()", () => {
 		});
 		const app = (name: string) => ({
 			name,
-			config: { port: 8081, devCommand: "bunx expo start" },
+			config: resolveApp({ port: 8081, devCommand: "bunx expo start" }),
 			port: 8181,
 			root: "/nonexistent",
 			workspaceId: "ws-1",

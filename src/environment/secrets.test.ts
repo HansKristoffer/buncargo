@@ -3,10 +3,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
-import { clearScopeSecretsCache } from "../core/secrets/infisical";
+import { clearScopeSecretsCache } from "../core/secrets/index";
+import { useTempHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "./create-dev-environment";
 import { runMigrationsSequentially } from "./migrations";
 
+// Sessions and caches go under HOME: each test's own.
+useTempHome();
 const cleanups: (() => void)[] = [];
 afterEach(() => {
 	clearScopeSecretsCache();
@@ -23,20 +26,15 @@ it("gives exec the app's scope, else the config's, beneath the computed env", as
 		secrets: { SHARED: "config-scope", DATABASE_URL: "wrong" },
 	};
 	infisical.projects.api = { secrets: { API_ONLY: "api-scope" } };
-	const saved = {
-		home: process.env.HOME,
-		path: process.env.BUNCARGO_INFISICAL_PATH,
-	};
-	process.env.HOME = infisical.home;
+	const savedPath = process.env.BUNCARGO_INFISICAL_PATH;
 	process.env.BUNCARGO_INFISICAL_PATH = infisical.cliPath;
 	const root = mkdtempSync(join(tmpdir(), "buncargo-exec-secrets-"));
 	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
 	cleanups.push(() => {
 		infisical.stop();
 		rmSync(root, { recursive: true, force: true });
-		process.env.HOME = saved.home;
-		if (saved.path === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
-		else process.env.BUNCARGO_INFISICAL_PATH = saved.path;
+		if (savedPath === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
+		else process.env.BUNCARGO_INFISICAL_PATH = savedPath;
 	});
 
 	const env = createDevEnvironment(
@@ -78,20 +76,14 @@ it("gives exec the app's scope, else the config's, beneath the computed env", as
 
 it("runs app startup, seed, migrations and exec offline without fetching disabled scopes", async () => {
 	const infisical = startFakeInfisical({ cliFails: true });
-	const saved = {
-		home: process.env.HOME,
-		path: process.env.BUNCARGO_INFISICAL_PATH,
-	};
-	process.env.HOME = infisical.home;
+	const savedPath = process.env.BUNCARGO_INFISICAL_PATH;
 	process.env.BUNCARGO_INFISICAL_PATH = infisical.cliPath;
 	const root = mkdtempSync(join(tmpdir(), "buncargo-offline-secrets-"));
 	cleanups.push(() => {
 		infisical.stop();
 		rmSync(root, { recursive: true, force: true });
-		if (saved.home === undefined) delete process.env.HOME;
-		else process.env.HOME = saved.home;
-		if (saved.path === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
-		else process.env.BUNCARGO_INFISICAL_PATH = saved.path;
+		if (savedPath === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
+		else process.env.BUNCARGO_INFISICAL_PATH = savedPath;
 	});
 	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
 	writeFileSync(

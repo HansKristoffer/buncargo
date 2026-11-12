@@ -14,7 +14,7 @@ import { type AppleContainerCli, runAppleAsync } from "./cli";
  * Its `volume ls` output shape has moved between releases like the rest of
  * this CLI, so both the JSON and the plain-table forms are accepted.
  */
-export function parseAppleVolumeNames(stdout: string): string[] {
+function parseAppleVolumeNames(stdout: string): string[] {
 	const trimmed = stdout.trim();
 	if (!trimmed) return [];
 	const parsed = safeJsonParse(trimmed);
@@ -39,7 +39,10 @@ export async function listAppleVolumes(
 	cli: AppleContainerCli,
 ): Promise<BuncargoVolume[]> {
 	const result = await runAppleAsync(cli, ["volume", "ls", "--format", "json"]);
-	if (!result.ok) return [];
+	if (!result.ok)
+		throw new Error(
+			result.stderr.trim() || `container volume ls exited ${result.exitCode}`,
+		);
 	return parseAppleVolumeNames(result.stdout).map((name) => ({
 		name,
 		runtime: "apple" as const,

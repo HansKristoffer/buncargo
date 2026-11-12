@@ -2,12 +2,12 @@ import { describe, expect, it } from "bun:test";
 import type { OffsetClaim } from "../core/offset-claims";
 import type { RunEntry } from "../core/run-registry";
 import type { BuncargoContainer, BuncargoVolume } from "../types";
+import { fakeRuntime, listedAs } from "./fake-runtime.testing";
 import {
 	ORPHAN_VOLUME_REPORT_INTERVAL_MS,
 	ORPHAN_VOLUME_REPORT_RETRY_MS,
 	orphanVolumeReporter,
 } from "./orphan-report";
-import type { ContainerRuntimeAdapter } from "./types";
 
 // Existing paths, so `checkoutDeleted` sees them as present.
 const PRESENT = import.meta.dir;
@@ -32,9 +32,16 @@ function container(project: string): BuncargoContainer {
 	};
 }
 
+/** A claim; a suffixed one belongs to the checkout at `PRESENT`. */
 function claim(projectName: string, suffix?: string): OffsetClaim {
-	return { projectName, ...(suffix ? { suffix } : {}) } as OffsetClaim;
+	return {
+		projectName,
+		...(suffix ? { suffix, root: PRESENT } : {}),
+	} as OffsetClaim;
 }
+
+/** The claims of a machine where the checkout that used project `a` was deleted. */
+const deletedA = () => ({ [GONE]: claim("a") });
 
 function setup(
 	options: {
@@ -44,18 +51,17 @@ function setup(
 		claims?: Record<string, OffsetClaim>;
 	} = {},
 ) {
-	const runtime = {
-		name: "docker",
-		list: () => options.containers ?? [],
+	const runtime = fakeRuntime({
+		containers: async () => (options.containers ?? []).map(listedAs),
 		listVolumes: async () => options.volumes ?? [],
-	} as unknown as ContainerRuntimeAdapter;
+	});
 	const logged: string[] = [];
 	let clock = 0;
 	const report = orphanVolumeReporter({
 		log: (message) => logged.push(message),
 		runtimes: () => [runtime],
 		readRuns: async () => options.runs ?? [],
-		claims: () => options.claims ?? {},
+		claims: () => options.claims ?? deletedA(),
 		now: () => clock,
 	});
 	return {
@@ -69,13 +75,13 @@ function setup(
 }
 
 describe("orphanVolumeReporter", () => {
-	it("names the volumes whose project nothing mentions", async () => {
+	it("names the volumes of deleted checkouts", async () => {
 		const { logged, pass } = setup({
-			volumes: [volume("old_postgres_data", "old")],
+			volumes: [volume("a_postgres_data", "a")],
 		});
 		await pass();
 		expect(logged).toHaveLength(1);
-		expect(logged[0]).toContain("old_postgres_data");
+		expect(logged[0]).toContain("a_postgres_data");
 		expect(logged[0]).toContain("nothing is removed automatically");
 	});
 
@@ -94,7 +100,7 @@ describe("orphanVolumeReporter", () => {
 		expect(logged).toEqual([]);
 	});
 
-	it("does not count a suffixed claim, or a deleted checkout's, as a checkout", async () => {
+	it("keeps an existing checkout's suffixed stack, and names a deleted checkout's", async () => {
 		const { logged, pass } = setup({
 			volumes: [volume("ci_db", "demo-ci"), volume("gone_db", "gone")],
 			claims: {
@@ -103,7 +109,7 @@ describe("orphanVolumeReporter", () => {
 			},
 		});
 		await pass();
-		expect(logged[0]).toContain("ci_db");
+		expect(logged[0]).not.toContain("ci_db");
 		expect(logged[0]).toContain("gone_db");
 	});
 
@@ -116,17 +122,16 @@ describe("orphanVolumeReporter", () => {
 
 	it("waits out the interval between reports", async () => {
 		let clock = 0;
-		const runtime = {
-			name: "docker",
-			list: () => [],
+		const runtime = fakeRuntime({
+			containers: async () => [].map(listedAs),
 			listVolumes: async () => [volume("a_db", "a")],
-		} as unknown as ContainerRuntimeAdapter;
+		});
 		const logged: string[] = [];
 		const report = orphanVolumeReporter({
 			log: (message) => logged.push(message),
 			runtimes: () => [runtime],
 			readRuns: async () => [],
-			claims: () => ({}),
+			claims: deletedA,
 			now: () => clock,
 		});
 		await report(["docker"]);
@@ -138,20 +143,19 @@ describe("orphanVolumeReporter", () => {
 	it("tries a failed pass again after a short wait, not a whole interval", async () => {
 		let clock = 0;
 		let fail = true;
-		const runtime = {
-			name: "docker",
-			list: () => {
+		const runtime = fakeRuntime({
+			containers: async () => {
 				if (fail) throw new Error("docker ps failed");
 				return [];
 			},
 			listVolumes: async () => [volume("a_db", "a")],
-		} as unknown as ContainerRuntimeAdapter;
+		});
 		const logged: string[] = [];
 		const report = orphanVolumeReporter({
 			log: (message) => logged.push(message),
 			runtimes: () => [runtime],
 			readRuns: async () => [],
-			claims: () => ({}),
+			claims: deletedA,
 			now: () => clock,
 		});
 		await report(["docker"]);
@@ -164,17 +168,16 @@ describe("orphanVolumeReporter", () => {
 
 	it("does not start the interval on a pass no runtime answered", async () => {
 		let clock = 0;
-		const runtime = {
-			name: "docker",
-			list: () => [],
+		const runtime = fakeRuntime({
+			containers: async () => [].map(listedAs),
 			listVolumes: async () => [volume("a_db", "a")],
-		} as unknown as ContainerRuntimeAdapter;
+		});
 		const logged: string[] = [];
 		const report = orphanVolumeReporter({
 			log: (message) => logged.push(message),
 			runtimes: () => [runtime],
 			readRuns: async () => [],
-			claims: () => ({}),
+			claims: deletedA,
 			now: () => clock,
 		});
 		await report([]);

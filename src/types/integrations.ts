@@ -3,6 +3,7 @@ import type { PreflightStep, SetupCheck } from "./commands";
 import type { DevConfig } from "./config";
 import type { AnyDevEnvironment } from "./environment";
 import type { DevHooks, HookContext } from "./hooks";
+import type { ResolvedApp } from "./resolved";
 import type { ServiceConfig } from "./service";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -10,13 +11,36 @@ import type { ServiceConfig } from "./service";
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * App keys that integrations add to a config, so `profiles` and the like can
- * name them. An integration's module augments this:
- *
- * ```ts
- * declare module "buncargo" { interface IntegrationAppNames { shopify: true } }
- * ```
+ * The app and service keys an integration adds to a config, as string literal
+ * unions: `{ apps: "firebase" }`, `{ services: "supabase" | "supabaseDb" }`.
+ * They are what lets an app's `requiredServices`, `requiredApps` and
+ * `startAfter`, `tasks` and `profiles` name them.
  */
+export interface IntegrationAdds {
+	apps?: string;
+	services?: string;
+}
+
+type AddedNames<
+	TIntegrations extends readonly unknown[],
+	TKind extends keyof IntegrationAdds,
+> = TIntegrations[number] extends infer TIntegration
+	? TIntegration extends { readonly "~adds"?: infer TAdds }
+		? TAdds extends { [K in TKind]?: infer TName }
+			? string extends TName
+				? never
+				: Extract<TName, string>
+			: never
+		: never
+	: never;
+
+/** App keys the integrations of an `integrations` tuple add. */
+export type IntegrationAppKeys<TIntegrations extends readonly unknown[]> =
+	AddedNames<TIntegrations, "apps">;
+
+/** Service keys the integrations of an `integrations` tuple add. */
+export type IntegrationServiceKeys<TIntegrations extends readonly unknown[]> =
+	AddedNames<TIntegrations, "services">;
 
 /** A config as an integration sees it: keys are only known as strings. */
 export type IntegrationConfig = DevConfig<
@@ -36,7 +60,7 @@ export interface IntegrationConfigContext {
 /** One app, as handed to {@link BuncargoIntegration.appEnv} and `describeApp`. */
 export interface IntegrationAppContext {
 	name: string;
-	config: AppConfig;
+	config: ResolvedApp;
 	/** Its allocated port; absent for workers. */
 	port?: number;
 	root: string;
@@ -65,8 +89,19 @@ export interface IntegrationCommand {
  * Project-type knowledge packaged for any config: `buncargo/shopify`,
  * `buncargo/expo`. A plain object, so writing one needs nothing from buncargo
  * but these types.
+ *
+ * `TAdds` names the apps and services its `config()` adds, so a config that
+ * lists it can reference them: a factory returning
+ * `BuncargoIntegration<{ apps: "stripeListen" }>` makes
+ * `startAfter: ["stripeListen"]` compile, and only in configs that list it.
  */
-export interface BuncargoIntegration {
+export interface BuncargoIntegration<
+	TAdds extends IntegrationAdds = Record<never, never>,
+> {
+	/**
+	 * Type-only: carries `TAdds` to `defineDevConfig`. Never set at runtime.
+	 */
+	readonly "~adds"?: TAdds;
 	/** Also its CLI namespace: `buncargo <name> <command>`. */
 	name: string;
 	/**
@@ -81,7 +116,7 @@ export interface BuncargoIntegration {
 	/** Run beside the config's own hooks, after them. */
 	hooks?: DevHooks<Record<string, ServiceConfig>, Record<string, AppConfig>>;
 	/** Shown by `buncargo doctor`, run by `buncargo setup`; fast ones by `dev`. */
-	checks?: readonly SetupCheck[];
+	setupChecks?: readonly SetupCheck[];
 	/** Run by `dev` with the terminal, before anything starts (a login). */
 	preflight?: readonly PreflightStep[];
 	/** `buncargo <name> <command>` */

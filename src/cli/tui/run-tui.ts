@@ -4,7 +4,11 @@ import type { IMarker } from "@xterm/headless";
 import { clamp } from "hanzio";
 import pc from "picocolors";
 import { openUrl } from "../../core/open-url";
-import type { OutputLine, RunOutput } from "../../core/process/run-output";
+import {
+	defaultScreenSize,
+	type OutputLine,
+	type RunOutput,
+} from "../../core/process/run-output";
 import { colorizeName } from "../../core/style";
 import { copyToClipboard } from "./clipboard";
 import {
@@ -23,7 +27,7 @@ import {
  * The run's terminal UI: a sidebar with the Overview and every app, and a
  * main pane with either all apps' lines interleaved or one app's own
  * terminal. Each app runs under its own pseudo-terminal sized to the pane
- * (`RunOutput.terminalSize`), so a full-screen app draws itself correctly
+ * (`RunOutput.screenSize`), so a full-screen app draws itself correctly
  * here while the others keep running one keypress away.
  *
  * It owns the terminal while it runs: raw mode, the alternate screen, a hidden
@@ -261,7 +265,7 @@ export class RunTui {
 		// terminal's own.
 		if (this.active) return;
 		const { output } = this.options;
-		output.terminalSize = () => this.paneSize();
+		output.screenSize = () => this.paneSize();
 		this.unsubscribe = output.subscribe({
 			line: (line) => {
 				this.lines.push(line);
@@ -304,7 +308,7 @@ export class RunTui {
 		clearTimeout(this.escTimer);
 		this.unsubscribe?.();
 		// Apps restarted from here on have no pane to be sized to.
-		this.options.output.terminalSize = undefined;
+		this.options.output.screenSize = defaultScreenSize;
 		for (const anchor of this.anchors.values()) anchor.dispose();
 		this.anchors.clear();
 		this.stdin.off("data", this.onInput);

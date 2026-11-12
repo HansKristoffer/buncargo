@@ -1,4 +1,4 @@
-import type { SeedOutcome, ServiceConfig } from "../types";
+import type { ResolvedService, SeedOutcome } from "../types";
 
 type SeedSelection = {
 	beforeApps?: boolean;
@@ -7,7 +7,7 @@ type SeedSelection = {
 
 export function seedCanOverlap(
 	seed: SeedSelection | undefined,
-	services: Record<string, ServiceConfig>,
+	services: Record<string, ResolvedService>,
 	selected: readonly string[],
 ): boolean {
 	return (

@@ -1,14 +1,16 @@
 import { describe, expect, it } from "bun:test";
+import { resolveServices } from "../config/resolve";
 import { buildComposeModel } from "../docker-compose";
+import { SERVICE_HASH_LABEL } from "../docker-compose/interpolate";
 import type { ComposeDocument, ServiceConfig } from "../types";
 import type { AppleCliResult, AppleContainerCli } from "./cli";
 import { appleDown, appleUp } from "./lifecycle";
-import { buildAppleRunPlan, CONFIG_HASH_LABEL } from "./run-plan";
+import { buildAppleRunPlan } from "./run-plan";
 
 const IDENTITY = { projectName: "gey-main", root: "/repo", worktree: null };
 
 function modelFor(services: Record<string, ServiceConfig>): ComposeDocument {
-	return buildComposeModel(services, undefined, IDENTITY);
+	return buildComposeModel(resolveServices(services), undefined, IDENTITY);
 }
 
 interface RecordingCli extends AppleContainerCli {
@@ -122,7 +124,7 @@ describe("appleUp", () => {
 		});
 		const hash = plan.services[0]?.configHash ?? "";
 		const cli = recordingCli([
-			record("gey-main-postgres", "running", { [CONFIG_HASH_LABEL]: hash }),
+			record("gey-main-postgres", "running", { [SERVICE_HASH_LABEL]: hash }),
 		]);
 
 		await appleUp(
@@ -142,7 +144,7 @@ describe("appleUp", () => {
 		});
 		const hash = plan.services[0]?.configHash ?? "";
 		const cli = recordingCli([
-			record("gey-main-postgres", "stopped", { [CONFIG_HASH_LABEL]: hash }),
+			record("gey-main-postgres", "stopped", { [SERVICE_HASH_LABEL]: hash }),
 		]);
 
 		await appleUp(
@@ -166,7 +168,7 @@ describe("appleUp", () => {
 		});
 		const hash = plan.services[0]?.configHash ?? "";
 		const cli = recordingCli(
-			[record("gey-main-postgres", "", { [CONFIG_HASH_LABEL]: hash })],
+			[record("gey-main-postgres", "", { [SERVICE_HASH_LABEL]: hash })],
 			{ start: "container gey-main-postgres is already running" },
 		);
 
@@ -187,7 +189,7 @@ describe("appleUp", () => {
 		});
 		const hash = plan.services[0]?.configHash ?? "";
 		const cli = recordingCli(
-			[record("gey-main-postgres", "", { [CONFIG_HASH_LABEL]: hash })],
+			[record("gey-main-postgres", "", { [SERVICE_HASH_LABEL]: hash })],
 			{ start: "bind(...): Address already in use (errno: 48)" },
 		);
 
@@ -210,7 +212,7 @@ describe("appleUp", () => {
 		});
 		const hash = plan.services[0]?.configHash ?? "";
 		const cli = recordingCli(
-			[record("gey-main-postgres", "stopped", { [CONFIG_HASH_LABEL]: hash })],
+			[record("gey-main-postgres", "stopped", { [SERVICE_HASH_LABEL]: hash })],
 			{ start: "Error: image not found: postgres:17" },
 		);
 
@@ -241,7 +243,7 @@ describe("appleUp", () => {
 	it("recreates a container whose config hash drifted", async () => {
 		const cli = recordingCli([
 			record("gey-main-postgres", "running", {
-				[CONFIG_HASH_LABEL]: "stale-hash",
+				[SERVICE_HASH_LABEL]: "stale-hash",
 			}),
 		]);
 
@@ -263,7 +265,7 @@ describe("appleUp recreating and running", () => {
 	it("stops a running container before deleting it for a config change", async () => {
 		const cli = recordingCli([
 			record("gey-main-postgres", "running", {
-				[CONFIG_HASH_LABEL]: "stale-hash",
+				[SERVICE_HASH_LABEL]: "stale-hash",
 			}),
 		]);
 
@@ -285,7 +287,7 @@ describe("appleUp recreating and running", () => {
 	it("does not stop a container that is already stopped", async () => {
 		const cli = recordingCli([
 			record("gey-main-postgres", "stopped", {
-				[CONFIG_HASH_LABEL]: "stale-hash",
+				[SERVICE_HASH_LABEL]: "stale-hash",
 			}),
 		]);
 
@@ -600,6 +602,22 @@ describe("appleDown", () => {
 				verbose: false,
 			}),
 		).rejects.toThrow(/without the compose model/);
+	});
+
+	it("fails a reset whose volume delete failed, after trying every volume", async () => {
+		const cli = recordingCli([], { volume: "volume is in use" });
+		await expect(
+			appleDown(cli, {
+				root: "/repo",
+				projectName: "gey-main",
+				model: modelFor({ postgres: { port: 5432 }, mailpit: { port: 8025 } }),
+				removeVolumes: true,
+				verbose: false,
+			}),
+		).rejects.toThrow(
+			/gey-main-postgres_data: volume is in use[\s\S]*gey-main-mailpit_data: volume is in use/,
+		);
+		expect(cli.calls.filter((call) => call[0] === "volume")).toHaveLength(2);
 	});
 
 	it("removes the project's named volumes only with removeVolumes", async () => {

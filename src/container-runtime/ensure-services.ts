@@ -1,28 +1,107 @@
 import { recordFromKeys } from "hanzio";
 import { recordStartupMetric } from "../core/startup-metrics";
-import type { ComposeDocument } from "../docker-compose";
+import type { AssignedPortTarget, ComposeDocument } from "../docker-compose";
 import {
 	canProveServiceInputs,
 	serviceFingerprint,
 	serviceHashEnv,
 } from "../docker-compose/interpolate";
-import type { ServiceConfig } from "../types";
+import type { PortContainerOwner, ResolvedService } from "../types";
 import { assertServiceCapabilities } from "./capabilities";
+import {
+	portOwnersOf,
+	serviceContainerOf,
+	serviceStatesOf,
+} from "./containers";
 import { waitForAllServices } from "./readiness";
 import { assertServicePortsClaimable } from "./service-ports";
-import type { ContainerRuntimeAdapter, ServiceRuntimeState } from "./types";
+import type {
+	ContainerRuntimeAdapter,
+	RuntimeContainer,
+	ServiceRuntimeState,
+} from "./types";
 
-/** Never throws: a runtime that cannot answer reads as "reconcile". */
-async function readProjectServiceStates(
+/** Never throws: a runtime that cannot answer lists nothing, which reads as "reconcile". */
+async function listContainers(
 	runtime: ContainerRuntimeAdapter,
-	projectName: string,
 	signal?: AbortSignal,
-): Promise<ServiceRuntimeState[]> {
+): Promise<RuntimeContainer[]> {
 	try {
-		return await runtime.projectServiceStates(projectName, signal);
+		return await runtime.containers(signal);
 	} catch {
 		signal?.throwIfAborted();
 		return [];
+	}
+}
+
+/**
+ * The host port the runtime picked for each assigned port key, read off its
+ * listing. A key whose container publishes nothing (it already exited) is
+ * left out, and readiness reports that container.
+ */
+function assignedHostPortsOf(
+	containers: readonly RuntimeContainer[],
+	projectName: string,
+	targets: Readonly<Record<string, AssignedPortTarget>>,
+): Record<string, number> {
+	const hostPorts: Record<string, number> = {};
+	for (const [portKey, target] of Object.entries(targets)) {
+		const container = serviceContainerOf(
+			containers,
+			projectName,
+			target.service,
+		);
+		const hostPort = container?.ports.find(
+			(port) =>
+				(container.targetPorts?.[port] ?? port) === target.containerPort,
+		);
+		if (hostPort !== undefined) hostPorts[portKey] = hostPort;
+	}
+	return hostPorts;
+}
+
+/** What one listing of the runtime says about this start. */
+interface RuntimeReading {
+	containers: RuntimeContainer[];
+	states: ServiceRuntimeState[];
+	/** Undefined when the runtime could not list: the port check asks it again. */
+	portOwners?: Map<number, PortContainerOwner>;
+}
+
+/**
+ * The project's service states and the ports' container owners, from one
+ * listing.
+ *
+ * A listing that answers proves the runtime is up, so only one that fails
+ * asks the runtime to start, or to throw why it cannot. That keeps a warm
+ * start at one runtime call inside the project lock, where it used to be a
+ * daemon probe and two listings of the same containers.
+ */
+async function readRuntime(
+	runtime: ContainerRuntimeAdapter,
+	projectName: string,
+	ensureRunning: () => Promise<void>,
+	signal?: AbortSignal,
+): Promise<RuntimeReading> {
+	const list = async (): Promise<RuntimeReading> => {
+		const containers = await runtime.containers(signal);
+		return {
+			containers,
+			states: serviceStatesOf(containers, projectName),
+			portOwners: portOwnersOf(containers, runtime.name),
+		};
+	};
+	try {
+		return await list();
+	} catch {
+		signal?.throwIfAborted();
+	}
+	await ensureRunning();
+	try {
+		return await list();
+	} catch {
+		signal?.throwIfAborted();
+		return { containers: [], states: [] };
 	}
 }
 
@@ -35,7 +114,7 @@ function servicesAllRunning(
 	}
 
 	const running = new Set(
-		states.filter((state) => state.running).map((state) => state.service),
+		states.filter((state) => state.serving).map((state) => state.service),
 	);
 	return serviceNames.every((name) => running.has(name));
 }
@@ -61,7 +140,7 @@ function stackMatches(
 	return serviceNames.every((name) => {
 		const state = byService.get(name);
 		return (
-			state?.running === true &&
+			state?.serving === true &&
 			provable.has(name) &&
 			state.serviceHash === hashes[name]
 		);
@@ -81,7 +160,7 @@ export interface EnsureServicesRunningRequest {
 	 */
 	projectPrefix?: string;
 	envVars: Record<string, string>;
-	services: Record<string, ServiceConfig>;
+	services: Record<string, ResolvedService>;
 	ports: Record<string, number>;
 	model: ComposeDocument;
 	composeFile?: string;
@@ -91,6 +170,12 @@ export interface EnsureServicesRunningRequest {
 	autoStartRuntime?: boolean;
 	/** `docker.startCommand`; see {@link EnsureRuntimeOptions.startCommand}. */
 	runtimeStartCommand?: string;
+	/**
+	 * Port keys the model publishes on runtime-assigned host ports: their
+	 * `ports` entries are ignored, and readiness probes the host ports read
+	 * back after `up`.
+	 */
+	assignedPorts?: Readonly<Record<string, AssignedPortTarget>>;
 }
 
 /**
@@ -101,7 +186,12 @@ export interface EnsureServicesRunningRequest {
  */
 export async function ensureServicesRunning(
 	request: EnsureServicesRunningRequest,
-): Promise<{ started: boolean; composeServiceNames: string[] }> {
+): Promise<{
+	started: boolean;
+	composeServiceNames: string[];
+	/** The host port read back for each of `assignedPorts` that publishes one. */
+	assignedHostPorts: Record<string, number>;
+}> {
 	const {
 		runtime,
 		root,
@@ -120,29 +210,36 @@ export async function ensureServicesRunning(
 
 	request.signal?.throwIfAborted();
 	if (Object.keys(services).length === 0) {
-		return { started: false, composeServiceNames: [] };
+		return { started: false, composeServiceNames: [], assignedHostPorts: {} };
 	}
 
-	assertServiceCapabilities(runtime.name, services);
+	assertServiceCapabilities(runtime, services);
 
-	await runtime.ensureRunning({
-		autoStart: autoStartRuntime,
-		startCommand: runtimeStartCommand,
-		verbose,
-		signal: request.signal,
-	});
-
-	// Two independent reads of the runtime, so a warm start waits for one.
-	const [states] = await Promise.all([
-		readProjectServiceStates(runtime, projectName, request.signal),
-		assertServicePortsClaimable(
-			runtime,
-			services,
-			ports,
-			{ root, projectName, projectPrefix },
-			request.signal,
-		),
-	]);
+	const assignedPorts = request.assignedPorts ?? {};
+	const reading = await readRuntime(
+		runtime,
+		projectName,
+		() =>
+			runtime.ensureRunning({
+				autoStart: autoStartRuntime,
+				startCommand: runtimeStartCommand,
+				verbose,
+				signal: request.signal,
+			}),
+		request.signal,
+	);
+	const { states, portOwners } = reading;
+	// An assigned port is free by construction: the runtime picks it at `up`.
+	const claimedPorts = Object.fromEntries(
+		Object.entries(ports).filter(([key]) => !(key in assignedPorts)),
+	);
+	await assertServicePortsClaimable(
+		runtime,
+		services,
+		claimedPorts,
+		{ root, projectName, projectPrefix, containerOwners: portOwners },
+		request.signal,
+	);
 
 	const composeServiceNames = Object.entries(services).map(
 		([serviceKey, config]) => config.serviceName ?? serviceKey,
@@ -208,34 +305,39 @@ export async function ensureServicesRunning(
 		await runtime.up(upRequest);
 	}
 
-	if (
-		wait ||
-		Object.values(services).some((service) => service.kind === "job")
-	) {
-		// Re-read only when the reconcile ran: `up` is what changes state, and
-		// the states from before it describe the previous containers.
-		const readyStates = upToDate
-			? states
-			: await readProjectServiceStates(runtime, projectName, request.signal);
+	const waitFor = wait
+		? services
+		: Object.fromEntries(
+				Object.entries(services).filter(
+					([, service]) => service.kind === "job",
+				),
+			);
+	const assigning = Object.keys(assignedPorts).length > 0;
+	const waiting = Object.keys(waitFor).length > 0;
+	// Re-read only when the reconcile ran: `up` is what changes state, and
+	// the listing from before it describes the previous containers.
+	const listing =
+		upToDate || !(waiting || assigning)
+			? reading.containers
+			: await listContainers(runtime, request.signal);
+	const assignedHostPorts = assignedHostPortsOf(
+		listing,
+		projectName,
+		assignedPorts,
+	);
+	if (waiting) {
 		await waitForAllServices(
-			wait
-				? services
-				: Object.fromEntries(
-						Object.entries(services).filter(
-							([, service]) => service.kind === "job",
-						),
-					),
-			ports,
+			waitFor,
+			{ ...ports, ...assignedHostPorts },
 			{
 				signal: request.signal,
 				runtime,
 				projectName,
 				verbose,
 				root,
-				composeFile,
 				healthyServices: new Set(
-					readyStates
-						.filter((state) => state.running && state.healthy === true)
+					serviceStatesOf(listing, projectName)
+						.filter((state) => state.serving && state.healthy === true)
 						.map((state) => state.service),
 				),
 			},
@@ -244,5 +346,5 @@ export async function ensureServicesRunning(
 
 	// Not `!alreadyRunning`: a config change recreates containers that were
 	// all running, and that start is still one.
-	return { started: !upToDate, composeServiceNames };
+	return { started: !upToDate, composeServiceNames, assignedHostPorts };
 }

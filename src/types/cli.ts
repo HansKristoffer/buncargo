@@ -9,7 +9,7 @@
  * allocates, reclaiming an idle checkout's block if it has to.
  */
 export type PortOffsetProvenance =
-	"hash" | "lockfile" | "env" | "shifted" | "unallocated";
+	"hash" | "claim" | "env" | "shifted" | "unallocated";
 
 /**
  * Options for the CLI runner.

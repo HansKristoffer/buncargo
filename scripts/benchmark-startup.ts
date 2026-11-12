@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -158,7 +159,10 @@ if(args.includes('up')) {writeFileSync(${JSON.stringify(state)}, JSON.stringify(
 if(args[0]==='version') {console.log('benchmark'); process.exit(0);}
 if(args[0]==='ps' && args.join(' ').includes('buncargo.service') && existsSync(${JSON.stringify(state)})) {
 const env=JSON.parse(readFileSync(${JSON.stringify(state)},'utf8')); const hash=Object.entries(env).find(([key])=>key.startsWith('BUNCARGO_SERVICE_HASH_'))?.[1]??'';
-console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
+// The one listing (id, name, state, status, ports, labels), or the per-question formats older CLIs ask for.
+const listing=args.join(' ').includes('com.docker.compose.oneoff');
+const project=env.COMPOSE_PROJECT_NAME??'';
+console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'False',project,'','','postgres',hash]:['postgres','running','Up (healthy)',hash]).join('\\t'));}
 `,
 	);
 	writeFileSync(
@@ -367,13 +371,11 @@ console.log(['postgres','running','Up (healthy)',hash].join('\\t'));}
 					if (sinceCancel !== undefined && child.exitCode !== null)
 						cleanupMs = sinceCancel();
 					try {
-						const effectivePort =
-							scenario === "allocation" &&
-							existsSync(join(project, ".buncargo/ports.json"))
-								? JSON.parse(
-										readFileSync(join(project, ".buncargo/ports.json"), "utf8"),
-									).ports.web
-								: port;
+						const claimed =
+							scenario === "allocation"
+								? claimedOffset(root, project)
+								: undefined;
+						const effectivePort = claimed === undefined ? port : 3000 + claimed;
 						const response = await fetch(
 							`http://127.0.0.1:${effectivePort}/ready`,
 							{
@@ -572,4 +574,20 @@ try {
 	);
 	for (const cleanup of cleanups) cleanup();
 	rmSync(root, { recursive: true, force: true });
+}
+
+/**
+ * The offset `project` claimed, once it has: its block moved off the hash.
+ * Every worker shares one HOME, so the claims file holds every worker's
+ * checkout, and in CI the throwaway claims of runs already torn down too:
+ * only this checkout's own, unreleased claim names its ports.
+ */
+function claimedOffset(home: string, project: string): number | undefined {
+	const file = join(home, ".buncargo/offsets.json");
+	if (!existsSync(file)) return undefined;
+	const { claims } = JSON.parse(readFileSync(file, "utf8")) as {
+		claims: Record<string, { offset: number; reclaimedAt?: string }>;
+	};
+	const claim = claims[project] ?? claims[realpathSync(project)];
+	return claim?.reclaimedAt === undefined ? claim?.offset : undefined;
 }

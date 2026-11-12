@@ -1,20 +1,24 @@
-import { afterAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, it } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+	EVENT_LOG_LIMIT,
 	explainContainerLoss,
 	explainServiceStop,
 	findRemoval,
 	invocationCommand,
-	REMOVAL_LOG_LIMIT,
 	type RemovalRecord,
+	type RunStopRecord,
 	readRemovals,
-	recordRemovals,
+	readRunStops,
+	recentRunStops,
+	recordEvents,
+	runStopRecord,
 } from "./removal-log";
+import { useTempHome } from "./test-env.testing";
 
-const dir = mkdtempSync(join(tmpdir(), "buncargo-removals-"));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+// Each test logs under a HOME of its own.
+const home = useTempHome();
 
 const WATCHDOG = {
 	command: "buncargo watchdog",
@@ -23,8 +27,11 @@ const WATCHDOG = {
 	version: "12.4.0",
 };
 
-function record(extra: Partial<RemovalRecord> = {}): RemovalRecord {
+function record(
+	extra: Partial<Omit<RemovalRecord, "kind">> = {},
+): RemovalRecord {
 	return {
+		kind: "containers",
 		at: "2026-10-17T10:00:00.000Z",
 		projectName: "shop-ci",
 		root: "/work/shop",
@@ -33,6 +40,26 @@ function record(extra: Partial<RemovalRecord> = {}): RemovalRecord {
 		by: WATCHDOG,
 		...extra,
 	};
+}
+
+const NOW = Date.parse("2026-11-03T12:00:00.000Z");
+const HOUR = 60 * 60_000;
+
+function runStop(root: string, at: number): RunStopRecord {
+	return runStopRecord(
+		{
+			sessionId: `s-${root}-${at}`,
+			projectName: "demo",
+			root,
+			worktree: null,
+			pid: 42,
+		},
+		{
+			at: new Date(at).toISOString(),
+			reason: "idle",
+			detail: "idle for 2h 0m",
+		},
+	);
 }
 
 describe("invocationCommand", () => {
@@ -59,27 +86,27 @@ describe("invocationCommand", () => {
 	});
 });
 
-describe("recordRemovals", () => {
-	it("appends and keeps only the newest records", async () => {
-		const file = join(dir, "removals.json");
-		await recordRemovals([record({ reason: "first" })], file);
-		await recordRemovals(
-			Array.from({ length: REMOVAL_LOG_LIMIT }, (_, index) =>
+describe("recordEvents", () => {
+	it("keeps removals and run stops in one log, newest only", async () => {
+		await recordEvents([record({ reason: "first" }), runStop("/repo", NOW)]);
+		await recordEvents(
+			Array.from({ length: EVENT_LOG_LIMIT - 1 }, (_, index) =>
 				record({ reason: `later ${index}` }),
 			),
-			file,
 		);
-		const removals = readRemovals(file);
-		expect(removals).toHaveLength(REMOVAL_LOG_LIMIT);
+		const removals = readRemovals();
+		expect(removals).toHaveLength(EVENT_LOG_LIMIT - 1);
 		expect(removals[0]?.reason).toBe("later 0");
-		expect(removals.at(-1)?.reason).toBe(`later ${REMOVAL_LOG_LIMIT - 1}`);
+		expect(readRunStops()).toEqual([runStop("/repo", NOW)]);
+
+		await recordEvents([record({ reason: "pushes the stop out" })]);
+		expect(readRunStops()).toEqual([]);
 	});
 
 	it("never throws when the log cannot be written", async () => {
-		await recordRemovals(
-			[record()],
-			join(dir, "not-a-dir", "\0", "removals.json"),
-		);
+		// A state directory that is a file: the log's directory cannot be made.
+		writeFileSync(join(home(), ".buncargo"), "");
+		await recordEvents([record()]);
 	});
 });
 
@@ -143,11 +170,14 @@ describe("explainServiceStop", () => {
 		service: "postgres",
 		since: Date.parse("2026-10-17T09:30:00.000Z"),
 	};
-	const stop = record({
+	const stop = {
+		...record({
+			reason: "stopped",
+			by: { command: "buncargo stop postgres", pid: 9, user: "dev" },
+		}),
+		kind: "services" as const,
 		services: ["postgres"],
-		reason: "stopped",
-		by: { command: "buncargo stop postgres", pid: 9, user: "dev" },
-	});
+	};
 
 	it("names the command that stopped that service, or the whole stack", () => {
 		expect(explainServiceStop({ ...target, records: [stop] })).toBe(
@@ -190,5 +220,29 @@ describe("explainServiceStop", () => {
 		expect(explained).toContain(
 			"docker events --since 2026-10-17T09:30:00.000Z --filter label=com.docker.compose.project=shop-ci",
 		);
+	});
+});
+
+describe("recentRunStops", () => {
+	it("reports the newest stop of each checkout from the last day", () => {
+		const records = [
+			runStop("/old", NOW - 25 * HOUR),
+			runStop("/repo", NOW - 3 * HOUR),
+			runStop("/repo", NOW - HOUR),
+		];
+		expect(recentRunStops(records, [], NOW)).toEqual([records[2]]);
+	});
+
+	it("drops a stop once a run has started in that checkout since", () => {
+		const records = [runStop("/repo", NOW - HOUR)];
+		const restarted = [
+			{ root: "/repo", startedAt: new Date(NOW - 10 * 60_000).toISOString() },
+		];
+		expect(recentRunStops(records, restarted, NOW)).toEqual([]);
+		// The run the watchdog stopped started before it, and does not count.
+		const stoppedRun = [
+			{ root: "/repo", startedAt: new Date(NOW - 5 * HOUR).toISOString() },
+		];
+		expect(recentRunStops(records, stoppedRun, NOW)).toEqual(records);
 	});
 });

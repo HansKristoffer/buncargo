@@ -133,16 +133,21 @@ type ExplicitServiceEnvVarNames<TService extends ServiceConfig> =
 		? ConcreteStringKeys<NonNullable<TService["env"]>>
 		: never;
 
-type ServiceEnvVarNamesFromKey<TKey extends string> =
-	TKey extends keyof BuiltInServiceEnvVarMap
-		? Extract<keyof BuiltInServiceEnvVarMap[TKey], string>
-		: never;
+/**
+ * The preset a service is, as `resolveService` reads it: the one its
+ * `docker: service.<preset>()` names, or, with no `docker`, the preset its key
+ * names (`postgres: { port }` is `service.postgres({ port })`).
+ */
+type ServicePreset<TKey extends string, TService> = TService extends {
+	docker: { kind: "preset"; preset: infer TPreset };
+}
+	? TPreset
+	: TService extends { docker: object } | { external: object }
+		? never
+		: TKey;
 
-type ServiceEnvVarNamesFromPreset<TService extends ServiceConfig> =
-	TService["docker"] extends {
-		kind: "preset";
-		preset: infer TPreset;
-	}
+type PresetEnvVarNames<TKey extends string, TService> =
+	ServicePreset<TKey, TService> extends infer TPreset
 		? TPreset extends keyof BuiltInServiceEnvVarMap
 			? Extract<keyof BuiltInServiceEnvVarMap[TPreset], string>
 			: never
@@ -155,11 +160,15 @@ export type ServiceEnvVarNames<
 		| ExplicitServiceEnvVarNames<TServices[K]>
 		| WithServicePort<
 				TServices[K],
-				| ServiceEnvVarNamesFromKey<Extract<K, string>>
-				| ServiceEnvVarNamesFromPreset<TServices[K]>
+				PresetEnvVarNames<Extract<K, string>, TServices[K]>
 		  >
 		| OverlayEnvVarNames<DeclaredStaticEnv<TServices[K]>>;
 }[keyof TServices];
+
+/** `envName` in `core/ports.ts`, at the type level: `my-db` is `MY_DB`. */
+type EnvNameOf<K extends string> = Uppercase<
+	K extends `${infer Head}-${infer Tail}` ? `${Head}_${EnvNameOf<Tail>}` : K
+>;
 
 export type SharedEnvVarNames<
 	TServices extends Record<string, ServiceConfig>,
@@ -169,18 +178,40 @@ export type SharedEnvVarNames<
 	| "NODE_ENV"
 	| "NODE_EXTRA_CA_CERTS"
 	| "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS"
-	| `${Uppercase<Extract<keyof ComputedPorts<TServices, TApps>, string>>}_PORT`
-	| `${Uppercase<Extract<keyof ComputedUrls<TServices, TApps>, string>>}_URL`
-	| `${Uppercase<
+	| `${EnvNameOf<Extract<keyof ComputedPorts<TServices, TApps>, string>>}_PORT`
+	| `${EnvNameOf<Extract<keyof ComputedUrls<TServices, TApps>, string>>}_URL`
+	| `${EnvNameOf<
 			Extract<keyof ComputedLoopbackUrls<TServices, TApps>, string>
 	  >}_LOOPBACK_URL`
-	| `${Uppercase<Extract<ExposedKeys<TServices, TApps>, string>>}_PUBLIC_URL`;
+	| `${EnvNameOf<Extract<ExposedKeys<TServices, TApps>, string>>}_PUBLIC_URL`;
+
+/** The `env` names apps' `captures` export, once a value is captured. */
+type CaptureEnvVarNames<TApps> = {
+	[K in keyof TApps]: TApps[K] extends { captures?: infer TCaptures }
+		? {
+				[C in keyof TCaptures]: TCaptures[C] extends { env?: infer TName }
+					? string extends TName
+						? never
+						: Extract<TName, string>
+					: never;
+			}[keyof TCaptures]
+		: never;
+}[keyof TApps];
+
+/**
+ * Names in the shared environment only some of the time: under named hosts,
+ * once a capture has a value, or in a checkout with a workspace id.
+ */
+type OptionalEnvVarNames<TApps> =
+	HostOnlyEnvVarNames | CaptureEnvVarNames<TApps> | "BUNCARGO_WORKSPACE_ID";
 
 export type ConfigEnvVarNames<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends object,
 	TEnv = EnvValues,
 > =
+	| "BUNCARGO_WORKSPACE_ID"
+	| CaptureEnvVarNames<TApps>
 	| SharedEnvVarNames<
 			TServices,
 			[TApps] extends [Record<string, AppConfig>]
@@ -209,26 +240,28 @@ export type HostOnlyEnvVarNames =
 /**
  * A built shared environment.
  *
- * Every computed name is present, plus whatever `config.env` declared. Names
- * that only appear under named hosts are optional. There is deliberately no
- * open index signature: an unknown name is a typo, not a lookup.
+ * Every computed name is present, plus whatever `config.env` declared. The
+ * {@link OptionalEnvVarNames} are optional. There is deliberately no open
+ * index signature: an unknown name is a typo, not a lookup.
  */
 export type ComputedEnvVars<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 	TEnv = EnvValues,
 > = Record<
-	Exclude<ConfigEnvVarNames<TServices, TApps, TEnv>, HostOnlyEnvVarNames>,
+	Exclude<
+		ConfigEnvVarNames<TServices, TApps, TEnv>,
+		OptionalEnvVarNames<TApps>
+	>,
 	string
 > &
-	Partial<Record<HostOnlyEnvVarNames | "BUNCARGO_WORKSPACE_ID", string>>;
+	Partial<Record<OptionalEnvVarNames<TApps>, string>>;
 
 /**
  * Env names the spawner injects into an app process only while named hosts are
  * active, so they cannot be guaranteed present.
  */
-export type AppHostOnlyEnvVarNames =
-	"BUNCARGO_APP_HOSTNAME" | "BUNCARGO_HOSTS_PORT";
+export type AppHostOnlyEnvVarNames = "BUNCARGO_APP_HOSTNAME";
 
 /**
  * The environment one app's own process receives: the shared surface plus that

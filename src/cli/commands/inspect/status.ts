@@ -1,49 +1,77 @@
-import { existsSync } from "node:fs";
 import { getErrorMessage, typedSwitch, typedSwitchGroup } from "hanzio";
 import {
 	containerRuntimeForEnv,
-	listBuncargoContainers,
+	isRuntimeUp,
 } from "../../../container-runtime";
+import {
+	buncargoContainersOf,
+	portOwnersOf,
+} from "../../../container-runtime/containers";
+import type { ContainerRuntimeAdapter } from "../../../container-runtime/types";
+import {
+	checkSlotStatus,
+	formatCheckSlotHolder,
+} from "../../../core/check-slots";
 import { readEnvOverrides } from "../../../core/env-overrides";
 import { describeStrayLoopbackUrl } from "../../../core/loopback-env";
 import {
 	classifyPortOccupant,
+	createPortOwnerSnapshotAsync,
 	formatPortOwner,
-	getPortOwner,
 	withBindProbe,
 } from "../../../core/process";
 import { describeRemoval, readRemovals } from "../../../core/removal-log";
 import { type RunEntry, readLiveRuns } from "../../../core/run-registry";
-import type { AnyDevEnvironment } from "../../../types";
+import { internalsOf } from "../../../environment";
+import type {
+	AnyDevEnvironment,
+	BuncargoContainer,
+	PortContainerOwner,
+} from "../../../types";
+import { BASE_EXITS, defineCommand } from "../../command-spec";
 import { strayLoopbackUrls } from "../../core-checks";
-import { hasFlag } from "../../flags";
+import type { StatusJson } from "../../json-documents";
 import * as log from "../../log";
-import {
-	getTunnelRegistryPath,
-	readLiveTunnelRegistry,
-} from "../../tunnel-registry";
-import { loadLiveEnv } from "../runtime";
+import { loadLiveEnv } from "../load-env";
 
 /**
  * `buncargo status` — this checkout's containers, ports, hosts, tunnels and
  * runs. `--json` is the same snapshot as one object, so a script or an agent
  * reads it instead of hunting ports out of logs and `docker ps`.
  */
-export async function handleStatus(args: string[] = []): Promise<void> {
-	const status = await readStatus();
-	if (hasFlag(args, "--json")) {
-		log.line(JSON.stringify(status, null, 2));
-		return;
-	}
-	printStatus(status);
-}
+export const statusCommand = defineCommand({
+	spec: {
+		name: "status",
+		summary: "Show this project's containers, ports, and tunnels",
+		flags: {
+			json: { kind: "boolean", description: "One JSON document on stdout" },
+		},
+	},
+	exits: BASE_EXITS,
+	json: "StatusJson (--json)",
+	run: async ({ values }) => {
+		const status = await readStatus();
+		if (values.json) log.line(JSON.stringify(status, null, 2));
+		else printStatus(status);
+		return 0;
+	},
+});
 
-async function readStatus() {
+async function readStatus(): Promise<StatusJson> {
 	// As `env` and `url` see it: named URLs once the daemon serves this
 	// checkout's run, rather than a read-only load that never activates them.
 	const env = await loadLiveEnv();
 	const runtime = containerRuntimeForEnv(env);
-	const ownerOf = withBindProbe((port) => getPortOwner(port, { runtime }));
+	// One listing of the runtime answers both who holds each port and which
+	// containers this checkout has, where each used to be a `docker ps` of
+	// its own per port.
+	const listing = await readContainerListing(runtime);
+	const snapshot = await createPortOwnerSnapshotAsync({
+		runtime,
+		ports: Object.values(env.ports as Record<string, number>),
+		containers: "inventory" in listing ? listing.portOwners : undefined,
+	});
+	const ownerOf = withBindProbe((port) => snapshot.owner(port));
 
 	const ports = Object.fromEntries(
 		Object.entries(env.ports as Record<string, number>).map(([name, port]) => {
@@ -58,9 +86,13 @@ async function readStatus() {
 				{
 					port,
 					state: typedSwitch(action, {
-						free: () => "free",
-						fail: () => "foreign",
-						...typedSwitchGroup(action, ["reuse", "kill"], () => "ours"),
+						free: () => "free" as const,
+						fail: () => "foreign" as const,
+						...typedSwitchGroup(
+							action,
+							["reuse", "kill"],
+							() => "ours" as const,
+						),
 					}),
 					owner: owner ? formatPortOwner(port, owner) : null,
 				},
@@ -68,28 +100,34 @@ async function readStatus() {
 		}),
 	);
 
-	let containers:
-		{ service: string; name: string; status: string }[] | { error: string };
-	try {
-		containers = listBuncargoContainers([runtime])
-			.filter((item) => item.project === env.projectName)
-			.map((item) => ({
-				service: item.service || item.name,
-				name: item.name,
-				status: item.status,
-			}));
-	} catch (error) {
-		containers = {
-			error: getErrorMessage(error),
-		};
-	}
+	const containers:
+		{ service: string; name: string; status: string }[] | { error: string } =
+		"inventory" in listing
+			? listing.inventory
+					.filter((item) => item.project === env.projectName)
+					.map((item) => ({
+						service: item.service || item.name,
+						name: item.name,
+						status: item.status,
+					}))
+			: { error: listing.error };
 
-	const tunnels = existsSync(getTunnelRegistryPath(env.root))
-		? (await readLiveTunnelRegistry(env.root)).map((entry) => ({
-				name: entry.name,
-				publicUrl: entry.publicUrl,
-			}))
-		: [];
+	const runs = (await readLiveRuns().catch(() => [])).filter(
+		(run) => run.root === env.root,
+	);
+	// The public URLs the live runs publish: each run's tunnels, which close
+	// with it, and the URLs its apps printed.
+	const publicUrls = new Map(
+		runs
+			.flatMap((run) => [...run.apps, ...run.services])
+			.flatMap((row) =>
+				row.publicUrl === undefined ? [] : [[row.name, row.publicUrl] as const],
+			),
+	);
+	const tunnels = [...publicUrls].map(([name, publicUrl]) => ({
+		name,
+		publicUrl,
+	}));
 
 	// Before a run has persisted its block, the offset shown is the unprobed
 	// hash: say so when the next run would move it, or an agent tests ports
@@ -100,7 +138,7 @@ async function readStatus() {
 			env.portOffsetProvenance === "hash"
 				? describePlannedOffset({
 						offset: env.portOffset,
-						planned: env.planPortOffset().offset,
+						planned: internalsOf(env).planPortOffset(ownerOf).offset,
 						ports,
 					})
 				: undefined;
@@ -113,16 +151,20 @@ async function readStatus() {
 		// First: what an agent reads `status` for, and `| head` keeps the top.
 		// The live runs of this checkout, with each app's status, pid and URL,
 		// and `degraded` while a service container is down under it.
-		runs: (await readLiveRuns().catch(() => []))
-			.filter((run) => run.root === env.root)
-			.map((run) => ({ ...run, health: runHealth(run) })),
+		runs: runs.map((run) => ({ ...run, health: runHealth(run) })),
 		project: env.projectName,
 		root: env.root,
 		portOffset: env.portOffset,
 		portOffsetProvenance: env.portOffsetProvenance,
 		plannedOffset,
 		composeFile: env.composeFile,
-		runtime: { name: runtime.name, running: runtime.isAvailable() },
+		// A runtime that listed its containers is running; only one that did
+		// not is asked again.
+		runtime: {
+			name: runtime.name,
+			running: "inventory" in listing || isRuntimeUp(runtime),
+		},
+		checkSlots: checkSlotStatus(process.env),
 		ports,
 		urls: env.urls,
 		containers,
@@ -152,7 +194,29 @@ async function readStatus() {
 		strayLoopbackUrls: strayLoopbackUrls(env as AnyDevEnvironment).map(
 			(stray) => ({ ...stray, message: describeStrayLoopbackUrl(stray) }),
 		),
-	};
+	} satisfies StatusJson;
+}
+
+/**
+ * The runtime's buncargo containers and the ports its containers hold, from
+ * one listing, or why it could not say.
+ */
+async function readContainerListing(runtime: ContainerRuntimeAdapter): Promise<
+	| {
+			inventory: BuncargoContainer[];
+			portOwners: Map<number, PortContainerOwner>;
+	  }
+	| { error: string }
+> {
+	try {
+		const listed = await runtime.containers();
+		return {
+			inventory: buncargoContainersOf(listed, runtime.name),
+			portOwners: portOwnersOf(listed, runtime.name),
+		};
+	} catch (error) {
+		return { error: getErrorMessage(error) };
+	}
 }
 
 /** How many of this checkout's removal records `status` shows. */
@@ -205,7 +269,7 @@ export function appStatusLines(
 	];
 }
 
-function printStatus(status: Awaited<ReturnType<typeof readStatus>>): void {
+function printStatus(status: StatusJson): void {
 	for (const line of appStatusLines(status.runs)) log.line(line);
 	log.line();
 	log.line(`project: ${status.project}`);
@@ -244,19 +308,26 @@ function printStatus(status: Awaited<ReturnType<typeof readStatus>>): void {
 				log.line(`  ${entry.hostname} → :${entry.targetPort}`);
 		}
 	}
-	if (existsSync(getTunnelRegistryPath(status.root))) {
+	if (status.tunnels.length > 0) {
 		log.line();
 		log.line("tunnels:");
-		if (status.tunnels.length === 0) log.line("  (none)");
-		else
-			for (const entry of status.tunnels)
-				log.line(`  ${entry.name}: ${entry.publicUrl}`);
+		for (const entry of status.tunnels)
+			log.line(`  ${entry.name}: ${entry.publicUrl}`);
 	}
 	if (status.envOverrides.length > 0) {
 		log.line();
 		log.line(
 			`env overrides (buncargo env set): ${status.envOverrides.join(", ")}`,
 		);
+	}
+	const slots = status.checkSlots;
+	if (slots.enabled && (slots.holders.length > 0 || slots.waiting > 0)) {
+		log.line();
+		log.line(
+			`check slots: ${slots.holders.length} of ${slots.capacity} taken, ${slots.waiting} waiting (this user's, in ${slots.dir})`,
+		);
+		for (const holder of slots.holders)
+			log.line(`  ${formatCheckSlotHolder(holder)}`);
 	}
 	for (const stray of status.strayLoopbackUrls) log.warn(stray.message);
 	for (const run of status.runs) {

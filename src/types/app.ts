@@ -14,7 +14,7 @@ import type { ServiceConfig } from "./service";
 /**
  * Configuration for an application (e.g., api, web).
  */
-interface AppOptions<TStatic extends EnvValues = EnvValues> {
+export interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	/** Eligible for a public tunnel with `dev --expose`. */
 	expose?: boolean;
 	/** Protocol for recipient sharing; apps default to HTTP, presets infer it, custom services default to TCP. */
@@ -144,7 +144,7 @@ export interface AppWatchConfig {
 }
 
 /** A key that opens a captured URL: `{ key: "p", label: "open preview", open: "previewUrl" }`. */
-export interface AppAction {
+interface AppAction {
 	/** One character. */
 	key: string;
 	label: string;
@@ -159,7 +159,7 @@ export interface AppAction {
  * tunnel URL (normalized to its origin). `value` is `captured.<name>` in hooks,
  * `envVars`, generated files and `buncargo env --get captured.<name>`. `event`
  * only fires `onCapture`. Every kind fires `onCapture` and lands in the run
- * registry.
+ * registry, unless it is `secret`.
  */
 export interface CaptureConfig {
 	/** The first capture group is the value; without one, the whole match. */
@@ -172,6 +172,14 @@ export interface CaptureConfig {
 	label?: string;
 	/** Also set this env var to the value, beneath the config's own `env`. */
 	env?: string;
+	/**
+	 * Keep the value in this run's environment only (`env`, `captured.<name>`
+	 * in hooks and generated files): never in the run registry, so neither
+	 * BuncargoBar nor another process's `buncargo env` sees it, and never
+	 * shown under its `label`. For a credential such as a webhook signing
+	 * secret.
+	 */
+	secret?: boolean;
 }
 
 /**
@@ -198,10 +206,22 @@ export interface SecretsScopeConfig {
 	/** Folder, matching the app's own secret path. Default: `"/"`. */
 	path?: string;
 	/**
+	 * Inject only these keys from the scope. A key someone adds to the shared
+	 * Infisical environment then reaches no checkout until it is listed here.
+	 */
+	only?: readonly string[];
+	/** Never inject these keys, such as a mail provider's key that sends real mail. */
+	exclude?: readonly string[];
+	/**
 	 * Keys that must be present after the fetch. A missing one stops the app
 	 * before it spawns, naming the key, instead of the app crashing on it.
 	 */
 	required?: readonly string[];
+}
+
+/** What reading an app's secrets scope needs: a resolved app or one as written. */
+export interface SecretsHolder {
+	secrets?: SecretsScopeConfig | false;
 }
 
 /** A long-running owned process. Readiness means spawned and still alive. */
@@ -251,7 +271,8 @@ export type DeclaredAppEnvVars<TApp> = "envVars" extends keyof TApp
 
 /**
  * `TApps` with every position that names a service or app key narrowed to this
- * config's own keys.
+ * config's own keys, plus the keys its integrations add (`TAddedServices`,
+ * `TAddedApps`).
  *
  * The `envVars` parameters are spelled out with `NoInfer` rather than reused
  * from {@link EnvVarsBuilder}: a builder that reads `ports.web` would otherwise
@@ -268,26 +289,43 @@ type AppDefinitionBase<T extends AppConfig> = T extends AppConfig
 	? Omit<T, "requiredServices" | "requiredApps" | "envVars">
 	: never;
 
+/** Every key an app definition may set. */
+type AppKey = keyof AppOptions | "kind" | "port";
+
+/**
+ * `never` for each key of `T` no app takes. `TApps` is inferred from the
+ * literal, so a misspelt key (`healthEndpont`) would otherwise become part of
+ * the app's type and pass silently.
+ */
+type NoUnknownAppKeys<T> = {
+	[P in Exclude<keyof T, AppKey>]: never;
+};
+
 export type TypedAppDefinitions<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TAddedServices extends string = never,
+	TAddedApps extends string = never,
 > = {
 	[K in keyof TApps]: [TApps[K]] extends [never]
 		? TApps[K]
-		: AppDefinitionBase<TApps[K]> & {
-				requiredServices?: readonly Extract<keyof TServices, string>[];
-				requiredApps?: readonly Extract<keyof TApps, string>[];
-				startAfter?: readonly Extract<keyof TApps, string>[];
-				envVars?: (
-					ports: NoInfer<
-						ComputedPorts<TServices, TypedAppDefinitions<TServices, TApps>>
-					>,
-					urls: NoInfer<
-						ComputedUrls<TServices, TypedAppDefinitions<TServices, TApps>>
-					>,
-					ctx: NoInfer<
-						EnvVarsContext<TServices, TypedAppDefinitions<TServices, TApps>>
-					>,
-				) => DeclaredAppEnvVars<TApps[K]>;
-			};
+		: AppDefinitionBase<TApps[K]> &
+				NoUnknownAppKeys<TApps[K]> & {
+					requiredServices?: readonly (
+						Extract<keyof TServices, string> | TAddedServices
+					)[];
+					requiredApps?: readonly (Extract<keyof TApps, string> | TAddedApps)[];
+					startAfter?: readonly (Extract<keyof TApps, string> | TAddedApps)[];
+					envVars?: (
+						ports: NoInfer<
+							ComputedPorts<TServices, TypedAppDefinitions<TServices, TApps>>
+						>,
+						urls: NoInfer<
+							ComputedUrls<TServices, TypedAppDefinitions<TServices, TApps>>
+						>,
+						ctx: NoInfer<
+							EnvVarsContext<TServices, TypedAppDefinitions<TServices, TApps>>
+						>,
+					) => DeclaredAppEnvVars<TApps[K]>;
+				};
 };

@@ -1,8 +1,12 @@
-import { formatCheckSlotHolder, withCheckSlot } from "../../core/check-slots";
+import {
+	formatCheckSlotWait,
+	processCheckSlot,
+	withCheckSlot,
+} from "../../core/check-slots";
 import { CommandSignalError, type ExecResult } from "../../core/process";
 import { loadDevEnv } from "../../loader";
+import { BASE_EXITS, defineCommand } from "../command-spec";
 import { argumentsError } from "../errors";
-import { parseExecArgs, printExecHelp } from "../exec-flags";
 import { databaseExists, databaseOverrides } from "./exec-database";
 
 /**
@@ -55,19 +59,55 @@ export function withAppendedArgs(
 		: ["sh", "-c", `${command} "$@"`, "sh", ...args];
 }
 
-export async function handleExec(args: string[]): Promise<number> {
-	const parsed = parseExecArgs(args);
+export const execCommand = defineCommand({
+	spec: {
+		name: "exec",
+		usage: "exec [options] -- <command> [args...]",
+		summary: "Run a command with the checkout environment",
+		flags: {
+			app: {
+				kind: "string",
+				value: "<name>",
+				description: "Use this app's environment and default working directory",
+			},
+			cwd: {
+				kind: "string",
+				value: "<path>",
+				description: "Working directory relative to the repository root",
+			},
+			db: {
+				kind: "string",
+				value: "<name>",
+				description:
+					"Point the variables that name this checkout's Postgres database at database <name>",
+			},
+			slot: {
+				kind: "boolean",
+				description:
+					"Hold one of the machine-wide check slots (BUNCARGO_CHECK_SLOTS, default 3) while it runs",
+			},
+		},
+		passthrough: "Required: the command; following arguments pass unchanged",
+	},
+	exits: {
+		...BASE_EXITS,
+		1: "bad arguments; otherwise the command's own code",
+	},
+	run: ({ values, passthrough }) => {
+		if (passthrough.length === 0)
+			throw argumentsError(["Provide a command after --"], "exec");
+		return exec({ ...values, command: [...passthrough] });
+	},
+});
 
-	if (parsed.help) {
-		printExecHelp();
-		return 0;
-	}
-
-	if (parsed.errors.length) {
-		throw argumentsError(parsed.errors, "exec");
-	}
-
-	const env = await loadDevEnv({ readOnly: true });
+async function exec(parsed: {
+	app: string | undefined;
+	cwd: string | undefined;
+	db: string | undefined;
+	slot: boolean;
+	command: string[];
+}): Promise<number> {
+	const env = await loadDevEnv();
 	const databaseEnv =
 		parsed.db === undefined
 			? undefined
@@ -93,9 +133,7 @@ export async function handleExec(args: string[]): Promise<number> {
 	if (!parsed.slot) return run();
 
 	return withCheckSlot(parsed.command.join(" ").slice(0, 60), run, {
-		onWait: (holders) =>
-			console.error(
-				`Waiting for a check slot: ${holders.map(formatCheckSlotHolder).join(", ")}`,
-			),
+		...processCheckSlot,
+		onWait: (wait) => console.error(formatCheckSlotWait(wait)),
 	});
 }

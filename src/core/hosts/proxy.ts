@@ -1,5 +1,6 @@
 import type { Server } from "bun";
 import { getErrorMessage } from "hanzio";
+import { HOSTS_PROTOCOL, MIN_HOSTS_PROTOCOL } from "./protocol";
 import {
 	createUpstreamResolver,
 	describeUpstreamFamilies,
@@ -9,6 +10,11 @@ import {
 export const HOPS_HEADER = "x-buncargo-hops";
 export const MAX_PROXY_HOPS = 5;
 export const HEALTH_PATH = "/_buncargo/health";
+/**
+ * Asked on the health path, the daemon reloads before it answers, so the CLI
+ * learns whether its new routes are served in one round trip.
+ */
+const HEALTH_REFRESH_PARAM = "refresh";
 
 /**
  * What the proxy can say about the routes it is serving.
@@ -18,9 +24,12 @@ export const HEALTH_PATH = "/_buncargo/health";
  * identical from a 404, which is how a stalled daemon went unnoticed for days.
  */
 export interface ProxyRoutesView {
-	/** Hostnames the bound listener answers for: routed, and its leaf covers them. */
-	hostnames: string[];
-	/** Epoch ms of the last successful refresh. */
+	/**
+	 * Hostnames the bound listener answers for: routed, and its leaf covers them.
+	 * Read only by health and a 404, so a view may build it on read.
+	 */
+	readonly hostnames: string[];
+	/** Epoch ms of the last reload that finished, whether or not it loaded. */
 	lastReloadAt: number;
 	/**
 	 * Why the listener could not move to the certificate on disk. It keeps the
@@ -59,7 +68,7 @@ const HOP_BY_HOP_HEADERS = [
  * anything else leaves the socket in its HTTP server with no `error` listener,
  * and the next reset takes the dev server down with an unhandled ECONNRESET.
  */
-export function requestedSubprotocol(request: Request): string | undefined {
+function requestedSubprotocol(request: Request): string | undefined {
 	const offered = request.headers.get("sec-websocket-protocol");
 	if (!offered) return undefined;
 	return offered.split(",")[0]?.trim() || undefined;
@@ -104,7 +113,8 @@ export function closestHostname(
 export function createProxyFetch(input: {
 	lookup: ProxyRouteLookup;
 	routes: () => ProxyRoutesView;
-	https: boolean;
+	/** What a health request with {@link HEALTH_REFRESH_PARAM} waits for. */
+	refresh?: () => Promise<void>;
 	upstream?: UpstreamResolver;
 	/** Age of `lastReloadAt` past which the map is reported as stale. */
 	staleAfterMs?: number;
@@ -115,7 +125,7 @@ export function createProxyFetch(input: {
 	request: Request,
 	server: Server<unknown>,
 ) => Response | Promise<Response> {
-	const { lookup, routes, https, staleAfterMs, onStale } = input;
+	const { lookup, routes, refresh, staleAfterMs, onStale } = input;
 	const upstream = input.upstream ?? createUpstreamResolver();
 	const now = input.now ?? Date.now;
 
@@ -136,18 +146,28 @@ export function createProxyFetch(input: {
 
 	return async (request, server) => {
 		const url = new URL(request.url);
-		const view = routes();
-		const ageMs = reloadAgeMs(view);
 		if (url.pathname === HEALTH_PATH) {
+			// A reload that failed still answers: the body says what is served.
+			if (refresh && url.searchParams.has(HEALTH_REFRESH_PARAM)) {
+				await refresh().catch(() => {});
+			}
+			const view = routes();
+			reloadAgeMs(view);
+			const { hostnames } = view;
 			return Response.json({
 				ok: true,
-				routes: view.hostnames.length,
-				hostnames: view.hostnames,
+				protocol: HOSTS_PROTOCOL,
+				routes: hostnames.length,
+				hostnames,
 				lastReloadAt: view.lastReloadAt,
 				...(view.bindError === undefined ? {} : { bindError: view.bindError }),
 			});
 		}
 
+		// Every request reads the view for its age; only health and a 404 read
+		// its hostnames.
+		const view = routes();
+		const ageMs = reloadAgeMs(view);
 		const hostname = hostnameFromHostHeader(request.headers.get("host"));
 		const hops =
 			Number.parseInt(request.headers.get(HOPS_HEADER) ?? "0", 10) || 0;
@@ -201,7 +221,7 @@ export function createProxyFetch(input: {
 		const headers = new Headers(request.headers);
 		for (const header of HOP_BY_HOP_HEADERS) headers.delete(header);
 		headers.set(HOPS_HEADER, String(hops + 1));
-		headers.set("x-forwarded-proto", https ? "https" : "http");
+		headers.set("x-forwarded-proto", "https");
 		headers.set("x-forwarded-host", hostname);
 		const forwardedFor = request.headers.get("x-forwarded-for");
 		headers.set(
@@ -381,6 +401,12 @@ export interface LocalProxy {
 	stop: () => void;
 	httpsPort: number;
 	httpPort?: number;
+	/**
+	 * Why the http redirect listener is not bound, when one was asked for.
+	 * https serves without it: a redirect is a convenience, and failing the
+	 * bind over it put every run on the machine on `localhost:port`.
+	 */
+	redirectError?: string;
 }
 
 /**
@@ -427,13 +453,14 @@ function serveOnEach(
 export async function startLocalProxy(options: {
 	lookup: ProxyRouteLookup;
 	routes: () => ProxyRoutesView;
+	refresh?: () => Promise<void>;
 	/**
-	 * The pair to serve HTTPS with; absent serves plain HTTP. Given but empty
-	 * is refused: it used to bind plain HTTP on :443 while every client spoke
-	 * HTTPS to it.
+	 * The pair to serve with. An empty one is refused: it used to bind plain
+	 * HTTP on :443 while every client spoke HTTPS to it.
 	 */
-	tls?: { cert: string; key: string };
+	tls: { cert: string; key: string };
 	httpsPort: number;
+	/** Where to redirect plain http from; none binds no redirect listener. */
 	httpPort?: number;
 	hostname?: string;
 	staleAfterMs?: number;
@@ -441,21 +468,18 @@ export async function startLocalProxy(options: {
 }): Promise<LocalProxy> {
 	const hostnames = options.hostname ? [options.hostname] : LOOPBACK_HOSTNAMES;
 	const { tls } = options;
-	const emptyPair =
-		tls !== undefined && (tls.cert.trim() === "" || tls.key.trim() === "");
-	if (emptyPair) {
+	if (tls.cert.trim() === "" || tls.key.trim() === "") {
 		throw new Error(
 			"Named-hosts certificate or key is empty. Run `buncargo hosts install`.",
 		);
 	}
-	const https = tls !== undefined;
 	// One resolver for both paths so an HMR upgrade reuses the family the first
 	// HTTP request already probed.
 	const upstream = createUpstreamResolver();
 	const fetchHandler = createProxyFetch({
 		lookup: options.lookup,
 		routes: options.routes,
-		https,
+		refresh: options.refresh,
 		upstream,
 		staleAfterMs: options.staleAfterMs,
 		onStale: options.onStale,
@@ -475,61 +499,64 @@ export async function startLocalProxy(options: {
 		reusePort: true,
 		fetch: fetchHandler,
 		websocket: websocket as never,
-		...(tls
-			? {
-					tls: { cert: tls.cert, key: tls.key },
-					// Negotiated via ALPN; HTTP/1.1 clients are still served, and a
-					// browser opens its WebSocket over a separate HTTP/1.1 connection
-					// since Bun does not do RFC 8441 upgrades over h2.
-					http2: true,
-				}
-			: {}),
+		tls: { cert: tls.cert, key: tls.key },
+		// Negotiated via ALPN; HTTP/1.1 clients are still served, and a browser
+		// opens its WebSocket over a separate HTTP/1.1 connection since Bun does
+		// not do RFC 8441 upgrades over h2.
+		http2: true,
 	});
 
 	const httpsPort = httpsServers[0]?.port;
-	if (httpsPort === undefined) {
+	const stopHttps = () => {
+		websocket.closeAll();
 		for (const server of httpsServers) server.stop(true);
+	};
+	if (httpsPort === undefined) {
+		stopHttps();
 		throw new Error("Failed to bind the local hosts proxy");
 	}
 
 	let httpServers: BunServer[] = [];
+	let redirectError: string | undefined;
 	if (options.httpPort !== undefined) {
-		httpServers = serveOnEach(hostnames, {
-			port: options.httpPort,
-			idleTimeout: 0,
-			// So a reload can bind the replacement before stopping this one. Without
-			// it the daemon has to drop the listener first, and every certificate
-			// remint opens a window where :443 refuses connections.
-			reusePort: true,
-			fetch(request) {
-				const url = new URL(request.url);
-				if (url.pathname === HEALTH_PATH) {
-					return Response.json({ ok: true, redirect: true });
-				}
-				const host = hostnameFromHostHeader(request.headers.get("host"));
-				return new Response(null, {
-					status: 301,
-					headers: {
-						location: `https://${host}${url.pathname}${url.search}`,
-					},
-				});
-			},
-		});
+		try {
+			httpServers = serveOnEach(hostnames, {
+				port: options.httpPort,
+				idleTimeout: 0,
+				// So a reload can bind the replacement before stopping this one.
+				// Without it the daemon has to drop the listener first, and every
+				// certificate remint opens a window where :443 refuses connections.
+				reusePort: true,
+				fetch: redirectToHttps,
+			});
+		} catch (error) {
+			redirectError = `could not bind :${options.httpPort} (${getErrorMessage(error)})`;
+		}
 	}
 
 	return {
 		httpsPort,
 		httpPort: httpServers[0]?.port,
+		...(redirectError === undefined ? {} : { redirectError }),
 		stop() {
 			// Close the bridged upstreams first: a forced server stop resets
 			// them, and a reset is what kills dev servers that do not guard
 			// their upgraded sockets.
-			websocket.closeAll();
-			for (const server of [...httpsServers, ...httpServers]) {
-				server.stop(true);
-			}
+			stopHttps();
+			for (const server of httpServers) server.stop(true);
 		},
 	};
+}
+
+function redirectToHttps(request: Request): Response {
+	const url = new URL(request.url);
+	const host = hostnameFromHostHeader(request.headers.get("host"));
+	return new Response(null, {
+		status: 301,
+		headers: {
+			location: `https://${host}${url.pathname}${url.search}`,
+		},
+	});
 }
 
 const HEALTH_TIMEOUT_MS = 500;
@@ -543,21 +570,22 @@ const HEALTH_TIMEOUT_MS = 500;
  */
 function isProxyHealthBody(value: unknown): boolean {
 	if (typeof value !== "object" || value === null) return false;
-	const body = value as { ok?: unknown; routes?: unknown; redirect?: unknown };
-	if (body.ok !== true) return false;
-	return typeof body.routes === "number" || body.redirect === true;
+	const body = value as { ok?: unknown; routes?: unknown };
+	return body.ok === true && typeof body.routes === "number";
 }
 
 /**
  * What a buncargo proxy says it is serving.
  *
- * `outdated` is a buncargo daemon that answers but predates the `hostnames`
- * and `lastReloadAt` fields, so nothing it serves can be checked. It is not
- * served on trust: callers tell the user to update it.
+ * `outdated` is a buncargo daemon below {@link MIN_HOSTS_PROTOCOL}: one from
+ * before the protocol existed reports none. What it serves cannot be checked
+ * the way this CLI checks it, so it is not served on trust: callers tell the
+ * user to update it. A daemon above this CLI's protocol is not outdated.
  */
 export type ProxyHealth =
 	| {
 			outdated?: false;
+			protocol: number;
 			routeCount: number;
 			hostnames: string[];
 			lastReloadAt: number;
@@ -568,12 +596,15 @@ export type ProxyHealth =
 function parseProxyHealth(value: unknown): ProxyHealth | undefined {
 	if (!isProxyHealthBody(value)) return undefined;
 	const body = value as {
+		protocol?: unknown;
 		routes?: unknown;
 		hostnames?: unknown;
 		lastReloadAt?: unknown;
 		bindError?: unknown;
 	};
 	if (
+		typeof body.protocol !== "number" ||
+		body.protocol < MIN_HOSTS_PROTOCOL ||
 		!Array.isArray(body.hostnames) ||
 		!body.hostnames.every((entry) => typeof entry === "string") ||
 		typeof body.lastReloadAt !== "number"
@@ -581,6 +612,7 @@ function parseProxyHealth(value: unknown): ProxyHealth | undefined {
 		return { outdated: true };
 	}
 	return {
+		protocol: body.protocol,
 		routeCount: typeof body.routes === "number" ? body.routes : 0,
 		hostnames: body.hostnames as string[],
 		lastReloadAt: body.lastReloadAt,
@@ -594,21 +626,20 @@ function parseProxyHealth(value: unknown): ProxyHealth | undefined {
  * What the proxy says it is serving, or `undefined` when nothing answered or
  * what answered is not a buncargo proxy.
  *
- * Probes only the scheme the caller says the proxy serves: racing an HTTP and
- * an HTTPS probe against the same port means one of them is always speaking
- * the wrong protocol into the listener.
+ * `refresh` has the daemon reload first ({@link HEALTH_REFRESH_PARAM}); a
+ * daemon too old to know it answers anyway and reads as outdated.
  */
 export async function readProxyHealth(
-	port = 443,
+	port: number,
 	hostname = "127.0.0.1",
-	options: { tls?: boolean; timeoutMs?: number } = {},
+	options: { refresh?: boolean; timeoutMs?: number } = {},
 ): Promise<ProxyHealth | undefined> {
-	const tls = options.tls ?? true;
-	const url = `${tls ? "https" : "http"}://${loopbackAuthority(hostname, port)}${HEALTH_PATH}`;
+	const query = options.refresh ? `?${HEALTH_REFRESH_PARAM}` : "";
+	const url = `https://${loopbackAuthority(hostname, port)}${HEALTH_PATH}${query}`;
 	try {
 		const response = await fetch(url, {
 			signal: AbortSignal.timeout(options.timeoutMs ?? HEALTH_TIMEOUT_MS),
-			...(tls ? { tls: { rejectUnauthorized: false } } : {}),
+			tls: { rejectUnauthorized: false },
 		});
 		if (!response.ok) return undefined;
 		return parseProxyHealth(await response.json());

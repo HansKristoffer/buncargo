@@ -12,11 +12,12 @@
  * service - survives untouched.
  */
 
-import { copyFile, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { buildSharedEnvValues } from "../core/env";
 import type { PortMap, UrlMap } from "../core/ports";
-import type { EnvFileOptions, ServiceConfig } from "../types";
+import { writeTextFile } from "../core/registry-file";
+import type { EnvFileOptions, ResolvedService } from "../types";
 
 /** `.env` line: optional `export`, a key, `=`, then the value. */
 const ENV_LINE =
@@ -89,7 +90,7 @@ export function rewriteEnvValues(
  */
 export function buildEnvFileUpdates(input: {
 	projectName: string;
-	services: Record<string, ServiceConfig>;
+	services: Record<string, ResolvedService>;
 	ports: PortMap;
 	loopbackUrls: UrlMap;
 	values?: EnvFileOptions["values"];
@@ -127,6 +128,10 @@ export function resolveEnvFileOptions(
 	return { ...options, path: options.path ?? ".env" };
 }
 
+function isMissing(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
 export interface EnvFileSyncResult {
 	/** Absolute path of the file considered. */
 	path: string;
@@ -138,21 +143,19 @@ export interface EnvFileSyncResult {
 	absent?: boolean;
 }
 
-function tempPathFor(path: string): string {
-	return `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 /**
  * Sync one dotenv in place.
  *
  * Writes through a temp file and a rename so a concurrent reader - a test
- * runner loading `.env` while this runs - never sees a truncated file.
+ * runner loading `.env` while this runs - never sees a truncated file. The
+ * file keeps its mode. Only a missing file is absent; any other read error
+ * throws, rather than passing for a dotenv the repo does not have.
  */
 export async function syncEnvFile(input: {
 	root: string;
 	envFile: boolean | EnvFileOptions | undefined;
 	projectName: string;
-	services: Record<string, ServiceConfig>;
+	services: Record<string, ResolvedService>;
 	ports: PortMap;
 	loopbackUrls: UrlMap;
 }): Promise<EnvFileSyncResult | undefined> {
@@ -167,7 +170,8 @@ export async function syncEnvFile(input: {
 	let created = false;
 	try {
 		contents = await readFile(path, "utf-8");
-	} catch {
+	} catch (error) {
+		if (!isMissing(error)) throw error;
 		if (!options.createFrom) {
 			// Never conjure a dotenv the repo did not ask for.
 			return { path, changed: [], created: false, absent: true };
@@ -179,7 +183,8 @@ export async function syncEnvFile(input: {
 			await copyFile(template, path);
 			contents = await readFile(path, "utf-8");
 			created = true;
-		} catch {
+		} catch (error) {
+			if (!isMissing(error)) throw error;
 			return { path, changed: [], created: false, absent: true };
 		}
 	}
@@ -199,14 +204,6 @@ export async function syncEnvFile(input: {
 		return { path, changed, created };
 	}
 
-	const temp = tempPathFor(path);
-	try {
-		await writeFile(temp, next, "utf-8");
-		await rename(temp, path);
-	} catch (error) {
-		await rm(temp, { force: true });
-		throw error;
-	}
-
+	await writeTextFile(path, next);
 	return { path, changed, created };
 }

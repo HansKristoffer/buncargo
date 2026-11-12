@@ -3,7 +3,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { isDefined, isRecord } from "hanzio";
 import { DEFAULT_HTTP_SERVICE_NAMES } from "../core/hosts/plan";
-import { externalStackProjectName, findMonorepoRoot } from "../core/ports";
+import { publicEnvCopies } from "../core/integration-cli";
+import { externalStackProjectName } from "../core/ports";
 import { configuredPrimaryApp, resolvePrimaryApp } from "../core/primary-app";
 import { isCI } from "../core/runtime-flags";
 import { shellQuote } from "../core/shell-quote";
@@ -17,10 +18,11 @@ import type {
 	EnvVarsContext,
 	HostsOptionsLike,
 	IntegrationConfig,
+	IntegrationConfigContext,
 	ServiceConfig,
 } from "../types";
 import { supabaseChecks } from "./checks";
-import { resolveSupabaseBin } from "./cli";
+import { supabaseCli } from "./cli";
 import { supabaseKeys } from "./keys";
 import { readSupabaseProject, type SupabaseProject } from "./project";
 
@@ -52,12 +54,6 @@ export {
 	SUPABASE_DEFAULT_PORTS,
 	type SupabaseProject,
 } from "./project";
-
-declare module "../types/all-types" {
-	interface IntegrationAppNames {
-		supabaseFunctions: true;
-	}
-}
 
 /** The service keys the integration adds; `supabase` is the API apps call. */
 export const SUPABASE_SERVICES = {
@@ -233,24 +229,30 @@ function typesUpToDate(output: string, stamp: string, inputs: string): boolean {
 	return contentHash(readFileSync(output, "utf8")) === recorded.written;
 }
 
-export function supabase(
-	options: SupabaseIntegrationOptions = {},
-): BuncargoIntegration {
+/** The keys of {@link SUPABASE_SERVICES}. */
+type SupabaseServiceKey =
+	(typeof SUPABASE_SERVICES)[keyof typeof SUPABASE_SERVICES];
+
+/** `functions: true` (or a `boolean` that may be) adds `supabaseFunctions`. */
+export function supabase<TFunctions extends boolean = false>(
+	options: SupabaseIntegrationOptions & { functions?: TFunctions } = {},
+): BuncargoIntegration<{
+	services: SupabaseServiceKey;
+	apps: true extends TFunctions ? "supabaseFunctions" : never;
+}> {
 	const workdirOption = options.workdir;
 	const workdirOf = (root: string) => resolve(root, workdirOption ?? ".");
 	// Set in `config()`, which runs before anything below is called.
-	let project: SupabaseProject | undefined;
 	let bin = "supabase";
 	let exclude: readonly string[] = [];
 
 	return {
 		name: "supabase",
 
-		config(config, ctx) {
-			const root = ctx?.root ?? findMonorepoRoot();
+		config(config, ctx: IntegrationConfigContext) {
+			const root = ctx.root;
 			const toml = readSupabaseProject(workdirOf(root));
-			project = toml;
-			bin = resolveSupabaseBin(root);
+			bin = supabaseCli.resolve([root]);
 			exclude = options.exclude ?? (isCI() ? CI_EXCLUDE : []);
 
 			const services = supabaseServices(toml, exclude);
@@ -265,7 +267,7 @@ export function supabase(
 				throw new Error(`supabase(): "${siteApp}" is not a configured app`);
 			}
 			const serverApps = Object.entries(apps)
-				.filter(([, app]) => app.kind !== "worker")
+				.filter(([, app]) => app.port !== undefined)
 				.map(([name]) => name);
 
 			if (options.functions) {
@@ -278,10 +280,6 @@ export function supabase(
 				};
 			}
 
-			const prefixes =
-				typeof options.publicEnvPrefix === "string"
-					? [options.publicEnvPrefix]
-					: (options.publicEnvPrefix ?? []);
 			const keys = supabaseKeys(toml.auth.jwtSecret);
 			const userEnv = config.env;
 
@@ -332,14 +330,7 @@ export function supabase(
 					SUPABASE_SERVICE_ROLE_KEY: keys.serviceRoleKey,
 					SUPABASE_SECRET_KEY: keys.secretKey,
 					SUPABASE_DB_URL: urls[SUPABASE_SERVICES.db],
-					...Object.fromEntries(
-						prefixes.flatMap((prefix) =>
-							Object.entries(browser).map(([name, value]) => [
-								`${prefix}${name}`,
-								value,
-							]),
-						),
-					),
+					...publicEnvCopies(browser, options.publicEnvPrefix),
 				};
 			};
 
@@ -441,11 +432,9 @@ export function supabase(
 			},
 		},
 
-		checks: supabaseChecks({
-			project: (root) => {
-				project ??= readSupabaseProject(workdirOf(root));
-				return project;
-			},
+		setupChecks: supabaseChecks({
+			// Read fresh: `setup` runs `supabase init` and then checks again.
+			project: (root) => readSupabaseProject(workdirOf(root)),
 			workdir: workdirOf,
 		}),
 

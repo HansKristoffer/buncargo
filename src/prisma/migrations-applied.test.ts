@@ -2,10 +2,12 @@ import { expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveService } from "../config/resolve";
 import { runMigrationsSequentially } from "../environment/migrations";
 import {
 	appliedMigrationCount,
 	type MigrationRow,
+	missingAppliedMigrations,
 	readMigrationRows,
 } from "./migrations-applied";
 
@@ -21,8 +23,7 @@ async function fixture() {
 		input: {
 			root,
 			prisma: { cwd: "db", migrations: "schema/migrations" },
-			serviceKey: "postgres",
-			service: { port: 5432 },
+			service: resolveService("postgres", { port: 5432 }),
 			url: "postgresql://postgres:postgres@127.0.0.1:5432/dev",
 		},
 	};
@@ -53,7 +54,11 @@ for (const scenario of [
 				);
 			}
 			if (scenario === "unreadable") await rm(dir, { recursive: true });
-			if (scenario === "custom-service") input.serviceKey = "custom";
+			if (scenario === "custom-service")
+				input.service = resolveService("custom", {
+					port: 5432,
+					docker: { image: "postgres:16" },
+				});
 			const read = async () => {
 				if (scenario === "fresh")
 					throw new Error('relation "_prisma_migrations" does not exist');
@@ -121,6 +126,38 @@ it("executes the migration query through Bun SQL and falls back on an absent tab
 		expect(await appliedMigrationCount(input, read)).toBeUndefined();
 	} finally {
 		db.close();
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+// A branch squashed the chain: the database finished migrations the checkout
+// no longer has, which only a reset gets past.
+it("names the migrations the database applied that the checkout no longer has", async () => {
+	const { root, dir, input } = await fixture();
+	try {
+		const rows: MigrationRow[] = [
+			applied,
+			{ ...applied, migration_name: "20250101_squashed_away" },
+			// Rolled back: nothing of it is in the database.
+			{
+				...applied,
+				migration_name: "20250202_undone",
+				rolled_back_at: new Date(),
+			},
+		];
+		expect(
+			await missingAppliedMigrations(input.url, dir, async () => rows),
+		).toEqual(["20250101_squashed_away"]);
+		expect(
+			await missingAppliedMigrations(input.url, dir, async () => [applied]),
+		).toEqual([]);
+		// Prisma decides when the database cannot say.
+		expect(
+			await missingAppliedMigrations(input.url, dir, async () => {
+				throw new Error('relation "_prisma_migrations" does not exist');
+			}),
+		).toBeUndefined();
+	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
 });

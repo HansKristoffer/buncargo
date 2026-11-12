@@ -1,33 +1,13 @@
-import { ensureSecretsSession } from "../../core/secrets/infisical";
+import { ensureSecretsSession } from "../../core/secrets/index";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
+import { internalsOf } from "../../environment";
 import { loadDevEnv } from "../../loader";
 import type { AnyDevEnvironment, TaskConfig } from "../../types";
-import {
-	type CommandSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readPositionals,
-} from "../command-spec";
+import { BASE_EXITS, defineCommand } from "../command-spec";
 import { CliError } from "../errors";
-import { splitCliArgs } from "../flags";
 import * as log from "../log";
 import { commandSecretScopes } from "../secrets-scopes";
 import { runForwardingSignals, withAppendedArgs } from "./exec";
-
-export const RUN_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo run [<task>] [-- args...]",
-	flags: [
-		{ name: "--help", kind: "boolean", description: "Show this help message" },
-	],
-	notes: [
-		{ command: "<task>", description: "A key of tasks in dev.config.ts" },
-		{ command: "--", description: "Following arguments go to the command" },
-	],
-	examples: [
-		{ command: "buncargo run", description: "List the configured tasks" },
-		{ command: "buncargo run shop:seed", description: "Run one task" },
-	],
-};
 
 /** One row per task, for `buncargo run` and `buncargo help`. */
 export function formatTaskRows(
@@ -41,27 +21,12 @@ export function formatTaskRows(
 	);
 }
 
-export async function handleRun(args: string[]): Promise<number> {
-	const { flags, passthrough } = splitCliArgs(args);
-	if (flags.includes("--help")) {
-		console.log(formatCommandHelp(RUN_COMMAND_SPEC));
-		return 0;
-	}
-
-	const unknown = findUnknownFlags(RUN_COMMAND_SPEC, flags);
-	const positionals = readPositionals(RUN_COMMAND_SPEC, flags);
-	if (unknown.length > 0 || positionals.length > 1) {
-		throw new CliError(
-			unknown.length > 0
-				? `Unknown flag: ${unknown.join(", ")}`
-				: `Expected one task name, got: ${positionals.join(" ")}`,
-			['Pass arguments for the task after "--".'],
-		);
-	}
-
-	const [name] = positionals;
-	const env = await loadDevEnv({ readOnly: true });
-	const tasks = env.tasks ?? {};
+async function runNamedTask(
+	name: string | undefined,
+	passthrough: readonly string[],
+): Promise<number> {
+	const env = await loadDevEnv();
+	const tasks = internalsOf(env).tasks ?? {};
 
 	if (!name) {
 		if (Object.keys(tasks).length === 0) {
@@ -102,38 +67,49 @@ async function runTask(
 	extraArgs: readonly string[],
 ): Promise<number> {
 	const services = task.requiredServices ?? [];
-	try {
-		return await runForwardingSignals(async (signal) => {
-			if (services.length > 0) {
-				// Before the services: an expired Infisical session stops here, not
-				// once they are up. The task's own fetch reuses this token.
-				await ensureSecretsSession(commandSecretScopes(env, task.app), {
-					signal,
-				});
-				// Prepared before claiming: the claim names the selection's
-				// services. The CLI's idle hold, not the library's keep-forever
-				// default, so a task that started a database leaves it on the
-				// same timer as a `dev` run would.
-				await env.prepareStartAsync(undefined, services, signal);
-				await env.claimRun({ defaultIdleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS });
-				await env.start({
-					onlyServices: services,
-					startServers: false,
-					prepare: "containers",
-					skipEnvironmentLog: true,
-					signal,
-				});
-			}
-
-			return env.exec(withAppendedArgs(task.command, extraArgs), {
+	return runForwardingSignals(async (signal) => {
+		const command = () =>
+			env.exec(withAppendedArgs(task.command, extraArgs), {
 				app: task.app,
 				cwd: task.cwd,
 				verbose: true,
 				throwOnError: false,
 				signal,
 			});
+		if (services.length === 0) return command();
+
+		// Before the services: an expired Infisical session stops here, not
+		// once they are up. The task's own fetch reuses this token.
+		await ensureSecretsSession(commandSecretScopes(env, task.app), {
+			signal,
 		});
-	} finally {
-		if (services.length > 0) await env.releaseRun();
-	}
+		// The CLI's idle hold, not the library's keep-forever default, so a
+		// task that started a database leaves it on the same timer as a `dev`
+		// run would.
+		return env.withServices(
+			services,
+			{ claim: { defaultIdleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS }, signal },
+			command,
+		);
+	});
 }
+
+export const runTaskCommand = defineCommand({
+	spec: {
+		name: "run",
+		summary: "Run a task from dev.config.ts (lists them without a name)",
+		flags: {},
+		args: [{ name: "<task>", description: "A key of tasks in dev.config.ts" }],
+		passthrough: "Arguments appended to the task's command",
+		examples: [
+			{ command: "buncargo run", description: "List the configured tasks" },
+			{ command: "buncargo run shop:seed", description: "Run one task" },
+		],
+	},
+	exits: {
+		...BASE_EXITS,
+		1: "bad arguments or task; otherwise the task's own code",
+	},
+	run: ({ positionals: [name], passthrough }) =>
+		runNamedTask(name, passthrough),
+});

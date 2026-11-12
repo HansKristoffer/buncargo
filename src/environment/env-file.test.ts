@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+	chmodSync,
+	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ServiceConfig } from "../types";
+import { resolveServices } from "../config/resolve";
 import {
 	buildEnvFileUpdates,
 	isReplaceableEnvValue,
@@ -145,9 +148,9 @@ describe("resolveEnvFileOptions", () => {
 });
 
 describe("buildEnvFileUpdates", () => {
-	const services: Record<string, ServiceConfig> = {
+	const services = resolveServices({
 		postgres: { port: 5432, database: "app" },
-	};
+	});
 
 	it("derives ports and loopback URLs, including service aliases", () => {
 		const updates = buildEnvFileUpdates({
@@ -232,7 +235,7 @@ describe("syncEnvFile", () => {
 
 	const base = {
 		projectName: "app-app",
-		services: {} as Record<string, ServiceConfig>,
+		services: resolveServices({}),
 		ports: { api: 4900 },
 		loopbackUrls: { api: "http://localhost:4900" },
 	};
@@ -252,6 +255,25 @@ describe("syncEnvFile", () => {
 		expect(readFileSync(join(root, ".env"), "utf-8")).toBe(
 			"# api\nAPI_URL=http://localhost:4900\n",
 		);
+	});
+
+	it("keeps an owner-only file owner-only", async () => {
+		const path = join(root, ".env");
+		writeFileSync(path, "API_URL=http://localhost:1\n");
+		chmodSync(path, 0o600);
+
+		await syncEnvFile({ ...base, root, envFile: true });
+
+		expect(readFileSync(path, "utf-8")).toBe("API_URL=http://localhost:4900\n");
+		expect(statSync(path).mode & 0o777).toBe(0o600);
+	});
+
+	it("fails on a dotenv it cannot read instead of calling it absent", async () => {
+		mkdirSync(join(root, ".env"));
+
+		await expect(
+			syncEnvFile({ ...base, root, envFile: true }),
+		).rejects.toThrow();
 	});
 
 	// The file is the repo's contract, so buncargo must not invent one.

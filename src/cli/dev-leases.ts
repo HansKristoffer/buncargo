@@ -1,19 +1,12 @@
 import {
-	appLeaseRequest,
 	describeLeaseRefusal,
 	endLeaseHolderHint,
-	type LeaseOwner,
 	type SkippedLeaseApp,
 } from "../core/app-leases";
-import {
-	acquireLease,
-	describeLeaseHolder,
-	type LeaseEntry,
-	transferLease,
-} from "../core/leases";
+import type { LeaseEntry } from "../core/leases";
 import { askConfirm, isInteractive } from "../core/prompt";
 import { readLiveRuns } from "../core/run-registry";
-import type { AppConfig } from "../types";
+import type { LeasePolicy } from "../environment";
 import { STOP_EXIT, stopTarget } from "./commands/stop";
 import { type TakeoverDecision, takesOver } from "./dev-takeover";
 import { CliError } from "./errors";
@@ -53,82 +46,47 @@ export function leaseSkipLines(skip: SkippedLeaseApp): string[] {
 }
 
 /**
- * Take the lease of every app about to spawn that declares `exclusive`.
- *
- * A lease held by another live run is taken over (an app the run's takeover
- * decision covers, or a `y` to the prompt: stop the holder's app, move the
- * lease here), or left alone. Left
- * alone, an `essential: false` app — the Shopify CLI — is skipped, and
- * returned so the caller can drop it and say so; the rest of the run is still
- * worth having. An essential one refuses the run, as before. Either way the
- * message names the holder's checkout and the flag that takes it over: a run
- * that quietly started without the app was the thing to avoid.
+ * How `buncargo dev` answers an `exclusive` lease another live run holds:
+ * taken over (an app the run's takeover decision covers, or a `y` to the
+ * prompt: stop the holder's app, move the lease here), or left alone. Left
+ * alone, an `essential: false` app (the Shopify CLI) is skipped, and the
+ * caller drops it and says so; the rest of the run is still worth having. An
+ * essential one refuses the run. Either way the message names the holder's
+ * checkout and the flag that takes it over: a run that quietly started
+ * without the app was the thing to avoid.
  */
-export async function acquireAppLeases(
-	owner: LeaseOwner,
-	apps: Record<string, AppConfig>,
-	options: {
-		takeover: TakeoverDecision;
-		signal?: AbortSignal;
-		/** Test seams; default to the real terminal. */
-		interactive?: boolean;
-		confirm?: (lines: string[]) => Promise<boolean>;
-	},
-): Promise<{ skipped: SkippedLeaseApp[] }> {
+export function cliLeasePolicy(options: {
+	/** Read at each lease: a takeover earlier in the run widens it. */
+	takeover: () => TakeoverDecision;
+	/** Test seams; default to the real terminal. */
+	interactive?: boolean;
+	confirm?: (lines: string[]) => Promise<boolean>;
+}): LeasePolicy {
 	const interactive = options.interactive ?? isInteractive();
 	const confirm = options.confirm ?? askConfirm;
-	const skipped: SkippedLeaseApp[] = [];
-
-	for (const [name, app] of Object.entries(apps)) {
-		if (!app.exclusive) continue;
-		const request = appLeaseRequest(owner, name, app.exclusive);
-		const result = await acquireLease(request, { signal: options.signal });
-		if (result.ok) continue;
-
-		const skip = { app: name, key: app.exclusive, holder: result.holder };
-		const optional = app.essential === false;
-		const takeOver =
-			takesOver(options.takeover, name) ||
-			(interactive &&
-				(await confirm([
-					`  ${app.exclusive} is in use by another run, so ${name} cannot start here.`,
-					...describeLeaseRefusal(skip).map((line) => `    ${line}`),
-					"",
-					`  y to stop ${name} there and run it here  ·  Enter to ${optional ? `start without ${name}` : "cancel"}`,
-				])));
-
-		if (!takeOver) {
-			if (!optional) {
-				throw new CliError(`${app.exclusive} is in use by another run.`, [
-					...describeLeaseRefusal(skip),
-					"Only one run may use it at a time.",
-					...leaseTakeoverHints(skip),
-				]);
-			}
-			skipped.push(skip);
-			continue;
-		}
-
-		const holder = describeLeaseHolder(result.holder);
-		const transferred = await transferLease(
-			request,
-			result.holder,
-			stopHolder,
-			{
-				signal: options.signal,
-			},
-		);
-		if (!transferred.ok) {
-			throw new CliError(
-				transferred.reason === "stop-refused"
-					? `Could not stop ${app.exclusive} held by ${holder}.`
-					: `${app.exclusive} ownership changed during takeover. Retry to check its current owner.`,
-			);
-		}
-		log.info(`🔑 Took over ${app.exclusive} from ${holder}`);
-	}
-
-	return { skipped };
+	return {
+		takeOver: async (skip, app) => {
+			if (takesOver(options.takeover(), skip.app)) return true;
+			if (!interactive) return false;
+			const optional = app.essential === false;
+			return confirm([
+				`  ${skip.key} is in use by another run, so ${skip.app} cannot start here.`,
+				...describeLeaseRefusal(skip).map((line) => `    ${line}`),
+				"",
+				`  y to stop ${skip.app} there and run it here  ·  Enter to ${optional ? `start without ${skip.app}` : "cancel"}`,
+			]);
+		},
+		stopHolder,
+		refusal: (skip) =>
+			new CliError(`${skip.key} is in use by another run.`, [
+				...describeLeaseRefusal(skip),
+				"Only one run may use it at a time.",
+				...leaseTakeoverHints(skip),
+			]),
+		// Said by the run, before its banner and again in the TUI.
+		skipped: () => {},
+		tookOver: (key, holder) => log.info(`🔑 Took over ${key} from ${holder}`),
+	};
 }
 
 /** Print why each skipped app is not starting. */

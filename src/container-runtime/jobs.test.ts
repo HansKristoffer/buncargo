@@ -1,25 +1,49 @@
 import { expect, it } from "bun:test";
 import { validateConfig } from "../config";
+import {
+	resolveApps,
+	resolveService,
+	resolveServices,
+} from "../config/resolve";
 import { buildComposeModel } from "../docker-compose";
 import { buildStartPlan } from "../planning";
 import type { ServiceConfig } from "../types";
 import { ensureServicesRunning } from "./ensure-services";
-import { waitForService } from "./readiness";
+import {
+	fakeAppleRuntime,
+	fakeRuntime,
+	runtimeContainer,
+} from "./fake-runtime.testing";
+import { pollServiceReadiness, waitForService } from "./readiness";
 import type { ContainerRuntimeAdapter, ServiceDiagnosis } from "./types";
 
-const job: ServiceConfig = {
+const declaredJob: ServiceConfig = {
 	kind: "job",
 	rerun: "always",
 	healthTimeout: 200,
 	docker: { image: "alpine:3.21.3", command: ["sh", "-c", "exit 0"] },
 };
+const job = resolveService("init", declaredJob);
 
+/** The job's container moves through `states`, one per listing. */
 function runtime(states: ServiceDiagnosis[]): ContainerRuntimeAdapter {
-	return {
-		name: "docker",
-		displayName: "Docker",
-		diagnoseService: () => (states.length > 1 ? states.shift() : states[0]),
-	} as unknown as ContainerRuntimeAdapter;
+	let current: ServiceDiagnosis | undefined = states[0];
+	return fakeRuntime({
+		containers: async () => {
+			current = states.length > 1 ? states.shift() : states[0];
+			if (!current) return [];
+			return [
+				runtimeContainer({
+					state: current.state,
+					...(current.exitCode === undefined
+						? {}
+						: { exitCode: current.exitCode }),
+					labels: { project: "fixture", service: "init" },
+				}),
+			];
+		},
+		logs: async () => current?.logTail ?? "",
+	});
 }
 
 it("waits for successful completion, not merely a running job", async () => {
@@ -27,7 +51,7 @@ it("waits for successful completion, not merely a running job", async () => {
 		{ state: "running", logTail: "" },
 		{ state: "exited", exitCode: 0, logTail: "initialized" },
 	];
-	await waitForService("init", job, undefined, {
+	await pollServiceReadiness("init", job, undefined, {
 		runtime: runtime(states),
 		projectName: "fixture",
 		pollInterval: 1,
@@ -40,7 +64,7 @@ it("waits for successful completion, not merely a running job", async () => {
 
 it("reads completion through the shared state words, not Docker's alone", async () => {
 	for (const state of ["Exited", "stopped"]) {
-		await waitForService("init", job, undefined, {
+		await pollServiceReadiness("init", job, undefined, {
 			runtime: runtime([{ state, exitCode: 0, logTail: "" }]),
 			projectName: "fixture",
 			pollInterval: 1,
@@ -61,7 +85,7 @@ it("fails with job exit details and log output", async () => {
 
 it("a still-running job times out and cancellation interrupts polling", async () => {
 	await expect(
-		waitForService("init", { ...job, healthTimeout: 10 }, undefined, {
+		pollServiceReadiness("init", { ...job, healthTimeout: 10 }, undefined, {
 			runtime: runtime([{ state: "running", logTail: "" }]),
 			projectName: "fixture",
 			pollInterval: 1,
@@ -78,12 +102,11 @@ it("a still-running job times out and cancellation interrupts polling", async ()
 
 it("rejects unsupported Apple completion before invoking its daemon", async () => {
 	let mutated = false;
-	const adapter = {
-		name: "apple",
+	const adapter = fakeAppleRuntime({
 		ensureRunning: async () => {
 			mutated = true;
 		},
-	} as unknown as ContainerRuntimeAdapter;
+	});
 	await expect(
 		ensureServicesRunning({
 			runtime: adapter,
@@ -102,21 +125,23 @@ it("rejects unsupported Apple completion before invoking its daemon", async () =
 it("rejects phase inversions and malformed worker/job endpoints before startup", () => {
 	expect(() =>
 		buildStartPlan(
-			{ api: { port: 3000, devCommand: false, requiredServices: ["db"] } },
-			{
+			resolveApps({
+				api: { port: 3000, devCommand: false, requiredServices: ["db"] },
+			}),
+			resolveServices({
 				db: {
 					port: 5432,
 					docker: { image: "postgres:17", depends_on: ["sync"] },
 				},
 				sync: { port: 8080, afterPreparation: true },
-			},
+			}),
 			undefined,
 		),
 	).toThrow("afterPreparation");
 	for (const service of [
-		{ ...job, port: 3000 },
-		{ ...job, rerun: undefined },
-		{ ...job, docker: { image: "alpine", restart: "always" } },
+		{ ...declaredJob, port: 3000 },
+		{ ...declaredJob, rerun: undefined },
+		{ ...declaredJob, docker: { image: "alpine", restart: "always" } },
 	])
 		expect(
 			validateConfig({ projectPrefix: "invalid", services: { init: service } })

@@ -1,57 +1,10 @@
 import { promiseTimeout } from "hanzio";
 import { findMonorepoRoot } from "../../core/ports";
 import { findRunsByRoot, type RunAppEntry } from "../../core/run-registry";
-import {
-	type CommandSpec,
-	type FlagSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
-	readStringFlag,
-} from "../command-spec";
+import { defineCommand } from "../command-spec";
 import { SIGNAL_EXIT } from "../dev-interrupts";
+import { argumentsError } from "../errors";
 import * as log from "../log";
-
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
-	},
-	app: {
-		name: "--app",
-		kind: "string",
-		valueHint: "=<name>",
-		description: "The app to wait for (required)",
-		validate: (value: string) => (value ? undefined : "--app requires a name"),
-	},
-	timeout: {
-		name: "--timeout",
-		kind: "string",
-		valueHint: "=<seconds>",
-		description: "Give up after this long; 0 waits forever (default: 120)",
-		validate: (value: string) =>
-			/^\d+$/.test(value)
-				? undefined
-				: `--timeout expects whole seconds, got "${value}"`,
-	},
-	hold: {
-		name: "--hold",
-		kind: "boolean",
-		description: "Once healthy, stay alive until the run stops",
-	},
-} as const satisfies Record<string, FlagSpec>;
-
-export const WAIT_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo wait --app=<name> [--timeout=<seconds>] [--hold]",
-	flags: Object.values(FLAGS),
-	examples: [
-		{
-			command: "buncargo wait --app=api && bunx playwright test",
-			description: "Test once this checkout's API is up",
-		},
-	],
-};
 
 /**
  * 0 healthy · 1 failed or stopped · 2 timed out waiting · 128 + the signal
@@ -118,27 +71,11 @@ async function findApp(root: string, name: string) {
  * must stay alive as long as the app does, which is what Shopify CLI's
  * generated web process needs: it treats its web command exiting as a crash.
  */
-export async function handleWait(args: string[]): Promise<number> {
-	if (readBooleanFlag(args, FLAGS.help)) {
-		console.log(formatCommandHelp(WAIT_COMMAND_SPEC));
-		return 0;
-	}
-	const errors: string[] = [];
-	const name = readStringFlag(args, FLAGS.app, errors);
-	const timeoutSeconds = Number(
-		readStringFlag(args, FLAGS.timeout, errors) ?? 120,
-	);
-	errors.push(
-		...findUnknownFlags(WAIT_COMMAND_SPEC, args).map(
-			(flag) => `Unknown flag: ${flag}`,
-		),
-	);
-	if (!name) errors.push("--app is required");
-	if (errors.length > 0 || !name) {
-		for (const error of errors) log.error(error);
-		return WAIT_EXIT.failed;
-	}
-
+async function waitFor(
+	name: string,
+	timeoutSeconds: number,
+	hold: boolean,
+): Promise<number> {
 	const root = findMonorepoRoot();
 	const deadline =
 		timeoutSeconds === 0
@@ -186,7 +123,7 @@ export async function handleWait(args: string[]): Promise<number> {
 			await pause(POLL_MS);
 		}
 
-		if (!readBooleanFlag(args, FLAGS.hold)) return WAIT_EXIT.ok;
+		if (!hold) return WAIT_EXIT.ok;
 
 		// Held until the app or its whole run goes away, or we are told to
 		// stop: the way the Shopify CLI ends the web process it runs, so 0.
@@ -200,3 +137,48 @@ export async function handleWait(args: string[]): Promise<number> {
 		for (const { signal, listener } of listeners) process.off(signal, listener);
 	}
 }
+
+export const waitCommand = defineCommand({
+	spec: {
+		name: "wait",
+		usage: "wait --app=<name> [options]",
+		summary: "Block until an app of this checkout's run is healthy",
+		flags: {
+			app: {
+				kind: "string",
+				value: "<name>",
+				description: "The app to wait for (required)",
+			},
+			timeout: {
+				kind: "string",
+				value: "<seconds>",
+				description: "Give up after this long; 0 waits forever (default: 120)",
+				validate: (value: string) =>
+					/^\d+$/.test(value)
+						? undefined
+						: `--timeout expects whole seconds, got "${value}"`,
+			},
+			hold: {
+				kind: "boolean",
+				description: "Once healthy, stay alive until the run stops",
+			},
+		},
+		examples: [
+			{
+				command: "buncargo wait --app=api && bunx playwright test",
+				description: "Test once this checkout's API is up",
+			},
+		],
+	},
+	exits: {
+		[WAIT_EXIT.ok]: "healthy (and, with --hold, a signal after that)",
+		[WAIT_EXIT.failed]: "the app failed or stopped, or bad arguments",
+		[WAIT_EXIT.timeout]: "timed out waiting",
+		130: "interrupted before the app was healthy (Ctrl-C); 143 for SIGTERM",
+	},
+	run: ({ values }) => {
+		if (values.app === undefined)
+			throw argumentsError(["--app is required"], "wait");
+		return waitFor(values.app, Number(values.timeout ?? 120), values.hold);
+	},
+});

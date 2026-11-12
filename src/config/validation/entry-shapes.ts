@@ -1,4 +1,40 @@
-import { SECRETS_FIELDS, type ShapeChecks } from "./shape-checks";
+import { envName } from "../../core/ports";
+import {
+	APP_KEYS,
+	CAPTURE_KEYS,
+	keysChecked,
+	RENAMED_KEYS,
+	SERVICE_KEYS,
+	unknownKeyErrors,
+	WATCH_KEYS,
+} from "./key-tables";
+import type { ShapeChecks } from "./shape-checks";
+
+/**
+ * Two keys that spell one env name would write each other's `<NAME>_PORT` and
+ * `<NAME>_URL`: `my-db` and `my_db` are both `MY_DB`. A key used twice as is
+ * is the namespace check's to report, so only differing keys count here.
+ */
+function sharedEnvNames(value: Record<string, unknown>): string[] {
+	const owners = new Map<string, { keys: Set<string>; paths: string[] }>();
+	for (const kind of ["services", "apps"] as const) {
+		const entries = value[kind];
+		if (typeof entries !== "object" || entries === null) continue;
+		for (const key of Object.keys(entries)) {
+			const stem = envName(key);
+			const owner = owners.get(stem) ?? { keys: new Set(), paths: [] };
+			owner.keys.add(key);
+			owner.paths.push(`${kind}.${key}`);
+			owners.set(stem, owner);
+		}
+	}
+	return [...owners]
+		.filter(([, owner]) => owner.keys.size > 1)
+		.map(
+			([stem, { paths }]) =>
+				`${paths.join(" and ")} share the env name ${stem} (${stem}_PORT, ${stem}_URL): rename one of them`,
+		);
+}
 
 export function validateEntryShapes(
 	value: Record<string, unknown>,
@@ -13,7 +49,9 @@ export function validateEntryShapes(
 		fields,
 		duration,
 		envValues,
+		secretsScope,
 	} = checks;
+	errors.push(...sharedEnvNames(value));
 	for (const kind of ["services", "apps"] as const) {
 		const entries = value[kind];
 		if (entries === undefined || !record(entries, kind)) continue;
@@ -25,35 +63,20 @@ export function validateEntryShapes(
 			)
 				errors.push(`${path} has an invalid name`);
 			if (!record(entry, path)) continue;
-			fields(
-				entry,
-				`${path}.`,
-				[
-					"expose",
-					"interactive",
-					"essential",
-					"needsPublicUrls",
-					"afterPreparation",
-				],
-				"boolean",
-			);
+			const table = kind === "apps" ? APP_KEYS : SERVICE_KEYS;
+			errors.push(...unknownKeyErrors(entry, path, table, RENAMED_KEYS[kind]));
+			for (const type of ["boolean", "string", "function"] as const)
+				fields(entry, `${path}.`, keysChecked(table, type), type);
+			for (const key of keysChecked(table, "duration"))
+				duration(entry[key], `${path}.${key}`);
 			check(
 				entry.exposeProtocol,
 				`${path}.exposeProtocol`,
 				entry.exposeProtocol === "http" || entry.exposeProtocol === "tcp",
 				'"http" or "tcp"',
 			);
-			duration(entry.healthTimeout, `${path}.healthTimeout`);
 			envValues(entry.staticEnv, `${path}.staticEnv`);
 			if (kind === "apps") {
-				fields(
-					entry,
-					`${path}.`,
-					["cwd", "prodCommand", "buildCommand"],
-					"string",
-				);
-				fields(entry, `${path}.`, ["envVars"], "function");
-				duration(entry.stopGraceMs, `${path}.stopGraceMs`);
 				check(
 					entry.devCommand,
 					`${path}.devCommand`,
@@ -67,21 +90,11 @@ export function validateEntryShapes(
 						entry.healthEndpoint === false,
 					"a path string or false",
 				);
-				if (
-					entry.secrets !== undefined &&
-					entry.secrets !== false &&
-					record(entry.secrets, `${path}.secrets`)
-				) {
-					fields(entry.secrets, `${path}.secrets.`, SECRETS_FIELDS, "string");
-					check(
-						entry.secrets.required,
-						`${path}.secrets.required`,
-						strings(entry.secrets.required),
-						"an array of nonempty strings",
-					);
-				}
-				fields(entry, `${path}.`, ["prebuild", "exclusive"], "string");
+				secretsScope(entry.secrets, `${path}.secrets`);
 				if (entry.watch !== undefined && record(entry.watch, `${path}.watch`)) {
+					errors.push(
+						...unknownKeyErrors(entry.watch, `${path}.watch`, WATCH_KEYS),
+					);
 					check(
 						entry.watch.paths,
 						`${path}.watch.paths`,
@@ -130,6 +143,13 @@ export function validateEntryShapes(
 				)
 					for (const [name, capture] of Object.entries(entry.captures)) {
 						if (!record(capture, `${path}.captures.${name}`)) continue;
+						errors.push(
+							...unknownKeyErrors(
+								capture,
+								`${path}.captures.${name}`,
+								CAPTURE_KEYS,
+							),
+						);
 						if (!(capture.pattern instanceof RegExp))
 							errors.push(
 								`${path}.captures.${name}.pattern must be a regular expression`,
@@ -138,7 +158,13 @@ export function validateEntryShapes(
 							errors.push(
 								`${path}.captures.${name}.as must be "publicUrl", "value" or "event"`,
 							);
-						fields(capture, `${path}.captures.${name}.`, ["label"], "string");
+						for (const type of ["boolean", "string"] as const)
+							fields(
+								capture,
+								`${path}.captures.${name}.`,
+								keysChecked(CAPTURE_KEYS, type),
+								type,
+							);
 						check(
 							capture.env,
 							`${path}.captures.${name}.env`,
@@ -160,13 +186,6 @@ export function validateEntryShapes(
 						"an array of nonempty strings",
 					);
 			} else {
-				fields(
-					entry,
-					`${path}.`,
-					["serviceName", "database", "user", "password"],
-					"string",
-				);
-				fields(entry, `${path}.`, ["urlTemplate"], "function");
 				check(
 					entry.healthCheck,
 					`${path}.healthCheck`,

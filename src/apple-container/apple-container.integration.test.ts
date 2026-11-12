@@ -1,4 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import { resolveServices } from "../config/resolve";
+import {
+	buncargoContainersOn,
+	probeContainerPort,
+	projectServiceStates,
+} from "../container-runtime/containers";
 import { buildComposeModel } from "../docker-compose";
 import { appleContainerRuntimeAdapter } from "./adapter";
 import { createAppleContainerCli } from "./cli";
@@ -17,7 +23,7 @@ const ENABLED =
 
 const PROJECT = "buncargo-itest";
 const MODEL = buildComposeModel(
-	{ redis: { port: 6399, healthCheck: "tcp" } },
+	resolveServices({ redis: { port: 6399, healthCheck: "tcp" } }),
 	undefined,
 	{ projectName: PROJECT, root: process.cwd(), worktree: null },
 );
@@ -39,21 +45,21 @@ describe.skipIf(!ENABLED)("apple container runtime", () => {
 		};
 
 		const running = async () =>
-			(await adapter.projectServiceStates(PROJECT))
-				.filter((state) => state.running)
+			(await projectServiceStates(adapter, PROJECT))
+				.filter((state) => state.serving)
 				.map((state) => state.service);
 		try {
 			await adapter.up(request);
 
 			expect(await running()).toEqual(["redis"]);
-			const containers = adapter
-				.list()
-				.filter((container) => container.project === PROJECT);
+			const containers = (await buncargoContainersOn(adapter)).filter(
+				(container) => container.project === PROJECT,
+			);
 			expect(containers.map((container) => container.service)).toEqual([
 				"redis",
 			]);
 			expect(
-				await adapter.execInService({
+				await adapter.exec({
 					projectName: PROJECT,
 					serviceName: "redis",
 					command: ["redis-cli", "ping"],
@@ -77,13 +83,15 @@ describe.skipIf(!ENABLED)("apple container runtime", () => {
 		await adapter.ensureRunning({ verbose: false });
 		const modelWith = (password: string) =>
 			buildComposeModel(
-				{ postgres: { port: 55433, password, healthCheck: "pg_isready" } },
+				resolveServices({
+					postgres: { port: 55433, password, healthCheck: "pg_isready" },
+				}),
 				undefined,
 				{ projectName: PROJECT, root: process.cwd(), worktree: null },
 				"apple",
 			);
 		const psql = (sql: string) =>
-			adapter.execInService({
+			adapter.exec({
 				projectName: PROJECT,
 				serviceName: "postgres",
 				command: ["psql", "-U", "postgres", "-tAc", sql],
@@ -91,7 +99,7 @@ describe.skipIf(!ENABLED)("apple container runtime", () => {
 			});
 		const ready = () =>
 			until(() =>
-				adapter.execInService({
+				adapter.exec({
 					projectName: PROJECT,
 					serviceName: "postgres",
 					command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres"],
@@ -131,7 +139,7 @@ describe.skipIf(!ENABLED)("apple container runtime", () => {
 		const adapter = appleContainerRuntimeAdapter();
 		await adapter.ensureRunning({ verbose: false });
 		const model = buildComposeModel(
-			{
+			resolveServices({
 				late: {
 					port: 59000,
 					docker: {
@@ -140,17 +148,18 @@ describe.skipIf(!ENABLED)("apple container runtime", () => {
 						command: ["sh", "-c", "sleep 3; exec nc -lk -p 9000"],
 					},
 				},
-			},
+			}),
 			undefined,
 			{ projectName: PROJECT, root: process.cwd(), worktree: null },
 			"apple",
 		);
 		const probe = () =>
-			adapter.probeServicePort?.({
+			probeContainerPort(adapter, {
 				projectName: PROJECT,
 				serviceName: "late",
 				hostPort: 59000,
-			}) ?? Promise.resolve(false);
+				timeoutMs: 1000,
+			});
 
 		try {
 			await adapter.up({

@@ -1,12 +1,12 @@
 import { isOneOf, isRecord } from "hanzio";
+import { isPort } from "../json-shape";
 
 /** Wire contract shared by the directory, CLI, and Swift fixture tests. */
 export const LEASE_MS = 45_000;
 
 export const HEARTBEAT_MS = 10_000;
 
-export type TargetStatus =
-	"starting" | "ready" | "reused" | "stopped" | "failed";
+type TargetStatus = "starting" | "ready" | "reused" | "stopped" | "failed";
 
 export interface TargetInput {
 	id: string;
@@ -30,7 +30,7 @@ export interface RunInput {
 	targets: TargetInput[];
 }
 
-export interface RemoteTarget extends TargetInput {
+interface RemoteTarget extends TargetInput {
 	url: string;
 }
 
@@ -100,15 +100,6 @@ export function record(value: unknown): Record<string, unknown> {
 	return isRecord(value) ? value : {};
 }
 
-export function validPort(value: unknown): value is number {
-	return (
-		typeof value === "number" &&
-		Number.isInteger(value) &&
-		value > 0 &&
-		value <= 65535
-	);
-}
-
 export function ready(status: string) {
 	return status === "ready" || status === "reused";
 }
@@ -149,7 +140,7 @@ export function parseRun(value: unknown): RunInput {
 				["starting", "ready", "reused", "stopped", "failed"],
 				target.status,
 			) ||
-			!validPort(target.port) ||
+			!isPort(target.port) ||
 			(target.preset !== undefined && !text(target.preset))
 		) {
 			throw new Error("Invalid target");

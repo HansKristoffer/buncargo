@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { offsetClaimsOf } from "../../core/offset-claims";
 import { execAsync } from "../../core/process";
 
 const cli = resolve(import.meta.dir, "../bin.ts");
@@ -27,7 +28,7 @@ function fixture() {
 		`export default {projectPrefix:'run',services:{},apps:{api:{port:3000,devCommand:false,cwd:'packages/api',staticEnv:{APP_ONLY:'yes'}}},tasks:{
 			'shop:seed':{command:'printf "%s|%s|" "$APP_ONLY" "$PWD"; printf "%s,"',app:'api',description:'Seed the store'},
 			fail:{command:'exit 7'},
-		},checks:[{name:'marker',check:({root})=>require('node:fs').existsSync(root+'/marker'),fix:'touch marker'}]};`,
+		},setupChecks:[{name:'marker',check:({root})=>require('node:fs').existsSync(root+'/marker'),fix:'touch marker'}]};`,
 	);
 	return root;
 }
@@ -55,7 +56,7 @@ it("runs a task with its app's env and cwd, appending argv unparsed", async () =
 	expect(result.stdout).toBe(`yes|${join(root, "packages/api")}|a b,$HOME,`);
 	expect(result.exitCode).toBe(0);
 	// Reads ports like exec does: no allocation state for a task without services.
-	expect(existsSync(join(root, ".buncargo/ports.json"))).toBe(false);
+	expect(offsetClaimsOf(root)).toEqual({});
 });
 
 it("lists tasks, propagates exit codes and names unknown tasks", async () => {

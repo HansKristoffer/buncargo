@@ -9,14 +9,14 @@ import {
 } from "../prompt";
 import { hostsMode } from "../runtime-flags";
 import { getCertNamesPath } from "./cert-names";
-import { syncCertificateForRoutes } from "./certificates";
+import { machineMkcert, syncCertificateForRoutes } from "./certificates";
 import {
 	ensureHostsDaemonRunning,
+	hostsDaemonProbe,
 	isHostsDaemonHealthy,
 	isHostsDaemonWedged,
 	SERVICE_START_TIMEOUT_MS,
 } from "./daemon-client";
-import { readDaemonConfig } from "./daemon-config";
 import {
 	cleanHostsFileAsRoot,
 	DEFAULT_HOSTS_FILE,
@@ -34,11 +34,13 @@ import {
 import { DECLINE_FILENAME } from "./paths";
 import { isHostsPlatformSupported } from "./plan";
 import { systemPrivilegedRunner } from "./privileged";
+import { HOSTS_HTTPS_PORT } from "./protocol";
 import { clearHostRoutes } from "./registry";
 import {
 	describeStaleHostsService,
 	installHostsService,
 	isHostsServiceInstalled,
+	machineServiceInstall,
 	readHostsServiceManifest,
 	toHostsUserMessage,
 	uninstallHostsService,
@@ -68,7 +70,7 @@ export function persistHostsDecline(): void {
 	hostsDecline.persist();
 }
 
-export function clearHostsDecline(): void {
+function clearHostsDecline(): void {
 	hostsDecline.clear();
 }
 
@@ -121,7 +123,8 @@ async function promptStaleService(reason: string): Promise<"update" | "skip"> {
 export interface StaleServiceRepairDeps {
 	/** Undefined when there is no TTY to prompt on. */
 	prompt?: (reason: string) => Promise<"update" | "skip">;
-	reinstall: () => Promise<void>;
+	/** Resolves to notes worth showing, such as a newer service it kept. */
+	reinstall: () => Promise<string[]>;
 	caPath: () => string | undefined;
 }
 
@@ -147,8 +150,12 @@ export async function repairStaleService(
 	if (!deps.prompt) return asIs;
 	if ((await deps.prompt(staleService)) === "skip") return asIs;
 	try {
-		await deps.reinstall();
-		return { ok: true, caPath: deps.caPath() };
+		const notes = await deps.reinstall();
+		return {
+			ok: true,
+			caPath: deps.caPath(),
+			...(notes.length === 0 ? {} : { notes }),
+		};
 	} catch (error) {
 		// The old daemon is still up, so the run continues on named hosts either
 		// way; only the reason it is stale changes.
@@ -156,41 +163,85 @@ export async function repairStaleService(
 	}
 }
 
-export async function runHostsInstall(
-	options: {
-		/**
-		 * Rewrite and reload the service even when one is already installed.
-		 *
-		 * Set by the explicit `buncargo hosts install` command. Without it a
-		 * service that is installed but broken — wrong code, wedged daemon —
-		 * looks fine to `isHostsServiceInstalled()`, so the command that is meant
-		 * to repair it would skip the only step that could.
-		 */
-		reinstallService?: boolean;
-	} = {},
-): Promise<void> {
-	clearHostsDecline();
-	const mkcertPath = await ensureMkcert();
+/** What `hosts install` asks of {@link installHosts}. */
+export interface HostsInstallOptions {
+	/**
+	 * Rewrite and reload the service even when one is already installed.
+	 *
+	 * Set by the explicit `buncargo hosts install` command. Without it a
+	 * service that is installed but broken (wrong code, a wedged daemon)
+	 * looks fine to `isHostsServiceInstalled()`, so the command that is meant
+	 * to repair it would skip the only step that could.
+	 */
+	reinstallService?: boolean;
+	/** Install over a newer service too (`hosts install --force`). */
+	force?: boolean;
+}
+
+/** The steps of `hosts install`, injected so the order can be tested without root. */
+export interface HostsInstallDeps {
+	clearDecline: () => void;
+	ensureMkcert: () => Promise<string>;
+	installTrust: (mkcertPath: string) => void;
+	mintCertificate: () => Promise<void>;
+	/** Installed, and not stale. */
+	serviceCurrent: () => boolean;
+	installService: (options: { force: boolean | undefined }) => {
+		kept?: string;
+	};
+	waitForDaemon: () => Promise<{ ok: boolean; message?: string }>;
+}
+
+/** Put named hosts on this machine; returns notes such as a newer service kept. */
+export async function installHosts(
+	deps: HostsInstallDeps,
+	options: HostsInstallOptions,
+): Promise<string[]> {
+	deps.clearDecline();
+	const mkcertPath = await deps.ensureMkcert();
 	// Unconditionally: `hosts uninstall` removes the trust and keeps the CA
 	// files, so "the CA exists" skipped this on the reinstall that needed it.
 	// `mkcert -install` asks for nothing when the CA is already trusted.
-	installTrust(mkcertPath);
+	deps.installTrust(mkcertPath);
 	// Mint before the service starts. The daemon cannot bind :443 without a
 	// leaf, and it will not mint one itself.
-	await syncCertificateForRoutes({ mkcertPath });
-	if (
-		options.reinstallService ||
-		!isHostsServiceInstalled() ||
-		describeStaleHostsService()
-	) {
-		installHostsService();
+	await deps.mintCertificate();
+
+	const notes: string[] = [];
+	if (options.reinstallService || !deps.serviceCurrent()) {
+		const { kept } = deps.installService({ force: options.force });
+		if (kept) notes.push(kept);
 	}
-	const ready = await ensureHostsDaemonRunning({
-		timeoutMs: SERVICE_START_TIMEOUT_MS,
-	});
+
+	const ready = await deps.waitForDaemon();
 	if (!ready.ok) {
 		throw new Error(ready.message ?? "Named-hosts daemon failed to start");
 	}
+	return notes;
+}
+
+export function runHostsInstall(
+	options: HostsInstallOptions = {},
+): Promise<string[]> {
+	return installHosts(
+		{
+			clearDecline: clearHostsDecline,
+			ensureMkcert,
+			installTrust,
+			mintCertificate: async () => {
+				await syncCertificateForRoutes(machineMkcert);
+			},
+			serviceCurrent: () =>
+				isHostsServiceInstalled() && !describeStaleHostsService(),
+			installService: ({ force }) =>
+				installHostsService({ ...machineServiceInstall(), force }),
+			waitForDaemon: () =>
+				ensureHostsDaemonRunning(hostsDaemonProbe(), {
+					timeoutMs: SERVICE_START_TIMEOUT_MS,
+				}),
+		},
+		options,
+	);
 }
 
 /** The steps of `hosts uninstall`, injected so the order can be tested without root. */
@@ -234,7 +285,7 @@ export async function uninstallHosts(
 export function runHostsUninstall(): Promise<string[]> {
 	const runner = systemPrivilegedRunner();
 	return uninstallHosts({
-		removeService: () => uninstallHostsService({ runner }),
+		removeService: () => uninstallHostsService(runner),
 		removeTrust: () => uninstallTrust(),
 		cleanHostsFile: () => cleanHostsFileAsRoot(runner),
 		clearRoutes: () => clearHostRoutes(),
@@ -304,10 +355,9 @@ export async function ensureHostsReady(input: {
 
 	const interactive = input.interactive ?? isInteractive();
 
-	if (await isHostsDaemonHealthy(readDaemonConfig().httpsPort)) {
-		// Healthy is not the same as current: a daemon loaded from a previous
-		// version's bundle answers health checks while running that version's
-		// code, and only an explicit reinstall can move it.
+	if (await isHostsDaemonHealthy()) {
+		// Healthy is not the same as usable: a daemon below this CLI's protocol
+		// answers health checks, and only a reinstall can move it.
 		const stale = describeStaleHostsService();
 		return stale
 			? await repairStaleService(stale, {
@@ -332,7 +382,7 @@ export async function ensureHostsReady(input: {
 		//
 		// The squatter lookup lists containers; only pay for it here, where the
 		// message has to name whatever else is holding :443.
-		const squatter = describePortSquatter(readDaemonConfig().httpsPort);
+		const squatter = describePortSquatter(HOSTS_HTTPS_PORT);
 		if (!interactive) {
 			return {
 				ok: false,
@@ -370,8 +420,12 @@ export async function ensureHostsReady(input: {
 		}
 
 		try {
-			await runHostsInstall();
-			return { ok: true, caPath: getCaPath(resolvedMkcertPath()) };
+			const notes = await runHostsInstall();
+			return {
+				ok: true,
+				caPath: getCaPath(resolvedMkcertPath()),
+				...(notes.length === 0 ? {} : { notes }),
+			};
 		} catch (error) {
 			return {
 				ok: false,
@@ -381,7 +435,7 @@ export async function ensureHostsReady(input: {
 		}
 	}
 
-	const ready = await ensureHostsDaemonRunning();
+	const ready = await ensureHostsDaemonRunning(hostsDaemonProbe());
 	if (!ready.ok) {
 		return {
 			ok: false,
@@ -465,7 +519,7 @@ export async function doctorFixHosts(
 		}
 		// A certificate that no longer covers the registered hostnames stops the
 		// daemon binding, and the daemon cannot repair that itself.
-		await syncCertificateForRoutes({ mkcertPath });
+		await syncCertificateForRoutes(machineMkcert);
 		const stale = describeStaleHostsService();
 		const installed = isHostsServiceInstalled();
 		// An installed service that is not answering is exactly the case doctor
@@ -477,8 +531,9 @@ export async function doctorFixHosts(
 		const needsTerminal = typedSwitch(fix, "action", {
 			none: () => false,
 			install: ({ note }) => {
-				installHostsService();
-				fixed.push(note);
+				const { kept } = installHostsService(machineServiceInstall());
+				if (kept) issues.push({ kind: "service", message: kept });
+				else fixed.push(note);
 				return false;
 			},
 			"needs-terminal": ({ issue }) => {
@@ -487,7 +542,7 @@ export async function doctorFixHosts(
 			},
 		});
 		if (needsTerminal) return { fixed, issues };
-		const ready = await ensureHostsDaemonRunning({
+		const ready = await ensureHostsDaemonRunning(hostsDaemonProbe(), {
 			timeoutMs: SERVICE_START_TIMEOUT_MS,
 		});
 		if (!ready.ok)

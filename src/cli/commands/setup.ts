@@ -2,6 +2,7 @@ import { getErrorMessage } from "hanzio";
 import { findMonorepoRoot } from "../../core/ports";
 import { askChoice, isInteractive } from "../../core/prompt";
 import { isCI } from "../../core/runtime-flags";
+import { internalsOf } from "../../environment";
 import { loadDevEnv } from "../../loader";
 import type { AnyDevEnvironment, CheckContext, SetupCheck } from "../../types";
 import { writeAgentsBlock } from "../agents-guide";
@@ -11,46 +12,10 @@ import {
 	isWarning,
 	runChecks,
 } from "../checks";
-import {
-	type CommandSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
-	readPositionals,
-} from "../command-spec";
+import { BASE_EXITS, defineCommand } from "../command-spec";
 import { allChecks } from "../core-checks";
-import { argumentsError, CliError } from "../errors";
+import { CliError } from "../errors";
 import * as log from "../log";
-
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
-	},
-	yes: {
-		name: "--yes",
-		kind: "boolean",
-		description: "Run every fix without asking (implied in CI)",
-	},
-	agents: {
-		name: "--agents",
-		kind: "boolean",
-		description:
-			"Add or update the buncargo block in AGENTS.md (pointing at `help agents`), then exit",
-	},
-} as const;
-
-export const SETUP_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo setup [--yes] [--agents]",
-	flags: Object.values(FLAGS),
-	examples: [
-		{
-			command: "bunx buncargo setup",
-			description: "Check the checkout and offer each fix",
-		},
-	],
-};
 
 function printResult(result: CheckResult): void {
 	const detail = result.detail ? ` (${result.detail})` : "";
@@ -88,33 +53,21 @@ async function applyFix(check: SetupCheck, ctx: CheckContext): Promise<void> {
  * Interactive by default; `--yes` and CI run every fix. A terminal-less run
  * without `--yes` only reports, rather than guessing consent.
  */
-export async function handleSetup(args: string[]): Promise<number> {
-	if (readBooleanFlag(args, FLAGS.help)) {
-		console.log(formatCommandHelp(SETUP_COMMAND_SPEC));
-		return 0;
-	}
-	const unknown = [
-		...findUnknownFlags(SETUP_COMMAND_SPEC, args),
-		...readPositionals(SETUP_COMMAND_SPEC, args),
-	];
-	if (unknown.length > 0) {
-		throw argumentsError(
-			[`Unexpected argument: ${unknown.join(" ")}`],
-			"setup",
-		);
-	}
-
-	if (readBooleanFlag(args, FLAGS.agents)) {
+async function setup(values: {
+	yes: boolean;
+	agents: boolean;
+}): Promise<number> {
+	if (values.agents) {
 		const { path, changed } = writeAgentsBlock(findMonorepoRoot());
 		if (changed) log.done(`Updated the buncargo block in ${path}`);
 		else log.done(`${path} is up to date`);
 		return 0;
 	}
 
-	const env = (await loadDevEnv({ readOnly: true })) as AnyDevEnvironment;
+	const env = (await loadDevEnv()) as AnyDevEnvironment;
 	const ctx: CheckContext = { root: env.root, env };
-	const checks = allChecks(env);
-	const autoFix = readBooleanFlag(args, FLAGS.yes) || isCI();
+	const checks = allChecks(env, internalsOf(env).setupChecks);
+	const autoFix = values.yes || isCI();
 	const canAsk = !autoFix && isInteractive();
 
 	const results = await runChecks(checks, ctx);
@@ -178,3 +131,29 @@ export async function handleSetup(args: string[]): Promise<number> {
 		],
 	);
 }
+
+export const setupCommand = defineCommand({
+	spec: {
+		name: "setup",
+		summary: "Run the fix of every failing check",
+		flags: {
+			yes: {
+				kind: "boolean",
+				description: "Run every fix without asking (implied in CI)",
+			},
+			agents: {
+				kind: "boolean",
+				description:
+					"Add or update the buncargo block in AGENTS.md (pointing at `help agents`), then exit",
+			},
+		},
+		examples: [
+			{
+				command: "bunx buncargo setup",
+				description: "Check the checkout and offer each fix",
+			},
+		],
+	},
+	exits: { ...BASE_EXITS, 1: "a check still fails, or bad arguments" },
+	run: ({ values }) => setup(values),
+});

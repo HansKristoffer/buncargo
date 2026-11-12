@@ -1,6 +1,5 @@
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import fg from "fast-glob";
 import { getErrorMessage, startTimer, sumBy } from "hanzio";
 import { execAsync } from "../core/process";
 import { readWorkspaceGraph, selectChangedWorkspaces } from "./changed";
@@ -8,6 +7,7 @@ import {
 	type ConfigTypecheckResult,
 	typecheckRootConfig,
 } from "./config-typecheck";
+import { countTypeScriptFiles, globPaths } from "./glob";
 import { resolveProjectTsc } from "./project-tsc";
 import {
 	defaultTypecheckConcurrency,
@@ -47,6 +47,11 @@ export interface WorkspaceTypecheckOptions {
 	/** Workspaces to leave out: paths, globs or basenames (`typecheck.exclude`) */
 	exclude?: readonly string[];
 	/**
+	 * The `package.json` scripts that check a workspace, each run as its own
+	 * job (`typecheck.scripts`). Default: `["typecheck"]`.
+	 */
+	scripts?: readonly string[];
+	/**
 	 * Check only what these files can break (paths relative to `root`): their
 	 * workspaces and the workspaces depending on those. A root manifest,
 	 * lockfile, tsconfig or dev config among them checks everything.
@@ -63,6 +68,7 @@ export interface WorkspaceTypecheckOptions {
  * Result of a single workspace typecheck.
  */
 export interface WorkspaceTypecheckResult {
+	/** The workspace path, with `#<script>` for a script other than the first. */
 	workspace: string;
 	duration: number;
 	success: boolean;
@@ -85,78 +91,38 @@ export interface TypecheckResult {
 	selectionError?: string;
 }
 
+/** One job of the pool: a workspace and one way to check it. */
 interface Workspace {
 	path: string;
+	/** What results and timings call it: the path, or `<path>#<script>`. */
+	job: string;
 	fileCount: number;
-	/** How to check it, run in the workspace. Default: its `typecheck` script. */
-	command?: string[];
+	/** How to check it, run in the workspace. */
+	command: string[];
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Constants
-// ═══════════════════════════════════════════════════════════════════════════
+const DEFAULT_SCRIPTS = ["typecheck"];
 
-// Patterns that indicate a corrupted tsgo cache (deadlock/panic)
-const CORRUPTED_CACHE_PATTERNS = [
-	"all goroutines are asleep - deadlock",
-	"fatal error:",
-	"panic:",
-	"github.com/microsoft/typescript-go",
-];
+/**
+ * The jobs for a workspace's scripts. The first configured script keeps the
+ * bare path, so a project that adds a script keeps its timings and output.
+ */
+function scriptJobs(
+	path: string,
+	present: readonly string[],
+	scripts: readonly string[],
+): Workspace[] {
+	return present.map((script) => ({
+		path,
+		job: script === scripts[0] ? path : `${path}#${script}`,
+		fileCount: 0,
+		command: [process.execPath, "run", script],
+	}));
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helper Functions
 // ═══════════════════════════════════════════════════════════════════════════
-
-function isCorruptedCacheError(output: string): boolean {
-	return CORRUPTED_CACHE_PATTERNS.some((pattern) => output.includes(pattern));
-}
-
-async function clearTsBuildInfo(
-	workspace: string,
-	verbose: boolean,
-): Promise<void> {
-	if (verbose) {
-		console.log(`🧹 Clearing corrupted tsbuildinfo cache for ${workspace}...`);
-	}
-	// Clear both old tsbuildinfo and new tsgo cache
-	try {
-		const tsbuildInfoFiles = await fg(`${workspace}/**/*.tsbuildinfo`, {
-			absolute: true,
-		});
-		for (const file of tsbuildInfoFiles) {
-			try {
-				unlinkSync(file);
-			} catch {
-				// Ignore errors
-			}
-		}
-
-		const cacheFiles = await fg(`${workspace}/**/.cache/tsbuildinfo.json`, {
-			absolute: true,
-		});
-		for (const file of cacheFiles) {
-			try {
-				unlinkSync(file);
-			} catch {
-				// Ignore errors
-			}
-		}
-	} catch {
-		// Ignore errors
-	}
-}
-
-async function countTypeScriptFiles(
-	pkgPath: string,
-	root: string,
-): Promise<number> {
-	const files = await fg(`${pkgPath}/**/*.{ts,tsx}`, {
-		cwd: root,
-		ignore: ["**/node_modules/**"],
-	});
-	return files.length;
-}
 
 /** `file.ts(3,7): error` becomes `file.ts:3:7 - error`, which terminals link. */
 function formatErrorOutput(output: string): string {
@@ -168,64 +134,49 @@ function workspaceLabel(workspace: string, fileCount: number): string {
 }
 
 async function runSingleTypecheck(
-	{ path: workspace, fileCount, command }: Workspace,
+	{ path, job: workspace, fileCount, command }: Workspace,
 	root: string,
 	verbose: boolean,
 	signal: AbortSignal | undefined,
-	isRetry = false,
 ): Promise<WorkspaceTypecheckResult> {
 	const elapsed = startTimer();
 	if (verbose) {
 		console.log(
-			`Running typecheck in ${workspaceLabel(workspace, fileCount)}${isRetry ? " (retry)" : ""}...`,
+			`Running typecheck in ${workspaceLabel(workspace, fileCount)}...`,
 		);
 	}
 
-	const workspacePath = join(root, workspace);
 	const result = await execAsync(
-		command ?? [process.execPath, "run", "typecheck"],
-		workspacePath,
+		command,
+		join(root, path),
 		{},
 		{ throwOnError: false, signal },
 	);
 
 	const duration = Number((elapsed() / 1000).toFixed(2));
 	const success = result.exitCode === 0;
-
-	let errorOutput: string | undefined;
-	if (!success) {
-		const parts = [result.stdout.trim(), result.stderr.trim()].filter(Boolean);
-		errorOutput = parts.length > 0 ? parts.join("\n") : undefined;
-
-		if (
-			!isRetry &&
-			!signal?.aborted &&
-			errorOutput &&
-			isCorruptedCacheError(errorOutput)
-		) {
-			await clearTsBuildInfo(workspacePath, verbose);
-			return runSingleTypecheck(
-				{ path: workspace, fileCount, command },
-				root,
-				verbose,
-				signal,
-				true,
-			);
-		}
-	}
+	const parts = success
+		? []
+		: [result.stdout.trim(), result.stderr.trim()].filter(Boolean);
+	const errorOutput = parts.length > 0 ? parts.join("\n") : undefined;
 
 	return { workspace, duration, success, fileCount, errorOutput };
 }
 
-function hasTypecheckScript(root: string, path: string): boolean {
+/** Which of `scripts` the workspace's `package.json` defines, in that order. */
+function presentScripts(
+	root: string,
+	path: string,
+	scripts: readonly string[],
+): string[] {
 	try {
 		const pkgJson = JSON.parse(
 			readFileSync(join(root, path, "package.json"), "utf-8"),
-		) as { scripts?: { typecheck?: string } };
-		return Boolean(pkgJson.scripts?.typecheck);
+		) as { scripts?: Record<string, unknown> };
+		return scripts.filter((script) => Boolean(pkgJson.scripts?.[script]));
 	} catch {
 		// No package.json, or an invalid one.
-		return false;
+		return [];
 	}
 }
 
@@ -244,6 +195,7 @@ interface IncludeProblem {
 async function resolveIncludedWorkspaces(
 	include: readonly string[],
 	root: string,
+	scripts: readonly string[],
 ): Promise<{ workspaces: Workspace[]; problems: IncludeProblem[] }> {
 	const workspaces: Workspace[] = [];
 	const problems: IncludeProblem[] = [];
@@ -255,11 +207,7 @@ async function resolveIncludedWorkspaces(
 		const directories =
 			pattern === "."
 				? ["."]
-				: await fg(pattern, {
-						cwd: root,
-						onlyDirectories: true,
-						ignore: ["**/node_modules/**"],
-					});
+				: globPaths([pattern], root, { directories: true });
 		if (directories.length === 0) {
 			problems.push({
 				workspace: entry,
@@ -270,8 +218,9 @@ async function resolveIncludedWorkspaces(
 		for (const path of directories.sort()) {
 			if (seen.has(path)) continue;
 			seen.add(path);
-			if (hasTypecheckScript(root, path)) {
-				workspaces.push({ path, fileCount: 0 });
+			const present = presentScripts(root, path, scripts);
+			if (present.length > 0) {
+				workspaces.push(...scriptJobs(path, present, scripts));
 			} else if (existsSync(join(root, path, "tsconfig.json"))) {
 				try {
 					tsc ??= await resolveProjectTsc(root);
@@ -284,13 +233,14 @@ async function resolveIncludedWorkspaces(
 				}
 				workspaces.push({
 					path,
+					job: path,
 					fileCount: 0,
 					command: [process.execPath, tsc, "--noEmit", "-p", "tsconfig.json"],
 				});
 			} else {
 				problems.push({
 					workspace: path,
-					message: `typecheck.include: ${path} has no "typecheck" script in a package.json and no tsconfig.json to check.`,
+					message: `typecheck.include: ${path} has no ${scripts.map((script) => `"${script}"`).join(" or ")} script in a package.json and no tsconfig.json to check.`,
 				});
 			}
 		}
@@ -299,21 +249,17 @@ async function resolveIncludedWorkspaces(
 }
 
 /** Whether `exclude` names this workspace: its path, a glob over it, or its basename. */
-async function excludedPaths(
+function excludedPaths(
 	exclude: readonly string[],
 	root: string,
 	workspaces: readonly Workspace[],
-): Promise<Set<string>> {
+): Set<string> {
 	const excluded = new Set<string>();
 	if (exclude.length === 0) return excluded;
 	const patterns = exclude.map((entry) =>
 		entry.replace(/^\.\//, "").replace(/\/$/, ""),
 	);
-	for (const path of await fg(patterns, {
-		cwd: root,
-		onlyDirectories: true,
-		ignore: ["**/node_modules/**"],
-	}))
+	for (const path of globPaths(patterns, root, { directories: true }))
 		excluded.add(path);
 	for (const workspace of workspaces)
 		if (
@@ -327,12 +273,15 @@ async function excludedPaths(
 async function discoverWorkspaces(
 	patterns: string[],
 	root: string,
-	timings: Readonly<Record<string, number>>,
-	selection: { include?: readonly string[]; exclude?: readonly string[] } = {},
+	selection: {
+		include?: readonly string[];
+		exclude?: readonly string[];
+		scripts: readonly string[];
+	},
 ): Promise<{ workspaces: Workspace[]; problems: IncludeProblem[] }> {
-	const matches = await fg(
+	const matches = globPaths(
 		patterns.map((pattern) => `${pattern.replace(/\/$/, "")}/package.json`),
-		{ cwd: root, ignore: ["**/node_modules/**"] },
+		root,
 	);
 
 	const seen = new Set<string>();
@@ -341,8 +290,13 @@ async function discoverWorkspaces(
 		const pkgPath = match.replace("/package.json", "");
 		if (seen.has(pkgPath)) continue;
 		seen.add(pkgPath);
-		if (hasTypecheckScript(root, pkgPath))
-			candidates.push({ path: pkgPath, fileCount: 0 });
+		candidates.push(
+			...scriptJobs(
+				pkgPath,
+				presentScripts(root, pkgPath, selection.scripts),
+				selection.scripts,
+			),
+		);
 	}
 
 	// The config's own entries, after discovery: a directory both found and
@@ -350,29 +304,17 @@ async function discoverWorkspaces(
 	const included = await resolveIncludedWorkspaces(
 		selection.include ?? [],
 		root,
+		selection.scripts,
 	);
 	for (const workspace of included.workspaces) {
 		if (seen.has(workspace.path)) continue;
-		seen.add(workspace.path);
 		candidates.push(workspace);
 	}
+	for (const workspace of included.workspaces) seen.add(workspace.path);
 
-	const excluded = await excludedPaths(
-		selection.exclude ?? [],
-		root,
-		candidates,
-	);
-	const workspaces = await Promise.all(
-		candidates
-			.filter((workspace) => !excluded.has(workspace.path))
-			.map(async (workspace) => ({
-				...workspace,
-				fileCount: await countTypeScriptFiles(workspace.path, root),
-			})),
-	);
-
+	const excluded = excludedPaths(selection.exclude ?? [], root, candidates);
 	return {
-		workspaces: sortWorkspacesByExpectedDuration(workspaces, timings),
+		workspaces: candidates.filter((workspace) => !excluded.has(workspace.path)),
 		problems: included.problems.filter(
 			(problem) => !excluded.has(problem.workspace),
 		),
@@ -437,6 +379,7 @@ export async function runWorkspaceTypecheck(
 		exclude,
 		changedFiles,
 		signal,
+		scripts = DEFAULT_SCRIPTS,
 	} = options;
 	let includeRootConfig = options.includeRootConfig ?? true;
 	const concurrency = options.concurrency ?? defaultTypecheckConcurrency();
@@ -451,9 +394,10 @@ export async function runWorkspaceTypecheck(
 	let rootConfig: ConfigTypecheckResult | undefined;
 
 	const timings = await readTypecheckTimings(root);
-	const discovered = await discoverWorkspaces(patterns, root, timings, {
+	const discovered = await discoverWorkspaces(patterns, root, {
 		include,
 		exclude,
+		scripts,
 	});
 	let workspaces = discovered.workspaces;
 	// An `include` entry with nothing to check fails like a workspace would,
@@ -517,6 +461,29 @@ export async function runWorkspaceTypecheck(
 		}
 	}
 
+	// Counted after `--only` and `--changed` narrow the set, so only the
+	// workspaces that get checked are walked, each once however many scripts
+	// check it. Sorted by job, since each script has its own duration.
+	const fileCounts = new Map<string, number>();
+	const countFiles = (path: string) => {
+		const count =
+			fileCounts.get(path) ?? countTypeScriptFiles(join(root, path));
+		fileCounts.set(path, count);
+		return count;
+	};
+	workspaces = sortWorkspacesByExpectedDuration(
+		workspaces.map((workspace) => {
+			const fileCount = countFiles(workspace.path);
+			return {
+				path: workspace.job,
+				fileCount,
+				workspace: { ...workspace, fileCount },
+			};
+		}),
+		timings,
+	).map((ranked) => ranked.workspace);
+	const workspaceCount = fileCounts.size;
+
 	if (workspaces.length === 0) {
 		const rootConfig = includeRootConfig
 			? await typecheckRootConfig({ root, verbose: false, signal })
@@ -542,7 +509,7 @@ export async function runWorkspaceTypecheck(
 
 	if (verbose) {
 		console.log(
-			`Running typecheck across ${workspaces.length} workspaces with concurrency limit of ${concurrency}...\n`,
+			`Running typecheck across ${workspaceCount} workspaces with concurrency limit of ${concurrency}...\n`,
 		);
 	}
 
@@ -568,7 +535,7 @@ export async function runWorkspaceTypecheck(
 	await writeTypecheckTimings(root, timings, results);
 
 	const totalDuration = Number((totalElapsed() / 1000).toFixed(2));
-	const totalFiles = sumBy(workspaces, "fileCount");
+	const totalFiles = sumBy([...fileCounts.values()], (count) => count);
 	results.push(...problemResults);
 	const success =
 		results.every((r) => r.success) && (rootConfig?.success ?? true);
@@ -587,7 +554,7 @@ export async function runWorkspaceTypecheck(
 		success,
 		totalDuration,
 		totalFiles,
-		workspaceCount: workspaces.length,
+		workspaceCount,
 		results,
 		...(rootConfig ? { rootConfig } : {}),
 	};

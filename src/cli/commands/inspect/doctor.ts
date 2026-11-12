@@ -1,10 +1,14 @@
-import { existsSync } from "node:fs";
 import { getErrorMessage, typedSwitch } from "hanzio";
 import {
 	availableContainerRuntimes,
 	type ContainerRuntimeAdapter,
+	claimedCheckouts,
 	containerRuntimeForEnv,
 	getContainerRuntimeAdapter,
+	isRuntimeUp,
+	listBuncargoContainers,
+	orphanedVolumes,
+	planVolumePrune,
 	sweepOrphanedContainers,
 } from "../../../container-runtime";
 import { inDiscardedCheckout } from "../../../core/checkout-presence";
@@ -17,7 +21,6 @@ import {
 	OUTDATED_DAEMON_MESSAGE,
 	type ProxyHealth,
 	RELOAD_STALL_MS,
-	readDaemonConfig,
 	readHostsDaemonHealth,
 } from "../../../core/hosts";
 import { isCaTrusted } from "../../../core/hosts/mkcert";
@@ -37,19 +40,16 @@ import {
 import {
 	describeOffsetClaimOverlap,
 	overlappingOffsetClaims,
+	readAllOffsetClaims,
+	readHeldOffsetClaims,
 	sharedProjectNameClaims,
 } from "../../../core/offset-claims";
-import {
-	foreignLockfile,
-	getPortsLockfilePath,
-	readOffsetClaimsWithPorts,
-	readPortsLockfile,
-} from "../../../core/port-allocation";
 import { unallocatedPortsMessage } from "../../../core/port-exhaustion";
 import {
 	classifyPortOccupant,
+	createPortOwnerSnapshotAsync,
 	formatPortOwner,
-	getPortOwner,
+	getPortOwnerAsync,
 	killPortOwnerFoundBy,
 	type PortOwnerLookupOptions,
 	withBindProbe,
@@ -63,16 +63,13 @@ import {
 import { type HostsMode, hostsMode } from "../../../core/runtime-flags";
 import { invokingUserIdentity } from "../../../core/state-paths";
 import { describeSwept } from "../../../core/watchdog-loop";
+import { internalsOf } from "../../../environment";
 import { loadDevEnv } from "../../../loader";
-import type { AnyDevEnvironment } from "../../../types";
+import type { AnyDevEnvironment, BuncargoVolume } from "../../../types";
 import { describeCheckFailures, isWarning, runChecks } from "../../checks";
+import { BASE_EXITS, defineCommand } from "../../command-spec";
 import { allChecks } from "../../core-checks";
-import { hasFlag } from "../../flags";
 import * as log from "../../log";
-import {
-	getTunnelRegistryPath,
-	readLiveTunnelRegistry,
-} from "../../tunnel-registry";
 import {
 	type FileHolder,
 	type FileTableUsage,
@@ -88,7 +85,8 @@ async function checkSetupChecks(
 	env: DevEnv,
 ): Promise<void> {
 	const anyEnv = env as AnyDevEnvironment;
-	for (const result of await runChecks(allChecks(anyEnv), {
+	const checks = allChecks(anyEnv, internalsOf(anyEnv).setupChecks);
+	for (const result of await runChecks(checks, {
 		root: env.root,
 		env: anyEnv,
 	})) {
@@ -176,9 +174,12 @@ async function checkPortOwnership(
 		(candidate) => candidate.name !== runtime.name,
 	);
 
-	const lookup = withBindProbe((port) =>
-		getPortOwner(port, { runtime, fallbackRuntimes }),
-	);
+	const snapshot = await createPortOwnerSnapshotAsync({
+		runtime,
+		fallbackRuntimes,
+		ports: Object.values(env.ports),
+	});
+	const lookup = withBindProbe((port) => snapshot.owner(port));
 	for (const [name, port] of Object.entries(env.ports)) {
 		const owner = lookup(port);
 		if (!owner) continue;
@@ -198,11 +199,11 @@ async function checkPortOwnership(
 		});
 		// A dev server whose checkout was thrown away is nobody's any more, as
 		// the sweep treats that checkout's containers.
-		const discarded =
-			!owner.container &&
-			owner.cwd !== undefined &&
-			inDiscardedCheckout(owner.cwd);
-		if (!discarded) {
+		if (
+			owner.kind !== "process" ||
+			owner.cwd === undefined ||
+			!inDiscardedCheckout(owner.cwd)
+		) {
 			report.issue(described);
 			continue;
 		}
@@ -214,9 +215,13 @@ async function checkPortOwnership(
 		}
 		// Only the process just judged: a port that changed hands since is
 		// somebody else's, and is left alone.
-		const sameHolder = (_port: number, options: PortOwnerLookupOptions) => {
-			const current = getPortOwner(port, options);
-			return current && current.pids.join() === owner.pids.join()
+		const sameHolder = async (
+			_port: number,
+			options: PortOwnerLookupOptions,
+		) => {
+			const current = await getPortOwnerAsync(port, options);
+			return current?.kind === "process" &&
+				current.pids.join() === owner.pids.join()
 				? current
 				: null;
 		};
@@ -234,22 +239,9 @@ async function checkPortOwnership(
 	}
 }
 
-function checkPortsLockfile(report: DoctorReport, env: DevEnv): void {
-	const lockfile = readPortsLockfile(env.root);
-	if (!lockfile) return;
-	const foreign = foreignLockfile(lockfile, env);
-	if (foreign) {
-		report.issue(
-			`Stale ${getPortsLockfilePath(env.root)}: ${foreign}. Delete it or run buncargo dev to rewrite it.`,
-		);
-		return;
-	}
-	report.note(`ports.json offset ${lockfile.offset} looks consistent`);
-}
-
-/** Two checkouts whose blocks overlap collide whenever both run (a lost race, a copied lockfile). */
+/** Two checkouts whose blocks overlap collide whenever both run (a lost race). */
 function checkOffsetClaims(report: DoctorReport): void {
-	const claims = readOffsetClaimsWithPorts();
+	const claims = readHeldOffsetClaims();
 	for (const overlap of overlappingOffsetClaims(claims))
 		report.issue(
 			`${describeOffsetClaimOverlap(overlap)}. Move one: \`buncargo ports pin <offset>\` in that checkout.`,
@@ -266,7 +258,7 @@ async function checkOrphanedContainers(
 	env: DevEnv,
 	runtime: ContainerRuntimeAdapter,
 ): Promise<void> {
-	if (!runtime.isAvailable()) return;
+	if (!isRuntimeUp(runtime)) return;
 	try {
 		const result = await sweepOrphanedContainers({
 			runtimes: [runtime],
@@ -313,17 +305,94 @@ async function checkOrphanedContainers(
 	}
 }
 
-async function checkTunnelRegistry(
-	report: DoctorReport,
-	env: DevEnv,
-): Promise<void> {
-	if (!existsSync(getTunnelRegistryPath(env.root))) return;
-	const after = await readLiveTunnelRegistry(env.root);
-	report.note(
-		after.length === 0
-			? "Tunnel registry is empty"
-			: `Tunnel registry has ${after.length} live ${after.length === 1 ? "entry" : "entries"}`,
+/**
+ * What `doctor` says about the volumes `buncargo prune` would propose, or
+ * undefined when there are none. Never removes one: a volume is a database,
+ * and only a confirmed `prune` takes it.
+ */
+export async function prunableVolumesNote(
+	runtimes: readonly ContainerRuntimeAdapter[],
+): Promise<string | undefined> {
+	if (runtimes.length === 0) return undefined;
+	const volumes = (
+		await Promise.all(runtimes.map((runtime) => runtime.listVolumes()))
+	).flat();
+	const orphaned = orphanedVolumes(
+		planVolumePrune({
+			volumes,
+			containers: await listBuncargoContainers([...runtimes]),
+			runs: await readAllRuns(),
+			checkouts: claimedCheckouts(readAllOffsetClaims()),
+		}),
 	);
+	if (orphaned.length === 0) return undefined;
+
+	const size = describeVolumeSize(
+		orphaned.map((volume) => volume.name),
+		await readVolumeSizes(runtimes, orphaned),
+	);
+	const count = orphaned.length;
+	const noun = count === 1 ? "volume" : "volumes";
+	return `warning: ${count} ${noun} of deleted checkouts (${size}) can be reclaimed. Review them with \`buncargo prune --dry-run\`; removing them destroys their data.`;
+}
+
+/**
+ * The sizes of the runtimes that hold one of `volumes`. A runtime that fails
+ * to answer measures nothing: the size only enriches the note.
+ */
+async function readVolumeSizes(
+	runtimes: readonly ContainerRuntimeAdapter[],
+	volumes: readonly BuncargoVolume[],
+): Promise<Map<string, number>> {
+	const holding = runtimes.filter((runtime) =>
+		volumes.some((volume) => volume.runtime === runtime.name),
+	);
+	const sizes = await Promise.all(
+		holding.map((runtime) =>
+			runtime.volumeSizes().catch(() => new Map<string, number>()),
+		),
+	);
+	return new Map(sizes.flatMap((map) => [...map]));
+}
+
+/** "1.3 GB", "1.3 GB, 2 of unknown size", or "size unknown". */
+function describeVolumeSize(
+	names: readonly string[],
+	sizes: ReadonlyMap<string, number>,
+): string {
+	const measured = names.flatMap((name) => {
+		const bytes = sizes.get(name);
+		return bytes === undefined ? [] : [bytes];
+	});
+	if (measured.length === 0) return "size unknown";
+	const total = formatBytes(measured.reduce((sum, bytes) => sum + bytes, 0));
+	const unknown = names.length - measured.length;
+	return unknown === 0 ? total : `${total}, ${unknown} of unknown size`;
+}
+
+/** Decimal units, as Docker prints them. */
+function formatBytes(bytes: number): string {
+	const units = ["B", "kB", "MB", "GB", "TB"];
+	let value = bytes;
+	let unit = 0;
+	while (value >= 1000 && unit < units.length - 1) {
+		value /= 1000;
+		unit += 1;
+	}
+	const digits = unit === 0 ? 0 : 1;
+	return `${value.toFixed(digits)} ${units[unit]}`;
+}
+
+async function checkPrunableVolumes(
+	report: DoctorReport,
+	runtimes: readonly ContainerRuntimeAdapter[],
+): Promise<void> {
+	try {
+		const note = await prunableVolumesNote(runtimes);
+		if (note) report.note(note);
+	} catch (error) {
+		report.issue(`Could not read volumes: ${getErrorMessage(error)}`);
+	}
 }
 
 /**
@@ -381,7 +450,7 @@ async function checkNamedHosts(
 		);
 		return;
 	}
-	const health = await readHostsDaemonHealth(readDaemonConfig().httpsPort);
+	const health = await readHostsDaemonHealth();
 	if (health) {
 		report.note("Named-hosts daemon is healthy");
 		const hijack = await describeLoopbackHijack();
@@ -400,8 +469,8 @@ async function checkNamedHosts(
 	if (staleService && !reported.has("service")) {
 		report.issue(staleService);
 	}
-	const hostRoutes = (await loadHostRoutes(undefined, { strict: true })).filter(
-		(route) => isRouteLive(route),
+	const hostRoutes = (await loadHostRoutes({ strict: true })).filter((route) =>
+		isRouteLive(route),
 	);
 	report.note(
 		hostRoutes.length === 0
@@ -554,7 +623,7 @@ function checkMenuBarApp(report: DoctorReport): void {
 	);
 }
 
-export async function handleDoctor(args: string[] = []): Promise<void> {
+async function doctor(fix: boolean): Promise<number> {
 	const report = new DoctorReport();
 
 	// The config is read first because it can point either runtime at a binary
@@ -562,7 +631,7 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 	let env: DevEnv | undefined;
 	try {
 		// Inspect-only: the checkout files check reports their state instead.
-		env = await loadDevEnv({ readOnly: true, syncCheckoutFiles: false });
+		env = await loadDevEnv({ syncCheckoutFiles: false });
 	} catch (error) {
 		report.issue(`Could not load dev config: ${getErrorMessage(error)}`);
 	}
@@ -577,7 +646,6 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 
 	// Only the runtime this project selected has to be up; another one being
 	// down is not a problem for it, and starting it would be wrong.
-	const fix = hasFlag(args, "--fix");
 	const selected = env
 		? containerRuntimeForEnv(env)
 		: getContainerRuntimeAdapter("docker");
@@ -599,20 +667,33 @@ export async function handleDoctor(args: string[] = []): Promise<void> {
 		if (env.portOffsetProvenance === "unallocated")
 			report.note(`warning: ${unallocatedPortsMessage(env.root)}`);
 		else await checkPortOwnership(report, env, selected, fix);
-		checkPortsLockfile(report, env);
 		await checkOrphanedContainers(report, env, selected);
-		await checkTunnelRegistry(report, env);
 		await checkNamedHosts(report, env, hostsFix);
 		await checkSetupChecks(report, env);
 	}
 
 	await checkRunRegistry(report, env?.root);
+	await checkPrunableVolumes(report, available);
 	checkMenuBarApp(report);
 	checkFileTable(report);
 	checkOffsetClaims(report);
 
 	report.print();
-	if (report.issues.length > 0) {
-		process.exit(1);
-	}
+	return report.issues.length > 0 ? 1 : 0;
 }
+
+export const doctorCommand = defineCommand({
+	spec: {
+		name: "doctor",
+		summary: "Check Docker, port owners, lockfile, hosts, and orphans",
+		flags: {
+			fix: {
+				kind: "boolean",
+				description:
+					"Repair what it can: the named-hosts daemon, CA trust, stale routes, port owners",
+			},
+		},
+	},
+	exits: { ...BASE_EXITS, 1: "an issue was found" },
+	run: ({ values }) => doctor(values.fix),
+});

@@ -6,7 +6,7 @@ import { recordStartupMetric } from "./startup-metrics";
 import { chownToInvokingUser } from "./state-paths";
 
 const LOCK_POLL_MS = 20;
-export const LOCK_TIMEOUT_MS = 5000;
+const LOCK_TIMEOUT_MS = 5000;
 
 export class FileLockTimeoutError extends Error {
 	readonly code = "BUNCARGO_LOCK_TIMEOUT";
@@ -73,6 +73,15 @@ function flockOperation(): (fd: number) => boolean {
 		});
 	})();
 	return loadedFlock;
+}
+
+/**
+ * Take the exclusive kernel lock on an open descriptor without waiting: false
+ * while another descriptor holds it. The lock lives as long as the
+ * descriptor, so a holder that dies frees it with no pid to judge.
+ */
+export function tryLockDescriptor(fd: number): boolean {
+	return flockOperation()(fd);
 }
 
 /** Run a mutation exclusively, or reject on bounded contention without running it. */

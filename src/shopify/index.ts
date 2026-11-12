@@ -22,7 +22,7 @@ import {
 	shopifyConfigName,
 } from "./app-config";
 import { isClientId, shopifyChecks } from "./checks";
-import { resolveShopifyBin } from "./cli";
+import { shopifyCli } from "./cli";
 import { shopifyCommands } from "./commands";
 import { ensureShopifyLogin } from "./login";
 import { renderShopifyWebToml, SHOPIFY_WEB_DIR } from "./web";
@@ -49,12 +49,6 @@ export {
 	type ShopifyWebhookSubscription,
 } from "./app-config";
 export { patchWebDirectories, SHOPIFY_WEB_DIR } from "./web";
-
-declare module "../types/all-types" {
-	interface IntegrationAppNames {
-		shopify: true;
-	}
-}
 
 export interface ShopifyIntegrationOptions {
 	/** Which app toml: `shopify.app.toml` (default), a name, or `shopify.app.<name>.toml`. */
@@ -156,7 +150,7 @@ export function storeLinks(
 
 export function shopify(
 	options: ShopifyIntegrationOptions = {},
-): BuncargoIntegration {
+): BuncargoIntegration<{ apps: "shopify" }> {
 	const file = shopifyConfigFile(options.config);
 	const configName = shopifyConfigName(file);
 	const state = { config: configName };
@@ -204,7 +198,7 @@ export function shopify(
 
 			const store = options.store;
 			const devCommand = [
-				shellQuote(resolveShopifyBin(root)),
+				shellQuote(shopifyCli.resolve([root])),
 				"app",
 				"dev",
 				"--config",
@@ -239,39 +233,42 @@ export function shopify(
 			};
 
 			const cli = buncargoCli();
-			return mergeConfigs(config, {
-				apps: { ...apps, ...discovered, shopify: shopifyApp },
-				// The admin UI is what "Open" should open, not the CLI's worker.
-				...(frontend && !config.options?.primaryApp
-					? { options: { primaryApp: frontend } }
-					: {}),
-				env: () => {
-					const devStore = store ?? appToml?.devStoreUrl;
-					return {
-						SHOPIFY_APP_CONFIG: configName,
-						...(appToml ? { SHOPIFY_API_KEY: appToml.clientId } : {}),
-						...(devStore ? { SHOPIFY_DEV_STORE: devStore } : {}),
-					};
+			const devStore = store ?? appToml?.devStoreUrl;
+			const shopifyEnv = {
+				SHOPIFY_APP_CONFIG: configName,
+				...(appToml ? { SHOPIFY_API_KEY: appToml.clientId } : {}),
+				...(devStore ? { SHOPIFY_DEV_STORE: devStore } : {}),
+			};
+			// Shopify's env goes in as the base, so the config's own `env` wins.
+			return mergeConfigs(
+				{ ...config, env: () => shopifyEnv },
+				{
+					apps: { ...apps, ...discovered, shopify: shopifyApp },
+					// The admin UI is what "Open" should open, not the CLI's worker.
+					...(frontend && !config.options?.primaryApp
+						? { options: { primaryApp: frontend } }
+						: {}),
+					env: config.env,
+					generatedFiles: [
+						...(config.generatedFiles ?? []),
+						...(frontend
+							? [
+									{
+										path: `${SHOPIFY_WEB_DIR}/shopify.web.toml`,
+										render: ({ ports }: GeneratedFileContext) =>
+											renderShopifyWebToml({
+												frontend,
+												port: ports[frontend],
+												buncargo: cli.script
+													? [cli.program, cli.script]
+													: [cli.program],
+											}),
+									},
+								]
+							: []),
+					],
 				},
-				generatedFiles: [
-					...(config.generatedFiles ?? []),
-					...(frontend
-						? [
-								{
-									path: `${SHOPIFY_WEB_DIR}/shopify.web.toml`,
-									render: ({ ports }: GeneratedFileContext) =>
-										renderShopifyWebToml({
-											frontend,
-											port: ports[frontend],
-											buncargo: cli.script
-												? [cli.program, cli.script]
-												: [cli.program],
-										}),
-								},
-							]
-						: []),
-				],
-			}) as IntegrationConfig;
+			) as IntegrationConfig;
 		},
 
 		hooks: {
@@ -301,7 +298,7 @@ export function shopify(
 			},
 		},
 
-		checks: shopifyChecks(state),
+		setupChecks: shopifyChecks(state),
 		commands: shopifyCommands(state),
 		preflight: [
 			{

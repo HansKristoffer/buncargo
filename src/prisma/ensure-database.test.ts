@@ -2,24 +2,27 @@ import { afterEach, beforeEach, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { offsetClaimKey, readOffsetClaims } from "../core/offset-claims";
-import { PORT_OFFSET_STEP, readPortsLockfile } from "../core/port-allocation";
+import {
+	claimOffset,
+	offsetClaimKey,
+	readOffsetClaims,
+} from "../core/offset-claims";
+import { PORT_OFFSET_STEP } from "../core/port-allocation";
+import { useTempHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "../environment/create-dev-environment";
 
 // `buncargo prisma` starts the database outside a run. A CI runner's checkout
 // took its hashed block while another OS user's project, with claims in a
 // `~/.buncargo` this one cannot see, published the same Postgres port.
 
-const originalHome = process.env.HOME;
+useTempHome();
 const originalOffset = process.env.BUNCARGO_PORT_OFFSET;
 let scratch: string;
 beforeEach(() => {
 	scratch = mkdtempSync(join(tmpdir(), "buncargo-prisma-ports-"));
-	process.env.HOME = join(scratch, "home");
 	delete process.env.BUNCARGO_PORT_OFFSET;
 });
 afterEach(() => {
-	process.env.HOME = originalHome;
 	if (originalOffset === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
 	else process.env.BUNCARGO_PORT_OFFSET = originalOffset;
 	rmSync(scratch, { recursive: true, force: true });
@@ -35,7 +38,7 @@ const BASE_PORT = 15432;
 function fakeDocker(container?: { port: number; project: string }): string {
 	const docker = join(scratch, "docker");
 	const ps = container
-		? `printf '%s\\t%s\\t%s\\t%s\\n' f00 ${container.project}-postgres-1 '0.0.0.0:${container.port}->5432/tcp' ${container.project}`
+		? `printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' f00 ${container.project}-postgres-1 running Up '0.0.0.0:${container.port}->5432/tcp' ${container.project}`
 		: "true";
 	writeFileSync(
 		docker,
@@ -77,7 +80,6 @@ it("starts the database on the next free block when another project's container 
 	expect(String(failure)).not.toContain("held by container");
 	expect(env.portOffset).toBe(hashed + PORT_OFFSET_STEP);
 	expect(env.ports.postgres).toBe(BASE_PORT + hashed + PORT_OFFSET_STEP);
-	expect(readPortsLockfile(root)?.offset).toBe(hashed + PORT_OFFSET_STEP);
 	expect(readOffsetClaims()[offsetClaimKey(root)]?.offset).toBe(
 		hashed + PORT_OFFSET_STEP,
 	);
@@ -122,20 +124,23 @@ it("leaves an allocation already made where it is", async () => {
 	expect(env.portOffset).toBe(offset);
 });
 
-// A CI runner's checkout persists between jobs, so its lockfile outlives the
-// run that wrote it while other stacks come and go on the same daemon.
-function pinLockfile(offset: number) {
-	const { root } = checkout();
-	mkdirSync(join(root, ".buncargo"), { recursive: true });
-	writeFileSync(
-		join(root, ".buncargo", "ports.json"),
-		JSON.stringify({ offset }),
-	);
+// A CI runner's checkout persists between jobs, so its claim outlives the run
+// that wrote it while other stacks come and go on the same daemon.
+function pinClaim(offset: number) {
+	const { root, env } = checkout();
+	claimOffset({
+		root,
+		offset,
+		ports: Object.values(env.ports).map(
+			(port) => port - env.portOffset + offset,
+		),
+		projectName: env.projectName,
+	});
 }
 
-it("sets aside a lockfile whose database port another project's container now publishes", async () => {
+it("sets aside a claimed block whose database port another project's container now publishes", async () => {
 	const pinned = 2300;
-	pinLockfile(pinned);
+	pinClaim(pinned);
 	const { root, env, prisma } = checkout({
 		port: BASE_PORT + pinned,
 		project: "gey-t3-a18cdddf-e2e",
@@ -147,12 +152,12 @@ it("sets aside a lockfile whose database port another project's container now pu
 	expect(String(failure)).not.toContain("held by container");
 	expect(env.portOffset).not.toBe(pinned);
 	expect(env.ports.postgres).toBe(BASE_PORT + env.portOffset);
-	expect(readPortsLockfile(root)?.offset).toBe(env.portOffset);
+	expect(readOffsetClaims()[offsetClaimKey(root)]?.offset).toBe(env.portOffset);
 });
 
-it("keeps a lockfile block whose database port is its own running container's", async () => {
+it("keeps a claimed block whose database port is its own running container's", async () => {
 	const pinned = 2300;
-	pinLockfile(pinned);
+	pinClaim(pinned);
 	const projectName = checkout().env.projectName;
 	const { env, prisma } = checkout({
 		port: BASE_PORT + pinned,

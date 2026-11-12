@@ -14,7 +14,7 @@ Local development environments are fragile: hand-written compose files, scattere
 
 - **Single config file** - services, apps, ports, URLs, migrations, hooks
 - **Auto-generated Docker Compose** - stamped with `buncargo.*` labels
-- **Port allocation** - hash of `projectPrefix` + worktree, then probe and persist `.buncargo/ports.json`
+- **Port allocation** - hash of `projectPrefix` + worktree, then probe and claim the block in `~/.buncargo/offsets.json`
 - **Built-in presets** - Postgres, Redis, ClickHouse
 - **Dev server orchestration** - reuse healthy apps, kill own orphans, fail on foreign port owners
 - **Terminal UI** - the default in a terminal (`--no-tui` for prefixed lines): every app in its own terminal pane, full-screen apps (Shopify CLI, Expo) render natively, an Overview interleaves the rest
@@ -156,13 +156,13 @@ Add `integrations: [expo()]` (from `buncargo/expo`): every app whose `devCommand
 ```json
 {
 	"scripts": {
-		"dev:with-api": "bunx buncargo dev --apps=expoApp",
-		"dev:expose": "bunx buncargo dev --apps=expoApp,platform --expose"
+		"dev:with-api": "bunx buncargo dev expoApp",
+		"dev:expose": "bunx buncargo dev expoApp platform --expose"
 	}
 }
 ```
 
-`buncargo dev --apps=expoApp -- --clear` appends `--clear` to the attached Expo command.
+`buncargo dev expoApp -- --clear` appends `--clear` to the attached Expo command.
 
 ### Shopify app
 
@@ -243,9 +243,26 @@ The data survives: it is imported from `.firebase-emulator-data` on start and ex
 
 ### Built-in service helpers
 
-All of `service.postgres()`, `redis()`, `clickhouse()`, `mailpit()`, `typesense()` accept `port`, `expose`, `healthCheck`, `serviceName`, and `docker`. Beyond that each takes only what it honors: `database` / `user` / `password` on `postgres` and `clickhouse` (their URLs carry credentials), `secondaryPort` on `clickhouse` and `mailpit`, `apiKey` on `typesense`. Anything else is a type error - use `service.custom({ ... })` for a service that needs more.
+All of `service.postgres()`, `redis()`, `clickhouse()`, `mailpit()`, `typesense()`, `minio()` accept `port`, `expose`, `healthCheck`, `serviceName`, and `docker`. Beyond that each takes only what it honors: `database` / `user` / `password` on `postgres` and `clickhouse` (their URLs carry credentials), `secondaryPort` on `clickhouse` and `mailpit`, `apiKey` on `typesense`, `user` / `password` on `minio` (the root credentials, `minioadmin` by default, also given to the apps as `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` beside `MINIO_URL`). Anything else is a type error - use `service.custom({ ... })` for a service that needs more.
 
-Health check defaults follow what each image can actually run: `pg_isready` on postgres, `redis-cli` on redis, in-container HTTP on clickhouse, and `tcp` on mailpit and typesense, whose images ship no `wget` or `curl` to probe with. A `tcp` check emits no Compose healthcheck and is polled from the host instead.
+Health check defaults follow what each image can actually run: `pg_isready` on postgres, `redis-cli` on redis, in-container HTTP on clickhouse, and `tcp` on mailpit, typesense and minio, whose images ship no `wget` or `curl` to probe with. A `tcp` check emits no Compose healthcheck and is polled from the host instead; minio keeps one that bash runs, so a job can wait for it.
+
+`service.job({ docker })` is a container that runs to completion on every start, such as one that creates MinIO's bucket:
+
+```typescript
+minio: service.minio({ user: "app", password: "app-minio-dev" }),
+minioBucket: service.job({
+	docker: {
+		// A digest, not `latest`, so a warm start can skip `compose up`.
+		image: "cgr.dev/chainguard/minio-client@sha256:799a60aa839c0d79b53f1dccdddc974d0fe94282cca712fbfbad3b196f88d0ee",
+		command: ["mb", "--ignore-existing", "local/app"],
+		environment: { MC_HOST_local: "http://app:app-minio-dev@minio:9000" },
+		depends_on: { minio: { condition: "service_healthy" } },
+	},
+}),
+```
+
+An app lists the job in `requiredServices` to start after it. See [finite jobs](docs/reference.md#portless-containers-and-finite-jobs).
 
 ### Custom service
 
@@ -267,6 +284,7 @@ Agents get the same isolated environment per worktree as people do, and a few co
 
 ```bash
 bunx buncargo dev --detach              # Background run; returns once the apps are up, stops after 2h idle
+bunx buncargo dev --detach --json       # The same, the outcome as one JSON document
 bunx buncargo wait --app=api            # Block until one app is healthy
 bunx buncargo env --get DATABASE_URL    # Any variable the apps get
 bunx buncargo sql -c "select 1" --json  # This checkout's database, nobody else's
@@ -279,7 +297,7 @@ bunx buncargo check                    # Biome, typecheck, gates and tests for t
 bunx buncargo stop                     # Stop this checkout's run
 ```
 
-`bunx buncargo setup --agents` adds a short block to the project's `AGENTS.md` with the rules agents most often miss, pointing at `bunx buncargo help agents` (a short guide; `help agents <topic>` for the rest). Without a terminal, `dev --reset` and `dev --down --all` refuse unless passed `--yes`.
+`bunx buncargo setup --agents` adds a short block to the project's `AGENTS.md` with the rules agents most often miss, pointing at `bunx buncargo help agents` (a short guide; `help agents <topic>` for the rest, and `help agents exits` for every command's exit codes). Without a terminal, `dev --reset` and `dev --down --all` refuse unless passed `--yes`.
 
 ## Documentation
 

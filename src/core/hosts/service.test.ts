@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, expect, it } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { useTempHome } from "../test-env.testing";
 import { getServiceManifestPath } from "./paths";
 import type { PrivilegedRunner } from "./privileged";
+import { HOSTS_PROTOCOL, MIN_HOSTS_PROTOCOL } from "./protocol";
 import {
 	describeStaleService,
 	HOSTS_SERVICE_START_MESSAGE,
@@ -85,66 +86,65 @@ function commandNames(calls: RecordedCall[]): string[] {
 	return calls.map((call) => call.command);
 }
 
-/** Point `~/.buncargo` at a temp dir so tests never touch the real home. */
-let home: string;
-let previousHome: string | undefined;
+// Each test starts with no service manifest under `~/.buncargo`.
+useTempHome();
 
-beforeEach(() => {
-	previousHome = process.env.HOME;
-	home = mkdtempSync(join(tmpdir(), "buncargo-service-test-"));
-	process.env.HOME = home;
-});
-
-afterEach(() => {
-	if (previousHome === undefined) delete process.env.HOME;
-	else process.env.HOME = previousHome;
-	rmSync(home, { recursive: true, force: true });
-});
+const manifest: HostsServiceManifest = {
+	version: 2,
+	protocol: HOSTS_PROTOCOL,
+	buncargoVersion: "6.0.0",
+	program: "/opt/homebrew/bin/bun",
+	args: ["/usr/local/libexec/buncargo/hostsd-6.0.0.js"],
+	installedAt: new Date().toISOString(),
+};
 
 describe("service manifest", () => {
-	it("round-trips what the service was installed with", () => {
+	it("round-trips what the service was installed with, and its protocol", () => {
 		writeHostsServiceManifest({
 			program: "/opt/homebrew/bin/bun",
 			args: ["/usr/local/libexec/buncargo/hostsd-6.0.0.js"],
+			buncargoVersion: "6.0.0",
 		});
-		const manifest = readHostsServiceManifest();
-		expect(manifest?.program).toBe("/opt/homebrew/bin/bun");
-		expect(manifest?.args[0]).toBe(
-			"/usr/local/libexec/buncargo/hostsd-6.0.0.js",
-		);
-		expect(manifest?.installedAt).not.toBe("");
-	});
-
-	it("records the bundle contents when the installer supplies them", () => {
-		writeHostsServiceManifest({
-			program: "/opt/homebrew/bin/bun",
-			args: ["/usr/local/libexec/buncargo/hostsd-6.0.0.js"],
-			bundleHash: "abc123",
+		expect(readHostsServiceManifest()).toEqual({
+			...manifest,
+			installedAt: expect.any(String),
 		});
-		expect(readHostsServiceManifest()?.bundleHash).toBe("abc123");
 	});
 
 	it("reads as absent when the file is missing", () => {
 		expect(readHostsServiceManifest()).toBeUndefined();
 	});
 
-	it("reads as absent on a version mismatch", async () => {
+	// What every machine has until `hosts install` runs: it reads as a service
+	// to update, not one this CLI can judge.
+	it("reads a manifest from before the protocol as absent", async () => {
 		await Bun.write(
 			getServiceManifestPath(),
-			JSON.stringify({ version: 999, program: "/bin/bun", args: ["x"] }),
+			JSON.stringify({
+				version: 1,
+				program: "/bin/bun",
+				args: ["/usr/local/libexec/buncargo/hostsd-15.1.0.js"],
+				bundleHash: "abc123",
+			}),
 		);
 		expect(readHostsServiceManifest()).toBeUndefined();
+	});
+
+	// Read as absent, a later format sent an older project to repair it, which
+	// downgraded the newer project's daemon.
+	it("reads a later format by the fields it keeps", async () => {
+		await Bun.write(
+			getServiceManifestPath(),
+			JSON.stringify({ ...manifest, version: 3, protocol: 7, extra: true }),
+		);
+		expect(readHostsServiceManifest()).toMatchObject({
+			protocol: 7,
+			buncargoVersion: "6.0.0",
+		});
 	});
 });
 
 describe("missingServiceTargets", () => {
-	const manifest: HostsServiceManifest = {
-		version: 1,
-		program: "/opt/homebrew/bin/bun",
-		args: ["/usr/local/libexec/buncargo/hostsd-6.0.0.js"],
-		installedAt: new Date().toISOString(),
-	};
-
 	it("is empty while every target is present", () => {
 		expect(missingServiceTargets(manifest, () => true)).toEqual([]);
 	});
@@ -186,16 +186,13 @@ describe("toHostsUserMessage", () => {
 });
 
 describe("describeStaleService", () => {
-	const manifest: HostsServiceManifest = {
-		version: 1,
-		program: "/opt/homebrew/bin/bun",
-		args: ["/usr/local/libexec/buncargo/hostsd-6.0.0.js"],
-		installedAt: new Date().toISOString(),
-	};
-
 	it("says nothing when no service is installed", () => {
 		expect(
-			describeStaleService({ installed: false, manifest: undefined }),
+			describeStaleService({
+				installed: false,
+				manifest: undefined,
+				fileExists: () => true,
+			}),
 		).toBeUndefined();
 	});
 
@@ -223,7 +220,11 @@ describe("describeStaleService", () => {
 
 	it("flags an install with no manifest as needing repair", () => {
 		expect(
-			describeStaleService({ installed: true, manifest: undefined }),
+			describeStaleService({
+				installed: true,
+				manifest: undefined,
+				fileExists: () => true,
+			}),
 		).toContain("buncargo hosts install");
 	});
 
@@ -246,77 +247,31 @@ describe("describeStaleService", () => {
 		expect(message).toContain("/opt/homebrew/bin/bun");
 	});
 
-	// The bundle path carries the version it was built from, so an upgraded CLI
-	// would otherwise keep talking to a daemon running the old code.
-	it("flags a service still pointing at a previous version's bundle", () => {
+	// Two projects on two releases share the one daemon. Calling "different"
+	// stale had each prompt to reinstall over the other on every run.
+	it("says nothing for another release at a protocol this CLI can use", () => {
+		for (const installed of [
+			{ ...manifest, buncargoVersion: "1.0.0" },
+			{ ...manifest, buncargoVersion: "99.0.0", protocol: HOSTS_PROTOCOL + 1 },
+		]) {
+			expect(
+				describeStaleService({
+					installed: true,
+					manifest: installed,
+					fileExists: () => true,
+				}),
+			).toBeUndefined();
+		}
+	});
+
+	it("flags a service below this CLI's minimum protocol", () => {
 		const message = describeStaleService({
 			installed: true,
-			manifest,
-			expectedBundle: "/usr/local/libexec/buncargo/hostsd-6.1.0.js",
+			manifest: { ...manifest, protocol: MIN_HOSTS_PROTOCOL - 1 },
 			fileExists: () => true,
 		});
-		expect(message).toContain("hostsd-6.0.0.js");
-		expect(message).toContain("hostsd-6.1.0.js");
+		expect(message).toContain(`protocol ${MIN_HOSTS_PROTOCOL - 1}`);
 		expect(message).toContain("buncargo hosts install");
-	});
-
-	it("says nothing when the installed bundle is the current one", () => {
-		expect(
-			describeStaleService({
-				installed: true,
-				manifest,
-				expectedBundle: manifest.args[0],
-				fileExists: () => true,
-			}),
-		).toBeUndefined();
-	});
-
-	// The path stops at the version, so a rebuild at the same version passed
-	// every other check here — which is how a machine ran days-old daemon code
-	// while `doctor` reported the service current.
-	it("flags a bundle rebuilt at the same version", () => {
-		const message = describeStaleService({
-			installed: true,
-			manifest: { ...manifest, bundleHash: "aaaaaaaaaaaaaaaa" },
-			expectedBundle: manifest.args[0],
-			expectedBundleHash: "bbbbbbbbbbbbbbbb",
-			fileExists: () => true,
-		});
-		expect(message).toContain("buncargo hosts install");
-	});
-
-	it("says nothing when the bundle contents match", () => {
-		expect(
-			describeStaleService({
-				installed: true,
-				manifest: { ...manifest, bundleHash: "aaaaaaaaaaaaaaaa" },
-				expectedBundle: manifest.args[0],
-				expectedBundleHash: "aaaaaaaaaaaaaaaa",
-				fileExists: () => true,
-			}),
-		).toBeUndefined();
-	});
-
-	// A manifest written before the field, or a CLI installed without `dist/`,
-	// must not report every command as stale.
-	it("says nothing when either side cannot be hashed", () => {
-		expect(
-			describeStaleService({
-				installed: true,
-				manifest,
-				expectedBundle: manifest.args[0],
-				expectedBundleHash: "bbbbbbbbbbbbbbbb",
-				fileExists: () => true,
-			}),
-		).toBeUndefined();
-		expect(
-			describeStaleService({
-				installed: true,
-				manifest: { ...manifest, bundleHash: "aaaaaaaaaaaaaaaa" },
-				expectedBundle: manifest.args[0],
-				fileExists: () => true,
-			}),
-		).toBeUndefined();
 	});
 });
 
@@ -325,6 +280,51 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 	// Injected so install does not depend on a built `dist/hostsd.js`.
 	const bundle = { contents: "// daemon\n", version: "9.9.9" };
 	const bundlePath = "/usr/local/libexec/buncargo/hostsd-9.9.9.js";
+
+	// An older project accepting the update prompt took the newer project's
+	// daemon away and dropped every proxied websocket on the machine.
+	/** What another project's `hosts install` left on the machine. */
+	function installedBy(installed: Partial<HostsServiceManifest>): void {
+		const path = getServiceManifestPath();
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, JSON.stringify({ ...manifest, ...installed }));
+	}
+
+	it("keeps a newer service and asks for nothing", () => {
+		for (const newer of [
+			{ buncargoVersion: "10.0.0" },
+			{ buncargoVersion: "9.0.0", protocol: HOSTS_PROTOCOL + 1 },
+		]) {
+			installedBy(newer);
+			const { runner, calls } = recordingRunner();
+
+			const result = installHostsService({ user, runner, bundle });
+
+			expect(result.kept).toContain(`buncargo ${newer.buncargoVersion}`);
+			expect(calls).toEqual([]);
+			expect(readHostsServiceManifest()).toMatchObject(newer);
+		}
+	});
+
+	it("replaces an older release or the same one", () => {
+		for (const buncargoVersion of ["9.0.0", "9.9.9"]) {
+			installedBy({ buncargoVersion });
+			const { runner } = recordingRunner();
+
+			expect(installHostsService({ user, runner, bundle })).toEqual({});
+			expect(readHostsServiceManifest()?.buncargoVersion).toBe("9.9.9");
+		}
+	});
+
+	it("installs over a newer service when forced", () => {
+		installedBy({ buncargoVersion: "10.0.0" });
+		const { runner } = recordingRunner();
+
+		expect(installHostsService({ user, runner, bundle, force: true })).toEqual(
+			{},
+		);
+		expect(readHostsServiceManifest()?.buncargoVersion).toBe("9.9.9");
+	});
 
 	it("writes the unit file, loads it, then records the manifest", () => {
 		const { runner, calls, files } = recordingRunner();
@@ -369,10 +369,14 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 	});
 
 	it("removes the installed bundle on uninstall", () => {
-		writeHostsServiceManifest({ program: "/bin/bun", args: [bundlePath] });
+		writeHostsServiceManifest({
+			program: "/bin/bun",
+			args: [bundlePath],
+			buncargoVersion: "9.9.9",
+		});
 		const { runner, calls } = recordingRunner();
 
-		uninstallHostsService({ runner });
+		uninstallHostsService(runner);
 
 		expect(calls).toContainEqual({ command: "removeFile", args: [bundlePath] });
 	});
@@ -380,10 +384,14 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 	// The manifest lives in the user's home, so a tampered entry must not turn
 	// uninstall into an arbitrary root delete.
 	it("refuses to remove a manifest path outside the managed directory", () => {
-		writeHostsServiceManifest({ program: "/bin/bun", args: ["/etc/passwd"] });
+		writeHostsServiceManifest({
+			program: "/bin/bun",
+			args: ["/etc/passwd"],
+			buncargoVersion: "9.9.9",
+		});
 		const { runner, calls } = recordingRunner();
 
-		uninstallHostsService({ runner });
+		uninstallHostsService(runner);
 
 		expect(
 			calls.filter((call) => call.command === "removeFile"),
@@ -480,10 +488,14 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 	});
 
 	it("unloads the service on uninstall even when the unit file is gone", () => {
-		writeHostsServiceManifest({ program: "/bin/bun", args: ["/x/bin.js"] });
+		writeHostsServiceManifest({
+			program: "/bin/bun",
+			args: ["/x/bin.js"],
+			buncargoVersion: "9.9.9",
+		});
 		const { runner, calls } = recordingRunner();
 
-		uninstallHostsService({ runner });
+		uninstallHostsService(runner);
 
 		expect(commandNames(calls)).toContain(isDarwin ? "launchctl" : "systemctl");
 		expect(readHostsServiceManifest()).toBeUndefined();
@@ -495,7 +507,7 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 		"does nothing when neither a unit file nor a manifest exists",
 		() => {
 			const { runner, calls } = recordingRunner();
-			uninstallHostsService({ runner });
+			uninstallHostsService(runner);
 			expect(calls).toEqual([]);
 		},
 	);

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { runtimeContainer } from "./fake-runtime.testing";
 import {
 	describeServiceCondition,
 	observeServices,
@@ -7,14 +8,14 @@ import {
 	settleConditions,
 	watchServiceContainers,
 } from "./service-watch";
-import type { ServiceRuntimeState } from "./types";
+import type { RuntimeContainer, ServiceRuntimeState } from "./types";
 
 describe("observeServices", () => {
 	it("reads stopped, removed and unhealthy containers apart from running ones", () => {
 		const states: ServiceRuntimeState[] = [
-			{ service: "postgres", state: "stopped", running: false, exitCode: 0 },
-			{ service: "redis", state: "running", running: true, healthy: false },
-			{ service: "upstash", state: "running", running: true },
+			{ service: "postgres", state: "stopped", serving: false, exitCode: 0 },
+			{ service: "redis", state: "running", serving: true, healthy: false },
+			{ service: "upstash", state: "running", serving: true },
 		];
 		expect(
 			observeServices(["postgres", "redis", "upstash", "mailpit"], states),
@@ -41,15 +42,15 @@ describe("observeServices", () => {
 		expect(
 			observeServices(
 				["postgres"],
-				[{ service: "postgres", state: "unknown", running: false }],
+				[{ service: "postgres", state: "unknown", serving: false }],
 			),
 		).toEqual(new Map());
 	});
 
 	it("reads a restarting or paused container as serving nothing, and says why", () => {
 		const states: ServiceRuntimeState[] = [
-			{ service: "search", state: "restarting", running: false, exitCode: 1 },
-			{ service: "mail", state: "paused", running: false },
+			{ service: "search", state: "restarting", serving: false, exitCode: 1 },
+			{ service: "mail", state: "paused", serving: false },
 		];
 		const observed = observeServices(["search", "mail"], states);
 		expect(
@@ -117,16 +118,13 @@ describe("watchServiceContainers", () => {
 		const { promise, resolve } = Promise.withResolvers<void>();
 		const stop = watchServiceContainers({
 			runtime: {
-				projectServiceStates: async () => {
-					return [
-						{
-							service: "postgres",
-							state: running ? "running" : "stopped",
-							running,
-							exitCode: 0,
-						},
-					];
-				},
+				containers: async () => [
+					runtimeContainer({
+						state: running ? "running" : "exited",
+						exitCode: 0,
+						labels: { project: "app", service: "postgres" },
+					}),
+				],
 			},
 			projectName: "app",
 			services: () => ["postgres"],
@@ -143,8 +141,10 @@ describe("watchServiceContainers", () => {
 	});
 
 	it("reports every container removed, but nothing while the runtime cannot answer", async () => {
-		const answers: (() => ServiceRuntimeState[])[] = [
-			() => [{ service: "postgres", state: "running", running: true }],
+		const answers: (() => RuntimeContainer[])[] = [
+			() => [
+				runtimeContainer({ labels: { project: "app", service: "postgres" } }),
+			],
 			() => {
 				throw new Error("Cannot connect to the Docker daemon");
 			},
@@ -155,7 +155,7 @@ describe("watchServiceContainers", () => {
 		const { promise, resolve } = Promise.withResolvers<void>();
 		const stop = watchServiceContainers({
 			runtime: {
-				projectServiceStates: async () => {
+				containers: async () => {
 					const answer = answers[Math.min(polls++, answers.length - 1)];
 					return answer();
 				},

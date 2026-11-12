@@ -21,16 +21,16 @@ it("loads ordered defaults and inherited values without mutation", () => {
 	const root = fixture();
 	writeFileSync(join(root, "base.env"), 'A=first\nB="two words"\n');
 	writeFileSync(join(root, "local.env"), "A=last\n");
-	const inherited = { A: "shell" };
-	expect(
-		loadEnvInput(
-			root,
-			["base.env", "local.env", { path: "missing", optional: true }],
-			inherited,
-			{},
-		),
-	).toEqual({ A: "shell", B: "two words" });
-	expect(inherited).toEqual({ A: "shell" });
+	const inherited = { A: "shell", SOME_TOKEN: "exported" };
+	const input = loadEnvInput(
+		root,
+		["base.env", "local.env", { path: "missing", optional: true }],
+		inherited,
+		{ C: "override" },
+	);
+	expect(input.declared).toEqual({ A: "shell", B: "two words", C: "override" });
+	expect(input.merged).toEqual({ ...input.declared, SOME_TOKEN: "exported" });
+	expect(inherited).toEqual({ A: "shell", SOME_TOKEN: "exported" });
 	expect(readFileSync(join(root, "base.env"), "utf8")).toContain(
 		'B="two words"',
 	);

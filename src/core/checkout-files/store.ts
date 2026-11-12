@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
-import { promiseTimeout, typedSwitch } from "hanzio";
+import { isRecord, promiseTimeout, typedSwitch } from "hanzio";
 import { isProcessAlive } from "../process/lifecycle";
 import { getStateDir } from "../state-paths";
 import { checkoutPathError } from "./spec";
@@ -114,21 +114,24 @@ export function readStoreManifest(dir: string): Manifest | undefined {
 }
 
 /**
- * An entry's bytes, or undefined when they are not there yet.
- *
- * A data file whose hash differs from its entry is mid-write (data is written
- * before the manifest) and reads as absent until a later read.
+ * An entry's bytes as read from the store. `unreadable`: the data file does
+ * not match its entry, because a write is in progress (data is written before
+ * the manifest) or it was torn. Nothing is decided from it until a later read.
  */
+export type StoreData = { kind: "ok"; data: Buffer } | { kind: "unreadable" };
+
 export function readStoreData(
 	dir: string,
 	path: string,
 	entry: ManifestEntry,
-): Buffer | undefined {
+): StoreData {
 	try {
 		const data = readFileSync(dataPath(dir, path));
-		return sha256(data) === entry.sha256 ? data : undefined;
+		return sha256(data) === entry.sha256
+			? { kind: "ok", data }
+			: { kind: "unreadable" };
 	} catch {
-		return undefined;
+		return { kind: "unreadable" };
 	}
 }
 
@@ -209,11 +212,8 @@ export function isLockStale(
 	host: string,
 	isAlive: (pid: number) => boolean,
 ): boolean {
-	const {
-		pid,
-		host: ownerHost,
-		createdAt,
-	} = (owner ?? {}) as Partial<Record<keyof LockOwner, unknown>>;
+	const fields: Record<string, unknown> = isRecord(owner) ? owner : {};
+	const { pid, host: ownerHost, createdAt } = fields;
 	if (
 		typeof pid !== "number" ||
 		typeof ownerHost !== "string" ||
@@ -269,9 +269,9 @@ export async function withStoreLock<T>(
 			continue;
 		}
 		if (Date.now() > deadline) {
-			const who = holder as Partial<LockOwner> | undefined;
+			const who: Record<string, unknown> = isRecord(holder) ? holder : {};
 			throw new Error(
-				`The file store ${dir} is locked by pid ${who?.pid ?? "?"} on ${who?.host ?? "?"} since ${who?.createdAt ?? "?"}. If that process is gone, remove ${lockDir}.`,
+				`The file store ${dir} is locked by pid ${who.pid ?? "?"} on ${who.host ?? "?"} since ${who.createdAt ?? "?"}. If that process is gone, remove ${lockDir}.`,
 			);
 		}
 		await promiseTimeout(20);
@@ -288,9 +288,13 @@ export async function withStoreLock<T>(
 	try {
 		return await body();
 	} finally {
-		const current = readOwner(lockDir) as Partial<LockOwner> | undefined;
+		const current = readOwner(lockDir);
 		// Only our own lock: a slow body's lock may have been broken as stale.
-		if (current?.pid === owner.pid && current.createdAt === owner.createdAt)
+		if (
+			isRecord(current) &&
+			current.pid === owner.pid &&
+			current.createdAt === owner.createdAt
+		)
 			rmSync(lockDir, { recursive: true, force: true });
 	}
 }

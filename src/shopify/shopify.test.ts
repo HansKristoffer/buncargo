@@ -13,7 +13,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runChecks } from "../cli/checks";
 import { validateConfig } from "../config";
-import { parseVersion } from "../core/version";
 import type { AnyDevEnvironment, IntegrationConfig } from "../types";
 import {
 	parseShopifyAppConfig,
@@ -23,9 +22,9 @@ import {
 import { shopifyChecks } from "./checks";
 import {
 	isShopifySessionExpired,
-	isTestedShopifyVersion,
 	readShopifySession,
 	shopifyAppInfo,
+	shopifyCli,
 	shopifyLogin,
 } from "./cli";
 import { shopify, storeLinks } from "./index";
@@ -365,6 +364,27 @@ describe("shopify()", () => {
 			}),
 		).toEqual([]);
 	});
+
+	it("lets the config's own env win over the values it adds", () => {
+		const root = repo({ "shopify.app.toml": TOML });
+		const base: IntegrationConfig = {
+			projectPrefix: "shop",
+			services: {},
+			apps: { platform: { port: 5173, devCommand: "bun dev" } },
+			env: () => ({ SHOPIFY_API_KEY: "own-key", OWN: "kept" }),
+		};
+		const config = shopify({ frontend: "platform" }).config?.(base, {
+			root,
+		}) as IntegrationConfig;
+
+		const env = (config.env as () => Record<string, string>)();
+		expect(env).toEqual({
+			SHOPIFY_APP_CONFIG: "shopify.app.toml",
+			SHOPIFY_API_KEY: "own-key",
+			SHOPIFY_DEV_STORE: "dev.myshopify.com",
+			OWN: "kept",
+		});
+	});
 });
 
 describe("helpers", () => {
@@ -377,10 +397,10 @@ describe("helpers", () => {
 	});
 
 	it("checks the tested CLI range", () => {
-		expect(isTestedShopifyVersion(parseVersion("3.93.1") as never)).toBe(true);
-		expect(isTestedShopifyVersion(parseVersion("4.8.2") as never)).toBe(true);
-		expect(isTestedShopifyVersion(parseVersion("3.80.0") as never)).toBe(false);
-		expect(isTestedShopifyVersion(parseVersion("5.0.0") as never)).toBe(false);
+		expect(shopifyCli.isTested("3.93.1")).toBe(true);
+		expect(shopifyCli.isTested("4.8.2")).toBe(true);
+		expect(shopifyCli.isTested("3.80.0")).toBe(false);
+		expect(shopifyCli.isTested("5.0.0")).toBe(false);
 	});
 });
 

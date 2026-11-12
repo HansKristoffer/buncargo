@@ -6,6 +6,7 @@ import type {
 	ComputedLoopbackUrls,
 	ComputedPorts,
 	ComputedUrls,
+	ResolvedService,
 	ServiceConfig,
 } from "../types";
 
@@ -48,7 +49,7 @@ export function toUrlMap<T extends Record<keyof T, string>>(urls: T): UrlMap {
 /**
  * Key a {@link PortMap} on a config's services and apps.
  *
- * `resolvePortPlan` allocates ports by iterating the config at runtime, so the
+ * The allocator builds ports by iterating the config at runtime, so the
  * keys it produces are only known to the type system through the config that
  * was passed in. This is the single place that correspondence is asserted.
  */
@@ -298,7 +299,10 @@ export interface CheckoutProjectNamesOptions {
 export interface CheckoutProjectNames {
 	/** `buncargo dev`, `dev.start()` and every command that reuses them. */
 	dev: string;
-	/** `buncargo ci`. */
+	/**
+	 * The stack `buncargo ci` ran under before each run got its own
+	 * (`<ci>-<id>[-<runner>]`, on tmpfs), which a checkout may still hold.
+	 */
 	ci: string;
 }
 
@@ -327,52 +331,13 @@ export function checkoutProjectNames(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Service defaults for common services.
+ * The environment variable stem for a service or app key: `my-db` becomes
+ * `MY_DB`, so `MY_DB_PORT` and `MY_DB_URL`. A hyphen is no part of a name
+ * Compose or a shell can read, and `${MY-DB_PORT:-5432}` reads to Compose as
+ * the variable `MY` with a default. Validation rejects two keys with one stem.
  */
-const SERVICE_DEFAULTS: Record<
-	string,
-	{ user: string; password: string; database: string }
-> = {
-	postgres: { user: "postgres", password: "postgres", database: "postgres" },
-	postgresql: { user: "postgres", password: "postgres", database: "postgres" },
-	redis: { user: "", password: "", database: "" },
-	clickhouse: { user: "default", password: "clickhouse", database: "default" },
-	mysql: { user: "root", password: "root", database: "mysql" },
-	mongodb: { user: "", password: "", database: "" },
-};
-
-/**
- * Build URL for a service with given credentials and database.
- */
-function buildServiceUrl(
-	serviceName: string,
-	ctx: { port: number; host: string },
-	config: { database?: string; user?: string; password?: string },
-): string | null {
-	const defaults = SERVICE_DEFAULTS[serviceName];
-	if (!defaults && !config.database) return null;
-
-	const user = config.user ?? defaults?.user ?? "";
-	const password = config.password ?? defaults?.password ?? "";
-	const database = config.database ?? defaults?.database ?? "";
-
-	switch (serviceName) {
-		case "postgres":
-		case "postgresql":
-			return `postgresql://${user}:${password}@${ctx.host}:${ctx.port}/${database}`;
-		case "redis":
-			return `redis://${ctx.host}:${ctx.port}`;
-		case "clickhouse":
-			return `http://${user}:${password}@${ctx.host}:${ctx.port}/${database}`;
-		case "mysql":
-			return `mysql://${user}:${password}@${ctx.host}:${ctx.port}/${database}`;
-		case "mongodb":
-			return database
-				? `mongodb://${ctx.host}:${ctx.port}/${database}`
-				: `mongodb://${ctx.host}:${ctx.port}`;
-		default:
-			return null;
-	}
+export function envName(key: string): string {
+	return key.toUpperCase().replaceAll("-", "_");
 }
 
 /**
@@ -382,12 +347,9 @@ function buildServiceUrl(
  * by callers via `applyHostPlanToUrls`, so this module stays independent of the
  * hosts subsystem.
  */
-export function computeUrls<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
->(
-	services: TServices,
-	apps: TApps | undefined,
+export function computeUrls(
+	services: Readonly<Record<string, ResolvedService>>,
+	apps: Readonly<Record<string, { port?: number }>>,
 	ports: PortMap,
 	localIp: string,
 	/** Host for app URLs (`BUNCARGO_URL_HOST`); services always use `localhost`. */
@@ -396,48 +358,19 @@ export function computeUrls<
 	const urls: UrlMap = {};
 	const host = "localhost";
 
-	// Add service URLs
-	for (const [name, config] of Object.entries(services)) {
+	for (const [name, service] of Object.entries(services)) {
 		const port = ports[name];
+		if (port === undefined || service.port === undefined) continue;
 		const secondaryPort = ports[`${name}Secondary`];
-
-		// Skip if port is not defined
-		if (port === undefined) continue;
-
-		const ctx = { port, secondaryPort, host, localIp };
-
-		if (config.urlTemplate) {
-			// Use the provided function
-			urls[name] = config.urlTemplate(ctx);
-		} else {
-			// Try to build URL using service name and config options
-			const builtUrl = buildServiceUrl(
-				name,
-				{ port, host },
-				{
-					database: config.database,
-					user: config.user,
-					password: config.password,
-				},
-			);
-			if (builtUrl) {
-				urls[name] = builtUrl;
-			} else {
-				// Fallback to simple HTTP URL
-				urls[name] = `http://${host}:${port}`;
-			}
-		}
+		urls[name] = service.url({ port, secondaryPort, host, localIp });
 	}
 
-	// Add app URLs
-	if (apps) {
-		for (const [name, _config] of Object.entries(apps)) {
-			const port = ports[name];
-			if (port === undefined) continue;
-			urls[name] = `http://${appHost ?? host}:${port}`;
-			// Also add local IP version for mobile connectivity
-			urls[`${name}Local`] = `http://${localIp}:${port}`;
-		}
+	for (const [name, app] of Object.entries(apps)) {
+		const port = ports[name];
+		if (port === undefined || app.port === undefined) continue;
+		urls[name] = `http://${appHost ?? host}:${port}`;
+		// Also add local IP version for mobile connectivity
+		urls[`${name}Local`] = `http://${localIp}:${port}`;
 	}
 
 	return urls;
@@ -451,15 +384,14 @@ export function computeUrls<
  * needs the reachable-without-a-CA address has nothing left to read otherwise.
  * The `<app>Local` LAN aliases are dropped: they are a different address.
  */
-export function computeLoopbackUrls<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
->(services: TServices, apps: TApps | undefined, ports: PortMap): UrlMap {
+export function computeLoopbackUrls(
+	services: Readonly<Record<string, ResolvedService>>,
+	apps: Readonly<Record<string, { port?: number }>>,
+	ports: PortMap,
+): UrlMap {
 	// The LAN IP only feeds the aliases this then drops.
 	const all = computeUrls(services, apps, ports, "127.0.0.1");
-	const lanAliases = new Set(
-		Object.keys(apps ?? {}).map((name) => `${name}Local`),
-	);
+	const lanAliases = new Set(Object.keys(apps).map((name) => `${name}Local`));
 	const loopback: UrlMap = {};
 	for (const [key, value] of Object.entries(all)) {
 		if (!lanAliases.has(key)) loopback[key] = value;

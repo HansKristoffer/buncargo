@@ -46,7 +46,7 @@ Use:
   terminal is left running (exit 3): leave it.
 
 When something fails:
-- The cause and the next command are at the end of the output: \`| tail\`.
+- The cause and the next command end the output. Add \`; echo $?\`, not \`| tail\`.
 - "Could not allocate a free port block": \`dev\` takes back an idle block on
   its own, so this lists holders still in use. Tell the user (\`help agents ports\`).
   \`"unallocated"\` in \`status --json\` means the ports shown are not yours.
@@ -63,6 +63,8 @@ node_modules/buncargo/src, and dist/*.js.map map the bundles back to it.`;
 
 interface Topic {
 	name: string;
+	/** Other names agents ask for it by (\`help agents sql\`). */
+	aliases?: readonly string[];
 	body: string;
 }
 
@@ -78,9 +80,12 @@ const TOPICS: readonly Topic[] = [
   \`bunx buncargo wait --app=<app>\`. Do not use \`nohup\`, \`&\` or \`disown\`.
 - When it fails, the last block of its output names what failed (an app, the
   seed or a step), shows its last 20 lines and the setup checks that warned,
-  and says what to run next: \`dev --detach 2>&1 | tail -40\` is enough. Do
-  not run \`dev\` again to find the cause.
-- \`bunx buncargo dev --detach --apps=api\` starts only some apps (and the apps
+  and says what to run next: \`dev --detach; echo $?\` shows it with the
+  exit code. Do not run \`dev\` again to find the cause.
+  \`dev --detach --json\` prints the same as one JSON document: \`outcome\`,
+  \`apps\` with their URLs, \`failures\`, and \`hostsWarnings\` when named
+  URLs fell back to \`localhost:port\`.
+- \`bunx buncargo dev --detach api\` starts only some apps (and the apps
   they require). \`--profile=<name>\` picks a configured set.
   \`bunx buncargo dev --up-only\` starts the services alone and returns once
   they are up (no \`--detach\`).
@@ -89,13 +94,19 @@ const TOPICS: readonly Topic[] = [
   out its idle hold. A run someone started
   in a terminal (not with \`--detach\`) asks first, and without a terminal needs
   \`--force\`: only stop that one when the user asked.
-  A container runtime that refuses this user or does not answer may still
-  run the containers, so \`stop\` exits 3 and \`dev --down\` exits 1 rather
-  than reporting nothing to stop: once \`docker version\` answers, stop again.
+  Exit 3 means it was left running on purpose; nothing running exits 0, and
+  a mistyped flag 1. Exit 1 also means it could not stop it: a container
+  runtime that refuses this user or does not answer may still run the
+  containers, so \`stop\` and \`dev --down\` exit 1 rather than reporting
+  nothing to stop. Once \`docker version\` answers, stop again.
+  \`dev --down\` and a script's \`stop()\` keep services another live run
+  of the checkout uses; \`stop --all\` stops that run first.
   \`bunx buncargo stop <app>\` stops one app and \`bunx buncargo restart <app>\`
   restarts one; \`restart <app> && wait --app=<app>\` waits for the new process.
-  \`restart\` exits 3 when the run is a script's \`start()\`, which takes no
-  restart requests: nothing was restarted.
+  \`restart\` returns once the run answers: 1 when the new process could not
+  start (it says why), 2 when no run started the app, 3 when the run refused
+  (a script's \`start()\` takes no requests, or the app runs in another
+  terminal): nothing was restarted.
 - Stopping can take as long as an app's \`stopGraceMs\`: up to a minute for
   an app that saves data as it exits, such as the Firebase emulators. Let it
   finish; killing it loses that data.
@@ -133,11 +144,11 @@ const TOPICS: readonly Topic[] = [
 - \`dev --detach\`: the run is a background process of its own (its own systemd
   scope on Linux), not a child of your shell, so your session or harness
   ending does not stop it. \`bunx buncargo stop\` does, and so does the
-  watchdog: after 2 hours with no request through its named URLs and no
-  \`buncargo\` command in the checkout (any command, \`status\` included,
-  resets the clock), and once its checkout has been deleted.
-  \`dev --detach --keep\` turns the idle limit off, for a long job or for
-  traffic that goes to \`localhost:port\` only. With
+  watchdog: after 2 hours with no request through its named URLs, no open
+  connection to its apps' ports and no \`buncargo\` command in the checkout
+  (any command, \`status\` included, resets the clock), and once its
+  checkout has been deleted. \`dev --detach --keep\` turns the idle limit
+  off, for a long job that nothing connects to. With
   \`BUNCARGO_HOSTS=tailscale\` there is no idle limit; \`dev --detach\` says
   which applies. \`bunx buncargo runs\` shows
   the time left (\`idleStopsAt\` in \`runs --json\`); when a run is gone,
@@ -154,7 +165,9 @@ const TOPICS: readonly Topic[] = [
   removes containers that nothing holds any more: a deleted checkout's, a run's
   whose hold ran out, a crashed run's. It never touches a live run's
   containers and never removes a volume, so a database survives every stop;
-  only \`dev --reset\` and \`buncargo prune\` delete data.
+  only \`dev --reset\` and \`buncargo prune\` delete data. The one exception
+  is a machine that set \`BUNCARGO_PRUNE_DELETED_CHECKOUTS=1\`: there it also
+  removes the volumes of a checkout deleted at least 10 minutes ago.
 - A warning that names who removed this checkout's containers (a watchdog,
   \`stop\`, \`dev --down\`) explains a refused database connection: the
   stack is gone, not broken. Start the run again; report the remover to the
@@ -165,11 +178,15 @@ const TOPICS: readonly Topic[] = [
 		body: `## Reading the environment
 
 - \`bunx buncargo url <app>\` prints the URL to open, and \`url <service>\` a
-  service's (its connection URL, \`postgres://…\`, when it has no HTTP one). When \`BUNCARGO_URL_HOST\` is set, the person is on another
-  machine: hand them that URL, not localhost. With \`BUNCARGO_HOSTS=tailscale\`
-  it is \`https://<machine>.ts.net:<port>\`, served by Tailscale; a warning at
+  service's (its connection URL, \`postgres://…\`, when it has no HTTP one).
+  When \`BUNCARGO_URL_HOST\` is set, the person is on another machine: hand
+  them that URL, not localhost. With \`BUNCARGO_HOSTS=tailscale\` it is
+  \`https://<machine>.ts.net:<port>\`, served by Tailscale; a warning at
   startup says when an app fell back to its plain URL, and
-  \`bunx buncargo doctor\` says why.
+  \`bunx buncargo doctor\` says why. A plain \`http://\` URL on another host is
+  no secure context (\`crypto.randomUUID\`, the clipboard and service workers
+  fail there): a browser you drive on this machine gets
+  \`bunx buncargo url <app> --local\`.
 - \`bunx buncargo env --get DATABASE_URL\` prints any variable the apps get, and
   \`bunx buncargo env --get ports.<name>\` one port.
   \`eval "$(bunx buncargo env --export)"\` loads them all into a shell.
@@ -190,6 +207,7 @@ const TOPICS: readonly Topic[] = [
 	},
 	{
 		name: "db",
+		aliases: ["sql", "prisma"],
 		body: `## Databases
 
 - \`bunx buncargo sql\` opens the database's own client in this checkout's
@@ -211,6 +229,26 @@ const TOPICS: readonly Topic[] = [
   whose URL names this checkout's database (\`DATABASE_URL\`, direct and pooled
   ones) at that database. Do not rewrite \`DATABASE_URL\` by hand. It exits 1
   when the database does not exist or nothing points at it.
+- \`bunx buncargo prisma <args>\` runs Prisma against this checkout's database,
+  starting it if needed; its stdout is Prisma's alone, so
+  \`bunx buncargo prisma migrate diff --script > migration.sql\` is only SQL.
+  \`migrate reset\` and \`db push --force-reset\`/\`--accept-data-loss\` drop data
+  and exit 1 without \`--yes\`: do not pass it to fix a migration, ask first.
+- New migration: \`bunx buncargo prisma migration new <name>\`. It needs no
+  terminal, prints only the new folder's path on stdout, and exits 1 when the
+  schema has nothing new. Do not use \`migrate dev --create-only\` or pick a
+  timestamp by hand. Before you push, \`bunx buncargo prisma migration check\`
+  exits 1 when a migration's timestamp collides or sorts before the newest one
+  on the base branch; recreate it with \`migration new\`.
+- \`bunx buncargo prisma --db=scratch_<name> <args>\` runs Prisma against a
+  scratch database (create it with \`sql --create-scratch\`); destructive
+  commands need no \`--yes\` there.
+- A "points at <host>, not this checkout's database" warning names an
+  inherited variable Prisma may read instead: unset it before any write. With
+  one set, destructive commands exit 1 even with \`--yes\`.
+- Exit 4 from \`buncargo prisma\`: the database applied migrations this
+  checkout no longer has (a squashed chain). Only \`bunx buncargo dev --reset
+  --yes\` fixes it, and it drops the data: stop and ask the user.
 - Do not \`docker exec\` into a database by name or read credentials from the
   generated compose file: other worktrees run databases of their own.`,
 	},
@@ -220,13 +258,14 @@ const TOPICS: readonly Topic[] = [
 
 - Each checkout keeps its port block (\`bunx buncargo ports\` shows its offset
   and every claim on the machine). \`ci\` and E2E stacks, and every environment
-  in CI, give theirs back when torn down. Do not set \`BUNCARGO_PORT_OFFSET\` or
-  edit \`.buncargo/ports.json\`; to move a checkout,
+  in CI, give theirs back when torn down. The claim in
+  \`~/.buncargo/offsets.json\` is the only record. Do not set
+  \`BUNCARGO_PORT_OFFSET\` or edit that file; to move a checkout,
   \`bunx buncargo ports pin <offset>\`.
 - A checkout with no block of its own while every block is claimed reads as
   \`portOffsetProvenance: "unallocated"\` (\`status --json\`, \`env\`,
   \`ports\`): the ports shown belong to another checkout. Do not test against
-  them, start a database of your own or write \`.buncargo/ports.json\`. Run
+  them, start a database of your own or edit \`offsets.json\`. Run
   \`bunx buncargo dev --detach\`: when the range is full it takes back the
   block of the checkout used least recently that has no run and no
   containers, and says whose. That checkout keeps its containers, volumes and
@@ -256,7 +295,9 @@ const TOPICS: readonly Topic[] = [
 		body: `## Logs
 
 - \`bunx buncargo logs <app> --errors\`, \`--since=5m\`, \`-f\`. App output is kept
-  per run, so it is there after the terminal scrolled or the run ended.
+  per run, so it is there after the terminal scrolled or the run ended. It
+  reads the live run that runs <app>; \`--run=<sessionId>\` picks another
+  (\`bunx buncargo runs --json\` lists them). \`-f\` exits 0 when the run ends.
 - \`--errors\` keeps the lines that read as errors (a logger's own INFO or WARN
   level wins over a word like "failed"), with the \`{ … }\` block that follows
   one. It can hide a line such as \`MISSING_SECRETS: X\`: when an app will not
@@ -275,11 +316,18 @@ const TOPICS: readonly Topic[] = [
   checks everything.
 - \`bunx buncargo typecheck --changed\` checks the workspaces this branch
   touched and the ones depending on them.
-- Typechecks share a few slots across every checkout on the machine. One that
-  says it is waiting for a slot is not stuck; let it wait.
+- Typechecks share a few slots across every checkout of this user on the
+  machine. One that says it is waiting for a slot is not stuck; let it wait.
+  \`status --json\` (\`checkSlots\`) shows who holds them.
 - Run test suites as \`bunx buncargo slot -- <command>\` so they take a slot
   too. \`slot\` leaves the environment alone; \`exec --slot\` adds the
-  checkout's URLs and secrets.`,
+  checkout's URLs and secrets; \`ci --slot -- <command>\` runs it against a
+  throwaway stack of its own.
+- \`bunx buncargo ci --apps=<names> --build -- <command>\` also builds and
+  starts those apps and waits until they are healthy before the command (an
+  E2E run); exit 1 means a build, a start or a health check failed. \`ci
+  --migrate-check\` exits 2 when the Prisma schema has changes no migration
+  contains: create one with \`prisma migration new <name>\`.`,
 	},
 	{
 		name: "files",
@@ -344,15 +392,23 @@ const TOPICS: readonly Topic[] = [
 - \`bunx buncargo secrets check --json\` before tests or a run that needs
   secrets: exit 0 when every Infisical scope is readable, 2 when the session is
   missing or expired (the user runs the \`infisical login --domain=…\` it
-  prints), 3 when signed in but a scope cannot be read (\`error\` says why).
-  \`dev\`, \`run\` and \`exec\` stop within seconds on an expired session
-  instead of hanging.
+  prints), 3 when a scope cannot be read: Infisical unreachable, or a 403
+  (set \`secrets.organizationId\`); \`error\` says which. \`dev\`, \`run\`
+  and \`exec\` stop within seconds on an expired session instead of hanging,
+  and only warn when Infisical is unreachable.
+- A browser page of another checkout failing with \`ERR_NETWORK_CHANGED\`
+  while a run starts or stops: Docker creating or removing a stack's network
+  makes Chrome drop its requests. It is a known buncargo issue, not the app;
+  reload the page, and do not share one network between projects to avoid it.
 - \`bunx buncargo setup --yes\` runs the fix of every failing check (missing
   dependencies, generated files).
-- Docker out of disk, or hanging: \`bunx buncargo prune --project --dry-run\`
-  lists this project's leftover \`ci\` stacks and deleted worktrees' stacks.
-  Removing them deletes their data, so ask before running it without
-  \`--dry-run\`. It never touches an existing checkout's dev database.`,
+- Docker out of disk, or hanging: \`bunx buncargo prune --dry-run\` lists the
+  volumes of deleted checkouts on the machine (\`--older-than=7d\` for those
+  deleted a week ago or longer), and \`bunx buncargo prune --project --dry-run\`
+  this project's leftover \`ci\` stacks and deleted worktrees' stacks.
+  Removing them deletes their data: ask the user first before running either
+  without \`--dry-run\`. Neither touches an existing checkout's dev database.
+  \`doctor\` says how many such volumes there are.`,
 	},
 	{
 		name: "config",
@@ -364,29 +420,46 @@ const TOPICS: readonly Topic[] = [
   the containers start, so the database is not up yet there.
 - Tools that change behaviour in an agent's shell can be kept from seeing it with
   \`unsetEnv: ["VAR", …]\`, which removes those variables from every process
-  buncargo starts.`,
+  buncargo starts, except the Prisma CLI: Prisma reads them to guard its
+  destructive actions.`,
 	},
 ];
 
+/**
+ * The topic built from the command specs (`formatExitCodeTable`), which the
+ * caller passes in: this module loads no command.
+ */
+const EXITS_TOPIC = "exits";
+
 /** The core, naming its topics. */
-export const AGENTS_GUIDE = CORE.replace(
+const AGENTS_GUIDE = CORE.replace(
 	"TOPICS",
-	TOPICS.map((topic) => topic.name).join(", "),
+	[...TOPICS.map((topic) => topic.name), EXITS_TOPIC].join(", "),
 );
 
 export const AGENTS_GUIDE_TOPICS: readonly string[] = TOPICS.map(
 	(topic) => topic.name,
 );
 
-/** `help agents [topic]`: the core, one topic, or `all` of it. */
-export function agentsGuide(topic?: string): string {
+/**
+ * `help agents [topic]`: the core, one topic, or `all` of it. `exitCodes` is
+ * the `exits` topic, needed for it and for `all`.
+ */
+export function agentsGuide(topic?: string, exitCodes?: string): string {
 	if (topic === undefined) return AGENTS_GUIDE;
 	if (topic === "all")
-		return [AGENTS_GUIDE, ...TOPICS.map((entry) => entry.body)].join("\n\n");
-	const found = TOPICS.find((entry) => entry.name === topic);
+		return [
+			AGENTS_GUIDE,
+			...TOPICS.map((entry) => entry.body),
+			...(exitCodes ? [exitCodes] : []),
+		].join("\n\n");
+	if (topic === EXITS_TOPIC && exitCodes) return exitCodes;
+	const found = TOPICS.find(
+		(entry) => entry.name === topic || entry.aliases?.includes(topic),
+	);
 	if (!found)
 		throw new CliError(`No agents guide topic named "${topic}".`, [
-			`Topics: ${[...AGENTS_GUIDE_TOPICS, "all"].join(", ")}.`,
+			`Topics: ${[...AGENTS_GUIDE_TOPICS, EXITS_TOPIC, "all"].join(", ")}.`,
 		]);
 	return found.body;
 }

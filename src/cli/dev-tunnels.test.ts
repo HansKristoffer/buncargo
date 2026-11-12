@@ -1,4 +1,13 @@
 import { expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+	buildRunEntry,
+	loadRuns,
+	publishRun,
+	retireRuns,
+} from "../core/run-registry";
 import {
 	type PublicTunnel,
 	resolveExposeTargets,
@@ -210,4 +219,126 @@ it("keeps the URLs apps printed when its tunnels open and close", async () => {
 
 	await coordinator.stop();
 	expect(publicUrls).toEqual({ mobile: "https://mobile.exp.direct" });
+});
+
+it("inherits a reused app's tunnel URL from the live run serving it, on its port only", async () => {
+	const root = mkdtempSync(join(tmpdir(), "buncargo-tunnel-reuse-"));
+	const publicUrls: Record<string, string> = {};
+	const env = {
+		sessionId: "tunnel-reuser",
+		services: {},
+		apps: {
+			api: { port: 4100, expose: true },
+			web: { port: 4101, expose: true },
+			shop: { port: 4102, expose: true },
+		},
+		ports: { api: 4100, web: 4101, shop: 4102 },
+		root,
+		publicUrls,
+		setPublicUrls: (next: Record<string, string>) => {
+			for (const key of Object.keys(publicUrls)) delete publicUrls[key];
+			Object.assign(publicUrls, next);
+		},
+		clearPublicUrls: () => {},
+		logInfo: () => {},
+	} as unknown as DevEnvironment<
+		Record<string, ServiceConfig>,
+		Record<string, AppConfig>
+	>;
+	const row = (name: string, port: number, urls: object = {}) => ({
+		name,
+		port,
+		url: `http://localhost:${port}`,
+		loopbackUrl: `http://localhost:${port}`,
+		status: "ready" as const,
+		...urls,
+	});
+	const tunnel = (name: string) => {
+		const url = `https://${name}.trycloudflare.com`;
+		return { publicUrl: url, tunnelUrl: url };
+	};
+	const entry = (sessionId: string, apps: ReturnType<typeof row>[]) => ({
+		...buildRunEntry({
+			sessionId,
+			projectPrefix: "demo",
+			projectName: "demo",
+			root,
+			isWorktree: false,
+		}),
+		apps,
+	});
+	// This process stands in for the run that serves the apps. Its `web`
+	// tunnel is on a port this run would not use, and `shop`'s public URL is
+	// one the app printed, not a tunnel.
+	await publishRun(
+		entry("tunnel-owner", [
+			row("api", 4100, tunnel("api")),
+			row("web", 4999, tunnel("web")),
+			row("shop", 4102, { publicUrl: "https://shop.example.dev" }),
+		]),
+	);
+	await publishRun(
+		entry("tunnel-reuser", [
+			row("api", 4100),
+			row("web", 4101),
+			row("shop", 4102),
+		]),
+	);
+	const opened: string[] = [];
+	const coordinator = createTunnelCoordinator(
+		env,
+		{
+			resolveExposeTargets,
+			stopPublicTunnels,
+			startPublicTunnels: async (targets) => {
+				opened.push(...targets.map((target) => target.name));
+				return targets.map((target) => ({
+					...target,
+					localUrl: `http://localhost:${target.port}`,
+					publicUrl: `https://${target.name}-new.trycloudflare.com`,
+					close: async () => {},
+				}));
+			},
+		},
+		{ exposeRequested: true },
+	);
+
+	try {
+		await coordinator.planExpose({
+			exposeValue: undefined,
+			appsRequested: false,
+			selectedAppNames: new Set(["api", "web", "shop"]),
+			startAppNames: new Set(),
+			reusedAppNames: new Set(["api", "web", "shop"]),
+		});
+		await coordinator.openOwnedTunnels();
+
+		expect(coordinator.inheritsPublicUrls()).toBe(true);
+		expect(opened).toEqual(["web", "shop"]);
+		expect(publicUrls).toEqual({
+			api: "https://api.trycloudflare.com",
+			web: "https://web-new.trycloudflare.com",
+			shop: "https://shop-new.trycloudflare.com",
+		});
+		// This run's entry says which of its URLs are tunnels, for the next.
+		const reuser = (await loadRuns()).find(
+			(run) => run.sessionId === "tunnel-reuser",
+		);
+		expect(
+			Object.fromEntries(
+				(reuser?.apps ?? []).map((app) => [app.name, app.tunnelUrl]),
+			),
+		).toEqual({
+			api: "https://api.trycloudflare.com",
+			web: "https://web-new.trycloudflare.com",
+			shop: "https://shop-new.trycloudflare.com",
+		});
+	} finally {
+		await retireRuns(
+			(await loadRuns()).filter((run) =>
+				["tunnel-owner", "tunnel-reuser"].includes(run.sessionId),
+			),
+		);
+		rmSync(root, { recursive: true, force: true });
+	}
 });

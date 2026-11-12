@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveServices } from "../config/resolve";
 import { waitForAllServices } from "../container-runtime/readiness";
 import { dockerRuntimeAdapter } from "./adapter";
 
@@ -85,20 +86,19 @@ describe("Docker service probes", () => {
 	it("checks a cold service without Compose or an already-healthy runtime snapshot", async () => {
 		const { root, runtime, calls } = fixture();
 		await waitForAllServices(
-			{
+			resolveServices({
 				db: {
 					port: 5432,
 					serviceName: "postgres",
 					healthCheck: "pg_isready",
 					healthTimeout: 2000,
 				},
-			},
+			}),
 			{ db: 10232 },
 			{
 				runtime,
 				projectName: "new-worktree",
 				root,
-				composeFile: "absent.yml",
 				healthyServices: new Set(),
 				verbose: false,
 			},
@@ -137,9 +137,9 @@ describe("Docker service probes", () => {
 			serviceName: "cache",
 			command: ["redis-cli", "literal argument", "$(not-a-shell)"],
 		};
-		expect(await runtime.execInService(request)).toBe(true);
+		expect(await runtime.exec(request)).toBe(true);
 		writeFileSync(state, JSON.stringify({ ids: "123456abcdef" }));
-		expect(await runtime.execInService(request)).toBe(true);
+		expect(await runtime.exec(request)).toBe(true);
 		expect(calls().filter((args) => args[0] === "exec")).toEqual([
 			["exec", "abcdef123456", ...request.command],
 			["exec", "123456abcdef", ...request.command],
@@ -154,7 +154,7 @@ describe("Docker service probes", () => {
 		it(`never executes with a missing, ambiguous or failed lookup ${JSON.stringify(options)}`, async () => {
 			const { root, runtime, calls } = fixture(options);
 			expect(
-				await runtime.execInService({
+				await runtime.exec({
 					root,
 					projectName: "demo",
 					serviceName: "db",
@@ -168,7 +168,7 @@ describe("Docker service probes", () => {
 	it("treats a failing probe as not ready", async () => {
 		const { root, runtime } = fixture({ execExit: 1 });
 		expect(
-			await runtime.execInService({
+			await runtime.exec({
 				root,
 				projectName: "demo",
 				serviceName: "db",
@@ -184,7 +184,7 @@ describe("Docker service probes", () => {
 			execDelay: 900,
 		});
 		expect(
-			await runtime.execInService({
+			await runtime.exec({
 				root,
 				projectName: "demo",
 				serviceName: "db",
@@ -200,7 +200,7 @@ describe("Docker service probes", () => {
 		const { root, runtime, execPid } = fixture({ execDelay: 5000 });
 		const controller = new AbortController();
 		const outcome = runtime
-			.execInService({
+			.exec({
 				root,
 				projectName: "demo",
 				serviceName: "db",

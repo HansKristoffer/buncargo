@@ -1,13 +1,6 @@
-import type { IntegrationAppNames } from "./all-types";
-import type { AppConfig, CaptureConfig, SecretsScopeConfig } from "./app";
+import type { AppConfig, SecretsScopeConfig } from "./app";
 import type { PortOffsetProvenance } from "./cli";
-import type {
-	GeneratedFileConfig,
-	PreflightStep,
-	ProfileConfig,
-	SetupCheck,
-	TaskConfig,
-} from "./commands";
+import type { GeneratedFileConfig, ProfileConfig } from "./commands";
 import type {
 	AppEnvVars,
 	ComputedEnvVars,
@@ -24,33 +17,30 @@ import type {
 	DevConfigLike,
 	EnvValues,
 	HostsRuntime,
-	NamedHostsActivation,
 } from "./config";
 import type { ExecOptions } from "./hooks";
 import type { BuncargoIntegration } from "./integrations";
-import type { StartOptions, StopOptions } from "./lifecycle";
 import type {
-	PrismaRunner,
-	SeedConfig,
-	SeedOutcome,
-	SeedRunOptions,
-} from "./preparation";
-import type {
-	ComposeDocument,
-	ContainerRuntimeName,
-	ServiceConfig,
-} from "./service";
+	ServicesStarted,
+	StartOptions,
+	StopOptions,
+	WithServicesOptions,
+} from "./lifecycle";
+import type { PrismaRunner, SeedOutcome, SeedRunOptions } from "./preparation";
+import type { ResolvedApps, ResolvedServices } from "./resolved";
+import type { ContainerRuntimeName, ServiceConfig } from "./service";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Dev Environment Interface
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Process IDs for running dev servers.
+ * Process IDs of the dev servers a start spawned, by app. An app it did not
+ * spawn (reused, left out, or with no `devCommand`) has none.
  */
-export interface DevServerPids {
-	[appName: string]: number;
-}
+export type DevServerPids<
+	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
+> = { [TName in Extract<keyof TApps, string>]?: number };
 
 /** Tunnel rows passed to `logInfo` for public URL lines (matches `PublicTunnel` without `close`) */
 export interface DevEnvironmentTunnelLog {
@@ -130,10 +120,10 @@ export interface DevEnvironment<
 	readonly publicUrls: ComputedPublicUrls<TServices, TApps>;
 	/** Stable id of this checkout, which apps see as `BUNCARGO_WORKSPACE_ID`. */
 	readonly workspaceId: string;
-	/** Services configuration */
-	readonly services: TServices;
-	/** Apps configuration (for CLI to build commands) */
-	readonly apps: TApps;
+	/** The config's services, resolved: one kind each, every default filled. */
+	readonly services: ResolvedServices<TServices>;
+	/** The config's apps, resolved: one kind each, every default filled. */
+	readonly apps: ResolvedApps<TApps>;
 	/** Port offset applied (0 for main, > 0 for worktrees) */
 	readonly portOffset: number;
 	/** How the port offset was chosen */
@@ -148,20 +138,9 @@ export interface DevEnvironment<
 	readonly root: string;
 	/** Path passed to docker compose -f */
 	readonly composeFile: string;
-	/** Validate selection and resolve startup allocation before activating hosts. */
-	prepareStart(
-		onlyApps?: Extract<keyof TApps, string>[],
-		onlyServices?: readonly Extract<keyof TServices, string>[],
-	): void;
-	/**
-	 * Where the next full `start()` would put the port block, probed the way
-	 * it would probe, without claiming or writing anything. `status` compares
-	 * it with `portOffset` to warn before a run moves the ports.
-	 */
-	planPortOffset(): { offset: number; provenance: PortOffsetProvenance };
 	/** Which backend runs the containers: 'docker' or 'apple' */
 	readonly containerRuntime: ContainerRuntimeName;
-	/** Cancellable startup allocation; prefer this when preparing before host activation. */
+	/** Validate the selection and allocate for it before activating hosts; cancellable. */
 	prepareStartAsync(
 		onlyApps?: Extract<keyof TApps, string>[],
 		onlyServices?: readonly Extract<keyof TServices, string>[],
@@ -172,15 +151,6 @@ export interface DevEnvironment<
 	readonly containerRuntimeBinary?: string;
 	/** Named-hosts plan and whether the loopback proxy is serving it */
 	readonly hosts: HostsRuntime | null;
-	/** Seed command from config, when present */
-	readonly seed?: Pick<
-		SeedConfig<TServices, TApps>,
-		"command" | "cwd" | "beforeApps" | "requiredServices"
-	>;
-	/** `checks` from config and its integrations, run by `buncargo dev` before it starts anything */
-	readonly checks?: readonly SetupCheck[];
-	/** `preflight` from config and its integrations, run by `buncargo dev` with the terminal */
-	readonly preflight?: readonly PreflightStep[];
 	/** The config's integrations, after they have been applied. */
 	readonly integrations?: readonly BuncargoIntegration[];
 	/** `options.checkoutFiles` from config */
@@ -189,41 +159,14 @@ export interface DevEnvironment<
 	readonly generatedFiles?: readonly GeneratedFileConfig[];
 	/** Values apps printed (`captures`), by name. */
 	readonly captured: Readonly<Record<string, string>>;
-	/**
-	 * Record a value an app printed: update `captured` / `publicUrls`, fire
-	 * `onCapture` hooks and re-render generated files. Returns what changed
-	 * (`captured.<name>`, `publicUrls.<app>`). For callers that spawn apps
-	 * themselves; `buncargo dev` and `startServers` do it already.
-	 */
-	recordCapture(
-		app: string,
-		captured: { name: string; value: string; as: CaptureConfig["as"] },
-	): Promise<readonly string[]>;
-	/** Render every generated file; returns the paths whose content changed. */
-	renderGeneratedFiles(): string[];
 	/** Labelled values for humans: labelled captures, then every integration's `describe`. */
 	details(): Record<string, string>;
 	/** The config-level Infisical scope (`secrets`), when configured. */
 	readonly secrets?: SecretsScopeConfig | false;
 	/** `options.onAppFailure` from config, for `buncargo dev` */
 	readonly onAppFailure?: "keep-others" | "stop-run";
-	/** `tasks` from config, for `buncargo run` */
-	readonly tasks?: Readonly<
-		Record<
-			string,
-			TaskConfig<Extract<keyof TServices, string>, Extract<keyof TApps, string>>
-		>
-	>;
-	/** `profiles` from config, for `buncargo dev --profile` */
-	readonly profiles?: Readonly<
-		Record<
-			string,
-			ProfileConfig<
-				| Extract<keyof TApps, string>
-				| Extract<keyof IntegrationAppNames, string>
-			>
-		>
-	>;
+	/** `profiles` from config, for `buncargo dev --profile`; may name integration apps. */
+	readonly profiles?: Readonly<Record<string, ProfileConfig>>;
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Container Management
@@ -232,11 +175,23 @@ export interface DevEnvironment<
 	/** Start the dev environment (containers + optional servers) */
 	start(
 		options?: StartOptions<TApps, TServices>,
-	): Promise<DevServerPids | null>;
-	/** Stop the dev environment */
+	): Promise<DevServerPids<TApps> | null>;
+	/**
+	 * Stop the dev environment: its apps, then its services. While another
+	 * live run of the project uses the services, they stay up for it and this
+	 * environment only releases its claim; `force` tears them down anyway.
+	 */
 	stop(options?: StopOptions): Promise<void>;
-	/** Restart containers only */
-	restart(): Promise<void>;
+	/**
+	 * Start these services for a command, run it, then release them to the
+	 * idle hold (or stop them, with `after: "stop"`), however it ends. The
+	 * run is claimed before the first container, with `options.claim`'s hold.
+	 */
+	withServices<T>(
+		services: readonly Extract<keyof TServices, string>[],
+		options: WithServicesOptions,
+		command: (started: ServicesStarted) => Promise<T>,
+	): Promise<T>;
 	/**
 	 * Whether the services are up: every Compose service's container running
 	 * (a `kind: "job"` one has done its work and exited), and every
@@ -251,16 +206,7 @@ export interface DevEnvironment<
 	 * there or the runtime cannot answer. Lists the runtime's containers, so
 	 * call it when something has already failed.
 	 */
-	explainMissingContainers(): string | undefined;
-	/**
-	 * Where `start()` reports a selected service's container stopping, being
-	 * removed or turning unhealthy while the run lives, and recovering
-	 * (`problem` false). Default: stderr. The run never restarts it; the line
-	 * says who stopped it when buncargo recorded one.
-	 */
-	reportServiceChanges(
-		report: (message: string, problem: boolean) => void,
-	): void;
+	explainMissingContainers(): Promise<string | undefined>;
 	/**
 	 * Run `seed.command` through the same path `start()` uses.
 	 *
@@ -280,18 +226,10 @@ export interface DevEnvironment<
 		verbose?: boolean;
 		/** If set, start and wait for only these app names plus any transitive `requiredApps`. */
 		onlyApps?: Extract<keyof TApps, string>[];
-	}): Promise<DevServerPids>;
-	/** Stop a process by PID */
-	stopProcess(pid: number): void;
-	/** Run lifecycle hooks for callers that supervise servers themselves. */
-	runServerHook?(
-		phase: "before" | "after",
-		signal?: AbortSignal,
-	): Promise<void>;
+	}): Promise<DevServerPids<TApps>>;
 	/** Wait for servers to be ready */
 	waitForServers(options?: {
 		signal?: AbortSignal;
-		timeout?: number;
 		productionBuild?: boolean;
 		/** If set, wait only for these app names plus any transitive `requiredApps`. */
 		onlyApps?: Extract<keyof TApps, string>[];
@@ -299,6 +237,8 @@ export interface DevEnvironment<
 		expandRequired?: boolean;
 		/** Defer the aggregate ready message until other preparation completes. */
 		logReady?: boolean;
+		/** Say "Waiting for servers to be ready..." when the wait is slow. Default: true */
+		verbose?: boolean;
 		/** Called as each app passes its health check, before the rest have. */
 		onAppReady?: (name: string) => void;
 	}): Promise<void>;
@@ -346,12 +286,6 @@ export interface DevEnvironment<
 	setPublicUrls(urls: ComputedPublicUrls<TServices, TApps>): void;
 	/** Clear all public tunnel URLs */
 	clearPublicUrls(): void;
-	/** Switch `urls` between localhost:port and named HTTPS hostnames */
-	setNamedHostsActive(active: boolean, extras?: NamedHostsActivation): void;
-	/** Ensure generated docker compose file exists and return path used with -f */
-	ensureComposeFile(): string;
-	/** The service model the compose file is rendered from */
-	composeModel(): ComposeDocument;
 	/** Execute a command with environment variables set */
 	exec(
 		cmd: string | readonly string[],
@@ -408,8 +342,32 @@ export interface DevEnvironment<
 	// Advanced
 	// ─────────────────────────────────────────────────────────────────────────
 
-	/** Create a new environment with a different suffix (for test isolation) */
-	withSuffix(suffix: string): DevEnvironment<TServices, TApps, TEnv>;
+	/**
+	 * Create a new environment with a different suffix (for test isolation).
+	 * `data: "tmpfs"` keeps its services' data in memory, so its stack leaves
+	 * no volume behind (`buncargo ci`).
+	 */
+	withSuffix(
+		suffix: string,
+		options?: SuffixedEnvironmentOptions,
+	): DevEnvironment<TServices, TApps, TEnv>;
+}
+
+/** Options for {@link DevEnvironment.withSuffix}. */
+export interface SuffixedEnvironmentOptions {
+	/**
+	 * Where its services keep their data. `"tmpfs"` mounts in memory every
+	 * volume the stack would own; bind mounts and `external` volumes stay.
+	 * Default: `"volumes"`.
+	 */
+	data?: "volumes" | "tmpfs";
+	/**
+	 * Where its services publish. `"assigned"` lets the runtime pick each
+	 * host port (`127.0.0.1::5432`); `ports`, `urls` and the environment use
+	 * the ports read back once the containers are up. Docker only: on Apple
+	 * `container` the stack keeps its claimed ports. Default: `"claimed"`.
+	 */
+	ports?: "claimed" | "assigned";
 }
 
 /**
@@ -437,7 +395,10 @@ export interface AnyDevEnvironment extends Omit<
 			Record<string, AppConfig>
 		>
 	>;
-	withSuffix(suffix: string): AnyDevEnvironment;
+	withSuffix(
+		suffix: string,
+		options?: SuffixedEnvironmentOptions,
+	): AnyDevEnvironment;
 }
 
 /**

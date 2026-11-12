@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { resolveServices } from "../config/resolve";
 import { formatBannerHeader, formatEnvironmentBanner } from "./logging";
 
 function visible(text: string): string {
@@ -62,7 +63,7 @@ describe("formatEnvironmentBanner", () => {
 			label: "Dev Environment",
 			projectPrefix: "buncargo-playground",
 			projectName: "buncargo-playground-playground",
-			services: { postgres: { database: "playground" } },
+			services: resolveServices({ postgres: { database: "playground" } }),
 			apps: {
 				api: { port: 3010 },
 				web: { port: 5199 },
@@ -105,7 +106,7 @@ describe("formatEnvironmentBanner", () => {
 			label: "Dev Environment",
 			projectPrefix: "app",
 			projectName: "app-app",
-			services: { postgres: { database: "app" } },
+			services: resolveServices({ postgres: { database: "app" } }),
 			apps: {},
 			ports: { postgres: 5432 },
 			localIp: "127.0.0.1",

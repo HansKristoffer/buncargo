@@ -73,10 +73,8 @@ async function liveOnly(entries: LeaseEntry[]): Promise<LeaseEntry[]> {
 }
 
 /** Who holds what right now. */
-export async function readLeases(
-	path = getLeasesPath(),
-): Promise<LeaseEntry[]> {
-	return liveOnly(await registry.read(path));
+export async function readLeases(): Promise<LeaseEntry[]> {
+	return liveOnly(await registry.read(getLeasesPath()));
 }
 
 function transferGate(path: string, key: string): string {
@@ -109,7 +107,7 @@ async function writeLease(
 	]);
 }
 
-type LeaseOptions = { path?: string; signal?: AbortSignal };
+type LeaseOptions = { signal?: AbortSignal };
 
 /**
  * Take a lease, or report who holds it. Re-acquiring your own is a no-op, and
@@ -119,7 +117,7 @@ export async function acquireLease(
 	request: LeaseRequest,
 	options: LeaseOptions = {},
 ): Promise<LeaseResult> {
-	const path = options.path ?? getLeasesPath();
+	const path = getLeasesPath();
 	return withFileLock(
 		transferGate(path, request.key),
 		() =>
@@ -158,7 +156,7 @@ export async function transferLease(
 	stop: (holder: LeaseEntry) => Promise<boolean>,
 	options: LeaseOptions = {},
 ): Promise<TransferResult> {
-	const path = options.path ?? getLeasesPath();
+	const path = getLeasesPath();
 	return withFileLock(
 		transferGate(path, request.key),
 		async () => {
@@ -196,9 +194,9 @@ export async function transferLease(
 /** Give up every lease a session holds, or only the `keys` named. */
 export async function releaseLeases(
 	sessionId: string,
-	options: { path?: string; keys?: readonly string[] } = {},
+	options: { keys?: readonly string[] } = {},
 ): Promise<void> {
-	const path = options.path ?? getLeasesPath();
+	const path = getLeasesPath();
 	const keys = options.keys && new Set(options.keys);
 	if (keys?.size === 0) return;
 	await withFileLock(path, async () => {

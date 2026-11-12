@@ -17,7 +17,7 @@ import { basename, dirname, join } from "node:path";
  * against a recording runner instead of prompting for a real password.
  */
 
-export interface PrivilegedRunOptions {
+interface PrivilegedRunOptions {
 	stdio?: "inherit" | "ignore";
 }
 

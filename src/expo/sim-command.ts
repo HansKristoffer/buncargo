@@ -1,15 +1,13 @@
 import { getErrorMessage } from "hanzio";
-import {
-	type CommandSpec,
-	type FlagSpec,
-	findUnknownFlags,
-	formatCommandHelp,
-	readBooleanFlag,
-	readStringFlag,
-} from "../cli/command-spec";
+import { defineCommand, runCommand } from "../cli/command-spec";
 import * as log from "../cli/log";
 import { findMonorepoRoot } from "../core/ports";
-import { findRunsByRoot, type RunEntry } from "../core/run-registry";
+import {
+	findRunsByRoot,
+	type RunAppEntry,
+	type RunEntry,
+} from "../core/run-registry";
+import type { ExpoAppIdentity } from "./app-identity";
 import { openExpoSimulator } from "./simulator";
 
 /**
@@ -22,75 +20,77 @@ import { openExpoSimulator } from "./simulator";
  * one the user already works in, so two worktrees show side by side.
  */
 
-const FLAGS = {
-	help: {
-		name: "--help",
-		kind: "boolean",
-		description: "Show this help message",
-	},
-	root: {
-		name: "--root",
-		kind: "string",
-		valueHint: "=<path>",
-		description: "Checkout whose run to open (default: this one)",
-	},
-	run: {
-		name: "--run",
-		kind: "string",
-		valueHint: "=<session>",
-		description: "One run session from buncargo runs",
-	},
-} as const satisfies Record<string, FlagSpec>;
-
-const SIM_COMMAND_SPEC: CommandSpec = {
-	usage: "buncargo expo sim [<app>] [options]",
-	flags: Object.values(FLAGS),
-	notes: [
-		{
-			command: "<app>",
-			description: "The Expo app to open (default: the run's only one)",
-		},
-	],
-	examples: [
-		{
-			command: "bunx buncargo expo sim",
-			description: "Boot this checkout's simulator and open the app",
-		},
-	],
-};
+/** What the Expo integration recorded on an app's row, or nothing for another app. */
+function expoIdentity(app: RunAppEntry): ExpoAppIdentity | undefined {
+	const fields = app.integrations?.expo;
+	if (!fields) return undefined;
+	const text = (value: unknown) =>
+		typeof value === "string" ? value : undefined;
+	return {
+		scheme: text(fields.scheme),
+		bundleId: text(fields.bundleId),
+		simulator: text(fields.simulator),
+	};
+}
 
 /** 0 opened · 1 failed · 2 nothing to open. */
 const SIM_EXIT = { ok: 0, failed: 1, notFound: 2 } as const;
 
-export async function handleSim(args: string[] = []): Promise<number> {
-	if (readBooleanFlag(args, FLAGS.help)) {
-		console.log(formatCommandHelp(SIM_COMMAND_SPEC));
-		return SIM_EXIT.ok;
-	}
-	const unknown = findUnknownFlags(SIM_COMMAND_SPEC, args);
-	if (unknown.length > 0) {
-		log.error(`Unknown flag(s): ${unknown.join(", ")}`);
-		return SIM_EXIT.failed;
-	}
-	const errors: string[] = [];
-	const root = readStringFlag(args, FLAGS.root, errors) ?? findMonorepoRoot();
-	const session = readStringFlag(args, FLAGS.run, errors);
-	for (const problem of errors) log.error(problem);
-	if (errors.length > 0) return SIM_EXIT.failed;
-	const name = args.find(
-		(arg, index) =>
-			!arg.startsWith("--") &&
-			args[index - 1] !== "--root" &&
-			args[index - 1] !== "--run",
-	);
+const simCommand = defineCommand({
+	spec: {
+		name: "expo sim",
+		summary: "Boot this checkout's own iOS simulator and open the Expo app",
+		flags: {
+			root: {
+				kind: "string",
+				value: "<path>",
+				description: "Checkout whose run to open (default: this one)",
+			},
+			run: {
+				kind: "string",
+				value: "<session>",
+				description: "One run session from buncargo runs",
+			},
+		},
+		args: [
+			{
+				name: "<app>",
+				description: "The Expo app to open (default: the run's only one)",
+			},
+		],
+		examples: [
+			{
+				command: "bunx buncargo expo sim",
+				description: "Boot this checkout's simulator and open the app",
+			},
+		],
+	},
+	exits: {
+		[SIM_EXIT.ok]: "opened",
+		[SIM_EXIT.failed]: "failed, or bad arguments",
+		[SIM_EXIT.notFound]: "nothing to open",
+	},
+	run: ({ values, positionals: [name] }) =>
+		openSimulator(values.root ?? findMonorepoRoot(), values.run, name),
+});
 
+export function handleSim(args: string[] = []): Promise<number> {
+	return runCommand(simCommand, args);
+}
+
+async function openSimulator(
+	root: string,
+	session: string | undefined,
+	name: string | undefined,
+): Promise<number> {
 	const runs = (await findRunsByRoot(root)).filter(
 		(run) => !session || run.sessionId === session,
 	);
 	const candidates = runs.flatMap((run) =>
-		run.apps
-			.filter((app) => app.expo && (!name || app.name === name))
-			.map((app) => ({ run, app })),
+		run.apps.flatMap((app) => {
+			const expo = expoIdentity(app);
+			return expo && (!name || app.name === name) ? [{ run, app, expo }] : [];
+		}),
 	);
 	if (candidates.length === 0) {
 		if (runs.length === 0) {
@@ -112,7 +112,7 @@ export async function handleSim(args: string[] = []): Promise<number> {
 		);
 		return SIM_EXIT.notFound;
 	}
-	const [{ run, app }] = candidates as [(typeof candidates)[number]];
+	const [{ run, app, expo }] = candidates as [(typeof candidates)[number]];
 	if (app.status === "stopped" || app.status === "failed") {
 		log.error(`${app.name} is ${app.status}; nothing is serving Metro.`);
 		return SIM_EXIT.notFound;
@@ -126,7 +126,7 @@ export async function handleSim(args: string[] = []): Promise<number> {
 		const opened = await openExpoSimulator({
 			label: checkoutLabel(run),
 			port: app.port,
-			expo: app.expo ?? {},
+			expo,
 			log: log.info,
 		});
 		log.done(`Opened ${opened.url} on "${opened.device}"`);

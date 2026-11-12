@@ -1,22 +1,22 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { offsetClaimsOf } from "../core/offset-claims";
 import { CI_PROJECT_SUFFIX } from "../core/ports";
+import { useTempHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "./create-dev-environment";
 
-// The claims live in ~/.buncargo: never the developer's. The selection below
-// has no services, so no container runtime is asked anything.
-const originalHome = process.env.HOME;
+// The claims live in ~/.buncargo: each test starts with none. The selection
+// below has no services, so no container runtime is asked anything.
+useTempHome();
 const originalOffset = process.env.BUNCARGO_PORT_OFFSET;
 let scratch: string;
 beforeEach(() => {
 	scratch = mkdtempSync(join(tmpdir(), "buncargo-project-name-"));
-	process.env.HOME = join(scratch, "home");
 	delete process.env.BUNCARGO_PORT_OFFSET;
 });
 afterEach(() => {
-	process.env.HOME = originalHome;
 	if (originalOffset === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
 	else process.env.BUNCARGO_PORT_OFFSET = originalOffset;
 	rmSync(scratch, { recursive: true, force: true });
@@ -58,5 +58,5 @@ it("refuses to start a second checkout under a project name another one claims, 
 	).rejects.toThrow(
 		`would run under Compose project lullu-app-ci, which ${first.root} (ci) already uses`,
 	);
-	expect(existsSync(join(second.root, ".buncargo", "ports.json"))).toBe(false);
+	expect(offsetClaimsOf(second.root)).toEqual({});
 });

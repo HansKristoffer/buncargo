@@ -12,6 +12,7 @@ import { X509Certificate } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { useTempHome } from "../test-env.testing";
 import { ensureMkcert, mintCert } from "./mkcert";
 
 const runHostsIntegration =
@@ -19,31 +20,27 @@ const runHostsIntegration =
 	process.env.BUNCARGO_TEST_HOSTS === "true";
 
 describe.skipIf(!runHostsIntegration)("hosts mkcert integration", () => {
+	useTempHome();
+
 	it("resolves mkcert and mints a leaf covering every hostname", async () => {
 		const previousCaroot = process.env.CAROOT;
-		const previousHome = process.env.HOME;
 		const caroot = mkdtempSync(join(tmpdir(), "buncargo-hosts-caroot-"));
 		process.env.CAROOT = caroot;
-		process.env.HOME = join(caroot, "home");
 		try {
 			const mkcert = await ensureMkcert();
 			expect(mkcert.length).toBeGreaterThan(0);
 
-			const certPath = join(caroot, "leaf.pem");
-			const keyPath = join(caroot, "leaf-key.pem");
 			const minted = mintCert(
 				["api.serpier.localhost", "web.serpier.localhost"],
-				{ mkcertPath: mkcert, certPath, keyPath },
+				{ mkcertPath: mkcert, timeoutMs: 30_000 },
 			);
 			expect(minted.minted).toBe(true);
 
-			const pem = await Bun.file(certPath).text();
+			const pem = await Bun.file(minted.certPath).text();
 			const cert = new X509Certificate(pem);
 			expect(cert.checkHost("api.serpier.localhost")).toBeTruthy();
 			expect(cert.checkHost("web.serpier.localhost")).toBeTruthy();
 		} finally {
-			if (previousHome === undefined) delete process.env.HOME;
-			else process.env.HOME = previousHome;
 			if (previousCaroot === undefined) delete process.env.CAROOT;
 			else process.env.CAROOT = previousCaroot;
 			rmSync(caroot, { recursive: true, force: true });

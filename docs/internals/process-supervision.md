@@ -2,7 +2,7 @@
 
 `src/core/process/` is command execution (`exec.ts`), the dev-server spawner (`dev-servers.ts`:
 waves, ownership, captures, restarts) and the single-app spawn it drives (`app-process.ts`: shell,
-prefixed output, the `script` tee, prebuild), port ownership and kill classification
+prefixed output, the attached app's terminal, prebuild), port ownership and kill classification
 (`port-owner.ts`), PID lifecycle (`lifecycle.ts`) and production builds (`build.ts`), re-exported
 from `process/index.ts`.
 
@@ -32,69 +32,89 @@ URL. For the same reason it joins rows an app wrapped itself (Ink at a narrow pa
 onto a line ending in a URL (`joinWrappedUrls`), holds a trailing `\r` for its `\n`, never takes
 an incomplete `publicUrl` (`looksLikeCompleteUrl`: a dotted host with a TLD, not stopping inside
 `trycloudflare.com`), and lets a URL ending the newest line wait for the row that may continue
-it. The attached app is teed through `script` when stdin is a TTY, else through pipes.
-`ProcessOwner.retire` replaces a child for `restartOn` without its exit counting as a crash.
+it. Piped bytes become lines only through `line-splitter.ts`: a streaming decoder (a character cut at a chunk
+boundary used to become U+FFFD) and a 64 KiB cap per line.
+`AppSupervision.retire` replaces a child for `restartOn` without its exit counting as a crash.
+
+## One lifecycle per app
+
+`app-lifecycle.ts` is an app's life as a value (`AppLife`: phase `starting | ready | restarting |
+reused | down`, a standing `essential | optional | probation | parked`, a generation, the pid, and
+how it ended) and a pure `transition(life, event)`. `AppSupervision` is the one owner of each app's
+spec, process and life, applies every step and reports it once through `onPhase`
+(`onAppPhase` outside): the rows (`RunOutput` feeds stream mode, the TUI and the log files) and
+the run registry (`appRowEvents`) read the same value. Before this, an essential app on probation
+that exited 0 was `failed` in the registry and `stopped (exit 0)` on its row, judged by two formulas
+at two times. An exit's verdict is decided by `transition` at the exit: `failed` for an app gone
+before its readiness check passed (unless the run is ending), else by the exit code, with a spared
+(`optional`, `parked`) worker exiting 0 only stopped. An app with no check (a worker,
+`healthEndpoint: false` without `readyWhen`) is read by its code, so a one-shot that exits 0 has
+stopped. `afterExit` says what the exit does to the run, and `runVerdict` whether going on without
+the failed essential apps ends it. Errors that end a run over one app are `AppFailure { app, kind }`,
+which `run-failure.ts` reads instead of searching the message. The supervisor registers no signal
+handlers: it follows the `AbortSignal` it is given, and `startDevServers` turns SIGINT, SIGTERM and
+SIGHUP into one.
 
 ## Failure and non-essential apps
 
 `keepOthersOnFailure` (on in `dev` unless `options.onAppFailure: "stop-run"`) waits for each app of
 a wave on its own, then stops and parks the ones that never came up, crashed at boot included:
-until it is ready, each essential app of the wave is on probation, so its exit parks it in the
-owner instead of ending the run. The attached app is never on probation: quitting it ends the run.
-Probation ends when the wave's waits settle, not at a deadline: a worker or `healthEndpoint: false`
-app without `readyWhen` is ready once spawned, so it is spared only while the rest of its wave
-comes up, and its crash after that ends the run. A boot window was left out on purpose: either
-every wave with a worker waits it out, or a crash inside it needs a verdict after the wave moved on.
-Whether the run fails is decided before anything is parked (when a later app `startAfter`s a failed
-one, or nothing else is left), and a row on probation offers no restart until then. `runFailure`
-holds those two rules, and a restart that cannot spawn or the check after one asks it too: the
-user-facing promise is that they hold whenever an app goes down, not only at start. A parked app
-is spared through `ProcessOwner.isOptional` like an `essential: false` one, so restart, the TUI and
-the registry need nothing new, and only until a restart brings it up: from then its crash ends the
-run again. A reused app (another process serves its port) that fails its check is reported failed
-and left running, since this run can neither stop nor restart it.
+until it is ready, each essential app of the wave is on probation, so its exit leaves the decision
+to the wave instead of ending the run. The attached app is never on probation: quitting it ends the
+run. Every process has one readiness wait (`appReady`: `readyWhen`, then the caller's
+`waitForHealth` for that one app), shared by the wave, the sparing of the others and the side
+checks, and the app is marked ready the moment it resolves: before, the sparing pass reported
+nothing until the slowest app of the wave settled, so `buncargo wait --app=api` waited out `web`'s
+whole timeout. Probation ends when the wave's waits settle, not at a deadline: a worker or
+`healthEndpoint: false` app without `readyWhen` is ready once the rest of its wave is, so it is
+spared only while the wave comes up, and its crash after that ends the run. A boot window was left
+out on purpose: either every wave with a worker waits it out, or a crash inside it needs a verdict
+after the wave moved on. `AppSupervision.fail` is the one path for an app that did not come up or
+could not be restarted, at start, after a side check and after a restart: it decides with
+`runVerdict` (a later app `startAfter`s a failed one, or nothing else is left) before anything is
+parked, so a row on probation offers no restart until then, and a run about to fail never says the
+rest keeps going. A parked app is spared like an `essential: false` one until a ready process makes
+it essential again: from then its crash ends the run. A reused app (another process serves its
+port) that fails its check is reported failed and left running, since this run can neither stop
+nor restart it.
 
-`port-drift.ts` races every wave's readiness: an app whose process tree listens on another port
-while its own is held by something else fails at once. It connects to the assigned port and never
-binds it, because a probe that bound it could push the booting app off.
+`port-drift.ts` watches every wave (one watcher per wave, or per side check, over whichever of its
+apps are still coming up, one listener snapshot a second): an app whose process tree listens on
+another port while its own is held by something else fails at once. It connects to the assigned
+port and never binds it, because a probe that bound it could push the booting app off.
 
-`essential: false` is `ProcessOwner.isOptional`: the app's exit parks it instead of aborting,
-`owner.wait()` keeps waiting while anything is parked, and its readiness never gates a wave (it is
-health-checked on the side, also after every restart). Each side check belongs to one process:
-exit or replacement aborts it, and `markReady` only promotes a `starting` app, so a late check
-cannot report a dead or replaced app ready. A side check that fails stops and parks the app (an
-essential one only under `keepOthersOnFailure`; otherwise the run fails as it would have at start),
-so no row stays `starting`. The same holds for what an exit shows: every spawn and restart starts a
-new generation of the app's row, and an exit's verdict, shown after the app's last screen flushes,
-is dropped once a newer generation exists.
+An `essential: false` app's exit never ends the run; `AppSupervision.wait()` keeps waiting while
+a spared app is down, and its readiness never gates a wave (it is checked on the side, also after
+every restart). Each readiness wait belongs to one process generation: exit or replacement aborts
+it, and `ready(name, generation)` only promotes that generation while it is coming up, so a late
+check cannot report a dead or replaced app ready. A side check that fails goes through
+`AppSupervision.fail`, so no row stays `starting`. The same holds for what an exit shows: an exit's
+row is shown after the app's last screen flushes, read from the app's life then (parking may have
+said more), and dropped once a newer generation exists.
 
 `AppSupervision.restart` runs restarts of one app one after another (a request before the first
 has begun joins it): two at once would both retire the same child and the second replacement fails
 on the port. In the run registry a new pid is a new process generation, the one update allowed to
 take a `stopped`/`failed` app back to `starting`. A restart that retires the old process and cannot
-spawn its replacement reports `onAppRestartFailed`: a retired process's exit is never reported, so
-nothing else would move the app's output row and registry entry off its old state. The owner then
-treats the app as one that exited (`replacementFailed`): parked when it is spared, otherwise the end
-of the run, which would else wait on an app that is gone. The session keeps the app's last pid, so
-`stopDevServers` with the caller's pids still finds it. A row only says `starting` once a restart
-has begun, so a restart asked for after the run ended changes nothing. A restart that retires a
-launcher while its exit is still looking for the server it detached waits for that lookup and stops
-the server, which would otherwise be adopted beside the replacement.
+spawn its replacement fails the app (`kind: "restart"`): a retired process's exit is never
+reported, so nothing else would move the app's row and registry entry off `restarting`. It is
+parked when the run spares it, otherwise the end of the run, which would else wait on an app that
+is gone. The session keeps the app's last pid, so `stop()` still finds it. A row only says `starting` once a restart has begun, so a restart asked for after the run
+ended changes nothing. A restart that retires a launcher while its exit is still looking for the
+server it detached waits for that lookup and stops the server, which would otherwise be adopted
+beside the replacement. An adopted server is watched with `kill(pid, 0)`; its identity is read only
+before it is signalled.
 
 A non-essential worker that dies while its ownership is being claimed (before or while the claim
 is written) is handed to the supervisor anyway (`spawnOwnedWorker`'s `allowEarlyExit`), with no
 claim left behind and its process group stopped first, since what it spawned would otherwise run
-unowned. `ProcessOwner.register` reports the exit of a child that is already gone, which never
+unowned. `AppSupervision.register` reports the exit of a child that is already gone, which never
 emits `exit` to it: otherwise a crash at boot failed the whole start, the one thing
 `essential: false` promises not to do.
 
-`startDevServers` records an exit the moment it is seen (`exited`), not when it is shown: the
-verdict waits for the app's last screen to flush, and in between a readiness check would otherwise
-promote the dead process.
-
 ## Stop grace
 
-Every SIGTERM an app gets is followed by SIGKILL after its `stopGraceMs` (`ProcessOwner.graceFor`,
+Every SIGTERM an app gets is followed by SIGKILL after its `stopGraceMs` (`AppSupervision.graceFor`,
 default the session's `shutdownGraceMs`): on stop, restart, retire and the detached-adoption path
 alike, because an app that saves data on exit (the Firebase emulators' export) loses it to the
 first path that kills it early. The paths that stop an app by its port (`killPortOwner`: the

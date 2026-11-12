@@ -3,19 +3,16 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildRunEntry, patchRun, publishRun } from "../../core/run-registry";
+import { useTempHome } from "../../core/test-env.testing";
 import { waitVerdict } from "./wait";
 
 const cli = resolve(import.meta.dir, "../bin.ts");
-let home: string;
+const home = useTempHome();
 let root: string;
-let savedHome: string | undefined;
 
 beforeEach(async () => {
-	home = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-wait-home-")));
 	root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-wait-root-")));
 	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
-	savedHome = process.env.HOME;
-	process.env.HOME = home;
 	// This test process stands in for the `dev` run, so the entry is live.
 	await publishRun({
 		...buildRunEntry({
@@ -37,16 +34,13 @@ beforeEach(async () => {
 	});
 });
 afterEach(() => {
-	if (savedHome === undefined) delete process.env.HOME;
-	else process.env.HOME = savedHome;
-	rmSync(home, { recursive: true, force: true });
 	rmSync(root, { recursive: true, force: true });
 });
 
 function wait(...args: string[]) {
 	return Bun.spawn([process.execPath, cli, "wait", ...args], {
 		cwd: root,
-		env: { ...process.env, HOME: home },
+		env: { ...process.env, HOME: home() },
 		stdout: "pipe",
 		stderr: "pipe",
 	});

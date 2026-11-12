@@ -8,6 +8,7 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { startLocalProxy } from "./proxy";
+import { ACCEPT_TEST_TLS, TEST_TLS } from "./test-tls.testing";
 
 const enabled = process.env.BUNCARGO_TEST_PROXY_IDLE === "1";
 
@@ -60,12 +61,14 @@ describe.skipIf(!enabled)("proxy idle timeout", () => {
 					hostnames: [...routes.keys()],
 					lastReloadAt: Date.now(),
 				}),
+				tls: TEST_TLS,
 				httpsPort: 0,
 				hostname: "127.0.0.1",
 			});
 			servers.push(proxy);
 
-			const response = await fetch(`http://127.0.0.1:${proxy.httpsPort}/sse`, {
+			const response = await fetch(`https://127.0.0.1:${proxy.httpsPort}/sse`, {
+				...ACCEPT_TEST_TLS,
 				headers: { host: "api.serpier.localhost" },
 			});
 			expect(response.status).toBe(200);

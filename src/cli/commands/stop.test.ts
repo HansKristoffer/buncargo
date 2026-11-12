@@ -9,16 +9,33 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	loadHostRoutes,
+	pidRouteOwners,
+	upsertHostRoutes,
+} from "../../core/hosts/registry";
+import {
 	claimOffset,
+	offsetClaimHoldsBlock,
 	offsetClaimKey,
 	readAllOffsetClaims,
 	withOffsetClaimsLock,
 } from "../../core/offset-claims";
+import * as terminate from "../../core/process/terminate";
 import { runStopGraceMs } from "../../core/process/terminate";
 import { readProcessIdentityAsync } from "../../core/process-identity";
-import { loadRuns, publishRun, type RunEntry } from "../../core/run-registry";
-import { recordRunStops, runStopRecord } from "../../core/run-stops";
-import { handleStop } from "./stop";
+import { recordEvents, runStopRecord } from "../../core/removal-log";
+import {
+	loadRuns,
+	publishRun,
+	type RunEntry,
+	releaseRun,
+} from "../../core/run-registry";
+import { DEAD_PID, runEntry } from "../../core/run-registry.testing";
+import { useTempHome } from "../../core/test-env.testing";
+import { runCommand } from "../command-spec";
+import { stopCommand } from "./stop";
+
+const handleStop = (args: string[]) => runCommand(stopCommand, args);
 
 /**
  * `HOME` is a temporary directory and the only runtime is a fake `docker`
@@ -26,10 +43,10 @@ import { handleStop } from "./stop";
  * `BUNCARGO_CONTAINER_BINARY` points at the fake too: a runtime probe would
  * find it, which is how a test sees a probe that should not happen.
  */
+useTempHome();
 let root: string;
 let docker: string;
 const saved = {
-	HOME: process.env.HOME,
 	BUNCARGO_CONTAINER_BINARY: process.env.BUNCARGO_CONTAINER_BINARY,
 	BUNCARGO_CONTAINER_RUNTIME: process.env.BUNCARGO_CONTAINER_RUNTIME,
 };
@@ -40,7 +57,6 @@ beforeEach(() => {
 	writeFileSync(docker, `#!/bin/sh\necho "$*" >> "${root}/calls"\nexit 0\n`, {
 		mode: 0o755,
 	});
-	process.env.HOME = root;
 	process.env.BUNCARGO_CONTAINER_BINARY = docker;
 	process.env.BUNCARGO_CONTAINER_RUNTIME = "docker";
 });
@@ -53,35 +69,40 @@ afterEach(() => {
 	rmSync(root, { recursive: true, force: true });
 });
 
+/** What `stop` printed to one console stream, and its exit code. */
+async function capture(stream: "log" | "error", run: () => Promise<number>) {
+	const lines: string[] = [];
+	const spy = spyOn(console, stream).mockImplementation((line) => {
+		lines.push(Bun.stripANSI(String(line)));
+	});
+	try {
+		const code = await run();
+		return { code, text: lines.join("\n") };
+	} finally {
+		spy.mockRestore();
+	}
+}
+
 const calls = () =>
 	existsSync(join(root, "calls"))
 		? readFileSync(join(root, "calls"), "utf-8").trim().split("\n")
 		: [];
 
 function entry(sessionId: string, extra: Partial<RunEntry> = {}): RunEntry {
-	const now = new Date().toISOString();
-	return {
+	return runEntry({
 		sessionId,
 		projectPrefix: "fixture",
 		projectName: "fixture",
 		root,
-		worktree: null,
-		pid: 2 ** 22 + 1,
-		startedAt: now,
-		updatedAt: now,
-		hosts: null,
-		cli: { program: "bun" },
-		apps: [],
-		services: [],
 		...extra,
-	};
+	});
 }
 
 /** A run released into the idle hold: its owner has exited, its container waits. */
 function held(sessionId: string): RunEntry {
 	return entry(sessionId, {
-		releasedAt: new Date().toISOString(),
-		idleTimeoutMs: 180_000,
+		lifecycle: { state: "released", at: new Date().toISOString() },
+		hold: { kind: "timed", ms: 180_000, inherited: false },
 		services: [
 			{
 				name: "db",
@@ -171,7 +192,11 @@ describe("buncargo stop --all", () => {
 		expect(await handleStop(["--all", "--root", root])).toBe(0);
 		expect(calls()).toContain("compose -p fixture down");
 		expect(await loadRuns()).toEqual([]);
-		expect(readAllOffsetClaims()).toEqual({});
+		// The claim stays without its block, naming the project its volumes
+		// belong to.
+		const claim = readAllOffsetClaims()[offsetClaimKey(root, "e2e")];
+		expect(claim?.projectName).toBe("fixture");
+		expect(claim && offsetClaimHoldsBlock(claim)).toBe(false);
 	});
 
 	it("takes down a live run's containers and its project's released runs together", async () => {
@@ -206,8 +231,83 @@ describe("buncargo stop --all", () => {
 		}
 	});
 
-	it("reports nothing to stop when the checkout has no run at all", async () => {
-		expect(await handleStop(["--all", "--root", root])).toBe(2);
+	// 3 means "left running on purpose"; a runtime that failed the teardown
+	// is no refusal to force past.
+	it("exits 1 when the teardown fails, keeping the entry for another try", async () => {
+		writeFileSync(
+			docker,
+			`#!/bin/sh\necho "$*" >> "${root}/calls"\ncase "$*" in *down*) exit 1 ;; esac\nexit 0\n`,
+		);
+		await publishRun(held("held"));
+		expect(await handleStop(["--all", "--root", root])).toBe(1);
+		expect((await loadRuns()).map((run) => run.sessionId)).toEqual(["held"]);
+	});
+
+	it("succeeds and says so when the checkout has no run at all", async () => {
+		const printed = await capture("log", () =>
+			handleStop(["--all", "--root", root]),
+		);
+		expect(printed.code).toBe(0);
+		expect(printed.text).toContain("Nothing running for this checkout");
+	});
+
+	it("still names an app or service that matches no run", async () => {
+		expect(await handleStop(["api", "--root", root])).toBe(2);
+	});
+
+	it("treats a run that ended between the read and the signal as stopped, and takes down what it left", async () => {
+		const owner = await live("dev", { services: held("dev").services });
+		// The run exits on its own and releases into the hold just before the
+		// signal would reach it.
+		const signal = spyOn(terminate, "terminateProcessGroup").mockImplementation(
+			async () => {
+				owner.kill("SIGKILL");
+				await owner.exited;
+				await releaseRun("dev");
+				return false;
+			},
+		);
+		try {
+			expect(await handleStop(["--all", "--root", root])).toBe(0);
+			expect(calls()).toContain("compose -p fixture down");
+			expect(await loadRuns()).toEqual([]);
+		} finally {
+			signal.mockRestore();
+			owner.kill("SIGKILL");
+		}
+	});
+
+	it("removes the checkout's service routes, and no other checkout's", async () => {
+		await upsertHostRoutes(
+			[
+				{
+					hostname: "typesense.fixture.localhost",
+					port: 8108,
+					kind: "service",
+					name: "typesense",
+					root,
+				},
+				{
+					hostname: "typesense.other.localhost",
+					port: 9108,
+					kind: "service",
+					name: "typesense",
+					root: tmpdir(),
+				},
+			],
+			{ owners: pidRouteOwners },
+		);
+		await publishRun(held("held"));
+		expect(await handleStop(["--all", "--root", root])).toBe(0);
+		expect((await loadHostRoutes()).map((route) => route.hostname)).toEqual([
+			"typesense.other.localhost",
+		]);
+	});
+});
+
+describe("buncargo stop arguments", () => {
+	it("exits 1 on an unknown flag, which is not a refusal", async () => {
+		expect(await handleStop(["--frce", "--root", root])).toBe(1);
 	});
 });
 
@@ -243,26 +343,19 @@ describe("buncargo stop with no target", () => {
 
 describe("buncargo stop after the watchdog stopped the run", () => {
 	it("says why the run is gone", async () => {
-		await recordRunStops([
+		await recordEvents([
 			runStopRecord(entry("idle", { detached: true }), {
 				at: new Date().toISOString(),
 				reason: "idle",
 				detail: "idle for 2h 0m",
 			}),
 		]);
-		const printed: string[] = [];
-		const error = spyOn(console, "error").mockImplementation((line) => {
-			printed.push(Bun.stripANSI(String(line)));
-		});
-		try {
-			expect(await handleStop(["--root", root])).toBe(2);
-		} finally {
-			error.mockRestore();
-		}
-		expect(printed.join("\n")).toContain(
-			"buncargo's watchdog stopped fixture's detached run (pid 4194305)",
+		const printed = await capture("log", () => handleStop(["--root", root]));
+		expect(printed.code).toBe(0);
+		expect(printed.text).toContain(
+			`buncargo's watchdog stopped fixture's detached run (pid ${DEAD_PID})`,
 		);
-		expect(printed.join("\n")).toContain("idle for 2h 0m");
+		expect(printed.text).toContain("idle for 2h 0m");
 	});
 });
 

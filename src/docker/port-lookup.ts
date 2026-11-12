@@ -1,22 +1,6 @@
-import {
-	isContainerLive,
-	parseContainerState,
-} from "../container-runtime/container-state";
+import { portOwnersOf } from "../container-runtime/containers";
 import type { PortContainerOwner } from "../types";
-import { runDocker, runDockerAsync } from "./binary";
-
-/**
- * `--all` with the state, so whether a container holds its ports is decided
- * by `isContainerLive` like everywhere else rather than by `docker ps`'s own
- * default filter: a paused or restarting container keeps, or takes back, its
- * ports.
- */
-const LIST_ARGS = [
-	"ps",
-	"--all",
-	"--format",
-	'{{.ID}}\t{{.Names}}\t{{.Ports}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "buncargo.root"}}\t{{.State}}',
-];
+import { listDockerContainers, listDockerContainersAsync } from "./containers";
 
 export function parseDockerPublishedPort(
 	portsField: string,
@@ -29,76 +13,31 @@ export function parseDockerPublishedPort(
 }
 
 /**
- * Every host port a `{{.Ports}}` field publishes.
- *
- * The field is a comma-separated list of `<address>:<host>-><container>/<proto>`
- * entries, with unpublished ports appearing as a bare `5432/tcp`. Only the
- * mapped ones are reachable from the host, so only those can be holding one of
- * ours.
- */
-export function parseDockerPublishedPorts(portsField: string): number[] {
-	const ports: number[] = [];
-	for (const match of portsField.matchAll(/:(\d{1,5})->/g)) {
-		const port = Number.parseInt(match[1] ?? "", 10);
-		if (Number.isInteger(port) && port > 0 && !ports.includes(port)) {
-			ports.push(port);
-		}
-	}
-	return ports;
-}
-
-/**
- * Which container is publishing each host port, from one `docker ps`.
- *
- * Built as a map rather than searched per port: the port allocator, the
- * service preflight and the app classifier each ask about several ports, and
- * running `docker ps` once per question was most of a dev run's fork count.
+ * Which Docker container is publishing each host port, from one `docker ps`:
+ * for the port-owner lookups that name no runtime, and the synchronous ones,
+ * which only ever ask Docker. A Docker that cannot answer names no container;
+ * the port's process owner still does.
  */
 export function dockerContainerPortOwners(
 	binary?: string,
 ): Map<number, PortContainerOwner> {
-	const result = runDocker(binary, LIST_ARGS);
-	return parseDockerPortOwners(result.ok ? result.stdout : "");
+	try {
+		return portOwnersOf(listDockerContainers(binary), "docker");
+	} catch {
+		return new Map();
+	}
 }
 
 export async function dockerContainerPortOwnersAsync(
-	binary?: string,
 	signal?: AbortSignal,
 ): Promise<Map<number, PortContainerOwner>> {
-	const result = await runDockerAsync(binary, LIST_ARGS, { signal });
-	return parseDockerPortOwners(result.ok ? result.stdout : "");
-}
-
-/** The port owners in `docker ps` output in the `LIST_ARGS` format. */
-export function parseDockerPortOwners(
-	output: string,
-): Map<number, PortContainerOwner> {
-	const owners = new Map<number, PortContainerOwner>();
-	for (const line of output.trim().split("\n")) {
-		if (!line) continue;
-		const [id, name, portsField, composeProject, root, state = ""] =
-			line.split("\t");
-		if (!id || !portsField) continue;
-		if (!isContainerLive(parseContainerState(state))) continue;
-		const owner: PortContainerOwner = {
-			id,
-			name: name ?? id,
-			composeProject: composeProject || undefined,
-			root: root || undefined,
-		};
-		for (const port of parseDockerPublishedPorts(portsField)) {
-			// First writer wins, matching the old scan, which returned the first
-			// container `docker ps` listed.
-			if (!owners.has(port)) owners.set(port, owner);
-		}
+	try {
+		return portOwnersOf(
+			await listDockerContainersAsync(undefined, { signal }),
+			"docker",
+		);
+	} catch {
+		signal?.throwIfAborted();
+		return new Map();
 	}
-
-	return owners;
-}
-
-export function findDockerContainerOnPort(
-	port: number,
-	binary?: string,
-): PortContainerOwner | undefined {
-	return dockerContainerPortOwners(binary).get(port);
 }

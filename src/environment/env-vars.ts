@@ -1,65 +1,62 @@
-import { anySignal, isDefined, recordFromKeys } from "hanzio";
+import { anySignal, recordFromKeys } from "hanzio";
 import {
-	buildSharedEnvValues,
-	mergeSharedEnvWithOverlay,
-	stringifyEnvValues,
-} from "../core/env";
+	envOverlayContext,
+	type SharedEnvExtras,
+	sharedEnv,
+} from "../core/checkout-view";
+import { stringifyEnvValues } from "../core/env";
 import { portableEnvFingerprint } from "../core/env-fingerprint";
 import { applyEnvOverrides, warnShadowedSecrets } from "../core/env-overrides";
 import { unallocatedPortsMessage } from "../core/port-exhaustion";
-import { toPortMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
-import { hostsDaemonPort, isCI, urlHostOverride } from "../core/runtime-flags";
+import { isCI } from "../core/runtime-flags";
 import {
 	describeSecretsError,
 	loadScopeSecrets,
 	resolveScope,
 	stopsTheRun,
 	warnSecretsOnce,
-} from "../core/secrets/infisical";
+} from "../core/secrets/index";
 import type {
-	AppConfig,
-	AppEnvVars,
-	ComputedEnvVars,
-	ComputedPublicUrls,
-	EnvValues,
 	EnvVarsBuilder,
 	ExecOptions,
 	HookContext,
-	HostsRuntime,
+	ResolvedApp,
 	SecretsScopeConfig,
-	ServiceConfig,
 } from "../types";
-import { capturedEnv } from "./captures";
-import type { DevEnvContext, StartSelection } from "./context";
+import type {
+	AnyApps,
+	AnyServices,
+	DevEnvContext,
+	StartSelection,
+} from "./context";
 
-export interface DevEnvVarsApi<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
-> {
-	buildEnvVars(production?: boolean): ComputedEnvVars<TServices, TApps, TEnv>;
-	buildAppEnvVars<TName extends Extract<keyof TApps, string>>(
-		appName: TName,
+/** {@link ExecOptions}, plus where a verbose command's lines go. */
+type CommandOptions = ExecOptions & { onOutputLine?: (line: string) => void };
+
+export interface DevEnvVarsApi {
+	buildEnvVars(production?: boolean): Record<string, string>;
+	buildAppEnvVars(
+		appName: string,
 		production?: boolean,
-	): AppEnvVars<TServices, TApps, TEnv, TName>;
+	): Record<string, string>;
 	buildAppEnvVarsMap(
-		targetApps: Record<string, AppConfig>,
+		targetApps: Record<string, ResolvedApp>,
 		production?: boolean,
 	): Record<string, Record<string, string>>;
-	buildEnvFingerprint(
-		appName: Extract<keyof TApps, string>,
-		production?: boolean,
-	): string;
+	buildEnvFingerprint(appName: string, production?: boolean): string;
 	/** Without a selection, hooks see the prepared one (every name before preparation). */
 	getHookContext(
 		signal?: AbortSignal,
 		selection?: StartSelection,
-	): HookContext<TServices, TApps>;
-	/** `production` builds the env a production start gives its processes. */
+	): HookContext<AnyServices, AnyApps>;
+	/**
+	 * `production` builds the env a production start gives its processes.
+	 * With `verbose`, `onOutputLine` takes each line instead of the terminal.
+	 */
 	exec(
 		cmd: string | readonly string[],
-		options?: ExecOptions,
+		options?: CommandOptions,
 		production?: boolean,
 	): Promise<ExecResult>;
 	/** `exec` for an integration stack's `down`, which reaches no port: allowed without a port block. */
@@ -82,111 +79,40 @@ export interface DevEnvVarsApi<
 	): Promise<Record<string, string>>;
 }
 
-/**
- * The hosts Vite must accept for named URLs: every `.<tld>` name behind the
- * loopback daemon, or the machine names Tailscale serves apps under.
- */
-function namedAllowedHosts(hosts: HostsRuntime | null): string[] {
-	if (!hosts?.active) return [];
-	if (hosts.mode === "loopback") return [`.${hosts.tld}`];
-	const names = Object.values(hosts.tailscaleUrls).map(
-		(url) => new URL(url).hostname,
-	);
-	return [...new Set(names)];
-}
-
-export function createEnvVarsApi<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
->(
-	ctx: DevEnvContext<TServices, TApps, TEnv>,
-): DevEnvVarsApi<TServices, TApps, TEnv> {
+export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 	const { config, services, apps, ports, urls, loopbackUrls, publicUrls } = ctx;
 
-	function overlayContext() {
+	function extras(production = false): SharedEnvExtras {
 		return {
-			env: ctx.inputEnv,
-			projectName: ctx.projectName,
-			workspaceId: ctx.workspaceId,
-			localIp: ctx.localIp,
-			portOffset: ctx.portOffset,
-			publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
-			loopbackUrls,
+			production,
+			publicUrls: ctx.publicUrls,
 			captured: ctx.captured,
+			hosts: ctx.hosts,
 		};
 	}
 
-	function buildEnvVars(
-		production = false,
-	): ComputedEnvVars<TServices, TApps, TEnv> {
-		const shared = buildSharedEnvValues({
-			projectName: ctx.projectName,
-			production,
-			services,
-			ports,
-			urls,
-			loopbackUrls,
-			publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
-		});
-		Object.assign(shared, capturedEnv(apps, ctx.captured));
-		shared.BUNCARGO_WORKSPACE_ID = ctx.workspaceId;
-		if (ctx.hosts?.active && ctx.hosts.caPath) {
-			shared.NODE_EXTRA_CA_CERTS = ctx.hosts.caPath;
-		}
-		// Vite answers 403 to a Host it does not know. Comma-separated: the
-		// buncargo Vite plugin splits the list.
-		const allowedHosts = [
-			...new Set([...namedAllowedHosts(ctx.hosts), urlHostOverride()]),
-		].filter(isDefined);
-		if (allowedHosts.length > 0) {
-			shared.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = allowedHosts.join(",");
-		}
-		// buildSharedEnvValues emits every computed name; TS cannot see that
-		// through the dynamic record it returns.
-		const merged = stringifyEnvValues(
-			mergeSharedEnvWithOverlay(
-				{ ...(config.options?.envFiles ? ctx.inputEnv : {}), ...shared },
-				config.env,
-				ports,
-				urls,
-				overlayContext(),
-			),
-		);
-		applyEnvOverrides(merged, ctx.envOverrides, ctx.inputEnv);
-		return merged as ComputedEnvVars<TServices, TApps, TEnv>;
+	function buildEnvVars(production = false): Record<string, string> {
+		return stringifyEnvValues(sharedEnv(ctx, extras(production)));
 	}
 
-	function buildAppEnvVars<TName extends Extract<keyof TApps, string>>(
-		appName: TName,
+	function buildAppEnvVars(
+		appName: string,
 		production = false,
-	): AppEnvVars<TServices, TApps, TEnv, TName> {
+	): Record<string, string> {
 		const sharedEnv: Record<string, string> = buildEnvVars(production);
 		const appConfig = apps[appName];
+		// A resolved app's builder takes `never`: it was written for its own config's keys.
 		const appEnvBuilder = appConfig?.envVars as
-			EnvVarsBuilder<TServices, TApps> | undefined;
+			EnvVarsBuilder<AnyServices, AnyApps> | undefined;
 
-		const appPort = toPortMap(ports)[appName];
-		const processEnv: Record<string, string> = {
-			...sharedEnv,
-			ASTRO_DEV_BACKGROUND: "1",
-			ASTRO_PREVIEW_BACKGROUND: "1",
-			...(appConfig?.staticEnv ? stringifyEnvValues(appConfig.staticEnv) : {}),
-			...(appConfig?.kind === "worker" ? {} : { HOST: "0.0.0.0" }),
-			// So a framework plugin can configure itself without the consumer
-			// repeating which app it is. Nothing else tells the child process.
-			BUNCARGO_APP_NAME: appName,
-		};
-
-		if (appPort !== undefined) {
-			processEnv.PORT = String(appPort);
-		}
-
-		// Integrations sit beneath the app's own `envVars`, which may override them.
+		const appPort = ports[appName];
+		// Integrations sit beneath everything the app's config sets itself,
+		// `staticEnv` and `envVars` alike: the user's values win.
+		const integrationEnv: Record<string, string> = {};
 		if (appConfig) {
 			for (const integration of config.integrations ?? []) {
 				Object.assign(
-					processEnv,
+					integrationEnv,
 					integration.appEnv?.({
 						name: appName,
 						config: appConfig,
@@ -198,6 +124,23 @@ export function createEnvVarsApi<
 			}
 		}
 
+		const processEnv: Record<string, string> = {
+			...sharedEnv,
+			ASTRO_DEV_BACKGROUND: "1",
+			ASTRO_PREVIEW_BACKGROUND: "1",
+			...integrationEnv,
+			...(appConfig?.staticEnv ? stringifyEnvValues(appConfig.staticEnv) : {}),
+			// A worker listens on nothing.
+			...(appConfig && appConfig.port === undefined ? {} : { HOST: "0.0.0.0" }),
+			// So a framework plugin can configure itself without the consumer
+			// repeating which app it is. Nothing else tells the child process.
+			BUNCARGO_APP_NAME: appName,
+		};
+
+		if (appPort !== undefined) {
+			processEnv.PORT = String(appPort);
+		}
+
 		// The loopback daemon's; a Tailscale-served app has only its URL.
 		const namedHost =
 			ctx.hosts?.active && ctx.hosts.mode === "loopback"
@@ -207,39 +150,38 @@ export function createEnvVarsApi<
 				: undefined;
 		if (namedHost) {
 			processEnv.BUNCARGO_APP_HOSTNAME = namedHost.hostname;
-			processEnv.BUNCARGO_HOSTS_PORT = String(hostsDaemonPort());
 		}
 		// Last writer wins: an app's own `envVars` may override PORT/HOST.
 		Object.assign(
 			processEnv,
 			appEnvBuilder
-				? stringifyEnvValues(appEnvBuilder(ports, urls, overlayContext()))
+				? stringifyEnvValues(
+						appEnvBuilder(
+							ports,
+							urls,
+							envOverlayContext(ctx, extras(production)),
+						),
+					)
 				: {},
 		);
 		// Above the app's own `envVars` too: an override is the checkout's last word.
-		applyEnvOverrides(processEnv, ctx.envOverrides, ctx.inputEnv);
-
-		// The per-app keys come from `staticEnv`/`envVars`, which are opaque here
-		// because the builder is widened to run against unknown apps.
-		return processEnv as unknown as AppEnvVars<TServices, TApps, TEnv, TName>;
+		applyEnvOverrides(processEnv, ctx.envOverrides, ctx.inputEnv.declared);
+		return processEnv;
 	}
 
-	function buildEnvFingerprint(
-		appName: Extract<keyof TApps, string>,
-		production = false,
-	): string {
+	function buildEnvFingerprint(appName: string, production = false): string {
 		return portableEnvFingerprint(buildAppEnvVars(appName, production), {
-			ports: Object.values(toPortMap(ports)),
+			ports: Object.values(ports),
 			names: [ctx.root, ctx.projectName, ctx.workspaceId],
 		});
 	}
 
 	function buildAppEnvVarsMap(
-		targetApps: Record<string, AppConfig>,
+		targetApps: Record<string, ResolvedApp>,
 		production = false,
 	): Record<string, Record<string, string>> {
 		return recordFromKeys(Object.keys(targetApps), (appName) =>
-			buildAppEnvVars(appName as Extract<keyof TApps, string>, production),
+			buildAppEnvVars(appName, production),
 		);
 	}
 
@@ -282,7 +224,7 @@ export function createEnvVarsApi<
 
 	async function exec(
 		cmd: string | readonly string[],
-		options?: ExecOptions,
+		options?: CommandOptions,
 		production = false,
 	): Promise<ExecResult> {
 		// Its ports would be another checkout's: a command would reach that
@@ -299,7 +241,7 @@ export function createEnvVarsApi<
 	 */
 	async function execTeardown(
 		cmd: string | readonly string[],
-		options?: ExecOptions,
+		options?: CommandOptions,
 		production = false,
 	): Promise<ExecResult> {
 		if (options?.app !== undefined && !apps[options.app]) {
@@ -309,10 +251,7 @@ export function createEnvVarsApi<
 		const computed: Record<string, string> =
 			options?.app === undefined
 				? buildEnvVars(production)
-				: buildAppEnvVars(
-						options.app as Extract<keyof TApps, string>,
-						production,
-					);
+				: buildAppEnvVars(options.app, production);
 		// Beneath the computed env and anything passed explicitly, like an app's.
 		const secrets = await resolveSecrets(options?.secrets, {
 			app: options?.app,
@@ -325,29 +264,27 @@ export function createEnvVarsApi<
 			cwd:
 				options?.cwd ??
 				(options?.app === undefined ? undefined : apps[options.app]?.cwd),
+			unsetEnv: ctx.config.unsetEnv,
 		});
 	}
 
 	// Created once, then reused so hooks observe a stable identity.
-	let hookContext: HookContext<TServices, TApps> | null = null;
+	let hookContext: HookContext<AnyServices, AnyApps> | null = null;
 
 	const scopedContexts = new WeakMap<
 		AbortSignal,
-		HookContext<TServices, TApps>
+		HookContext<AnyServices, AnyApps>
 	>();
 
 	function getHookContext(
 		signal?: AbortSignal,
 		selection: StartSelection | undefined = ctx.selection,
-	): HookContext<TServices, TApps> {
+	): HookContext<AnyServices, AnyApps> {
 		if (selection) {
 			return {
 				...scopedHookContext(signal),
-				selectedApps: selection.appNames as Extract<keyof TApps, string>[],
-				selectedServices: selection.requiredServiceKeys as Extract<
-					keyof TServices,
-					string
-				>[],
+				selectedApps: [...selection.appNames],
+				selectedServices: [...selection.requiredServiceKeys],
 			};
 		}
 		return scopedHookContext(signal);
@@ -355,19 +292,16 @@ export function createEnvVarsApi<
 
 	function scopedHookContext(
 		signal?: AbortSignal,
-	): HookContext<TServices, TApps> {
+	): HookContext<AnyServices, AnyApps> {
 		if (!hookContext) {
 			hookContext = {
-				selectedApps: Object.keys(apps) as Extract<keyof TApps, string>[],
-				selectedServices: Object.keys(services) as Extract<
-					keyof TServices,
-					string
-				>[],
+				selectedApps: Object.keys(apps),
+				selectedServices: Object.keys(services),
 				projectName: ctx.projectName,
 				ports,
 				urls,
 				loopbackUrls,
-				publicUrls: publicUrls as ComputedPublicUrls<TServices, TApps>,
+				publicUrls,
 				root: ctx.root,
 				isCI: isCI(),
 				portOffset: ctx.portOffset,

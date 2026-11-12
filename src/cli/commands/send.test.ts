@@ -4,22 +4,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RunOutput } from "../../core/process/run-output";
 import { buildRunEntry, publishRun } from "../../core/run-registry";
+import { useTempHome } from "../../core/test-env.testing";
+import { runCommand } from "../command-spec";
 import { sendRefusal } from "../dev-output";
 import { watchSendRequests } from "../restart-requests";
-import { handleSend, SEND_EXIT } from "./send";
+import { SEND_EXIT, sendCommand } from "./send";
 
-// The registry lives under HOME: the test's own, never the developer's.
+// The registry lives under HOME: each test's own.
+useTempHome();
 let dir: string;
-const realHome = process.env.HOME;
 
 beforeAll(() => {
 	dir = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-send-")));
-	process.env.HOME = join(dir, "home");
 });
 
 afterAll(() => {
-	if (realHome === undefined) delete process.env.HOME;
-	else process.env.HOME = realHome;
 	rmSync(dir, { recursive: true, force: true });
 });
 
@@ -43,7 +42,7 @@ it("exits by what became of the keys", async () => {
 		],
 	});
 	// The run's side, as `dev` answers: only expo has a terminal.
-	const output = new RunOutput();
+	const output = new RunOutput({ terminals: "pipe" });
 	const typed: string[] = [];
 	output.screen("expo").input = (text) => {
 		typed.push(text);
@@ -54,7 +53,7 @@ it("exits by what became of the keys", async () => {
 		return refusal;
 	});
 	const send = (...args: string[]) =>
-		handleSend([...args, `--root=${root}`], { replyTimeoutMs: 5_000 });
+		runCommand(sendCommand, [...args, `--root=${root}`]);
 	try {
 		expect(await send("expo", "i")).toBe(SEND_EXIT.ok);
 		expect(typed).toEqual(["i"]);

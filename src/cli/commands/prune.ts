@@ -1,10 +1,11 @@
-import { join } from "node:path";
 import {
 	availableContainerRuntimes,
 	type ContainerRuntimeAdapter,
+	claimedCheckouts,
 	containerRuntimeForEnv,
+	formatSpan,
+	isRuntimeUp,
 	listBuncargoContainers,
-	orphanedVolumes,
 	type ProjectPrunePlan,
 	type ProjectPruneStack,
 	planProjectPrune,
@@ -13,76 +14,184 @@ import {
 	type VolumeReport,
 	withProjectLifecycleLock,
 } from "../../container-runtime";
-import { checkoutPresence } from "../../core/checkout-presence";
 import { FileLockTimeoutError } from "../../core/file-lock";
 import { listGitCheckouts } from "../../core/git-checkouts";
-import { offsetClaimRoot, readOffsetClaims } from "../../core/offset-claims";
+import {
+	type OffsetClaim,
+	readAllOffsetClaims,
+} from "../../core/offset-claims";
 import { askConfirm, isInteractive } from "../../core/prompt";
+import { StateFileUnreadableError } from "../../core/registry-file";
 import { readAllRuns, readLiveRuns } from "../../core/run-registry";
 import { describeSwept } from "../../core/watchdog-loop";
-import { CONFIG_FILES, findConfigFile, loadDevEnv } from "../../loader";
+import { loadDevEnv } from "../../loader";
+import { defineCommand } from "../command-spec";
 import * as log from "../log";
-import { parsePruneArgs, printPruneHelp } from "../prune-flags";
+
+/** `7d`, `12h`, `30m` in milliseconds, or undefined when it is none of them. */
+export function parseAge(value: string): number | undefined {
+	const match = /^(\d+)(m|h|d)$/.exec(value.trim());
+	if (!match) return undefined;
+	const unit = { m: 60_000, h: 3_600_000, d: 86_400_000 }[
+		match[2] as "m" | "h" | "d"
+	];
+	const ms = Number(match[1]) * unit;
+	return ms > 0 ? ms : undefined;
+}
+
+interface PruneRequest {
+	dryRun: boolean;
+	yes: boolean;
+	/** `--older-than` in milliseconds. */
+	olderThanMs?: number;
+}
+
+export const pruneCommand = defineCommand({
+	spec: {
+		name: "prune",
+		summary: "Remove volumes whose project is gone (destroys their data)",
+		flags: {
+			"dry-run": {
+				kind: "boolean",
+				description: "List what would be removed and stop",
+			},
+			yes: {
+				kind: "boolean",
+				description: "Skip the confirmation (for scripts)",
+			},
+			"older-than": {
+				kind: "string",
+				value: "<age>",
+				description:
+					"Only volumes of checkouts deleted at least this long ago, e.g. 7d, 12h, 30m",
+				validate: (value: string) =>
+					parseAge(value) === undefined
+						? `--older-than expects an age such as 7d, 12h or 30m, got "${value}".`
+						: undefined,
+			},
+			project: {
+				kind: "boolean",
+				description:
+					"Only this project's leftovers: every checkout's ci stack and every stack of a deleted worktree (containers, volumes, networks)",
+			},
+		},
+		notes: [
+			{
+				command: "",
+				description:
+					"Removes the volumes of checkouts whose directory was deleted, when no container, run or other checkout uses their project. Destroys their data.",
+			},
+		],
+		examples: [
+			{
+				command: "bunx buncargo prune --dry-run",
+				description: "List reclaimable volumes without touching them",
+			},
+			{
+				command: "bunx buncargo prune",
+				description: "Review the list, then confirm removal",
+			},
+			{
+				command: "bunx buncargo prune --older-than=7d --dry-run",
+				description: "Only checkouts deleted a week ago or longer",
+			},
+			{
+				command: "bunx buncargo prune --project --dry-run",
+				description:
+					"List this project's leftover ci and deleted-worktree stacks",
+			},
+		],
+	},
+	exits: {
+		0: "removed, listed (--dry-run), declined, or nothing to remove",
+		1: "a removal failed, offsets.json is unreadable, or bad arguments",
+	},
+	run: ({ values }) => {
+		const olderThan = values["older-than"];
+		const parsed: PruneRequest = {
+			dryRun: values["dry-run"],
+			yes: values.yes,
+			olderThanMs: olderThan === undefined ? undefined : parseAge(olderThan),
+		};
+		if (!values.project) return prune(parsed);
+		if (parsed.olderThanMs !== undefined) {
+			log.error(
+				"--older-than applies to deleted checkouts' volumes, not to --project.",
+			);
+			return 1;
+		}
+		return pruneProject(parsed);
+	},
+});
 
 /**
- * `buncargo prune` — reclaim the volumes of projects that are gone.
+ * `buncargo prune`: reclaim the volumes of checkouts that were deleted.
  *
  * The sweep removes containers automatically because recreating one is free.
  * A volume is the database, so it is only ever removed from here, after the
  * person has seen the list. `--dry-run` shows it and stops; `--yes` is for a
  * script that has already decided.
  */
-export async function handlePrune(args: string[] = []): Promise<number> {
-	const parsed = parsePruneArgs(args);
-	if (parsed.help) {
-		printPruneHelp();
-		return 0;
-	}
-	if (parsed.unknownFlags.length > 0) {
-		log.error(`Unknown flag(s): ${parsed.unknownFlags.join(", ")}`);
-		printPruneHelp();
-		return 1;
-	}
-	if (parsed.project) return pruneProject(parsed);
-
+async function prune(parsed: PruneRequest): Promise<number> {
 	const runtimes = availableContainerRuntimes();
 	if (runtimes.length === 0) {
 		log.info("No container runtime is running. Nothing to prune.");
 		return 0;
 	}
 
+	// Unreadable claims would read as no checkout naming any volume.
+	if (!readClaims()) return 1;
+
 	// Sweeping first is what makes the volume answer meaningful: a project
 	// whose containers are removed here stops counting as in use, and its
 	// entry is retired in the same pass.
 	const swept = await sweepOrphanedContainers({ runtimes });
+	const deletedFor =
+		parsed.olderThanMs === undefined
+			? undefined
+			: { ms: parsed.olderThanMs, now: Date.now() };
 	for (const stack of swept.swept) log.info(describeSwept(stack));
 
-	const volumes = (
-		await Promise.all(runtimes.map((runtime) => runtime.listVolumes()))
-	).flat();
-	const reports = planVolumePrune({
-		volumes,
-		containers: listBuncargoContainers(runtimes),
-		runs: await readAllRuns(),
-		checkouts: existingCheckouts(),
-	});
+	const inventory = async (): Promise<VolumeReport[] | undefined> => {
+		const volumes = (
+			await Promise.all(runtimes.map((runtime) => runtime.listVolumes()))
+		).flat();
+		const claims = readClaims();
+		if (!claims) return undefined;
+		return planVolumePrune({
+			volumes,
+			containers: await listBuncargoContainers(runtimes),
+			runs: await readAllRuns(),
+			checkouts: claimedCheckouts(claims),
+			deletedFor,
+		});
+	};
+	const reports = await inventory();
+	if (!reports) return 1;
 
 	reportUnattributed(reports);
 
-	const names = orphanedVolumes(reports);
-	if (names.length === 0) {
+	const proposed = reports.filter(
+		(report) => report.verdict.kind === "orphaned",
+	);
+	if (proposed.length === 0) {
 		log.info("No volumes to reclaim.");
+		if (deletedFor)
+			log.hint(
+				`Only checkouts deleted at least ${formatSpan(deletedFor.ms)} ago count; without --older-than every deleted checkout does.`,
+			);
+		log.hint(
+			"Only a deleted checkout's volumes are proposed here. A project's ci and deleted-worktree stacks: `buncargo prune --project --dry-run` in one of its checkouts.",
+		);
 		return 0;
 	}
 
 	log.line();
 	log.info(
-		`${names.length} volume${names.length === 1 ? "" : "s"} belong to projects with no containers, no run and no checkout:`,
+		`${proposed.length} volume${proposed.length === 1 ? "" : "s"} of deleted checkouts, with no containers and no run:`,
 	);
-	for (const report of reports) {
-		if (report.verdict.kind !== "orphaned") continue;
-		log.line(`  ${report.volume.name}  (${report.volume.project})`);
-	}
+	for (const { volume, verdict } of proposed)
+		log.line(`  ${volume.name}  (${volume.project}: ${verdict.reason})`);
 	log.line();
 	log.warn("Removing these destroys their data, databases included.");
 
@@ -95,7 +204,7 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 		const accepted =
 			isInteractive() &&
 			(await askConfirm([
-				`  Remove ${names.length} volume${names.length === 1 ? "" : "s"}? This cannot be undone.`,
+				`  Remove ${proposed.length} volume${proposed.length === 1 ? "" : "s"}? This cannot be undone.`,
 				"",
 				"  y to remove  ·  Enter to keep them",
 			]));
@@ -106,43 +215,77 @@ export async function handlePrune(args: string[] = []): Promise<number> {
 	}
 
 	let removed = 0;
-	for (const runtime of runtimes) {
-		const mine = reports
-			.filter(
-				(report) =>
-					report.verdict.kind === "orphaned" &&
-					report.volume.runtime === runtime.name,
-			)
-			.map((report) => report.volume.name);
-		if (mine.length === 0) continue;
-		const failures = await runtime.removeVolumes(mine);
-		removed += mine.length - failures.length;
-		for (const failure of failures)
-			log.warn(`Could not remove ${failure.name}: ${failure.error}`);
-	}
+	for (const project of new Set(proposed.map(({ volume }) => volume.project)))
+		removed += await removeProjectVolumes(
+			runtimes,
+			proposed.filter(({ volume }) => volume.project === project),
+			inventory,
+		);
 	log.done(`Removed ${removed} volume${removed === 1 ? "" : "s"}`);
 	return 0;
 }
 
+/** Every port claim, or undefined (said) when `offsets.json` cannot be read. */
+function readClaims(): Record<string, OffsetClaim> | undefined {
+	try {
+		return readAllOffsetClaims({ strict: true });
+	} catch (error) {
+		if (!(error instanceof StateFileUnreadableError)) throw error;
+		log.error(`${error.message}. Nothing was removed.`);
+		return undefined;
+	}
+}
+
 /**
- * The checkouts on this machine that still exist, from their dev port claims.
- *
- * An idle checkout has no containers and, after `dev --down`, no run either,
- * yet its volume is still its database. A suffixed claim (`buncargo ci`, E2E)
- * is left out: those stacks are leftovers once their run is gone. A checkout
- * whose config this user cannot read is kept: it may well still be there.
+ * One project's listed volumes, under the lifecycle lock of the deleted
+ * checkout they were proposed for, and decided again from fresh inventories:
+ * since the listing, a checkout may have claimed the project, a run may have
+ * started, the directory may be back. Only what was listed is removed.
  */
-function existingCheckouts(): { projectName: string; root: string }[] {
-	return Object.entries(readOffsetClaims()).flatMap(([key, claim]) => {
-		const root = offsetClaimRoot(key, claim);
-		if (claim.suffix) return [];
-		const hasConfig =
-			findConfigFile(root) !== null ||
-			CONFIG_FILES.some(
-				(file) => checkoutPresence(join(root, file)) === "unknown",
-			);
-		return hasConfig ? [{ projectName: claim.projectName, root }] : [];
-	});
+async function removeProjectVolumes(
+	runtimes: readonly ContainerRuntimeAdapter[],
+	listed: readonly VolumeReport[],
+	inventory: () => Promise<VolumeReport[] | undefined>,
+): Promise<number> {
+	const [first] = listed;
+	if (!first || first.verdict.kind !== "orphaned") return 0;
+	const project = first.volume.project ?? "";
+	try {
+		return await withProjectLifecycleLock(
+			project,
+			first.verdict.root,
+			async () => {
+				const fresh = await inventory();
+				if (!fresh) return 0;
+				let removed = 0;
+				for (const runtime of runtimes) {
+					const names = listed
+						.filter(({ volume }) => volume.runtime === runtime.name)
+						.flatMap(({ volume }) => {
+							const now = fresh.find(
+								(report) =>
+									report.volume.name === volume.name &&
+									report.volume.runtime === volume.runtime,
+							);
+							if (now?.verdict.kind === "orphaned") return [volume.name];
+							if (now) log.info(`Kept ${volume.name}: ${now.verdict.reason}.`);
+							return [];
+						});
+					if (names.length === 0) continue;
+					const failures = await runtime.removeVolumes(names);
+					removed += names.length - failures.length;
+					for (const failure of failures)
+						log.warn(`Could not remove ${failure.name}: ${failure.error}`);
+				}
+				return removed;
+			},
+			{ timeoutMs: 0 },
+		);
+	} catch (error) {
+		if (!(error instanceof FileLockTimeoutError)) throw error;
+		log.info(`Kept ${project}'s volumes: a run is starting or stopping it.`);
+		return 0;
+	}
 }
 
 /**
@@ -175,16 +318,15 @@ async function pruneProject(parsed: {
 	dryRun: boolean;
 	yes: boolean;
 }): Promise<number> {
-	const env = await loadDevEnv({ readOnly: true });
+	const env = await loadDevEnv();
 	const runtime = containerRuntimeForEnv(env);
-	const list = runtime.listComposeProjectResources;
-	if (!list || !runtime.removeComposeProjectResource) {
+	if (!runtime.capabilities.composeProjectResources) {
 		log.error(
 			`prune --project needs Docker. ${runtime.displayName} records no Compose project on its volumes, so none can be traced to a checkout.`,
 		);
 		return 1;
 	}
-	if (!runtime.isAvailable()) {
+	if (!isRuntimeUp(runtime)) {
 		log.info(`${runtime.displayName} is not running. Nothing to prune.`);
 		return 0;
 	}
@@ -198,7 +340,7 @@ async function pruneProject(parsed: {
 				projectPrefix: env.projectPrefix,
 				worktreeIsolation: env.worktreeIsolation,
 				checkouts,
-				resources: list.call(runtime),
+				resources: await runtime.listComposeProjectResources(),
 				liveProjects: new Set(
 					(await readLiveRuns()).map((run) => run.projectName),
 				),
@@ -276,8 +418,7 @@ async function removeStack(
 	listed: ProjectPruneStack,
 	inventory: () => Promise<{ plan: ProjectPrunePlan }>,
 ): Promise<boolean> {
-	const remove = runtime.removeComposeProjectResource?.bind(runtime);
-	if (!remove) return false;
+	const remove = runtime.removeComposeProjectResource.bind(runtime);
 	try {
 		return await withProjectLifecycleLock(
 			listed.projectName,

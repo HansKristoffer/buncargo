@@ -1,5 +1,9 @@
 export interface ComposeCommandContext {
-	projectName?: string;
+	/**
+	 * Required: without `-p`, Compose acts on whatever project the working
+	 * directory resolves to, which for `down` is somebody else's stack.
+	 */
+	projectName: string;
 	composeFile?: string;
 }
 
@@ -10,11 +14,12 @@ export interface ComposeCommandContext {
  * rather than a command line because a compose path or project name is free to
  * contain a space, and there is no shell here to split it.
  */
-export function getComposeArgs(context: ComposeCommandContext = {}): string[] {
+export function getComposeArgs(context: ComposeCommandContext): string[] {
 	const { projectName, composeFile } = context;
 	return [
 		"compose",
 		...(composeFile ? ["-f", composeFile] : []),
-		...(projectName ? ["-p", projectName] : []),
+		"-p",
+		projectName,
 	];
 }

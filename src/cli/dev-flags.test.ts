@@ -1,125 +1,91 @@
 import { describe, expect, it } from "bun:test";
 import {
-	DEV_COMMAND_SPEC,
+	type DevArgs,
 	destructiveModeGate,
+	exposeRequested,
+	ignoredFlagWarnings,
 	parseDevArgs,
+	requestedApps,
+	tuiMode,
 } from "./dev-flags";
+import { ArgumentsError } from "./errors";
+
+function dev(argv: string[]): DevArgs {
+	const parsed = parseDevArgs(argv);
+	if (parsed.help) throw new Error("help");
+	return parsed;
+}
+
+function devErrors(argv: string[]): string[] {
+	try {
+		parseDevArgs(argv);
+	} catch (error) {
+		if (!(error instanceof ArgumentsError)) throw error;
+		return [error.message, ...error.hints.slice(0, -1)];
+	}
+	return [];
+}
 
 describe("parseDevArgs", () => {
-	it("splits passthrough args at --", () => {
-		const args = parseDevArgs(["--apps=expoApp", "--", "--clear"]);
-		expect(args.appsValue).toBe("expoApp");
-		expect(args.passthrough).toEqual(["--clear"]);
-		expect(args.unknownFlags).toEqual([]);
-	});
-
-	it("treats bare --expose as requested without a value", () => {
-		const args = parseDevArgs(["--expose"]);
-		expect(args.exposeRequested).toBe(true);
-		expect(args.exposeValue).toBeUndefined();
-	});
-
-	it("marks migrate, seed and up-only as one-shot modes", () => {
-		expect(parseDevArgs(["--migrate"]).oneShot).toBe(true);
-		expect(parseDevArgs(["--seed"]).oneShot).toBe(true);
-		expect(parseDevArgs(["--up-only"]).oneShot).toBe(true);
-		expect(parseDevArgs([]).oneShot).toBe(false);
-	});
-
-	it("ignores --expose and --takeover in a one-shot mode and says which", () => {
-		const args = parseDevArgs(["--seed", "--expose=api", "--takeover"]);
-		expect(args).toMatchObject({
-			exposeRequested: false,
-			exposeValue: undefined,
-			takeover: false,
-		});
-		expect(args.ignoredFlags.map((line) => line.split(" ")[0])).toEqual([
-			"--expose",
-			"--takeover",
+	// `buncargo dev api` started every app.
+	it("selects the apps named as arguments, as --apps does", () => {
+		expect(requestedApps(dev(["api", "web", "--", "--clear"]))).toEqual([
+			"api",
+			"web",
 		]);
-		expect(parseDevArgs(["--expose", "--takeover"]).ignoredFlags).toEqual([]);
-	});
-
-	it("takes --keep only with --detach", () => {
-		expect(parseDevArgs(["--detach", "--keep"])).toMatchObject({
-			detach: true,
-			keep: true,
-			errors: [],
-		});
-		expect(parseDevArgs(["--keep"]).errors).toEqual([
-			"--keep only applies to --detach: a run in a terminal never stops for idling.",
-		]);
-	});
-
-	it("inverts the negated flags", () => {
-		const args = parseDevArgs(["--no-hosts", "--no-docker-autostart"]);
-		expect(args.hosts).toBe(false);
-		expect(args.dockerAutostart).toBe(false);
-	});
-
-	it("defaults to the TUI, and --no-tui opts out", () => {
-		expect(parseDevArgs([]).tui).toBe("auto");
-		expect(parseDevArgs(["--tui"]).tui).toBe("on");
-		expect(parseDevArgs(["--no-tui"]).tui).toBe("off");
-	});
-
-	it("reads --replace-stale, which only a start can use", () => {
-		expect(parseDevArgs(["--replace-stale"]).replaceStale).toBe(true);
-		expect(parseDevArgs([]).replaceStale).toBe(false);
-		expect(parseDevArgs(["--replace-stale", "--down"]).errors).toEqual([
-			"--replace-stale clears the way for a start; it cannot be combined with --down or --reset.",
-		]);
-	});
-
-	it("reports unknown flags without throwing", () => {
-		expect(parseDevArgs(["--nope", "--reset"]).unknownFlags).toEqual([
-			"--nope",
-		]);
-	});
-
-	it("validates --watchdog-timeout", () => {
-		expect(parseDevArgs(["--watchdog-timeout=15"]).watchdogTimeoutMinutes).toBe(
-			15,
-		);
-
-		const invalid = parseDevArgs(["--watchdog-timeout=0"]);
-		expect(invalid.watchdogTimeoutMinutes).toBeUndefined();
-		expect(invalid.errors).toHaveLength(1);
-	});
-
-	it("accepts every container runtime selection for --runtime", () => {
-		expect(parseDevArgs(["--runtime=docker"]).runtime).toBe("docker");
-		expect(parseDevArgs(["--runtime=apple"]).runtime).toBe("apple");
-		expect(parseDevArgs(["--runtime=auto"]).runtime).toBe("auto");
-		expect(parseDevArgs([]).runtime).toBeUndefined();
-	});
-
-	it("rejects an unknown --runtime value", () => {
-		const invalid = parseDevArgs(["--runtime=podman"]);
-		expect(invalid.runtime).toBeUndefined();
-		expect(invalid.errors).toEqual([
-			'--runtime expects one of docker, apple, auto, got "podman".',
-		]);
-	});
-
-	it("keeps the help text in sync with the parsed flags", () => {
-		for (const flag of DEV_COMMAND_SPEC.flags) {
-			expect(parseDevArgs([flag.name]).unknownFlags).toEqual([]);
-		}
-	});
-});
-
-describe("parseDevArgs --profile", () => {
-	it("reads the profile name", () => {
-		expect(parseDevArgs(["--profile=full"]).profile).toBe("full");
-		expect(parseDevArgs([]).profile).toBeUndefined();
+		expect(requestedApps(dev(["--apps=api, web"]))).toEqual(["api", "web"]);
+		expect(requestedApps(dev([]))).toBeUndefined();
 	});
 
 	// Two ways to pick apps in one command is ambiguous about which wins.
-	it("refuses --profile together with --apps", () => {
-		expect(parseDevArgs(["--profile=full", "--apps=api"]).errors).toContain(
-			"Choose either --apps or --profile, not both.",
-		);
+	it("refuses two ways of picking apps at once", () => {
+		expect(devErrors(["api", "--apps=web"])).toEqual([
+			"Name the apps as arguments or with --apps, not both.",
+		]);
+		expect(devErrors(["api", "--profile=full"])).toEqual([
+			"Choose either apps or --profile, not both.",
+		]);
+		expect(devErrors(["--apps=,"])).toEqual([
+			"--apps requires at least one app name.",
+		]);
+	});
+
+	it("ignores --expose and --takeover in a one-shot mode and says which", () => {
+		const args = dev(["--seed", "--expose=api", "--takeover"]);
+		expect(exposeRequested(args.values)).toBe(false);
+		expect(
+			ignoredFlagWarnings(args.values).map((line) => line.split(" ")[0]),
+		).toEqual(["--expose", "--takeover"]);
+		const start = dev(["--expose", "--takeover"]);
+		expect(exposeRequested(start.values)).toBe(true);
+		expect(ignoredFlagWarnings(start.values)).toEqual([]);
+	});
+
+	it("takes --keep and --json only with --detach", () => {
+		expect(dev(["--detach", "--keep", "--json"]).values).toMatchObject({
+			detach: true,
+			keep: true,
+			json: true,
+		});
+		expect(devErrors(["--keep", "--json"])).toEqual([
+			"--keep only applies to --detach: a run in a terminal never stops for idling.",
+			"--json only applies to --detach; a run in a terminal prints its own output.",
+		]);
+	});
+
+	it("refuses modes that contradict each other", () => {
+		expect(devErrors(["--replace-stale", "--down"])).toEqual([
+			"--replace-stale clears the way for a start; it cannot be combined with --down or --reset.",
+		]);
+		expect(devErrors(["--detach", "--seed"])).toEqual([
+			"--detach runs the dev servers in the background; it cannot be combined with --tui, --attach or a one-shot mode.",
+		]);
+	});
+
+	it("defaults to the TUI, and --no-tui opts out", () => {
+		expect(tuiMode(dev([]).values)).toBe("auto");
+		expect(tuiMode(dev(["--tui"]).values)).toBe("on");
+		expect(tuiMode(dev(["--no-tui"]).values)).toBe("off");
 	});
 });
 
@@ -128,24 +94,24 @@ describe("destructiveModeGate", () => {
 	const agent = { interactive: false, ci: false };
 
 	it("asks in a terminal and refuses without one", () => {
-		const reset = parseDevArgs(["--reset"]);
+		const reset = dev(["--reset"]).values;
 		expect(destructiveModeGate(reset, terminal)).toBe("confirm");
 		expect(destructiveModeGate(reset, agent)).toBe("refuse");
-		expect(destructiveModeGate(parseDevArgs(["--down", "--all"]), agent)).toBe(
+		expect(destructiveModeGate(dev(["--down", "--all"]).values, agent)).toBe(
 			"refuse",
 		);
 	});
 
 	it("runs with --yes, in CI, and for a plain --down", () => {
-		expect(destructiveModeGate(parseDevArgs(["--reset", "--yes"]), agent)).toBe(
+		expect(destructiveModeGate(dev(["--reset", "--yes"]).values, agent)).toBe(
 			"run",
 		);
 		expect(
-			destructiveModeGate(parseDevArgs(["--reset"]), {
+			destructiveModeGate(dev(["--reset"]).values, {
 				interactive: false,
 				ci: true,
 			}),
 		).toBe("run");
-		expect(destructiveModeGate(parseDevArgs(["--down"]), agent)).toBe("run");
+		expect(destructiveModeGate(dev(["--down"]).values, agent)).toBe("run");
 	});
 });

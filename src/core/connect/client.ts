@@ -34,21 +34,23 @@ export async function request<T>(
 
 export const receiverPath = () => stateFilePath("connect-receiver.json");
 
-function hasReceiverCredentials(value: Record<string, unknown>): boolean {
-	return (
-		value.origin === connectOrigin() &&
-		/^bc_owner_[a-f0-9]{64}$/.test(String(value.owner)) &&
-		/^bc_share_[a-f0-9]{64}$/.test(String(value.token))
-	);
+/** A receiver of this relay with well-formed credentials, from its checked fields. */
+function parseReceiver(value: unknown): Receiver | undefined {
+	const { id, origin, owner, token } = record(value);
+	if (
+		typeof id !== "string" ||
+		origin !== connectOrigin() ||
+		typeof owner !== "string" ||
+		!/^bc_owner_[a-f0-9]{64}$/.test(owner) ||
+		typeof token !== "string" ||
+		!/^bc_share_[a-f0-9]{64}$/.test(token)
+	)
+		return undefined;
+	return { id, origin, owner, token };
 }
 
-export function readReceiver() {
-	return readJsonDocument(receiverPath(), (value) => {
-		const receiver = record(value);
-		return typeof receiver.id === "string" && hasReceiverCredentials(receiver)
-			? (receiver as unknown as Receiver)
-			: undefined;
-	});
+function readReceiver() {
+	return readJsonDocument(receiverPath(), parseReceiver);
 }
 
 export async function requireReceiver(): Promise<Receiver> {
@@ -88,11 +90,12 @@ export async function ensureReceiver(rotate = false): Promise<Receiver> {
 			);
 		}
 
-		if (!hasReceiverCredentials(record(receiver))) {
+		const registered = parseReceiver(receiver);
+		if (!registered) {
 			throw new Error("Invalid receiver registration");
 		}
-		await writeJsonDocument(receiverPath(), receiver);
-		return receiver;
+		await writeJsonDocument(receiverPath(), registered);
+		return registered;
 	});
 }
 

@@ -9,7 +9,7 @@ import {
 } from "../../../container-runtime";
 import { readAllOffsetClaims } from "../../../core/offset-claims";
 import {
-	recordRemovals,
+	recordEvents,
 	removalActor,
 	removalOwner,
 } from "../../../core/removal-log";
@@ -40,7 +40,9 @@ export async function stopAllBuncargoEnvironments(
 		log.info("No container runtime is running. Nothing to stop.");
 		return;
 	}
-	const groups = groupBuncargoContainers(listBuncargoContainers(runtimes));
+	const groups = groupBuncargoContainers(
+		await listBuncargoContainers(runtimes),
+	);
 	if (groups.length === 0) {
 		log.info("No buncargo containers.");
 		return;
@@ -74,8 +76,9 @@ export async function stopAllBuncargoEnvironments(
 			projectName: group.projectName,
 			verbose: false,
 		});
-		await recordRemovals([
+		await recordEvents([
 			{
+				kind: "containers",
 				at: new Date().toISOString(),
 				projectName: group.projectName,
 				root: group.root,

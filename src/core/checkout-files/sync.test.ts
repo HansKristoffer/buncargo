@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
 	existsSync,
@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CI_ENV_VARS } from "../runtime-flags";
+import { useTempHome } from "../test-env.testing";
 import {
 	type CheckoutFileSpec,
 	checkoutFileErrors,
@@ -63,7 +64,7 @@ afterEach(() => {
 		rmSync(dir, { recursive: true, force: true });
 });
 
-function makeRepo(): Repo {
+function makeRepo(home?: string): Repo {
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-files-")));
 	temps.push(dir);
 	const root = join(dir, "app");
@@ -74,7 +75,7 @@ function makeRepo(): Repo {
 		join(root, ".gitignore"),
 		".env*\n!.env.example\n.buncargo/\napps/*/.env\n",
 	);
-	const home = join(dir, "home");
+	home ??= join(dir, "home");
 	return { dir, root, home, store: storeDir(KEY, home), lines: [] };
 }
 
@@ -118,6 +119,12 @@ function seedStore(
 function readStore(repo: Repo, path = ENV): string | undefined {
 	const full = join(repo.store, "data", ...path.split("/"));
 	return existsSync(full) ? readFileSync(full, "utf8") : undefined;
+}
+
+/** Cut the store's data file short, as a crash mid-write leaves it. */
+function tearStoreData(repo: Repo, path = ENV): void {
+	const full = join(repo.store, "data", ...path.split("/"));
+	writeFileSync(full, readFileSync(full).subarray(0, 4));
 }
 
 function readBase(repo: Repo, path = ENV): string | undefined {
@@ -254,6 +261,36 @@ describe("syncCheckoutFiles", () => {
 		expect(statSync(join(repo.store, "manifest.json")).mode & 0o777).toBe(
 			0o600,
 		);
+	});
+
+	it("never adopts a checkout's copy over a store entry whose data is torn", async () => {
+		const repo = makeRepo();
+		writeLocal(repo, "A=old\n");
+		seedStore(repo, "A=new\n");
+		tearStoreData(repo);
+
+		const report = await sync(repo);
+
+		expect(report.files[0]?.state).toBe("local-edits");
+		expect(readStore(repo)).toBe("A=ne");
+		expect(readStoreManifest(repo.store)?.files[ENV]?.sha256).toBe(
+			hash("A=new\n"),
+		);
+	});
+
+	it("waits for a torn store copy instead of copying it, naming the fix", async () => {
+		const repo = makeRepo();
+		seedStore(repo, "A=old\n");
+		await sync(repo);
+		seedStore(repo, "A=new\n");
+		tearStoreData(repo);
+		repo.lines.length = 0;
+
+		const report = await sync(repo);
+
+		expect(readLocal(repo)).toBe("A=old\n");
+		expect(report.files[0]?.state).toBe("store-newer");
+		expect(repo.lines.join("\n")).toContain(`buncargo files save ${ENV}`);
 	});
 
 	it("records the base of a copy that already matches the store", async () => {
@@ -606,54 +643,48 @@ describe("dotenvKeyDiff", () => {
 });
 
 describe("syncConfiguredCheckoutFiles", () => {
-	async function withHome<T>(home: string, body: () => Promise<T>): Promise<T> {
-		const saved = new Map(
-			["HOME", ...CI_ENV_VARS].map((name) => [name, process.env[name]]),
-		);
-		for (const name of CI_ENV_VARS) delete process.env[name];
-		process.env.HOME = home;
-		try {
-			return await body();
-		} finally {
-			for (const [name, value] of saved) {
-				if (value === undefined) delete process.env[name];
-				else process.env[name] = value;
-			}
+	// The store is read from HOME, on a developer's machine rather than CI's.
+	const home = useTempHome();
+	const savedCi = new Map<string, string | undefined>();
+	beforeEach(() => {
+		for (const name of CI_ENV_VARS) {
+			savedCi.set(name, process.env[name]);
+			delete process.env[name];
 		}
-	}
+	});
+	afterEach(() => {
+		for (const [name, value] of savedCi) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	});
 
 	it("copies a required envFiles entry before it is read", async () => {
-		const repo = makeRepo();
+		const repo = makeRepo(home());
 		seedStore(repo, "A=1\n");
-		await withHome(repo.home, () =>
-			syncConfiguredCheckoutFiles(repo.root, {
-				options: { envFiles: [ENV], checkoutFiles: [ENV] },
-			}),
-		);
+		await syncConfiguredCheckoutFiles(repo.root, {
+			options: { envFiles: [ENV], checkoutFiles: [ENV] },
+		});
 		expect(readLocal(repo)).toBe("A=1\n");
 	});
 
 	it("names the fix when a required envFiles entry is still missing", async () => {
-		const repo = makeRepo();
+		const repo = makeRepo(home());
 		await expect(
-			withHome(repo.home, () =>
-				syncConfiguredCheckoutFiles(repo.root, {
-					options: { envFiles: [ENV], checkoutFiles: [ENV] },
-				}),
-			),
+			syncConfiguredCheckoutFiles(repo.root, {
+				options: { envFiles: [ENV], checkoutFiles: [ENV] },
+			}),
 		).rejects.toThrow(`buncargo files save ${ENV}`);
 	});
 
 	it("lets an optional envFiles entry stay missing", async () => {
-		const repo = makeRepo();
-		await withHome(repo.home, () =>
-			syncConfiguredCheckoutFiles(repo.root, {
-				options: {
-					envFiles: [{ path: ENV, optional: true }],
-					checkoutFiles: [ENV],
-				},
-			}),
-		);
+		const repo = makeRepo(home());
+		await syncConfiguredCheckoutFiles(repo.root, {
+			options: {
+				envFiles: [{ path: ENV, optional: true }],
+				checkoutFiles: [ENV],
+			},
+		});
 		expect(readLocal(repo)).toBeUndefined();
 	});
 });

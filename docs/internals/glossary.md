@@ -11,11 +11,11 @@ Terms whose meaning matters across buncargo. Use them this way in code, comments
 | Run               | One `buncargo dev` (or library `start()`) for a checkout: its services, apps, hosts and tunnels.                                        |
 | Session           | A run's entry in `~/.buncargo/runs.json`, addressed by `sessionId`. Several sessions can coexist for one root.                           |
 | Claim             | Writing a run's entry before its first container exists, so the sweep never sees a fresh stack as unowned.                             |
-| Release           | The run ended on purpose; `releasedAt` is set and its containers wait out the idle hold for the next run to reuse.                       |
+| Release           | The run ended on purpose; its `lifecycle` is `released` and its containers wait out the idle hold for the next run to reuse.            |
 | Retire            | Remove an entry because nothing is left to hold: an explicit `stop()` tore the containers down, or the sweep did.                       |
 | Stop              | Tear down now. `stop()` and `buncargo stop` stop or `down` containers instead of releasing them.                                        |
-| Idle hold         | How long a released run's containers are kept (`idleTimeoutMs`). The CLI passes three minutes; absent means "as long as the checkout". |
-| Owner lost        | The sweep found an unreleased owner dead (`ownerLostAt`). The short crash grace counts from here.                                       |
+| Idle hold         | How long a released run's containers are kept (`hold`). The CLI passes three minutes; `checkout` means "as long as the checkout".     |
+| Owner lost        | The sweep found an unreleased owner dead (`lifecycle` `lost`). The short crash grace counts from here.                                  |
 | Takeover          | Stopping another run's servers for the selected apps and spawning them here instead of reusing them.                                   |
 | Reuse             | An app or service already up for this checkout is used as-is instead of started twice.                                                |
 
@@ -41,10 +41,11 @@ Terms whose meaning matters across buncargo. Use them this way in code, comments
 | Term              | Meaning                                                                                                                       |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | Runtime           | The container backend a run uses: Docker or Apple `container`. `auto` probes; an explicit choice never falls back.            |
-| Sweep             | The one cleanup policy (`container-runtime/sweep.ts`): decides which unowned stacks come down. Never removes volumes.          |
+| Sweep             | The one cleanup policy (`container-runtime/sweep.ts`): decides which unowned stacks come down. Removes volumes only on a machine's opt-in (`BUNCARGO_PRUNE_DELETED_CHECKOUTS=1`), a deleted checkout's, by `decideVolume`. |
 | Watchdog          | One background process per machine that runs the sweep on a loop.                                                             |
-| Offset / port block | A checkout's ports are the config's base ports plus its offset. Offsets are claimed per checkout in `~/.buncargo/offsets.json`. |
-| Reclaim | A claiming start that finds every block taken marks the port claim of the checkout started least recently with no run and no containers `reclaimedAt` and takes its block. The claim keeps the project name; containers and volumes are untouched. Not the same as releasing a run. |
+| Offset / port block | A checkout's ports are the config's base ports plus its offset. Offsets are claimed per checkout in `~/.buncargo/offsets.json`, the only record of a checkout's block. |
+| Port claim | A checkout's (or suffixed environment's) entry in `offsets.json`: its block, and which checkout runs under its project name. A claim can give up its block (`reclaimedAt`) and stay, naming the project its volumes belong to. |
+| Reclaim | A claiming start that finds every block taken marks the port claim of the checkout started least recently with no run and no containers `reclaimedAt` and takes its block. The claim keeps the project name; containers and volumes are untouched. Not the same as releasing a run. A throwaway run's teardown gives up its block the same way. |
 | Named host        | An `https://<name>.localhost` URL served by the root hosts daemon's proxy, backed by a route in `~/.buncargo/routes.json`.     |
 | Process identity  | A pid plus its birth time (`v2:` prefixed). Liveness reads an unreadable identity as alive; signalling requires a strict match. |
 | BuncargoBar       | The macOS menu bar app. It only reads the run registry and calls `buncargo stop`.                                             |

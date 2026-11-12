@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+	fakeAppleRuntime,
+	fakeRuntime,
+} from "../../../container-runtime/fake-runtime.testing";
+import { claimOffset } from "../../../core/offset-claims";
 import { CI_ENV_VARS } from "../../../core/runtime-flags";
+import { useTempHome } from "../../../core/test-env.testing";
+import { prunableVolumesNote } from "./doctor";
 
 const cli = resolve(import.meta.dir, "../../bin.ts");
 let dir: string;
@@ -55,4 +62,53 @@ describe("buncargo doctor", () => {
 		expect(report).not.toContain("Named-hosts daemon is not running");
 		expect(report).not.toContain("Named-hosts CA is not trusted");
 	}, 30_000);
+});
+
+describe("prunableVolumesNote", () => {
+	useTempHome();
+
+	it("counts the volumes `prune` would propose and names `prune --dry-run`", async () => {
+		// 215 of them built up on one machine while doctor said "No issues found".
+		const claim = (root: string, projectName: string) =>
+			claimOffset({ root, offset: 100, ports: [5532], projectName });
+		claim(join(dir, "deleted-a"), "app-a");
+		claim(join(dir, "deleted-b"), "app-b");
+		claim(dir, "app-here");
+		const runtime = fakeRuntime({
+			listVolumes: async () =>
+				["app-a", "app-b", "app-here"].map((project) => ({
+					name: `${project}_db`,
+					project,
+					runtime: "docker" as const,
+				})),
+			volumeSizes: async () =>
+				new Map([
+					["app-a_db", 1_200_000_000],
+					["app-b_db", 80_000_000],
+					["app-here_db", 9_000_000_000],
+				]),
+		});
+
+		expect(await prunableVolumesNote([runtime])).toBe(
+			"warning: 2 volumes of deleted checkouts (1.3 GB) can be reclaimed. Review them with `buncargo prune --dry-run`; removing them destroys their data.",
+		);
+	});
+
+	it("says the size is unknown where the runtime cannot measure volumes", async () => {
+		claimOffset({
+			root: join(dir, "deleted"),
+			offset: 100,
+			ports: [5532],
+			projectName: "app-gone",
+		});
+		const runtime = fakeAppleRuntime({
+			listVolumes: async () => [
+				{ name: "app-gone_db", project: "app-gone", runtime: "apple" },
+			],
+		});
+
+		expect(await prunableVolumesNote([runtime])).toBe(
+			"warning: 1 volume of deleted checkouts (size unknown) can be reclaimed. Review them with `buncargo prune --dry-run`; removing them destroys their data.",
+		);
+	});
 });

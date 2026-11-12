@@ -183,6 +183,11 @@ describe("decideInstall", () => {
 		expect(refreshesStaleInstall([])).toBe(false);
 	});
 
+	// A deploy image's cached install layer is older than its bun.lock.
+	it("never installs before predeploy", () => {
+		expect(refreshesStaleInstall(["predeploy"])).toBe(false);
+	});
+
 	it("leaves a project that does not list buncargo alone", () => {
 		const { root } = monorepo();
 		expect(decideInstall(root, ["dev"])).toBeUndefined();

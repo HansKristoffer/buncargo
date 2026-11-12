@@ -3,10 +3,22 @@ import Testing
 
 @testable import BuncargoBar
 
-private func fixtureRuns() throws -> [Run] {
+private func fixtureRuns(_ name: String = "runs.v2.json") throws -> [Run] {
     let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        .deletingLastPathComponent().appendingPathComponent("fixtures/runs.v1.json")
+        .deletingLastPathComponent().appendingPathComponent("fixtures/\(name)")
     return try JSONDecoder().decode(RunsFile.self, from: Data(contentsOf: path)).runs
+}
+
+/// One entry this build could not decode emptied the whole menu.
+/// `src/core/run-registry.fixture.test.ts` reads the same fixture.
+@Test func entriesThatDoNotDecodeAreDroppedAndTheRestKept() throws {
+    let runs = try fixtureRuns("runs.v2.lossy.json")
+    #expect(
+        runs.map(\.sessionId) == ["first-valid-session", "unknown-status-session", "last-valid-session"])
+
+    let unknown = try #require(runs.first(where: { $0.sessionId == "unknown-status-session" }))
+    #expect(unknown.apps.first?.state == .starting)
+    #expect(unknown.services.first?.state == .starting)
 }
 
 /// The CLI hashes what `ps -o lstart=` prints in the C locale and UTC; these
@@ -49,13 +61,39 @@ private func fixtureRuns() throws -> [Run] {
     // An identity that cannot be read keeps a run, as in the CLI, unless the
     // sweep found its owner gone.
     #expect(run.isLive(owner: .running(identity: nil)))
-    run.ownerLostAt = "2026-09-03T08:20:00.000Z"
+    run.lifecycle = .lost(at: "2026-09-03T08:20:00.000Z")
     #expect(!run.isLive(owner: .running(identity: nil)))
     // The identity is the better evidence when it can be read.
     #expect(run.isLive(owner: .running(identity: "v2:recorded")))
 
-    run.releasedAt = "2026-09-03T09:30:00.000Z"
+    run.lifecycle = .released(at: "2026-09-03T09:30:00.000Z")
     #expect(!run.isLive(owner: .running(identity: "v2:recorded")))
+}
+
+/// The same rule as `runPhase` in `src/core/run-registry.ts`, and the
+/// fixture's lifecycles decode to the phases the CLI's fixture test reads.
+@Test func phaseFollowsTheCLIRule() throws {
+    let runs = try fixtureRuns()
+    #expect(runs.map(\.lifecycle) == [
+        .live,
+        .released(at: "2026-09-03T09:30:00.000Z"),
+        .lost(at: "2026-09-03T08:20:00.000Z"),
+    ])
+    var run = try #require(runs.first)
+    #expect(run.phase(alive: true) == .live)
+    #expect(run.phase(alive: false) == .lost)
+    run.lifecycle = .lost(at: "2026-09-03T08:20:00.000Z")
+    #expect(run.phase(alive: true) == .live)
+    run.lifecycle = .released(at: "2026-09-03T09:30:00.000Z")
+    #expect(run.phase(alive: true) == .released)
+}
+
+/// Integrations record their fields under their own name; the Expo app is
+/// the one offered a simulator button.
+@Test func theExpoAppIsTheOneWithExpoIntegrationFields() throws {
+    let run = try #require(try fixtureRuns().first)
+    #expect(run.apps.filter(\.hasSimulator).map(\.name) == ["api"])
+    #expect(run.apps.first(where: { $0.name == "api" })?.integrations?.expo?.scheme == "lullu")
 }
 
 @Test func aServiceWithAProblemIsNotReady() throws {

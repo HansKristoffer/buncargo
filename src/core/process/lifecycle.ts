@@ -1,15 +1,4 @@
 /**
- * Stop a process by PID.
- */
-export function stopProcess(pid: number): void {
-	try {
-		process.kill(pid, "SIGTERM");
-	} catch {
-		// Process may already be dead
-	}
-}
-
-/**
  * Check if a process is alive by sending signal 0.
  *
  * `EPERM` means the process exists and we are not allowed to signal it — the

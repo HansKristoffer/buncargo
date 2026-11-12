@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDevEnvironment, defineDevConfig } from "../src";
+import { defineDevConfig, service } from "../src";
+import { createDevEnvironment } from "../src/api/index";
 import { observeStartupMetrics } from "../src/core/startup-metrics";
 
 async function verifyContainerReuse(): Promise<void> {
@@ -126,20 +127,25 @@ async function verifyPreparation(): Promise<void> {
 		return defineDevConfig({
 			projectPrefix: prefix,
 			services: {
-				postgres: {
+				// The preset, so the contract gets the URL, credentials and TCP
+				// healthcheck a project's database gets. The raw fields add the
+				// slow init and give it its own startup budget.
+				postgres: service.postgres({
 					port: 5432,
-					healthCheck: "pg_isready",
 					docker: {
 						image: "postgres:16",
-						environment: { POSTGRES_PASSWORD: "postgres" },
-						// Give the deliberately slow initialization its own startup budget.
-						healthcheck: { start_period: "15s" },
+						healthcheck: {
+							test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres"],
+							interval: "1s",
+							retries: 60,
+							start_period: "15s",
+						},
 						volumes: [
 							"dbdata:/var/lib/postgresql/data",
 							`${slowInit}:/docker-entrypoint-initdb.d/slow-init.sql:ro`,
 						],
 					},
-				},
+				}),
 				init: {
 					kind: "job",
 					rerun: "always",

@@ -1,5 +1,27 @@
 import { describe, expect, it } from "bun:test";
-import { parseDockerVolumeLine } from "./volumes";
+import { fakeDocker } from "./fake-docker.testing";
+import {
+	listDockerVolumes,
+	parseDockerVolumeLine,
+	readDockerVolumeSizes,
+} from "./volumes";
+
+describe("listDockerVolumes", () => {
+	it("throws when Docker cannot list, rather than answering none", async () => {
+		// An empty answer read as "no volume left", which let the sweep retire
+		// the claim that names a deleted checkout's volumes.
+		const fake = fakeDocker({
+			volume: { stderr: "Cannot connect to the Docker daemon", exitCode: 1 },
+		});
+		try {
+			await expect(listDockerVolumes(fake.binary)).rejects.toThrow(
+				"Cannot connect to the Docker daemon",
+			);
+		} finally {
+			fake.remove();
+		}
+	});
+});
 
 describe("parseDockerVolumeLine", () => {
 	it("reads a named volume and its compose project", () => {
@@ -23,5 +45,41 @@ describe("parseDockerVolumeLine", () => {
 		const anonymous = "a".repeat(64);
 		expect(parseDockerVolumeLine(`${anonymous}\t`)).toBeNull();
 		expect(parseDockerVolumeLine("")).toBeNull();
+	});
+});
+
+describe("readDockerVolumeSizes", () => {
+	it("reads each volume's size in bytes from `docker system df -v`", async () => {
+		const volumes = [
+			{ Name: "app-a_db", Size: "1.5GB" },
+			{ Name: "app-b_db", Size: "2.477kB" },
+			{ Name: "empty", Size: "0B" },
+			{ Name: "unmeasured", Size: "N/A" },
+		];
+		const fake = fakeDocker({ system: { stdout: JSON.stringify(volumes) } });
+		try {
+			expect(await readDockerVolumeSizes(fake.binary)).toEqual(
+				new Map([
+					["app-a_db", 1_500_000_000],
+					["app-b_db", 2477],
+					["empty", 0],
+				]),
+			);
+		} finally {
+			fake.remove();
+		}
+	});
+
+	it("throws when Docker cannot answer", async () => {
+		const fake = fakeDocker({
+			system: { stderr: "Cannot connect to the Docker daemon", exitCode: 1 },
+		});
+		try {
+			await expect(readDockerVolumeSizes(fake.binary)).rejects.toThrow(
+				"Cannot connect to the Docker daemon",
+			);
+		} finally {
+			fake.remove();
+		}
 	});
 });

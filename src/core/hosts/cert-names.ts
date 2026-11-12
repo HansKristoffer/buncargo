@@ -1,5 +1,7 @@
 import { join } from "node:path";
+import { isString } from "hanzio";
 import { checkoutDeleted } from "../checkout-presence";
+import { arrayOf, type Guarded, object } from "../json-shape";
 import { defineListRegistry } from "../registry-file";
 import { chownToInvokingUser, getStateDir } from "../state-paths";
 
@@ -29,30 +31,21 @@ const REGISTRY_VERSION = 1;
  */
 const MAX_ROOTS = 200;
 
-export interface CertNameEntry {
-	/** Repo root the names belong to. */
-	root: string;
-	/** Hostnames and wildcards, as `certificateHostnames` produced them. */
-	names: string[];
-	updatedAt: string;
-}
-
-export const CERT_NAMES_FILENAME = "cert-names.json";
+const CERT_NAMES_FILENAME = "cert-names.json";
 
 export function getCertNamesPath(): string {
 	return join(getStateDir(), CERT_NAMES_FILENAME);
 }
 
-function isCertNameEntry(value: unknown): value is CertNameEntry {
-	if (typeof value !== "object" || value === null) return false;
-	const entry = value as Partial<CertNameEntry>;
-	return (
-		typeof entry.root === "string" &&
-		Array.isArray(entry.names) &&
-		entry.names.every((name) => typeof name === "string") &&
-		typeof entry.updatedAt === "string"
-	);
-}
+const isCertNameEntry = object({
+	/** Repo root the names belong to. */
+	root: isString,
+	/** Hostnames and wildcards, as `certificateHostnames` produced them. */
+	names: arrayOf(isString),
+	updatedAt: isString,
+});
+
+export type CertNameEntry = Guarded<typeof isCertNameEntry>;
 
 const registry = defineListRegistry<CertNameEntry>({
 	version: REGISTRY_VERSION,
@@ -65,18 +58,12 @@ function byNewestFirst(a: CertNameEntry, b: CertNameEntry): number {
 	return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
 }
 
-/**
- * Drop entries whose checkout is gone, and cap what is left.
- *
- * Exported for the test, and pure so the "is it still there" check can be
- * substituted.
- */
+/** Drop entries whose checkout is gone, and cap what is left. */
 export function pruneCertNameEntries(
 	entries: CertNameEntry[],
-	rootExists: (root: string) => boolean = (root) => !checkoutDeleted(root),
 ): CertNameEntry[] {
 	return entries
-		.filter((entry) => rootExists(entry.root))
+		.filter((entry) => !checkoutDeleted(entry.root))
 		.sort(byNewestFirst)
 		.slice(0, MAX_ROOTS);
 }
@@ -90,12 +77,10 @@ export function pruneCertNameEntries(
 export async function rememberCertNames(input: {
 	root?: string;
 	names: string[];
-	path?: string;
-	rootExists?: (root: string) => boolean;
 }): Promise<string[]> {
-	const path = input.path ?? getCertNamesPath();
+	const path = getCertNamesPath();
 	const stored = await registry.read(path);
-	const live = pruneCertNameEntries(stored, input.rootExists);
+	const live = pruneCertNameEntries(stored);
 
 	// An empty name list is never a recording: a caller that only wants the
 	// union must not be able to erase a project's coverage by omission.
@@ -120,12 +105,4 @@ export async function rememberCertNames(input: {
 	}
 
 	return [...new Set(next.flatMap((entry) => entry.names))].sort();
-}
-
-/** Every remembered name, without recording anything. */
-export async function readCertNames(
-	path = getCertNamesPath(),
-): Promise<string[]> {
-	const entries = pruneCertNameEntries(await registry.read(path));
-	return [...new Set(entries.flatMap((entry) => entry.names))].sort();
 }

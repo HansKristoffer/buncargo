@@ -2,29 +2,30 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveApps } from "../config/resolve";
 import type { SkippedLeaseApp } from "../core/app-leases";
 import { readLeases } from "../core/leases";
 import { publishCurrentRun, type RunSource } from "../core/run-publish";
 import { patchRun } from "../core/run-registry";
-import { acquireAppLeases, leaseSkipLines } from "./dev-leases";
+import { useTempHome } from "../core/test-env.testing";
+import { acquireStartLeases } from "../environment/app-leases";
+import type { ResolvedApp } from "../types";
+import { cliLeasePolicy, leaseSkipLines } from "./dev-leases";
+import type { TakeoverDecision } from "./dev-takeover";
 import { CliError } from "./errors";
 
+useTempHome();
 let root: string;
-let savedHome: string | undefined;
 beforeEach(() => {
 	root = mkdtempSync(join(tmpdir(), "buncargo-dev-leases-"));
-	savedHome = process.env.HOME;
-	process.env.HOME = root;
 });
 afterEach(() => {
-	if (savedHome === undefined) delete process.env.HOME;
-	else process.env.HOME = savedHome;
 	rmSync(root, { recursive: true, force: true });
 });
 
-const apps = {
+const apps = resolveApps({
 	web: { port: 3000, devCommand: "bun dev", exclusive: "fixture:exclusive" },
-};
+});
 function source(sessionId: string): RunSource {
 	return {
 		sessionId,
@@ -41,6 +42,26 @@ function source(sessionId: string): RunSource {
 		containerRuntime: "docker",
 		resolvePrimaryApp: () => "web",
 	};
+}
+
+/** The leases `buncargo dev` takes, answered the way its policy answers. */
+function acquireAppLeases(
+	owner: RunSource,
+	apps: Record<string, ResolvedApp>,
+	options: {
+		takeover: TakeoverDecision;
+		interactive?: boolean;
+		confirm?: (lines: string[]) => Promise<boolean>;
+	},
+) {
+	return acquireStartLeases(owner, apps, {
+		held: new Set(),
+		policy: cliLeasePolicy({
+			takeover: () => options.takeover,
+			interactive: options.interactive ?? false,
+			confirm: options.confirm,
+		}),
+	});
 }
 
 it.each(["starting", "identity-refused"])(
@@ -100,14 +121,14 @@ it("moves the lease of an app this run already took over without asking", async 
 });
 
 describe("a lease held by another run", () => {
-	const optionalApps = {
+	const optionalApps = resolveApps({
 		shopify: {
 			kind: "worker" as const,
 			devCommand: "shopify app dev",
 			essential: false,
 			exclusive: "shopify-app:abc",
 		},
-	};
+	});
 
 	it("skips an essential: false app without a terminal, naming the holder", async () => {
 		await acquireAppLeases(source("owner"), optionalApps, {

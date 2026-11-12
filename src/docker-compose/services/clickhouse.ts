@@ -4,7 +4,11 @@ import {
 	type PresetServiceCredentialOptions,
 	type PresetServiceSecondaryPortOptions,
 } from "./define-docker-service";
-import { getDefaultPortBindings, resolveHealthcheck } from "./shared";
+import {
+	composeLiteral,
+	getDefaultPortBindings,
+	resolveHealthcheck,
+} from "./shared";
 
 export type ClickhouseServiceOptions = PresetServiceCredentialOptions &
 	PresetServiceSecondaryPortOptions;
@@ -30,6 +34,9 @@ export const clickhouseDockerService = defineDockerService<
 		CLICKHOUSE_URL: "url",
 		CLICKHOUSE_NATIVE_PORT: "secondaryPort",
 	},
+	credentials: { user: "default", password: "clickhouse", database: "default" },
+	url: ({ host, port, credentials }) =>
+		`http://${credentials?.user}:${credentials?.password}@${host}:${port}/${credentials?.database}`,
 	enhanceServiceConfig: (base, options): ClickhouseServiceConfig => ({
 		...base,
 		secondaryPort: options?.secondaryPort ?? 9000,
@@ -38,9 +45,11 @@ export const clickhouseDockerService = defineDockerService<
 		password: options?.password,
 	}),
 	build: ({ serviceKey, config }) => {
-		const user = config.user ?? "default";
-		const password = config.password ?? "clickhouse";
-		const database = config.database ?? "default";
+		const user = composeLiteral(config.credentials?.user ?? "default");
+		const password = composeLiteral(
+			config.credentials?.password ?? "clickhouse",
+		);
+		const database = composeLiteral(config.credentials?.database ?? "default");
 		const defaultHealthcheck: DockerComposeHealthcheckRaw = {
 			test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping || exit 1"],
 			interval: "250ms",

@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { isRecord } from "hanzio";
 import { installConnectBundle } from "./connect/bundle";
 import { withFileLock } from "./file-lock";
 import { exec } from "./process/exec";
@@ -17,6 +18,7 @@ import { readJsonDocumentSync, writeJsonDocumentSync } from "./registry-file";
 import { barOfferOptedOut, isCI } from "./runtime-flags";
 import { shellQuote } from "./shell-quote";
 import { chownToInvokingUser, stateFilePath } from "./state-paths";
+import { downloadToolAsset, type ToolFetch } from "./tool-install";
 
 /**
  * BuncargoBar — the macOS menu bar app that reads the run registry.
@@ -32,9 +34,9 @@ import { chownToInvokingUser, stateFilePath } from "./state-paths";
  */
 
 export const BAR_APP_NAME = "BuncargoBar";
-export const BAR_BUNDLE_NAME = `${BAR_APP_NAME}.app`;
-export const BAR_DECLINE_FILENAME = "bar-declined";
-export const BAR_MANIFEST_FILENAME = "bar.json";
+const BAR_BUNDLE_NAME = `${BAR_APP_NAME}.app`;
+const BAR_DECLINE_FILENAME = "bar-declined";
+const BAR_MANIFEST_FILENAME = "bar.json";
 const MANIFEST_VERSION = 1;
 
 /**
@@ -60,7 +62,7 @@ export const BAR_SOURCE_VERSION = "source";
 const RELEASES_ENDPOINT =
 	"https://api.github.com/repos/HansKristoffer/buncargo/releases?per_page=100";
 /** Tags for the app, kept apart from the CLI's own `v*` tags. */
-export const BAR_TAG_PREFIX = "bar-v";
+const BAR_TAG_PREFIX = "bar-v";
 
 export const barDecline = declineMarker(BAR_DECLINE_FILENAME);
 
@@ -73,17 +75,32 @@ export interface BarManifest {
 	installedAt: string;
 }
 
-export function getBarManifestPath(home?: string): string {
-	return stateFilePath(BAR_MANIFEST_FILENAME, home);
+export function getBarManifestPath(): string {
+	return stateFilePath(BAR_MANIFEST_FILENAME);
 }
 
+/** The manifest built from the fields that checked out, never the raw value. */
 function isBarManifest(value: unknown): BarManifest | undefined {
-	if (typeof value !== "object" || value === null) return undefined;
-	const manifest = value as Partial<BarManifest>;
-	if (manifest.version !== MANIFEST_VERSION) return undefined;
-	if (typeof manifest.path !== "string") return undefined;
-	if (typeof manifest.appVersion !== "string") return undefined;
-	return manifest as BarManifest;
+	if (!isRecord(value) || value.version !== MANIFEST_VERSION) return undefined;
+	const { path, appVersion, installedAt, cli } = value;
+	if (
+		typeof path !== "string" ||
+		typeof appVersion !== "string" ||
+		typeof installedAt !== "string"
+	) {
+		return undefined;
+	}
+	return {
+		version: MANIFEST_VERSION,
+		path,
+		appVersion,
+		installedAt,
+		...(isRecord(cli) &&
+		typeof cli.program === "string" &&
+		typeof cli.script === "string"
+			? { cli: { program: cli.program, script: cli.script } }
+			: {}),
+	};
 }
 
 export function readBarManifest(): BarManifest | undefined {
@@ -124,16 +141,21 @@ export async function rememberBarCli(): Promise<void> {
 	});
 }
 
-const SYSTEM_APPLICATIONS = "/Applications";
+/** The folders the app is installed in: the machine's, then the user's own. */
+export interface BarFolders {
+	system: string;
+	user: string;
+}
+
+function machineBarFolders(): BarFolders {
+	return { system: "/Applications", user: join(homedir(), "Applications") };
+}
 
 /** Where the bundle can live, most preferred first. */
-function candidateBundlePaths(
-	home = homedir(),
-	system = SYSTEM_APPLICATIONS,
-): string[] {
+function candidateBundlePaths(folders: BarFolders): string[] {
 	return [
-		join(system, BAR_BUNDLE_NAME),
-		join(home, "Applications", BAR_BUNDLE_NAME),
+		join(folders.system, BAR_BUNDLE_NAME),
+		join(folders.user, BAR_BUNDLE_NAME),
 	];
 }
 
@@ -144,10 +166,12 @@ function candidateBundlePaths(
  * every `buncargo dev`, and the whole point of the command is to start fast.
  * No Spotlight query, no `mdfind`, no process listing.
  */
-export function findInstalledBar(home?: string): string | undefined {
+export function findInstalledBar(): string | undefined {
 	const manifest = readBarManifest();
 	if (manifest && existsSync(manifest.path)) return manifest.path;
-	return candidateBundlePaths(home).find((path) => existsSync(path));
+	return candidateBundlePaths(machineBarFolders()).find((path) =>
+		existsSync(path),
+	);
 }
 
 export interface InstalledBarInfo {
@@ -165,10 +189,8 @@ export interface InstalledBarInfo {
  * the `buncargo dev` path, the file is written by `package.sh` two lines from
  * the pattern below, and a process spawn costs more than reading it.
  */
-export function readInstalledBarInfo(
-	home?: string,
-): InstalledBarInfo | undefined {
-	const path = findInstalledBar(home);
+export function readInstalledBarInfo(): InstalledBarInfo | undefined {
+	const path = findInstalledBar();
 	return path ? readBundleInfo(path) : undefined;
 }
 
@@ -250,12 +272,15 @@ interface GithubRelease {
  * most recently across the whole repository, which here is usually a CLI `v7.x`
  * tag with no app in it.
  */
-export async function fetchLatestBarRelease(): Promise<BarRelease | undefined> {
+export async function fetchLatestBarRelease(
+	signal?: AbortSignal,
+): Promise<BarRelease | undefined> {
+	const timeout = AbortSignal.timeout(RELEASE_FETCH_TIMEOUT_MS);
 	const response = await fetch(RELEASES_ENDPOINT, {
 		headers: { Accept: "application/vnd.github+json" },
 		// The background check must not keep a dev run's event loop alive on a
 		// hung connection.
-		signal: AbortSignal.timeout(RELEASE_FETCH_TIMEOUT_MS),
+		signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
 	});
 	if (!response.ok) {
 		throw new Error(`GitHub returned ${response.status} listing releases`);
@@ -291,42 +316,34 @@ export async function fetchLatestBarRelease(): Promise<BarRelease | undefined> {
 	return undefined;
 }
 
-async function download(url: string, destination: string): Promise<void> {
-	const response = await fetch(url, { redirect: "follow" });
-	if (!response.ok) {
-		throw new Error(`Download failed with ${response.status}: ${url}`);
-	}
-	await Bun.write(destination, response);
-}
+/** The published checksum is one line: the digest, then the file name. */
+const MAX_CHECKSUM_BYTES = 4096;
 
 /**
- * Verify the zip against the checksum the release workflow publishes beside
- * it. A release without one, or one that cannot be read, is not installed.
+ * Download the release's zip to `to`, verified against the checksum the
+ * release workflow publishes beside it, bounded in time and size, and stopped
+ * when `signal` fires. A release without a readable checksum is not installed.
  */
-async function verifyChecksum(
-	zipPath: string,
-	checksumUrl: string | undefined,
+export async function downloadBarRelease(
+	release: BarRelease,
+	to: string,
+	options: { signal: AbortSignal; fetch?: ToolFetch },
 ): Promise<void> {
-	if (!checksumUrl)
+	if (!release.checksumUrl)
 		throw new Error(
 			"The release has no checksum for the app; not installing it.",
 		);
-	const response = await fetch(checksumUrl, { redirect: "follow" });
-	if (!response.ok)
-		throw new Error(
-			`Could not download the app's checksum (HTTP ${response.status}).`,
-		);
-	const expected = (await response.text()).trim().split(/\s+/)[0];
-	if (!expected) throw new Error("The app's published checksum is empty.");
-
-	const hasher = new Bun.CryptoHasher("sha256");
-	hasher.update(await Bun.file(zipPath).arrayBuffer());
-	const actual = hasher.digest("hex");
-	if (actual !== expected) {
-		throw new Error(
-			`Checksum mismatch for the downloaded app (expected ${expected}, got ${actual}).`,
-		);
-	}
+	const checksumPath = `${to}.sha256`;
+	await downloadToolAsset(release.checksumUrl, checksumPath, {
+		...options,
+		maxBytes: MAX_CHECKSUM_BYTES,
+		timeoutMs: RELEASE_FETCH_TIMEOUT_MS,
+	});
+	const sha256 = readFileSync(checksumPath, "utf8").trim().split(/\s+/)[0];
+	rmSync(checksumPath, { force: true });
+	if (!sha256 || !/^[a-f0-9]{64}$/i.test(sha256))
+		throw new Error("The app's published checksum is not a sha256 digest.");
+	await downloadToolAsset(release.zipUrl, to, { ...options, sha256 });
 }
 
 /**
@@ -336,11 +353,10 @@ async function verifyChecksum(
  * not worth a sudo prompt.
  */
 export function installDirectory(
-	home = homedir(),
-	system = SYSTEM_APPLICATIONS,
+	folders: BarFolders,
 	existing?: string,
 ): string {
-	for (const directory of [existing && dirname(existing), system]) {
+	for (const directory of [existing && dirname(existing), folders.system]) {
 		if (!directory) continue;
 		try {
 			accessSync(directory, constants.W_OK);
@@ -349,7 +365,7 @@ export function installDirectory(
 			// Not ours to write: try the next.
 		}
 	}
-	return join(home, "Applications");
+	return folders.user;
 }
 
 export interface BarInstallResult {
@@ -360,6 +376,8 @@ export interface BarInstallResult {
 }
 
 export interface BarInstallOptions {
+	/** The run's signal: the download stops when it fires. */
+	signal: AbortSignal;
 	/**
 	 * Refuse a release whose bundle cannot decode this `runs.json` version.
 	 *
@@ -382,21 +400,23 @@ export interface BarInstallOptions {
  * the only updater.
  */
 export async function installBar(
-	options: BarInstallOptions = {},
+	options: BarInstallOptions,
 ): Promise<BarInstallResult> {
 	if (!isBarSupported()) {
 		throw new Error(`${BAR_APP_NAME} is macOS only.`);
 	}
 
-	const release = await fetchLatestBarRelease();
+	const release = await fetchLatestBarRelease(options.signal);
 	if (!release) {
 		throw new Error(
 			`No ${BAR_APP_NAME} release published yet. Build it from source with \`buncargo bar install --source\`.`,
 		);
 	}
 
-	return withFileLock(getBarManifestPath(), () =>
-		applyRelease(release, options),
+	return withFileLock(
+		getBarManifestPath(),
+		() => applyRelease(release, options),
+		{ signal: options.signal },
 	);
 }
 
@@ -408,8 +428,7 @@ async function applyRelease(
 	const workspace = mkdtempSync(join(tmpdir(), "buncargo-bar-"));
 	try {
 		const zipPath = join(workspace, "bar.zip");
-		await download(release.zipUrl, zipPath);
-		await verifyChecksum(zipPath, release.checksumUrl);
+		await downloadBarRelease(release, zipPath, { signal: options.signal });
 
 		const extracted = join(workspace, "extracted");
 		const unzip = run(
@@ -441,7 +460,7 @@ async function applyRelease(
 		const wasRunning = await quitBar();
 
 		const target = join(
-			installDirectory(undefined, undefined, findInstalledBar()),
+			installDirectory(machineBarFolders(), findInstalledBar()),
 			BAR_BUNDLE_NAME,
 		);
 		try {
@@ -562,7 +581,7 @@ export function isBarRunning(): boolean {
  *
  * Returns whether it was running, which is what decides a relaunch.
  */
-export async function quitBar(): Promise<boolean> {
+async function quitBar(): Promise<boolean> {
 	if (!isBarRunning()) return false;
 	run(`osascript -e 'quit app "${BAR_APP_NAME}"'`);
 
@@ -579,7 +598,7 @@ export async function quitBar(): Promise<boolean> {
 export async function uninstallBar(): Promise<boolean> {
 	return withFileLock(getBarManifestPath(), async () => {
 		await quitBar();
-		return removeInstalledBars();
+		return removeInstalledBars(machineBarFolders());
 	});
 }
 
@@ -588,12 +607,12 @@ export async function uninstallBar(): Promise<boolean> {
  * write over a copy in `/Applications` installs a second one in
  * `~/Applications`, so there can be two. Whether any was there.
  */
-export function removeInstalledBars(home?: string, system?: string): boolean {
+export function removeInstalledBars(folders: BarFolders): boolean {
 	const manifest = readBarManifest();
 	const copies = [
 		...new Set([
 			...(manifest ? [manifest.path] : []),
-			...candidateBundlePaths(home, system),
+			...candidateBundlePaths(folders),
 		]),
 	].filter((path) => existsSync(path));
 	for (const path of copies) rmSync(path, { recursive: true, force: true });

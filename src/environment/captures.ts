@@ -1,7 +1,6 @@
 import { withDeadline } from "../core/deadline";
 import type { CapturedValue } from "../core/process/output-capture";
 import { formatDone } from "../core/style";
-import type { AppConfig, EnvValues, ServiceConfig } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
 import { renderGeneratedFiles } from "./generated-files";
@@ -13,13 +12,9 @@ import { renderGeneratedFiles } from "./generated-files";
  * `value` becomes `captured.<name>`. Hooks see every capture, events included.
  * Generated files re-render only when something they read actually changed.
  */
-export function createCaptureRecorder<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues,
->(
-	ctx: DevEnvContext<TServices, TApps, TEnv>,
-	envVars: DevEnvVarsApi<TServices, TApps, TEnv>,
+export function createCaptureRecorder(
+	ctx: DevEnvContext,
+	envVars: DevEnvVarsApi,
 ) {
 	return async function recordCapture(
 		app: string,
@@ -56,35 +51,4 @@ export function createCaptureRecorder<
 		}
 		return changed;
 	};
-}
-
-/** Every capture config that asked for `key`, with the value it captured. */
-function capturedWith(
-	apps: Readonly<Record<string, AppConfig>>,
-	captured: Readonly<Record<string, string>>,
-	key: "label" | "env",
-): [string, string][] {
-	return Object.values(apps).flatMap((app) =>
-		Object.entries(app.captures ?? {}).flatMap(([name, capture]) => {
-			const target = capture[key];
-			const value = captured[name];
-			return target && value ? [[target, value] as [string, string]] : [];
-		}),
-	);
-}
-
-/** Captured values under their `label`. */
-export function labelledCaptures(
-	apps: Readonly<Record<string, AppConfig>>,
-	captured: Readonly<Record<string, string>>,
-): Record<string, string> {
-	return Object.fromEntries(capturedWith(apps, captured, "label"));
-}
-
-/** Captured values under their `env` name. */
-export function capturedEnv(
-	apps: Readonly<Record<string, AppConfig>>,
-	captured: Readonly<Record<string, string>>,
-): Record<string, string> {
-	return Object.fromEntries(capturedWith(apps, captured, "env"));
 }

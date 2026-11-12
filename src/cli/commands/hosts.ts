@@ -1,4 +1,3 @@
-import { typedSwitch } from "hanzio";
 import {
 	describeLoopbackHijack,
 	identityRouteOwners,
@@ -6,7 +5,6 @@ import {
 	OUTDATED_DAEMON_MESSAGE,
 	pruneHostRoutes,
 	RELOAD_STALL_MS,
-	readDaemonConfig,
 	readHostsDaemonHealth,
 	runHostsDaemon,
 	runHostsInstall,
@@ -18,6 +16,7 @@ import {
 	isCaTrusted,
 	resolvedMkcertPath,
 } from "../../core/hosts/mkcert";
+import { HOSTS_HTTPS_PORT } from "../../core/hosts/protocol";
 import {
 	describeStaleHostsService,
 	isHostsServiceInstalled,
@@ -30,54 +29,123 @@ import {
 	tailscaleServeDeps,
 } from "../../core/hosts/tailscale-serve";
 import { hostsMode } from "../../core/runtime-flags";
+import {
+	type AnyCommand,
+	BASE_EXITS,
+	defineCommand,
+	defineGroup,
+} from "../command-spec";
 import * as log from "../log";
-import { hostsSubcommandList, resolveHostsSubcommand } from "./registry";
 
-export async function handleHosts(args: string[]): Promise<void> {
-	const requested = args[0] ?? "status";
-	const subcommand = resolveHostsSubcommand(requested);
-	if (!subcommand) {
-		log.fail(`Unknown hosts command: ${requested}`, [
-			`Use: buncargo hosts ${hostsSubcommandList()}`,
-		]);
-	}
-
-	await typedSwitch(subcommand, {
-		install: async () => {
-			// Always reload the service: this is the command users are told to run
-			// when named hosts are broken, so it has to replace a stale daemon.
-			await runHostsInstall({ reinstallService: true });
-			log.done("Named hosts are ready");
+/** A `hosts` subcommand with no arguments. */
+function hostsStep(
+	name: string,
+	summary: string,
+	run: () => Promise<void> | void,
+): AnyCommand {
+	return defineCommand({
+		spec: { name: `hosts ${name}`, summary, flags: {} },
+		exits: BASE_EXITS,
+		run: async () => {
+			await run();
+			return 0;
 		},
-		uninstall: async () => {
-			const warnings = await runHostsUninstall();
-			for (const warning of warnings) log.warn(warning);
-			log.done("Named hosts were removed from this machine");
-		},
-		status: () => printHostsStatus(),
-		sync: async () => {
-			const routes = await pruneHostRoutes();
-			syncHostsFile(routes.map((route) => route.hostname));
-			log.done(
-				`Synced ${routes.length} hostname${routes.length === 1 ? "" : "s"} to /etc/hosts`,
-			);
-		},
-		prune: async () => {
-			const before = (await loadHostRoutes()).length;
-			// By identity: this is what retires a route whose pid a reboot
-			// handed to another process.
-			const after = await pruneHostRoutes(undefined, {
-				owners: identityRouteOwners,
-			});
-			const removed = before - after.length;
-			log.done(`Pruned ${removed} stale route${removed === 1 ? "" : "s"}`);
-			const serve = await sweepTailscaleServe(tailscaleServeDeps());
-			for (const line of serve.removed) log.done(line);
-			for (const line of serve.failures) log.warn(line);
-		},
-		daemon: () => runHostsDaemon({ service: args.includes("--service") }),
 	});
 }
+
+const statusCommand = hostsStep(
+	"status",
+	"Daemon health, CA, and active routes",
+	() => printHostsStatus(),
+);
+
+export const hostsCommand = defineGroup({
+	spec: { name: "hosts", summary: "Named .localhost URLs" },
+	subcommands: {
+		// Always reloads the service: this is the command users are told to run
+		// when named hosts are broken, so it has to replace a stale daemon.
+		// Never a newer one without --force: another project installed it.
+		install: defineCommand({
+			spec: {
+				name: "hosts install",
+				summary: "One-time CA + :443 proxy (non-interactive)",
+				flags: {
+					force: {
+						kind: "boolean",
+						description:
+							"Replace the service even when a newer buncargo installed it",
+					},
+				},
+			},
+			exits: BASE_EXITS,
+			run: async ({ values }) => {
+				const notes = await runHostsInstall({
+					reinstallService: true,
+					force: values.force,
+				});
+				for (const note of notes) log.warn(note);
+				log.done("Named hosts are ready");
+				return 0;
+			},
+		}),
+		status: statusCommand,
+		sync: hostsStep(
+			"sync",
+			"Rewrite the /etc/hosts buncargo block",
+			async () => {
+				const routes = await pruneHostRoutes();
+				syncHostsFile(routes.map((route) => route.hostname));
+				log.done(
+					`Synced ${routes.length} hostname${routes.length === 1 ? "" : "s"} to /etc/hosts`,
+				);
+			},
+		),
+		prune: hostsStep(
+			"prune",
+			"Drop routes whose owner process is gone",
+			async () => {
+				const before = (await loadHostRoutes()).length;
+				// By identity: this is what retires a route whose pid a reboot
+				// handed to another process.
+				const after = await pruneHostRoutes({
+					owners: identityRouteOwners,
+				});
+				const removed = before - after.length;
+				log.done(`Pruned ${removed} stale route${removed === 1 ? "" : "s"}`);
+				const serve = await sweepTailscaleServe(tailscaleServeDeps());
+				for (const line of serve.removed) log.done(line);
+				for (const line of serve.failures) log.warn(line);
+			},
+		),
+		uninstall: hostsStep(
+			"uninstall",
+			"Remove named hosts from this machine",
+			async () => {
+				const warnings = await runHostsUninstall();
+				for (const warning of warnings) log.warn(warning);
+				log.done("Named hosts were removed from this machine");
+			},
+		),
+		daemon: defineCommand({
+			spec: {
+				name: "hosts daemon",
+				summary: "Run the loopback HTTPS proxy in the foreground",
+				flags: {
+					service: {
+						kind: "boolean",
+						description: "Run as the installed service (launchd, systemd)",
+					},
+				},
+			},
+			exits: BASE_EXITS,
+			run: async ({ values }) => {
+				await runHostsDaemon({ service: values.service });
+				return 0;
+			},
+		}),
+	},
+	fallback: statusCommand,
+});
 
 async function printHostsStatus(): Promise<void> {
 	const mode = hostsMode();
@@ -86,8 +154,7 @@ async function printHostsStatus(): Promise<void> {
 		await printTailscaleStatus();
 		return;
 	}
-	const config = readDaemonConfig();
-	const health = await readHostsDaemonHealth(config.httpsPort);
+	const health = await readHostsDaemonHealth();
 	const healthy = health !== undefined;
 	const mkcertPath = resolvedMkcertPath();
 	log.line(
@@ -96,6 +163,7 @@ async function printHostsStatus(): Promise<void> {
 	if (health?.outdated) {
 		log.line(`  ${OUTDATED_DAEMON_MESSAGE}`);
 	} else if (health) {
+		log.line(`  protocol: ${health.protocol}`);
 		const ageMs = Date.now() - health.lastReloadAt;
 		const stale = ageMs > RELOAD_STALL_MS ? "  (stale)" : "";
 		log.line(`  refreshed: ${Math.round(ageMs / 1000)}s ago${stale}`);
@@ -103,10 +171,12 @@ async function printHostsStatus(): Promise<void> {
 		if (health.bindError)
 			log.line(`  certificate: cannot load the new one (${health.bindError})`);
 	}
-	log.line(`httpsPort: ${config.httpsPort}`);
 	log.line(`service: ${isHostsServiceInstalled() ? "installed" : "missing"}`);
 	const manifest = readHostsServiceManifest();
 	if (manifest) {
+		log.line(
+			`  buncargo: ${manifest.buncargoVersion} (protocol ${manifest.protocol})`,
+		);
 		log.line(`  exec: ${[manifest.program, ...manifest.args].join(" ")}`);
 	}
 	log.line(`mkcert: ${mkcertPath ?? "missing"}`);
@@ -122,12 +192,12 @@ async function printHostsStatus(): Promise<void> {
 			: `${caPath} (not trusted)`;
 	log.line(`ca: ${ca}`);
 	if (!healthy) {
-		const squatter = describePortSquatter(config.httpsPort);
+		const squatter = describePortSquatter(HOSTS_HTTPS_PORT);
 		if (squatter) {
 			log.line(`port: ${squatter}`);
 		}
 	} else {
-		const hijack = await describeLoopbackHijack(config.httpsPort);
+		const hijack = await describeLoopbackHijack();
 		if (hijack) {
 			log.line(`port: ${hijack}`);
 		}
@@ -145,7 +215,7 @@ async function printHostsStatus(): Promise<void> {
 	const served =
 		health && !health.outdated ? new Set(health.hostnames) : undefined;
 	for (const route of routes) {
-		const owner = route.pid === undefined ? "static" : `pid ${route.pid}`;
+		const owner = route.kind === "app" ? `pid ${route.pid}` : "static";
 		const unserved =
 			served && !served.has(route.hostname)
 				? "  ← not served by the daemon"

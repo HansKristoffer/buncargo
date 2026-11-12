@@ -14,6 +14,10 @@ Operating the relay: [frp](../frp.md).
   `buncargo connect status|tcp|disconnect` write no intent, so the coordinator they adopt can
   still leave before the request lands: `requestCoordinator` ensures it again and resends once,
   only when the connection was refused or reset, never for an error the coordinator answered.
+- A run ensures its coordinator again every 10 seconds (`keepCoordinator` in `cli/dev-connect.ts`):
+  one that was killed or crashed left the run's targets unshared until the run restarted. One
+  ensure launches at most three coordinators that go away before they report, then fails; the run
+  warns once per outage.
 - `connect/publisher.ts` gates loopback targets against process birth identity and lease expiry.
   frp owns HTTP/SSE/WebSocket and STCP transport. Browser actions open validated public URLs; TCP
   actions receive local visitor addresses.

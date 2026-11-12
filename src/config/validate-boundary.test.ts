@@ -101,7 +101,7 @@ describe("unknown config boundary", () => {
 			validateConfig({
 				...config(),
 				apps: undefined,
-				options: { primaryApp: "web", hosts: { primaryApp: "web" } },
+				options: { primaryApp: "web", hosts: true },
 			}).join("\n"),
 		).toContain('options.primaryApp "web"');
 	});

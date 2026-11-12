@@ -57,7 +57,7 @@ it("wins over env files, buncargo's values and an app's own envVars, but not the
 			[".env.local"],
 			{ FROM_SHELL: "shell" },
 			readEnvOverrides(root),
-		),
+		).declared,
 	).toMatchObject({
 		UPSTASH_REDIS_REST_URL: "http://localhost:8779",
 		FROM_SHELL: "shell",

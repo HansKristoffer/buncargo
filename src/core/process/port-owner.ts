@@ -1,15 +1,14 @@
 import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { platform } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { promiseTimeout, typedSwitch } from "hanzio";
+import { containerPortOwners } from "../../container-runtime/containers";
 import { containerRuntimeDisplayName } from "../../container-runtime/names";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import { manualComposeDownCommand } from "../../docker/binary";
 import {
 	dockerContainerPortOwners,
 	dockerContainerPortOwnersAsync,
-	findDockerContainerOnPort,
 } from "../../docker/port-lookup";
 import { CONFIG_FILES } from "../../loader/find-config-file";
 import type { ContainerRuntimeName, PortContainerOwner } from "../../types";
@@ -34,10 +33,17 @@ import {
 
 export type { PortContainerOwner };
 
-export interface PortOwnerLookupOptions {
+/** What the synchronous lookups take: they ask Docker, and only Docker. */
+export interface SyncPortOwnerOptions {
 	skipContainers?: boolean;
 	/** Listeners to leave out, e.g. our own daemon sharing the port. */
 	ignorePids?: number[];
+}
+
+/** What a lookup reads of a runtime: its name and its one listing. */
+type PortOwnerRuntime = Pick<ContainerRuntimeAdapter, "name" | "containers">;
+
+export interface PortOwnerLookupOptions extends SyncPortOwnerOptions {
 	/**
 	 * Runtime to ask about container-held ports.
 	 *
@@ -45,9 +51,10 @@ export interface PortOwnerLookupOptions {
 	 * `:443` squatter check and the dev-server ports, where the holder is a
 	 * local process and the container lookup only enriches the message. The
 	 * service ports, where the holder really can be a container on either
-	 * runtime, pass the resolved one.
+	 * runtime, pass the resolved one. Read through the runtime's async
+	 * listing, so only the async lookups take it.
 	 */
-	runtime?: ContainerRuntimeAdapter;
+	runtime?: PortOwnerRuntime;
 	/**
 	 * Runtimes to ask when the selected one has no container on the port.
 	 *
@@ -59,21 +66,25 @@ export interface PortOwnerLookupOptions {
 	 * `killPortOwner`'s poll loop does not probe every runtime ten times a
 	 * second for an answer only the startup check reports.
 	 */
-	fallbackRuntimes?: ContainerRuntimeAdapter[];
+	fallbackRuntimes?: PortOwnerRuntime[];
 }
 
-export interface PortOwner {
-	pids: number[];
-	command?: string;
-	cwd?: string;
-	container?: PortContainerOwner;
-	/**
-	 * Nothing this user can list holds the port, yet it cannot be bound: a
-	 * root process `lsof` hides, often a macOS service (Screen Sharing on
-	 * :5900, AirPlay on :5000/:7000). Never one of ours, so always foreign.
-	 */
-	unidentified?: true;
-}
+/**
+ * Who holds a port. `unidentified`: nothing this user can list holds it, yet
+ * it cannot be bound: a root process `lsof` hides, often a macOS service
+ * (Screen Sharing on :5900, AirPlay on :5000/:7000). Never one of ours, so
+ * always foreign.
+ */
+export type PortOwner =
+	| {
+			kind: "process";
+			/** Never empty. */
+			pids: number[];
+			command?: string;
+			cwd?: string;
+	  }
+	| { kind: "container"; container: PortContainerOwner }
+	| { kind: "unidentified" };
 
 const BIND_PROBE_HOSTS = ["127.0.0.1", "0.0.0.0", "::"] as const;
 
@@ -109,7 +120,7 @@ export function withBindProbe(
 	canBind: (port: number) => boolean = canBindPort,
 ): (port: number) => PortOwner | null {
 	return (port) =>
-		lookup(port) ?? (canBind(port) ? null : { pids: [], unidentified: true });
+		lookup(port) ?? (canBind(port) ? null : { kind: "unidentified" });
 }
 
 function parsePids(output: string): number[] {
@@ -123,26 +134,8 @@ function parsePids(output: string): number[] {
 	return Array.from(pids);
 }
 
-export function getListeningPids(port: number): number[] {
+function getListeningPids(port: number): number[] {
 	try {
-		const os = platform();
-		if (os === "win32") {
-			const output = execSync(`netstat -ano | findstr :${port}`, {
-				encoding: "utf-8",
-				stdio: ["pipe", "pipe", "pipe"],
-			});
-			const pids: number[] = [];
-			for (const line of output.trim().split("\n")) {
-				if (!line.includes("LISTENING")) continue;
-				const parts = line.trim().split(/\s+/);
-				const pid = Number.parseInt(parts[parts.length - 1], 10);
-				if (!Number.isNaN(pid) && pid > 0) {
-					pids.push(pid);
-				}
-			}
-			return Array.from(new Set(pids));
-		}
-
 		const output = execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`, {
 			encoding: "utf-8",
 			stdio: ["pipe", "pipe", "pipe"],
@@ -153,98 +146,47 @@ export function getListeningPids(port: number): number[] {
 	}
 }
 
-function processCommand(pid: number): string | undefined {
-	try {
-		return (
-			execSync(`ps -p ${pid} -o comm=`, {
-				encoding: "utf-8",
-				stdio: ["pipe", "pipe", "pipe"],
-			}).trim() || undefined
-		);
-	} catch {
-		return undefined;
-	}
-}
-
-function processCwd(pid: number): string | undefined {
-	try {
-		const output = execSync(`lsof -a -p ${pid} -d cwd -Fn`, {
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-		});
-		for (const line of output.split("\n")) {
-			if (line.startsWith("n")) {
-				return line.slice(1).trim() || undefined;
-			}
-		}
-		return undefined;
-	} catch {
-		return undefined;
-	}
+/** The runtimes a lookup asks, the selected one (Docker by default) first. */
+function runtimesToAsk(options: PortOwnerLookupOptions): {
+	name: ContainerRuntimeName;
+	owners: (signal?: AbortSignal) => Promise<Map<number, PortContainerOwner>>;
+}[] {
+	if (options.skipContainers) return [];
+	const selected = options.runtime;
+	const selectedName = selected?.name ?? "docker";
+	return [
+		{
+			name: selectedName,
+			owners: (signal) =>
+				selected
+					? containerPortOwners(selected, signal)
+					: dockerContainerPortOwnersAsync(signal),
+		},
+		...(options.fallbackRuntimes ?? [])
+			.filter((other) => other.name !== selectedName)
+			.map((other) => ({
+				name: other.name,
+				owners: (signal?: AbortSignal) => containerPortOwners(other, signal),
+			})),
+	];
 }
 
 /**
- * Container-held ports across the selected runtime and any fallbacks, in one
- * reading per runtime.
- *
- * The selected runtime wins a port both claim: it is the one this run can
- * actually start, exec into and tear down.
+ * One map from every runtime's reading. The selected runtime wins a port
+ * both claim: it is the one this run can start, exec into and tear down. A
+ * runtime that could not answer simply is not the owner.
  */
-export function containerPortOwnerMap(
-	options: PortOwnerLookupOptions = {},
+function mergeContainerOwners(
+	readings: {
+		name: ContainerRuntimeName;
+		owners: Map<number, PortContainerOwner> | undefined;
+	}[],
 ): Map<number, PortContainerOwner> {
-	if (options.skipContainers) return new Map();
-	const selected = options.runtime;
-	const selectedName = selected?.name ?? "docker";
-	const owners = new Map<number, PortContainerOwner>();
-
-	const read = (
-		runtime: ContainerRuntimeName,
-		list: () => Map<number, PortContainerOwner>,
-	): void => {
-		try {
-			for (const [port, owner] of list()) {
-				if (!owners.has(port)) owners.set(port, { ...owner, runtime });
-			}
-		} catch {
-			// A runtime that cannot answer simply is not the owner.
-		}
-	};
-
-	read(selectedName, () =>
-		selected ? selected.containerPortOwners() : dockerContainerPortOwners(),
-	);
-	for (const other of options.fallbackRuntimes ?? []) {
-		if (other.name === selectedName) continue;
-		read(other.name, () => other.containerPortOwners());
-	}
-
-	return owners;
-}
-
-export function findContainerOnPort(
-	port: number,
-	options: PortOwnerLookupOptions = {},
-): PortContainerOwner | undefined {
-	if (options.skipContainers) return undefined;
-	const selected = options.runtime;
-	const found = selected
-		? selected.findContainerOnPort(port)
-		: findDockerContainerOnPort(port);
-	if (found) {
-		return { ...found, runtime: selected?.name ?? "docker" };
-	}
-
-	for (const other of options.fallbackRuntimes ?? []) {
-		if (other.name === (selected?.name ?? "docker")) continue;
-		try {
-			const foreign = other.findContainerOnPort(port);
-			if (foreign) return { ...foreign, runtime: other.name };
-		} catch {
-			// A runtime that cannot answer simply is not the owner.
-		}
-	}
-	return undefined;
+	const merged = new Map<number, PortContainerOwner>();
+	for (const { name, owners } of readings)
+		for (const [port, owner] of owners ?? [])
+			if (!merged.has(port)) merged.set(port, { ...owner, runtime: name });
+	return merged;
 }
 
 /**
@@ -265,26 +207,35 @@ export interface PortOwnerSnapshot {
 	isBusy(port: number): boolean;
 }
 
+interface SnapshotOptions {
+	/**
+	 * Ports this snapshot will be asked about.
+	 *
+	 * Only used to batch the working-directory lookup, which is the one
+	 * question that still needs a call per group of processes. Leaving it
+	 * out is correct, just one extra `lsof` per distinct owner.
+	 */
+	ports?: number[];
+	includeCwd?: boolean;
+	listeners?: ListenerSnapshot;
+	containers?: Map<number, PortContainerOwner>;
+	cwds?: Map<number, string | undefined>;
+}
+
+/**
+ * A snapshot read synchronously. Without `containers` it asks Docker alone:
+ * any other runtime is read through its async listing, in
+ * {@link createPortOwnerSnapshotAsync}.
+ */
 export function createPortOwnerSnapshot(
-	options: PortOwnerLookupOptions & {
-		/**
-		 * Ports this snapshot will be asked about.
-		 *
-		 * Only used to batch the working-directory lookup, which is the one
-		 * question that still needs a call per group of processes. Leaving it
-		 * out is correct, just one extra `lsof` per distinct owner.
-		 */
-		ports?: number[];
-		includeCwd?: boolean;
-		listeners?: ListenerSnapshot;
-		containers?: Map<number, PortContainerOwner>;
-		cwds?: Map<number, string | undefined>;
-	} = {},
+	options: SyncPortOwnerOptions & SnapshotOptions = {},
 ): PortOwnerSnapshot {
 	if (options.ports?.length === 0 && !options.listeners && !options.containers)
 		return { owner: () => null, isBusy: () => false };
 	const listeners = options.listeners ?? readListenerSnapshot();
-	const containers = options.containers ?? containerPortOwnerMap(options);
+	const containers =
+		options.containers ??
+		(options.skipContainers ? new Map() : dockerContainerPortOwners());
 	const cwds = options.cwds ?? new Map<number, string | undefined>();
 	let pendingBatch: number[] | undefined = options.ports
 		? [
@@ -310,19 +261,14 @@ export function createPortOwnerSnapshot(
 	function owner(port: number): PortOwner | null {
 		const pids = listeners.pidsByPort.get(port) ?? [];
 		const container = containers.get(port);
-		if (pids.length === 0 && !container) return null;
+		if (container) return { kind: "container", container };
 		const primaryPid = pids[0];
+		if (primaryPid === undefined) return null;
 		return {
+			kind: "process",
 			pids,
-			command:
-				primaryPid !== undefined
-					? listeners.commandByPid.get(primaryPid)
-					: undefined,
-			cwd:
-				primaryPid !== undefined && !container && options.includeCwd !== false
-					? cwdFor(primaryPid)
-					: undefined,
-			container,
+			command: listeners.commandByPid.get(primaryPid),
+			cwd: options.includeCwd !== false ? cwdFor(primaryPid) : undefined,
 		};
 	}
 
@@ -335,45 +281,32 @@ export function createPortOwnerSnapshot(
 
 /** One cancellable reading per phase; listener and container listings run together. */
 export async function createPortOwnerSnapshotAsync(
-	options: Parameters<typeof createPortOwnerSnapshot>[0] & {
-		signal?: AbortSignal;
-	} = {},
+	options: PortOwnerLookupOptions &
+		SnapshotOptions & {
+			signal?: AbortSignal;
+		} = {},
 ): Promise<PortOwnerSnapshot> {
 	options.signal?.throwIfAborted();
 	if (options.ports?.length === 0 && !options.listeners && !options.containers)
 		return { owner: () => null, isBusy: () => false };
 	const readContainers = async (): Promise<Map<number, PortContainerOwner>> => {
 		if (options.containers) return options.containers;
-		if (options.skipContainers) return new Map();
-		const selected = options.runtime;
-		const names = [
-			selected?.name ?? "docker",
-			...(options.fallbackRuntimes ?? [])
-				.filter((runtime) => runtime.name !== (selected?.name ?? "docker"))
-				.map((runtime) => runtime.name),
-		];
-		const reads = [
-			selected
-				? () => selected.containerPortOwnersAsync(options.signal)
-				: () => dockerContainerPortOwnersAsync(undefined, options.signal),
-			...(options.fallbackRuntimes ?? [])
-				.filter((runtime) => runtime.name !== (selected?.name ?? "docker"))
-				.map(
-					(runtime) => () => runtime.containerPortOwnersAsync(options.signal),
-				),
-		];
+		const runtimes = runtimesToAsk(options);
 		const results = await Promise.allSettled(
-			reads.map((read) => Promise.resolve().then(read)),
+			runtimes.map(({ owners }) =>
+				Promise.resolve().then(() => owners(options.signal)),
+			),
 		);
 		options.signal?.throwIfAborted();
-		const owners = new Map<number, PortContainerOwner>();
-		for (const [index, result] of results.entries()) {
-			if (result.status !== "fulfilled") continue;
-			for (const [port, owner] of result.value)
-				if (!owners.has(port))
-					owners.set(port, { ...owner, runtime: names[index] });
-		}
-		return owners;
+		return mergeContainerOwners(
+			runtimes.map(({ name }, index) => {
+				const result = results[index];
+				return {
+					name,
+					owners: result?.status === "fulfilled" ? result.value : undefined,
+				};
+			}),
+		);
 	};
 	const [listeners, containers] = await Promise.all([
 		options.listeners ?? readListenerSnapshotAsync(options.signal),
@@ -396,23 +329,49 @@ export async function createPortOwnerSnapshotAsync(
 	return createPortOwnerSnapshot({ ...options, listeners, containers, cwds });
 }
 
+/**
+ * Who holds one port, read fresh: for the paths that change ownership on
+ * purpose (a kill, a takeover) and must not act on an older reading. Asking
+ * about several ports at once is {@link createPortOwnerSnapshotAsync}.
+ */
+export async function getPortOwnerAsync(
+	port: number,
+	options: PortOwnerLookupOptions & { signal?: AbortSignal } = {},
+): Promise<PortOwner | null> {
+	const ignore = new Set(options.ignorePids ?? []);
+	const listeners = await readListenerSnapshotAsync(options.signal);
+	const pids = (listeners.pidsByPort.get(port) ?? []).filter(
+		(pid) => !ignore.has(pid),
+	);
+	const snapshot = await createPortOwnerSnapshotAsync({
+		...options,
+		ports: [port],
+		listeners: {
+			pidsByPort: new Map(pids.length > 0 ? [[port, pids]] : []),
+			commandByPid: listeners.commandByPid,
+		},
+	});
+	return snapshot.owner(port);
+}
+
+/** {@link getPortOwnerAsync}, blocking: asks Docker alone about containers. */
 export function getPortOwner(
 	port: number,
-	options: PortOwnerLookupOptions = {},
+	options: SyncPortOwnerOptions = {},
 ): PortOwner | null {
 	const ignore = new Set(options.ignorePids ?? []);
-	const pids = getListeningPids(port).filter((pid) => !ignore.has(pid));
-	const container = findContainerOnPort(port, options);
-	if (pids.length === 0 && !container) {
-		return null;
-	}
-	const primaryPid = pids[0];
-	return {
-		pids,
-		command: primaryPid !== undefined ? processCommand(primaryPid) : undefined,
-		cwd: primaryPid !== undefined ? processCwd(primaryPid) : undefined,
-		container,
-	};
+	const listeners = readListenerSnapshot();
+	const pids = (listeners.pidsByPort.get(port) ?? []).filter(
+		(pid) => !ignore.has(pid),
+	);
+	return createPortOwnerSnapshot({
+		...options,
+		ports: [port],
+		listeners: {
+			pidsByPort: new Map(pids.length > 0 ? [[port, pids]] : []),
+			commandByPid: listeners.commandByPid,
+		},
+	}).owner(port);
 }
 
 /**
@@ -431,7 +390,7 @@ export function getProcessOnPort(port: number): number | null {
  */
 export function isPortInUse(
 	port: number,
-	options: PortOwnerLookupOptions = {},
+	options: SyncPortOwnerOptions = {},
 ): boolean {
 	return getPortOwner(port, options) !== null;
 }
@@ -500,17 +459,20 @@ export function killPortOwner(
 	port: number,
 	options: KillPortOwnerOptions = {},
 ): Promise<boolean> {
-	return killPortOwnerFoundBy(getPortOwner, port, options);
+	return killPortOwnerFoundBy(getPortOwnerAsync, port, options);
 }
 
 /** `killPortOwner` with the lookup that finds the holder passed in. */
 export async function killPortOwnerFoundBy(
-	lookup: (port: number, options: PortOwnerLookupOptions) => PortOwner | null,
+	lookup: (
+		port: number,
+		options: PortOwnerLookupOptions,
+	) => Promise<PortOwner | null>,
 	port: number,
 	options: KillPortOwnerOptions = {},
 ): Promise<boolean> {
 	const { verbose = false, timeout = 5000, runtime, skipContainers } = options;
-	const owner = lookup(port, { runtime, skipContainers });
+	const owner = await lookup(port, { runtime, skipContainers });
 	if (!owner) {
 		return false;
 	}
@@ -518,7 +480,7 @@ export async function killPortOwnerFoundBy(
 	// The process holding a published port is the runtime's own (Docker
 	// Desktop's backend, the `container` forwarder): signalling it takes down
 	// every container on the machine, and still not this one.
-	if (owner.container) {
+	if (owner.kind === "container") {
 		const project = owner.container.composeProject;
 		throw new Error(
 			`Port ${port} is held by container ${owner.container.name}${
@@ -526,6 +488,8 @@ export async function killPortOwnerFoundBy(
 			}, which buncargo does not kill. Stop the run that owns it (\`buncargo stop --all\` in its checkout), or stop the container itself.`,
 		);
 	}
+	// Nothing this user can signal.
+	if (owner.kind === "unidentified") return false;
 
 	if (verbose) {
 		console.log(
@@ -588,7 +552,8 @@ export function classifyPortOccupant(
 	},
 ): PortOccupantAction {
 	if (!owner) return "free";
-	if (owner.container) {
+	if (owner.kind === "unidentified") return "fail";
+	if (owner.kind === "container") {
 		// A container of ours on the other backend still has to go: this run
 		// cannot start, exec into or tear it down through the runtime it chose.
 		const sameRuntime =
@@ -691,7 +656,7 @@ export function formatPortOwner(
 		checkout?: CheckoutStacks;
 	} = {},
 ): string {
-	if (owner.container) {
+	if (owner.kind === "container") {
 		const { container } = owner;
 		const project = container.composeProject
 			? ` (project ${container.composeProject})`
@@ -721,10 +686,10 @@ export function formatPortOwner(
 		}
 		return base;
 	}
-	if (owner.unidentified)
+	if (owner.kind === "unidentified")
 		return `port ${port} is held by an unidentified process (one this user cannot list, often a system service)`;
 	const command = owner.command ? ` (${owner.command})` : "";
 	const cwd = owner.cwd ? ` in ${owner.cwd}` : "";
-	const pid = owner.pids[0] ?? "unknown";
+	const pid = owner.pids[0];
 	return `port ${port} held by process ${pid}${command}${cwd}`;
 }

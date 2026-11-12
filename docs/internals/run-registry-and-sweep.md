@@ -6,36 +6,61 @@ User-facing summary: [runtime maintenance](../runtime-maintenance.md).
 
 There is **one** liveness record: `~/.buncargo/runs.json` (`src/core/run-registry.ts`). It holds
 per-session identity, process birth identity, the selected services, runtime, binary and aliases,
-and owned versus reused apps. Several sessions in one root coexist. Updates are serialized and
+and owned versus reused apps. An app row's `publicUrl` is a tunnel's or one the app printed
+(`captures`); `tunnelUrl` marks the tunnel's, and a run reusing that app inherits only it. Several sessions in one root coexist. Updates are serialized and
 terminal states cannot regress to ready. Read-only consumers filter live entries without writing;
 writers prune. `stop --run` selects an exact session.
+
+A run's state is two values. `lifecycle` is what was recorded: `live`, `released` (the owner exited
+on purpose) or `lost` (the sweep found the owner gone), the last two with `at`. `hold` is how long
+the containers outlive it: `checkout` (as long as the checkout exists) or `timed` with `ms` and
+`inherited`. Every reader turns the lifecycle and its own reading of the owner into one phase with
+`runPhase(entry, alive)`, BuncargoBar included (`Run.phase(alive:)`): released is never live, and
+lost is live again once the owner reads as itself. Version 1 had two timestamps and two hold
+fields the type allowed together, and four readers each defined "finished" their own way; `ls`
+showed nothing for a crashed run inside its grace. The schema is one value per entry type
+(`core/json-shape.ts`), with the TypeScript type inferred from it, so the guard cannot miss a field
+the type has, as v1's missed `hosts`, `worktree`, `branch` and `primaryApp`.
+
+A file an older buncargo wrote reads as empty, strict readers included, and the next write replaces
+it, keeping its bytes in `runs.json.recovery-*`. Reading it strictly as unreadable would have
+failed every sweep, `ls` and `stop` after an upgrade until some run published.
+
+A publish reads `runs.json` once (`ListRegistry.update`) and prunes under the lock with
+`kill(pid, 0)` alone: a start publishes and patches a dozen times, and each publish used to read
+the file three times and fork `ps` on macOS. A pid another process reused keeps its entry until the
+sweep, which compares identities, finds it gone; the prune never drops an entry that might be live.
 
 - `environment/run-claim.ts` publishes a run's entry *before* its first container exists, so the
   sweep can never see a fresh stack as unowned. The entry carries the idle hold, the runtime and
   the pinned binary, which is why the sweep needs no config. The library claims too, not only the
   CLI, and `start()` ensures the watchdog right after claiming (`StartOptions.watchdog: false` opts
   out, for tests; the claim happens either way).
-- Releasing sets `releasedAt` once (the first release wins, however many teardown paths reach it)
+- Releasing sets `lifecycle` to `released` once (the first release wins, however many teardown paths reach it)
   and keeps the entry; a run with no services is withdrawn instead. An explicit `stop()` *retires*
   instead of releasing, because it has just torn the containers down: its own session goes, and
   so does each finished session of the project whose containers were all on the runtimes it
   downed (`heldOnlyOn`, the rule `stop` applies too). It used to retire every finished session,
   so a library `stop()` on Docker dropped the only record of a stack held on Apple's runtime.
+  While another live run of the project uses the services, `stop()` keeps them and releases
+  instead (`environment/run-keep.ts`, the rule `stop` applies to a sibling session): two `ci`
+  runs once shared one project, and the first to finish removed the other's database mid-test.
 - Every write addresses an entry by `sessionId`, which is required; entries without one are dropped
   on read.
-- A library run with no hold asked for through `claimRun` keeps its containers after it exits.
+- A library run with no hold asked for (`start({ claim })` or `claimRun`) keeps its containers
+  after it exits.
   `options.autoShutdown` is the CLI's, applied only on top of the default the CLI passes: a script
   that brings a stack up and ends is indistinguishable from a crash, and "no hold" means "as long
   as the checkout" however the run ended. The CLI passes its three-minute default explicitly.
 - Except when that claim reuses a stack another run left in its hold: `holdToInherit` copies the
-  newest finished entry's hold into `inheritedIdleTimeoutMs`, and the sweep applies it from when
-  the script's run ends, released or found gone. The sweep decides from the newest entry only, so
-  a one-second `start()` that reused a released detached run's containers pinned them for 13 days.
-  Newest means ended last, by `releasedAt`, then `ownerLostAt`, then `startedAt`
+  newest finished entry's timed hold as `{ kind: "timed", inherited: true }`, and the sweep applies
+  it from when the script's run ends, released or found gone. The sweep decides from the newest
+  entry only, so a one-second `start()` that reused a released detached run's containers pinned
+  them for 13 days. Newest means ended last, by the lifecycle's `at`, then `startedAt`
   (`newestLifecycleFirst`), never `updatedAt`: every patch moves that, and a dead session's
   service watch writing a `problem` made its hold the stack's.
-  It reads the registry file without liveness (finished means `releasedAt` or `ownerLostAt`), so
-  the start path forks nothing for it. An explicit `idleTimeoutMs: false` (`--keep-containers`)
+  Finished is `runPhase` with the owner read by `kill(pid, 0)`, as a publish prunes, so the start
+  path forks no `ps` for it. An explicit `idleTimeoutMs: false` (`--keep-containers`)
   inherits nothing, and neither does a claim whose newest finished entry kept its containers.
 
 ## Process identity
@@ -66,7 +91,7 @@ recorded CLI is exactly where they once did), and a script's apps get the same r
   one hold, and reopening a released entry, which takes the new claim's `startedAt`: ranking and
   the claims a teardown releases date from it. The describe
   (`describeRun`) owns what the run serves and keeps everything else: `startedAt`, the hold,
-  `releasedAt`, captures, each app row's process and state, and a service's `problem`; it adds
+  a release, captures, each app row's process and state, and a service's `problem`; it adds
   services but never removes one. Neither it nor a queued `servicesReady` turns a `stopped`
   service `ready` (`nextServiceStatus`): only a claim, or another `start()` under the claim, which
   marks it `starting` first, brings one back. It used to replace the entry whole, so a library `claimApps`
@@ -96,10 +121,18 @@ recorded CLI is exactly where they once did), and a script's apps get the same r
 no config load, no Docker unless a service is the target.
 
 - Stopping one app must not end the run, which is why `isDeliberateExit` in
-  `process/process-owner.ts` treats a signalled exit (and `130`/`143`, what a shell wrapper reports
+  `process/app-lifecycle.ts` treats a signalled exit (and `130`/`143`, what a shell wrapper reports
   for SIGINT/SIGTERM) as a clean stop rather than a failure.
-- The two refusals (the attached app, and an app reused from another terminal) carry exit code 3;
-  `2` is "no such target".
+- Exit 3 is "refused: leave it running" (the attached app, an app reused from another terminal, a
+  run in someone's terminal), and `help agents` tells agents exactly that, so nothing else may
+  return it: an unknown flag is `1`, and so is a stop that failed (a teardown the runtime
+  refused, a port that would not free), where `--force` would not help. `2` is a named target that matches nothing; a bare `stop` with
+  nothing running exits 0. A run that ends between the read and the signal is not a refusal
+  either: `stop` reads the entry again and, released or gone, takes down what it left.
+- Stopping the whole run, or what a finished run left, withdraws the checkout's service routes
+  (`withdrawStoppedRoutes` in `sweep.ts`), and so does the sweep's teardown. They carry no pid, so
+  nothing else retires them, and a later run that fell back to `localhost:port` still got the
+  named URLs from `getEnvVar`.
 - Services are `stop`ped, never `kill`ed, so a `restart:` policy cannot undo it; the exited
   container is removed by the sweep once the run has ended. Stopping the whole run `down`s its
   containers, because the run itself only releases them to the idle hold and "stop" from the menu
@@ -139,12 +172,13 @@ no config load, no Docker unless a service is the target.
   sweep, settling claims, `readOffsetClaims`, prune's existing checkouts, host routes and
   certificate names. `existsSync` reads `EACCES` as missing, and a watchdog running as one user took every
   checkout of the CI user's home for deleted and tore its stacks down, a live E2E run's included.
-- The grace counts from `ownerLostAt`, which the sweep stamps the first time it finds an unreleased
-  owner gone, not from `updatedAt`, which a quiet run may not have written for hours before it
-  crashed. The sweep clears it when the owner reads as itself again, and so does the owner's own
-  publish: one wrong reading used to stamp a live run for good, and `holdToInherit` counted it as
-  finished.
-- `sweepOrphanedContainers` lists every runtime without probing first (a failed `list()` is the
+- The grace counts from a `lost` lifecycle's `at`, which the sweep stamps the first time it finds an
+  unreleased owner gone, not from `updatedAt`, which a quiet run may not have written for hours
+  before it crashed. The sweep makes it `live` again when the owner reads as itself, and so does
+  the owner's own publish: one wrong reading used to stamp a live run for good, and `holdToInherit`
+  counted it as finished. When a finished run's containers come down is `holdExpiry`, which
+  `decideSweep` and `ls` both read.
+- `sweepOrphanedContainers` lists every runtime without probing first (a failed `containers()` is the
   probe, and records which runtimes *answered*), reads liveness once for the whole registry,
   decides each stack under its project's lifecycle lock (`project-lock.ts`; a busy lock is
   skipped, not failed), then retires entries whose containers are gone. Only when the runtime that
@@ -153,17 +187,24 @@ no config load, no Docker unless a service is the target.
   stack looks unowned. It returns what it listed, so `ls` and `doctor` do not list again.
 - A stack condemned from the sweep's snapshot is decided again from a fresh registry read under its
   lock, because a new run publishes its claim before it takes the lock to reuse those containers.
+- `retireRuns` and `clearRunStacks` take the entries as the pass read them and drop only those
+  whose `startedAt` and `lifecycle` are unchanged. A pass retires minutes after its
+  read, and by then a library session may have released and claimed again under the same id; by
+  session id alone its live entry went. Integration stacks are decided by the checkout's newest
+  entry (`runFor`), as containers are.
 - `ContainerDownRequest.model` is optional because containers are found by label. Only
   `removeVolumes` needs it, to name the volumes, which is why the sweep can tear a project down
   without loading its config. For the same reason the Docker backend passes `-f` only when the
   compose file still exists and never requires the checkout as `cwd`: a stack whose worktree was
   deleted must still come down, and that used to be the one case the watchdog could not handle.
 
-### The removal log
+### The events log
 
 A container cannot be relabelled after it exists, and a removed one carries nothing, so who removed
-a stack is recorded on our side: `core/removal-log.ts`, `~/.buncargo/removals.json`, the newest 500
-records, rewritten whole under its file lock. The sweep records at each `result.swept` push, with
+a stack is recorded on our side: `core/removal-log.ts`, `~/.buncargo/events.json`, the newest 500
+events, rewritten whole under its file lock. Each event has a `kind`: `containers`, `volumes`,
+`services` (a `buncargo stop <service>`) or `run-stopped` (a detached run the watchdog stopped,
+[below](#detached-runs-that-end)). The sweep records at each `result.swept` push, with
 the run the verdict was decided against; `stop`, `dev --down --all` and the library's `stop()`
 record their own teardowns. Recording never throws: a removal that happened must not read as
 failed.
@@ -185,8 +226,7 @@ record" points at other users' logs and `docker events` instead of guessing.
 A run watches its own service containers (`container-runtime/service-watch.ts`, wired in
 `environment/service-watch.ts`): from the moment its services are up until `stop()` or
 `releaseRun()`, which end it before anything comes down, so the run's own teardown is never
-reported. It polls `projectServiceStates` every 10 s, the one state query both backends
-have. Both backends throw when the runtime does not answer, and a poll that throws changes
+reported. It polls the runtime's one listing (`containers()`) every 10 s. Both backends throw when the runtime does not answer, and a poll that throws changes
 nothing; so an answered empty listing means the project has no containers, and every watched
 service is reported removed. A state the runtime reports as `unknown` leaves what was last
 reported standing. A service that stops, disappears or turns unhealthy gets a line in the run's
@@ -287,32 +327,52 @@ the containers from there; nothing here removes a container or a volume.
   watchdog only waits one more period.
 - The idle limit (`idleLimitMs`, two hours, written by the detached run unless `--keep` or
   Tailscale mode, whose traffic never reaches the proxy) counts from the latest of the run's start,
-  the last request through the proxy to its checkout, and the last buncargo command in it. An
+  the last request through the proxy to its checkout, the last buncargo command in it, and the
+  last watchdog pass that saw an established TCP connection on one of its app ports (an open tab's
+  HMR socket, a client on `localhost:port` the proxy never sees; one `/proc/net/tcp` read on Linux,
+  one `netstat` on macOS, only while a detached run has a limit). An
   entry without `idleLimitMs` (an older buncargo's run) is never stopped for idling.
 - Requests: the hosts daemon counts each route lookup (every request and WebSocket upgrade, not
   the health path) by the route's checkout in memory and merges them into
   `~/.buncargo/proxy-activity.json` at most once a minute (`hosts/proxy-activity.ts`), and
   rewrites it every five minutes as a heartbeat. A missing file, or one silent for three beats,
   means no daemon counts requests (an older one put back by `hosts install` from a checkout on an
-  older buncargo leaves the file frozen): a run with named hosts is then `unknown`, never
-  stopped, because "no requests on record" would be no evidence.
+  older buncargo leaves the file frozen). A run is `unknown`, never stopped, only when neither its
+  requests nor the connections can be read, because "nothing on record" would be no evidence.
 - Commands: `bin.ts` sets the mtime of `<root>/.buncargo/last-command` on every command except
   `help` and `version` (`run-activity.ts`), with the root found as a run records it
   (`findCheckoutRoot`: the config's repository root, not the working directory). One `utimes`, no
   fork and no lock, since every command pays it; a directory without `.buncargo/` is left alone.
   `childProcessEnv` drops `BUNCARGO_DETACHED`, so a `buncargo dev` an app starts is not detached.
-- `~/.buncargo/run-stops.json` (`run-stops.ts`, newest 200) records each stop with its reason,
-  because the entry is gone soon after: `recentRunStops` picks what `stop` and `ls` print, the last
-  day's newest per checkout with no run started there since.
+- The events log records each stop with its reason (`kind: "run-stopped"`), because the entry is
+  gone soon after: `recentRunStops` picks what `stop` and `ls` print, the last day's newest per
+  checkout with no run started there since.
 
 ## Volumes
 
 `prune.ts` is the volume half, and it is deliberately not automatic: a container costs nothing to
-recreate, a volume is the database. `planVolumePrune` is pure and proposes only a volume whose
-Compose project has no containers, no entry *and* no existing checkout; `cli/commands/prune.ts`
-confirms before removing. The checkouts come from the dev port claims in `offsets.json`, because
-an idle checkout after `dev --down` has neither containers nor an entry, and its volume is still its
-database. Suffixed claims (`ci`, E2E) do not count: their stacks are leftovers once the run is gone.
+recreate, a volume is the database. A volume needs positive evidence: `decideVolume`
+(`volume-decision.ts`, pure) proposes one only when a claim in `offsets.json` names its Compose
+project, every checkout claiming that project is confirmed deleted, and no container or entry names
+it. It is the one owner of that rule: `prune`, the orphan report, `doctor` and the sweep's settling
+of deleted checkouts all decide through it. An idle checkout after `dev --down` has neither containers nor an entry, and its claim is the
+only thing saying its volume is still its database; when an unreadable claims file read as empty
+and absence counted as orphaned, `prune --yes` offered every idle checkout's database. A suffixed
+claim (`ci`, E2E) of an existing checkout keeps its stack's volume too; those are `prune --project`'s.
+
+The claim is that record because it outlives the block: a claim that gave up its block (a full
+range reclaimed it, or its throwaway run was torn down) stays, and the sweep drops a deleted
+checkout's claim only once nothing of its project is left to propose, opt-in or not. Before, the
+sweep dropped it on its first pass and a throwaway run's teardown deleted its claim, so plain
+`prune` almost never had anything to propose. `prune --older-than=7d` proposes only checkouts
+first found deleted at least that long ago (`deletedSeenAt`, below). After confirmation it decides
+each project again under the deleted checkout's lifecycle lock, from fresh volume, container,
+registry and claim inventories, and removes only what was listed.
+
+Every read-modify-write of `offsets.json` reads it strictly: missing is empty, and a file that does
+not parse or carries another `version` throws `StateFileUnreadableError` and is left as it is.
+Several buncargo versions share the file, and a lenient write replaced every other checkout's
+claim with its own.
 
 Buncargo attaches **no labels to volumes**. Verified: Compose compares a volume against the file
 and prompts "exists but doesn't match configuration in compose file. Recreate (data will be
@@ -324,18 +384,18 @@ One exception, opt-in per machine: with `BUNCARGO_PRUNE_DELETED_CHECKOUTS=1` the
 removes a deleted checkout's volumes (`settleDeletedCheckouts`), for servers where agents create
 and delete worktrees by the hundred. It works from the port claims in `offsets.json`, not from
 container stacks: a checkout's claim names its root and project, and by the time a worktree is
-deleted its containers are usually long gone, so a stack-driven rule would never see it. The sweep
-keeps a deleted checkout's claim until it has settled it, and without the opt-in only drops it.
-Volumes match by Compose project, and two checkouts can share one, so it removes them only when
-no existing checkout claims the project and no run on record for it still has its checkout; a
-container of the project still standing defers the decision to the next pass, and a runtime that
-does not answer defers everything. "Still has its checkout" includes one this user cannot read.
+deleted its containers are usually long gone, so a stack-driven rule would never see it. Its
+suffixed environments' claims (E2E, `ci`) settle with it. It removes what `decideVolume` proposes,
+so two checkouts sharing a project, a run on record of it, or a container of it still standing
+keep the volumes; the last two defer the decision to the next pass, and a runtime that does not
+answer defers everything. "Still has its checkout" includes one this user cannot read.
 
-The watchdog also reports, at most hourly and only when the set changes, the volumes `prune` would propose (`orphan-report.ts`). It never removes them: a project with no port claim has no removal record, so the sweep never sees it, and a report is the only thing that can say so. Only runtimes that answered that pass are judged, each against its own containers. The one automatic volume removal that is not an opt-in is `buncargo ci`'s own leftovers (`ciLeftoverVolumes`): at its start it removes what a killed run left in its `-ci` project, only when no container or run names that project, as its teardown would have done.
+The watchdog also reports, at most hourly and only when the set changes, the volumes `prune` would propose (`orphan-report.ts`), by the same `decideVolume`, and `doctor` counts them and names `prune --dry-run`: on one machine 215 built up while it said "No issues found". It never removes them. Only runtimes that answered that pass are judged, each against its own containers. `buncargo ci` creates no volume to leave behind: its services keep their data on tmpfs.
 
 Volumes need more proof than containers. A deletion counts only when confirmed (`ENOENT`) on two
-passes at least `DELETED_CHECKOUT_SETTLE_MS` (10 minutes) apart: the first sighting is stamped on
-the claim as `deletedSeenAt` under the claims lock, and cleared if the checkout is back, so an
+passes at least `DELETED_CHECKOUT_SETTLE_MS` (10 minutes) apart (`VolumeState.deletedFor`): the
+first sighting is stamped on the claim as `deletedSeenAt` under the claims lock, and cleared if
+the checkout is back, so an
 unmounted disk or a worktree being recreated costs nothing. Containers still come down on the
 first confirmed sighting. The watchdog may exit in between; the next pass, whenever it runs,
 decides.
@@ -367,14 +427,19 @@ It is not shipped in the npm package and not built by `bun run build`; it releas
 - It is a **reader**. It decodes `~/.buncargo/runs.json` and shells every mutation out to
   `buncargo stop`, using the interpreter recorded in the entry so a worktree on a different version
   stops with its own build. It never signals a process or talks to Docker itself.
-- `menubar/fixtures/runs.v1.json` is the schema contract. `menubar/scripts/smoke-test.sh` runs the
+- `menubar/fixtures/runs.v2.json` is the schema contract. `menubar/scripts/smoke-test.sh` runs the
   app's `--status` mode against it and `src/core/run-registry.fixture.test.ts` decodes the same
   file, so a field one side drops fails a test on both.
+- It decodes each run on its own and drops one it cannot read, and reads a status it does not know
+  as `starting`. The app and the CLI release on their own, so a field or status from a newer CLI
+  must cost one row at most; decoded as one array, a single such entry emptied the menu.
+  `menubar/fixtures/runs.v2.lossy.json` holds those entries, and `RunRegistryTests` and the
+  fixture test above both read it.
 - It decides liveness by the CLI's rule, not by the pid alone: `ProcessIdentity` reads the start
   time from `sysctl` and encodes it as `process-identity.ts` does (`v2:` and the SHA-256 of `ps`'s
   C-locale UTC `lstart`), so the two cannot drift without `RunRegistryTests` failing. With the pid
   alone, a reused pid showed a crashed run, and its Stop took down the containers it held. An
-  identity it cannot read keeps the row unless the sweep stamped `ownerLostAt`.
+  identity it cannot read keeps the row unless the sweep stamped the run `lost`.
 - A run's dot rolls up its apps and its services, and a service with a `problem` reads failed.
 - `RunRegistry.stateDirectory` reads `HOME` before `homeDirectoryForCurrentUser`, which ignores the
   environment. Without that the smoke test is silently handed the developer's real registry.

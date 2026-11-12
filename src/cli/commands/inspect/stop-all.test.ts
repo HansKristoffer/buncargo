@@ -1,36 +1,22 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, it } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type {
-	ContainerDownRequest,
-	ContainerRuntimeAdapter,
-} from "../../../container-runtime/types";
+import {
+	fakeRuntime,
+	listedAs,
+} from "../../../container-runtime/fake-runtime.testing";
+import type { ContainerDownRequest } from "../../../container-runtime/types";
 import { claimOffset } from "../../../core/offset-claims";
 import { readRemovals } from "../../../core/removal-log";
 import { publishRun } from "../../../core/run-registry";
+import { runEntry } from "../../../core/run-registry.testing";
+import { useTempHome } from "../../../core/test-env.testing";
 import type { BuncargoContainer } from "../../../types";
 import { stopAllBuncargoEnvironments } from "./stop-all";
 
 // The registry and claims decide which stacks are this user's, so they come
-// from a home of the test's own; the runtimes are stubs.
-const realHome = process.env.HOME;
-let home = "";
-
-beforeAll(() => {
-	home = mkdtempSync(join(tmpdir(), "buncargo-stop-all-"));
-	process.env.HOME = home;
-});
-
-afterAll(() => {
-	if (realHome === undefined) delete process.env.HOME;
-	else process.env.HOME = realHome;
-	rmSync(home, { recursive: true, force: true });
-});
-
-afterEach(() => {
-	rmSync(join(home, ".buncargo"), { recursive: true, force: true });
-});
+// from a home of each test's own; the runtimes are stubs.
+const home = useTempHome();
 
 function container(
 	project: string,
@@ -57,15 +43,14 @@ function stubRuntime(
 	containers: BuncargoContainer[],
 ) {
 	const downs: ContainerDownRequest[] = [];
-	const runtime = {
+	const runtime = fakeRuntime({
 		name,
 		displayName: name,
-		isAvailable: () => true,
-		list: () => containers,
+		containers: async () => containers.map(listedAs),
 		down: async (request: ContainerDownRequest) => {
 			downs.push(request);
 		},
-	} as unknown as ContainerRuntimeAdapter;
+	});
 	return { runtime, downs };
 }
 
@@ -77,20 +62,13 @@ describe("dev --down --all", () => {
 	it("removes every stack of this user's once, through the runtime that listed it, stopped ones included", async () => {
 		claim("gey-main", "/repo");
 		claim("lullu-wt", "/wt");
-		await publishRun({
-			sessionId: "s1",
-			projectPrefix: "gey",
-			projectName: "gey-apple",
-			root: "/apple",
-			worktree: null,
-			pid: 1,
-			startedAt: new Date().toISOString(),
-			updatedAt: new Date().toISOString(),
-			hosts: null,
-			cli: { program: "bun" },
-			apps: [],
-			services: [],
-		});
+		await publishRun(
+			runEntry({
+				projectPrefix: "gey",
+				projectName: "gey-apple",
+				root: "/apple",
+			}),
+		);
 		const docker = stubRuntime("docker", [
 			container("gey-main", "/repo", "postgres"),
 			container("gey-main", "/repo", "redis"),
@@ -144,8 +122,8 @@ describe("dev --down --all", () => {
 	});
 
 	it("removes nothing when the registry cannot be read", async () => {
-		mkdirSync(join(home, ".buncargo"), { recursive: true });
-		writeFileSync(join(home, ".buncargo", "runs.json"), "{ not json");
+		mkdirSync(join(home(), ".buncargo"), { recursive: true });
+		writeFileSync(join(home(), ".buncargo", "runs.json"), "{ not json");
 		claim("gey-main", "/repo");
 		const docker = stubRuntime("docker", [
 			container("gey-main", "/repo", "postgres"),

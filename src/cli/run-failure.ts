@@ -1,3 +1,4 @@
+import { AppFailure } from "../core/process/app-lifecycle";
 import type { AppStateDetail } from "../core/process/run-output";
 import { SeedFailedError } from "../environment/seed-startup";
 import { toCliError } from "./errors";
@@ -48,17 +49,13 @@ function setupHintLines(setupHints: readonly string[]): string[] {
 	];
 }
 
-/** The app an error is about: named in its message, else the one that failed. */
+/** The app an error is about: the one it names, else the one that failed. */
 function failedApp(
-	message: string,
+	error: unknown,
 	states: ReadonlyMap<string, AppStateDetail>,
 ): string | undefined {
-	const apps = [...states.keys()];
-	const named = apps.find(
-		(app) => message.includes(`"${app}"`) || message.startsWith(`${app} `),
-	);
-	if (named) return named;
-	return apps.find((app) => states.get(app)?.state === "failed");
+	if (error instanceof AppFailure) return error.app;
+	return [...states.keys()].find((app) => states.get(app)?.state === "failed");
 }
 
 /** The block for an error that ended a dev run. */
@@ -81,7 +78,7 @@ export function describeDevFailure(
 	const { message, hints: ownHints } = toCliError(error);
 	const [cause = "The run failed.", ...rest] = message.split("\n");
 	const { output } = context;
-	const app = output && failedApp(message, output.states);
+	const app = output && failedApp(error, output.states);
 	if (!output || app === undefined)
 		return {
 			cause,

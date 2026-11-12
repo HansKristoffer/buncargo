@@ -4,8 +4,9 @@ export {
 	writeGeneratedComposeFile,
 } from "./generated-file";
 export {
+	type AssignedPortTarget,
+	assignedPortTargets,
 	buildComposeModel,
 	type ComposeDocument,
-	type ComposeIdentity,
 } from "./model";
 export { composeToYaml } from "./yaml";

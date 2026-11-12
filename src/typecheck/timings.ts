@@ -6,13 +6,10 @@ import {
 } from "../core/registry-file";
 import { STATE_DIRNAME } from "../core/state-paths";
 
-export const TYPECHECK_TIMINGS_VERSION = 1;
-export const TYPECHECK_TIMINGS_FILE = join(
-	STATE_DIRNAME,
-	"typecheck-timings.json",
-);
+const TYPECHECK_TIMINGS_VERSION = 1;
+const TYPECHECK_TIMINGS_FILE = join(STATE_DIRNAME, "typecheck-timings.json");
 
-export interface TypecheckTimingsFile {
+interface TypecheckTimingsFile {
 	version: typeof TYPECHECK_TIMINGS_VERSION;
 	timings: Record<string, number>;
 }

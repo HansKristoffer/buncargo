@@ -1,9 +1,9 @@
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
-import { getPortOwner, killPortOwner } from "../core/process";
+import { getPortOwnerAsync, killPortOwner } from "../core/process";
 import { stopWorker } from "../core/process/worker-ownership";
 import { askConfirm, isInteractive } from "../core/prompt";
 import { joinColoredNames } from "../core/style";
-import type { AppConfig } from "../types";
+import type { ResolvedApp } from "../types";
 import * as log from "./log";
 
 export { isInteractive };
@@ -19,7 +19,7 @@ export { isInteractive };
  */
 
 export interface TakeoverCandidates {
-	apps: Record<string, AppConfig>;
+	apps: Record<string, ResolvedApp>;
 	names: string[];
 }
 
@@ -30,13 +30,13 @@ export interface TakeoverCandidates {
  * whatever answers on its port would leave it down rather than move it here.
  */
 export function takeoverCandidates(
-	reusedApps: Record<string, AppConfig>,
+	reusedApps: Record<string, ResolvedApp>,
 	ports: Record<string, number>,
 ): TakeoverCandidates {
-	const apps: Record<string, AppConfig> = {};
+	const apps: Record<string, ResolvedApp> = {};
 	for (const [name, config] of Object.entries(reusedApps)) {
 		if (config.devCommand === false) continue;
-		if (ports[name] === undefined && config.kind !== "worker") continue;
+		if (ports[name] === undefined && config.port !== undefined) continue;
 		apps[name] = config;
 	}
 	return { apps, names: Object.keys(apps) };
@@ -84,22 +84,23 @@ export async function stopRunningApps(
 		runtime?: ContainerRuntimeAdapter;
 		skipContainers?: boolean;
 		root?: string;
-		apps?: Record<string, AppConfig>;
+		apps?: Record<string, ResolvedApp>;
 	} = {},
 ): Promise<string[]> {
 	const stopped: string[] = [];
 	for (const name of names) {
-		if (options.apps?.[name]?.kind === "worker" && options.root) {
+		const app = options.apps?.[name];
+		if (app && app.port === undefined && options.root) {
 			if (await stopWorker(options.root, name)) stopped.push(name);
 			continue;
 		}
 		const port = ports[name];
 		if (port === undefined) continue;
 
-		const owner = getPortOwner(port, options);
+		const owner = await getPortOwnerAsync(port, options);
 		// Already gone: the other run exited between classification and here.
 		if (!owner) continue;
-		if (owner.container) {
+		if (owner.kind === "container") {
 			throw new Error(
 				`App "${name}" on port ${port} is served by container ${owner.container.name}, not by a dev server this run can take over.`,
 			);

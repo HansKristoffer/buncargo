@@ -31,6 +31,7 @@ export const mailpitDockerService = defineDockerService<
 		MAILPIT_URL: "url",
 		SMTP_PORT: "secondaryPort",
 	},
+	url: ({ host, port }) => `http://${host}:${port}`,
 	enhanceServiceConfig: (base, options): MailpitServiceConfig => ({
 		...base,
 		secondaryPort: options?.secondaryPort ?? 1025,
@@ -42,7 +43,7 @@ export const mailpitDockerService = defineDockerService<
 	build: ({ serviceKey, config }) => {
 		return {
 			service: {
-				image: "axllent/mailpit",
+				image: "axllent/mailpit:v1.33.1",
 				restart: "unless-stopped",
 				ports: getDefaultPortBindings(serviceKey, config, "mailpit"),
 				volumes: [`${serviceKey}_data:/data`],

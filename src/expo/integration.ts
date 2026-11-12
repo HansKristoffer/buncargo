@@ -74,7 +74,7 @@ export function expo(options: ExpoIntegrationOptions = {}): ExpoIntegration {
 		describeApp({ name, config, root }) {
 			const appOptions = expoApps.get(name);
 			if (!appOptions) return undefined;
-			return { expo: describeExpoApp(root, config, appOptions) };
+			return { ...describeExpoApp(root, config, appOptions) };
 		},
 
 		bannerHint: ({ name }) =>

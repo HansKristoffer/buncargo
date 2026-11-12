@@ -3,7 +3,11 @@ import {
 	defineDockerService,
 	type PresetServiceCredentialOptions,
 } from "./define-docker-service";
-import { getDefaultPortBindings, resolveHealthcheck } from "./shared";
+import {
+	composeLiteral,
+	getDefaultPortBindings,
+	resolveHealthcheck,
+} from "./shared";
 
 export type PostgresServiceOptions = PresetServiceCredentialOptions;
 
@@ -23,6 +27,9 @@ export const postgresDockerService = defineDockerService<
 	env: {
 		DATABASE_URL: "url",
 	},
+	credentials: { user: "postgres", password: "postgres", database: "postgres" },
+	url: ({ host, port, credentials }) =>
+		`postgresql://${credentials?.user}:${credentials?.password}@${host}:${port}/${credentials?.database}`,
 	enhanceServiceConfig: (base, options): PostgresServiceConfig => ({
 		...base,
 		database: options?.database,
@@ -30,9 +37,9 @@ export const postgresDockerService = defineDockerService<
 		password: options?.password,
 	}),
 	build: ({ serviceKey, config, runtime }) => {
-		const user = config.user ?? "postgres";
-		const password = config.password ?? "postgres";
-		const database = config.database ?? "postgres";
+		const user = composeLiteral(config.credentials?.user ?? "postgres");
+		const password = composeLiteral(config.credentials?.password ?? "postgres");
+		const database = composeLiteral(config.credentials?.database ?? "postgres");
 		const defaultHealthcheck: DockerComposeHealthcheckRaw = {
 			test: ["CMD-SHELL", `pg_isready -h 127.0.0.1 -U ${user}`],
 			interval: "250ms",

@@ -2,7 +2,10 @@ import { expect, it } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
+import {
+	fakeRuntime,
+	runtimeContainer,
+} from "../../container-runtime/fake-runtime.testing";
 import { dockerRuntimeAdapter } from "../../docker/adapter";
 import { shellQuote } from "../shell-quote";
 import { createPortOwnerSnapshotAsync } from "./port-owner";
@@ -15,43 +18,37 @@ it("prefers the selected backend and resolves independent backends concurrently"
 		release = resolve;
 	});
 	const adapter = (name: "docker" | "apple", port: number) =>
-		({
+		fakeRuntime({
 			name,
-			containerPortOwners: () => {
-				throw new Error("blocking fallback used");
-			},
-			containerPortOwnersAsync: async () => {
+			containers: async () => {
 				if (++started === 2) release();
 				await gate;
-				return new Map([[port, { id: name, name }]]);
+				return [runtimeContainer({ id: name, name, ports: [port] })];
 			},
-		}) as unknown as ContainerRuntimeAdapter;
+		});
 	const snapshot = await createPortOwnerSnapshotAsync({
 		listeners: emptyListenerSnapshot(),
 		runtime: adapter("apple", 3000),
 		fallbackRuntimes: [adapter("docker", 3000)],
 	});
-	expect(snapshot.owner(3000)?.container).toMatchObject({
-		id: "apple",
-		runtime: "apple",
+	expect(snapshot.owner(3000)).toMatchObject({
+		kind: "container",
+		container: { id: "apple", runtime: "apple" },
 	});
 });
 
-it("keeps synchronous custom adapters compatible and resolves supplied cwd data", async () => {
+it("resolves supplied cwd data for a process-held port", async () => {
 	const listeners = emptyListenerSnapshot();
 	listeners.pidsByPort.set(3000, [42]);
 	listeners.commandByPid.set(42, "bun");
-	const runtime = {
-		name: "docker",
-		containerPortOwners: () => new Map(),
-	} as unknown as ContainerRuntimeAdapter;
 	const snapshot = await createPortOwnerSnapshotAsync({
 		listeners,
-		runtime,
+		runtime: fakeRuntime(),
 		ports: [3000],
 		cwds: new Map([[42, "/checkout"]]),
 	});
 	expect(snapshot.owner(3000)).toMatchObject({
+		kind: "process",
 		pids: [42],
 		command: "bun",
 		cwd: "/checkout",

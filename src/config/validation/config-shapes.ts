@@ -1,18 +1,39 @@
 import { isString } from "hanzio";
 import { checkoutFileErrors } from "../../core/checkout-files/spec";
-import { SECRETS_FIELDS, type ShapeChecks } from "./shape-checks";
+import {
+	CONFIG_KEYS,
+	DOCKER_KEYS,
+	ENV_FILE_KEYS,
+	HOSTS_KEYS,
+	keysChecked,
+	OPTIONS_KEYS,
+	PRISMA_KEYS,
+	PROFILE_KEYS,
+	RENAMED_KEYS,
+	SEED_KEYS,
+	TASK_KEYS,
+	unknownKeyErrors,
+} from "./key-tables";
+import type { ShapeChecks } from "./shape-checks";
 
 export function validateSupplementShapes(
 	value: Record<string, unknown>,
 	checks: ShapeChecks,
 ): void {
-	const { errors, object, record, check, strings, fields, duration } = checks;
-	if (
-		value.secrets !== undefined &&
-		value.secrets !== false &&
-		record(value.secrets, "secrets")
-	)
-		fields(value.secrets, "secrets.", SECRETS_FIELDS, "string");
+	const {
+		errors,
+		object,
+		record,
+		check,
+		strings,
+		fields,
+		duration,
+		secretsScope,
+	} = checks;
+	errors.push(
+		...unknownKeyErrors(value, "config", CONFIG_KEYS, RENAMED_KEYS.config),
+	);
+	secretsScope(value.secrets, "secrets");
 	check(
 		value.unsetEnv,
 		"unsetEnv",
@@ -22,31 +43,44 @@ export function validateSupplementShapes(
 	for (const key of ["docker", "options", "prisma", "seed", "hooks"]) {
 		if (value[key] !== undefined) record(value[key], key);
 	}
-	if (object(value.docker))
-		fields(
-			value.docker,
-			"docker.",
-			["binary", "generatedFile", "writeStrategy", "runtime", "startCommand"],
-			"string",
-		);
-	if (object(value.prisma))
+	if (object(value.docker)) {
+		errors.push(...unknownKeyErrors(value.docker, "docker", DOCKER_KEYS));
+		for (const type of ["string", "boolean"] as const)
+			fields(value.docker, "docker.", keysChecked(DOCKER_KEYS, type), type);
+	}
+	if (object(value.prisma)) {
+		errors.push(...unknownKeyErrors(value.prisma, "prisma", PRISMA_KEYS));
 		fields(
 			value.prisma,
 			"prisma.",
-			["cwd", "migrations", "service", "urlEnvVar", "generate"],
+			keysChecked(PRISMA_KEYS, "string"),
 			"string",
 		);
+	}
+	if (object(value.prisma)) {
+		const names = value.prisma.urlEnvVar;
+		check(
+			names,
+			"prisma.urlEnvVar",
+			typeof names === "string" ||
+				(Array.isArray(names) &&
+					names.length > 0 &&
+					names.every((name) => typeof name === "string")),
+			"a variable name or a non-empty list of them",
+		);
+	}
 	if (object(value.seed)) {
-		fields(value.seed, "seed.", ["command", "cwd"], "string");
-		fields(value.seed, "seed.", ["check"], "function");
-		fields(value.seed, "seed.", ["beforeApps"], "boolean");
+		errors.push(...unknownKeyErrors(value.seed, "seed", SEED_KEYS));
+		for (const type of ["string", "function", "boolean"] as const)
+			fields(value.seed, "seed.", keysChecked(SEED_KEYS, type), type);
 	}
 	if (object(value.prisma))
 		check(
 			value.prisma.generateCheck,
 			"prisma.generateCheck",
-			typeof value.prisma.generateCheck === "function",
-			"a function",
+			typeof value.prisma.generateCheck === "function" ||
+				value.prisma.generateCheck === "schema-hash",
+			'a function or "schema-hash"',
 		);
 	if (object(value.hooks))
 		for (const [key, hook] of Object.entries(value.hooks))
@@ -119,11 +153,12 @@ export function validateSupplementShapes(
 				fields(entry, `${path}.`, ["gitignore"], "boolean");
 			}
 	}
-	if (value.checks !== undefined) {
-		if (!Array.isArray(value.checks)) errors.push("checks must be an array");
+	if (value.setupChecks !== undefined) {
+		if (!Array.isArray(value.setupChecks))
+			errors.push("setupChecks must be an array");
 		else
-			for (const [index, entry] of value.checks.entries()) {
-				const path = `checks.${index}`;
+			for (const [index, entry] of value.setupChecks.entries()) {
+				const path = `setupChecks.${index}`;
 				if (!record(entry, path)) continue;
 				if (typeof entry.name !== "string" || !entry.name)
 					errors.push(`${path}.name must be a nonempty string`);
@@ -151,6 +186,13 @@ export function validateSupplementShapes(
 			if (!/^[A-Za-z0-9][A-Za-z0-9:._-]*$/.test(name))
 				errors.push(`${path} has an invalid name`);
 			if (!record(entry, path)) continue;
+			errors.push(
+				...unknownKeyErrors(
+					entry,
+					path,
+					kind === "profiles" ? PROFILE_KEYS : TASK_KEYS,
+				),
+			);
 			fields(entry, `${path}.`, ["description"], "string");
 			if (kind === "profiles") {
 				if (!strings(entry.apps) || entry.apps.length === 0)
@@ -187,9 +229,17 @@ export function validateSupplementShapes(
 						);
 				}
 		}
+		errors.push(
+			...unknownKeyErrors(
+				options,
+				"options",
+				OPTIONS_KEYS,
+				RENAMED_KEYS.options,
+			),
+		);
 		errors.push(...checkoutFileErrors(options.checkoutFiles));
-		fields(options, "options.", ["worktreeIsolation", "verbose"], "boolean");
-		fields(options, "options.", ["primaryApp"], "string");
+		for (const type of ["boolean", "string"] as const)
+			fields(options, "options.", keysChecked(OPTIONS_KEYS, type), type);
 		if (options.autoShutdown !== false)
 			duration(options.autoShutdown, "options.autoShutdown");
 		if (
@@ -203,6 +253,14 @@ export function validateSupplementShapes(
 			if (option === undefined || typeof option === "boolean") continue;
 			if (!record(option, `options.${name}`)) continue;
 			if (name === "hosts") {
+				errors.push(
+					...unknownKeyErrors(
+						option,
+						"options.hosts",
+						HOSTS_KEYS,
+						RENAMED_KEYS["options.hosts"],
+					),
+				);
 				fields(option, "options.hosts.", ["tld"], "string");
 				check(
 					option.services,
@@ -211,6 +269,9 @@ export function validateSupplementShapes(
 					"true or an array of service names",
 				);
 			} else {
+				errors.push(
+					...unknownKeyErrors(option, "options.envFile", ENV_FILE_KEYS),
+				);
 				fields(option, "options.envFile.", ["path", "createFrom"], "string");
 				fields(option, "options.envFile.", ["values"], "function");
 			}
@@ -247,9 +308,7 @@ function unknownKeys(
 	known: readonly string[],
 	errors: string[],
 ) {
-	for (const key of Object.keys(value))
-		if (!known.includes(key))
-			errors.push(`${path}.${key} is not an option (${known.join(", ")})`);
+	errors.push(...unknownKeyErrors(value, path, known));
 }
 
 /**
@@ -266,10 +325,15 @@ export function validateTypecheckShape(
 	unknownKeys(
 		value,
 		"typecheck",
-		["include", "exclude", "concurrency", "groups"],
+		["include", "exclude", "concurrency", "groups", "scripts"],
 		errors,
 	);
 	pathList(value.include, "typecheck.include", checks);
+	if (
+		value.scripts !== undefined &&
+		!(strings(value.scripts) && value.scripts.length > 0)
+	)
+		errors.push("typecheck.scripts must be a nonempty array of script names");
 	pathList(value.exclude, "typecheck.exclude", checks);
 	check(
 		value.concurrency,
@@ -322,6 +386,91 @@ function validateDocsCheckShape(value: unknown, checks: ShapeChecks): void {
 	}
 }
 
+/**
+ * Step names `check` gives its own steps; a gate with one of them could not
+ * be told apart in `--only` and `--skip`.
+ */
+export const BUILT_IN_CHECK_STEPS = [
+	"bun-version",
+	"format",
+	"biome",
+	"docs",
+	"typecheck",
+	"tests",
+] as const;
+
+function validateGatesShape(value: unknown, checks: ShapeChecks): void {
+	const { errors, record, fields } = checks;
+	if (value === undefined) return;
+	if (!Array.isArray(value)) {
+		errors.push("check.gates must be an array");
+		return;
+	}
+	const names = new Set<string>();
+	for (const [index, gate] of value.entries()) {
+		const path = `check.gates.${index}`;
+		if (!record(gate, path)) continue;
+		unknownKeys(
+			gate,
+			path,
+			["name", "command", "cwd", "when", "staged", "rootWide", "fix"],
+			errors,
+		);
+		for (const key of ["name", "command"])
+			if (typeof gate[key] !== "string" || !gate[key])
+				errors.push(`${path}.${key} must be a nonempty string`);
+		fields(gate, `${path}.`, ["cwd", "fix"], "string");
+		fields(gate, `${path}.`, ["staged", "rootWide"], "boolean");
+		pathList(gate.when, `${path}.when`, checks);
+
+		const name = gate.name;
+		if (typeof name !== "string" || !name) continue;
+		const builtIn = (BUILT_IN_CHECK_STEPS as readonly string[]).includes(name);
+		if (builtIn)
+			errors.push(
+				`${path}.name: "${name}" is a built-in check step; name the gate something else`,
+			);
+		else if (names.has(name))
+			errors.push(`${path}.name: "${name}" is used by an earlier gate`);
+		names.add(name);
+	}
+}
+
+function validateTestAlsoShape(value: unknown, checks: ShapeChecks): void {
+	const { errors, record } = checks;
+	if (value === undefined) return;
+	if (!Array.isArray(value)) {
+		errors.push("check.testAlso must be an array");
+		return;
+	}
+	for (const [index, entry] of value.entries()) {
+		const path = `check.testAlso.${index}`;
+		if (!record(entry, path)) continue;
+		unknownKeys(entry, path, ["when", "tests"], errors);
+		for (const key of ["when", "tests"]) {
+			if (entry[key] === undefined)
+				errors.push(`${path}.${key} must be an array of globs`);
+			pathList(entry[key], `${path}.${key}`, checks);
+		}
+	}
+}
+
+function validateTestDeferredShape(value: unknown, checks: ShapeChecks): void {
+	const { errors, record, fields } = checks;
+	if (value === undefined || !record(value, "check.testDeferred")) return;
+	unknownKeys(
+		value,
+		"check.testDeferred",
+		["files", "command", "strict"],
+		errors,
+	);
+	if (value.files === undefined)
+		errors.push("check.testDeferred.files must be an array of globs");
+	pathList(value.files, "check.testDeferred.files", checks);
+	fields(value, "check.testDeferred.", ["command"], "string");
+	fields(value, "check.testDeferred.", ["strict"], "boolean");
+}
+
 /** `check`; shared with `buncargo check`, which reads only this key. */
 export function validateCheckShape(value: unknown, checks: ShapeChecks): void {
 	const { errors, record, fields } = checks;
@@ -329,7 +478,15 @@ export function validateCheckShape(value: unknown, checks: ShapeChecks): void {
 	unknownKeys(
 		value,
 		"check",
-		["gates", "testCommand", "testExclude", "docs", "format"],
+		[
+			"gates",
+			"testCommand",
+			"testExclude",
+			"testAlso",
+			"testDeferred",
+			"docs",
+			"format",
+		],
 		errors,
 	);
 	fields(value, "check.", ["testCommand"], "string");
@@ -343,27 +500,9 @@ export function validateCheckShape(value: unknown, checks: ShapeChecks): void {
 	else if (Array.isArray(format)) pathList(format, "check.format", checks);
 	validateDocsCheckShape(value.docs, checks);
 	pathList(value.testExclude, "check.testExclude", checks);
-	if (value.gates === undefined) return;
-	if (!Array.isArray(value.gates)) {
-		errors.push("check.gates must be an array");
-		return;
-	}
-	for (const [index, gate] of value.gates.entries()) {
-		const path = `check.gates.${index}`;
-		if (!record(gate, path)) continue;
-		unknownKeys(
-			gate,
-			path,
-			["name", "command", "cwd", "when", "staged"],
-			errors,
-		);
-		for (const key of ["name", "command"])
-			if (typeof gate[key] !== "string" || !gate[key])
-				errors.push(`${path}.${key} must be a nonempty string`);
-		fields(gate, `${path}.`, ["cwd"], "string");
-		fields(gate, `${path}.`, ["staged"], "boolean");
-		pathList(gate.when, `${path}.when`, checks);
-	}
+	validateTestAlsoShape(value.testAlso, checks);
+	validateTestDeferredShape(value.testDeferred, checks);
+	validateGatesShape(value.gates, checks);
 }
 
 /** `predeploy`; shared with `buncargo predeploy`, which reads only this key. */
@@ -373,14 +512,15 @@ export function validatePredeployShape(
 ): void {
 	const { errors, record, check, strings, fields, duration } = checks;
 	if (value === undefined || !record(value, "predeploy")) return;
-	const hooks = ["beforeMigrate", "afterMigrate", "afterSeed"];
+	const hooks = ["beforeMigrate", "afterMigrate", "afterSeed", "onFailure"];
+	const names = ["environmentVars", "production", "seedIn"];
 	unknownKeys(
 		value,
 		"predeploy",
-		["environmentVars", "production", "seed", "retry", ...hooks],
+		[...names, "seed", "retry", ...hooks],
 		errors,
 	);
-	for (const key of ["environmentVars", "production"])
+	for (const key of names)
 		check(
 			value[key],
 			`predeploy.${key}`,
@@ -390,9 +530,9 @@ export function validatePredeployShape(
 	check(
 		value.seed,
 		"predeploy.seed",
-		value.seed === false ||
+		value.seed === true ||
 			(typeof value.seed === "string" && value.seed.length > 0),
-		"false or a nonempty command",
+		"true or a nonempty command",
 	);
 	fields(value, "predeploy.", hooks, "function");
 	if (value.retry === undefined || value.retry === false) return;

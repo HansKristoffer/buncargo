@@ -1,3 +1,4 @@
+import { extname } from "node:path";
 import { pick } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
 import {
@@ -5,34 +6,33 @@ import {
 	resolveContainerRuntime,
 	resolveContainerRuntimeBinary,
 } from "../container-runtime";
-import { loadEnvInput } from "../core/env-input";
-import { readEnvOverrides } from "../core/env-overrides";
-import { applyHostPlanToUrls, planNamedHosts } from "../core/hosts/plan";
-import { tailscaleBlockPorts } from "../core/hosts/tailscale-serve";
-import { getLocalIp } from "../core/network";
 import {
+	namedHostsRuntime,
+	namedUrls,
+	resolveCheckoutView,
+} from "../core/checkout-view";
+import type { EnvInput } from "../core/env-input";
+import { tailscaleBlockPorts } from "../core/hosts/tailscale-serve";
+import {
+	markOffsetClaimsReclaimed,
 	offsetClaimKey,
 	readAllOffsetClaims,
-	releaseOffsetClaimsIfUnchanged,
 } from "../core/offset-claims";
 import {
+	allocatePortBlock,
 	candidateAllocationPorts,
-	resolvePortPlan,
 } from "../core/port-allocation";
 import {
-	asComputedLoopbackUrls,
-	asComputedPorts,
-	asComputedUrls,
-	computeDevIdentity,
 	computeLoopbackUrls,
 	computeUrls,
 	findMonorepoRoot,
-	toUrlMap,
+	type PortMap,
 	type UrlMap,
 } from "../core/ports";
 import {
 	createPortOwnerSnapshot,
 	createPortOwnerSnapshotAsync,
+	type PortOwner,
 	type PortOwnerSnapshot,
 	withBindProbe,
 } from "../core/process";
@@ -43,10 +43,11 @@ import {
 	portOffsetOverride,
 	urlHostOverride,
 } from "../core/runtime-flags";
-import { applySecretDefaults } from "../core/secrets/infisical";
 import type { PublicTunnel } from "../core/tunnel";
 import { workspaceId } from "../core/workspace-identity";
 import {
+	type AssignedPortTarget,
+	assignedPortTargets,
 	buildComposeModel,
 	type ComposeDocument,
 	getGeneratedComposePath,
@@ -55,21 +56,29 @@ import {
 import { planStart, type StartPlan } from "../planning";
 import type {
 	AppConfig,
-	ComputedLoopbackUrls,
-	ComputedPorts,
-	ComputedUrls,
-	DevConfig,
 	DevEnvironmentTunnelLog,
-	EnvValues,
-	HostsOptionsLike,
 	HostsRuntime,
 	NamedHostsActivation,
 	PortOffsetProvenance,
+	ResolvedApp,
+	ResolvedDevConfig,
+	ResolvedService,
 	ServiceConfig,
 } from "../types";
-import type { EnvironmentLogSelection } from "../types/environment";
+import type {
+	EnvironmentLogSelection,
+	SuffixedEnvironmentOptions,
+} from "../types/environment";
 import { logEnvironmentInfo } from "./logging";
 import { allocateReclaiming } from "./port-reclaim";
+import { type StatusOutput, TERMINAL_OUTPUT } from "./status-output";
+
+/**
+ * A config's services and apps with their keys unknown. The modules here read
+ * the config this way; `createDevEnvironment` applies the typed view once.
+ */
+export type AnyServices = Record<string, ServiceConfig>;
+export type AnyApps = Record<string, AppConfig>;
 
 /** The apps and services a run selected, `requiredApps` and dependencies expanded. */
 export interface StartSelection {
@@ -84,28 +93,30 @@ export interface StartSelection {
  * The sibling modules (`env-vars`, `lifecycle`, `servers`, `watchdog`) take this
  * as their only shared state, so `createDevEnvironment` stays a composer.
  */
-export interface DevEnvContext<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
-> {
+export interface DevEnvContext {
 	getStartPlan(
 		onlyApps?: string[],
 		onlyServices?: readonly string[],
 	): StartPlan;
 	prepareStart(onlyApps?: string[], onlyServices?: readonly string[]): void;
 	/** The full selection's allocation as a run would make it, claiming and writing nothing. */
-	planPortOffset(): { offset: number; provenance: PortOffsetProvenance };
+	planPortOffset(getOwner: (port: number) => PortOwner | null): {
+		offset: number;
+		provenance: PortOffsetProvenance;
+	};
 	prepareStartAsync(
 		onlyApps?: string[],
 		onlyServices?: readonly string[],
 		signal?: AbortSignal,
 	): Promise<void>;
 	/**
-	 * Drop this environment's offset claim if it is throwaway: suffixed, or
-	 * running in CI. A developer's dev checkout keeps its block while stopped.
+	 * Read this environment's offset claim before its teardown, if it is
+	 * throwaway: suffixed, or running in CI. A developer's dev checkout keeps
+	 * its block while stopped. The returned function drops the claim after
+	 * the teardown, unless another run of this environment used the block
+	 * since it was read.
 	 */
-	releaseThrowawayClaim(): Promise<void>;
+	captureThrowawayClaim(): () => Promise<void>;
 	readonly hasSelectedServices: boolean;
 	/** Service keys the current selection starts, for the run claim. */
 	readonly selectedServiceKeys: readonly string[];
@@ -117,24 +128,24 @@ export interface DevEnvContext<
 	readonly ownedServerPids: Record<string, number>;
 	/** Values apps printed (`captures`), shared by hooks, env and generated files. */
 	readonly captured: Record<string, string>;
-	readonly inputEnv: Readonly<Record<string, string>>;
+	readonly inputEnv: EnvInput;
 	/** `buncargo env set` values, applied on top of every computed environment. */
 	readonly envOverrides: Readonly<Record<string, string>>;
-	readonly config: DevConfig<TServices, TApps, TEnv>;
+	readonly config: ResolvedDevConfig;
 	readonly root: string;
 	readonly projectName: string;
 	readonly projectSuffix: string | undefined;
 	readonly worktree: boolean;
 	readonly localIp: string;
-	readonly services: TServices;
-	readonly apps: TApps;
-	readonly ports: ComputedPorts<TServices, TApps>;
-	readonly urls: ComputedUrls<TServices, TApps>;
+	readonly services: Record<string, ResolvedService>;
+	readonly apps: Record<string, ResolvedApp>;
+	readonly ports: PortMap;
+	readonly urls: UrlMap;
 	/**
 	 * The `http://localhost:<port>` form, immune to the named-host rewrite that
 	 * `setNamedHostsActive` applies to `urls` in place.
 	 */
-	readonly loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
+	readonly loopbackUrls: UrlMap;
 	/** Mutated in place so consumers holding the object see tunnel updates. */
 	readonly publicUrls: UrlMap;
 	readonly workspaceId: string;
@@ -146,6 +157,19 @@ export interface DevEnvContext<
 	/** The binary it was resolved to, for callers that rebuild the adapter. */
 	readonly runtimeBinary: string | undefined;
 	readonly hosts: HostsRuntime | null;
+	/**
+	 * The selected services' port keys that publish on runtime-assigned host
+	 * ports (`withSuffix(…, { ports: "assigned" })` on a runtime that can),
+	 * for `ensureServicesRunning` to read back.
+	 */
+	assignedPortTargets(
+		serviceKeys: readonly string[],
+	): Record<string, AssignedPortTarget>;
+	/**
+	 * Take the host ports read back after `up` into `ports`, `urls` and every
+	 * environment built from them, and keep them over later allocations.
+	 */
+	adoptAssignedPorts(hostPorts: Readonly<Record<string, number>>): void;
 	ensureComposeFile(): string;
 	/**
 	 * The same service model the compose file is rendered from.
@@ -159,6 +183,8 @@ export interface DevEnvContext<
 	setPublicUrls(urls: Readonly<Record<string, string | undefined>>): void;
 	clearPublicUrls(): void;
 	onSecretsWait?: (ms: number) => void;
+	/** Where the lifecycle reports its progress; see {@link StatusOutput}. */
+	output: StatusOutput;
 	logInfo(
 		label?: string,
 		tunnels?: PublicTunnel[],
@@ -166,60 +192,52 @@ export interface DevEnvContext<
 	): void;
 }
 
-function resolveHostsTld(hosts: boolean | HostsOptionsLike): string {
-	return typeof hosts === "object" ? (hosts.tld ?? "localhost") : "localhost";
+/**
+ * A suffixed environment's compose file beside the configured one: the
+ * suffix before the extension. Sharing the file let `ci` overwrite the dev
+ * stack's model, and fail where it is written only when missing.
+ */
+function suffixedComposeFile(
+	generatedFile: string | undefined,
+	suffix: string,
+): string {
+	const label = suffix.replace(/[^A-Za-z0-9-]/g, "-");
+	if (generatedFile === undefined)
+		return `.buncargo/docker-compose.${label}.generated.yml`;
+	const extension = extname(generatedFile);
+	const stem = generatedFile.slice(0, generatedFile.length - extension.length);
+	return `${stem}.${label}${extension}`;
 }
 
-export function createDevEnvContext<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
-	TEnv extends EnvValues = EnvValues,
->(
-	config: DevConfig<TServices, TApps, TEnv>,
+export function createDevEnvContext(
+	config: ResolvedDevConfig,
 	options: {
 		suffix?: string;
 		containerRuntime?: string;
 		root?: string;
-		readOnly?: boolean;
-	} = {},
-): DevEnvContext<TServices, TApps, TEnv> {
+	} & SuffixedEnvironmentOptions = {},
+): DevEnvContext {
 	const root = options.root ?? findMonorepoRoot();
-	const envOverrides = readEnvOverrides(root);
-	const inputEnv = loadEnvInput(
-		root,
-		config.options?.envFiles,
-		process.env,
-		envOverrides,
-	);
 	const suffix = options.suffix;
-	const { worktree, worktreeSuffix, projectSuffix, projectName } =
-		computeDevIdentity({
-			projectPrefix: config.projectPrefix,
-			suffix,
-			root,
-			worktreeIsolation: config.options?.worktreeIsolation,
-		});
-	const localIp = getLocalIp();
-
-	const services = config.services;
-	// Resolved once, here, because this is the last place the config-level
-	// defaults and the apps are both in hand: every spawner downstream reads the
-	// scope off `app.secrets` alone.
-	const apps = applySecretDefaults(
-		(config.apps ?? {}) as TApps,
-		config.secrets,
-	);
+	// The checkout view `getEnvVar` answers from, made this environment's own:
+	// its maps are new objects, which allocation updates in place.
+	const view = resolveCheckoutView(config, root, { suffix });
+	const { worktree, worktreeSuffix, projectSuffix, projectName, localIp } =
+		view;
+	const { inputEnv, envOverrides, services, apps } = view;
 	// A suffixed environment (`withSuffix`, `buncargo ci`) is a second stack in
 	// the same checkout: it gets its own compose file and never persists its
 	// ports, or it would overwrite the ones the checkout's own `dev` run and
 	// every `exec`/`env` read.
-	const docker =
-		suffix && !config.docker?.generatedFile
-			? {
-					...config.docker,
-					generatedFile: `.buncargo/docker-compose.${suffix.replace(/[^A-Za-z0-9-]/g, "-")}.generated.yml`,
-				}
-			: config.docker;
+	const docker = suffix
+		? {
+				...config.docker,
+				generatedFile: suffixedComposeFile(
+					config.docker?.generatedFile,
+					suffix,
+				),
+			}
+		: config.docker;
 	const composeFile = getGeneratedComposePath(root, docker).composeFileArg;
 	const runtimeSelection = {
 		flag: options.containerRuntime,
@@ -235,76 +253,27 @@ export function createDevEnvContext<
 	let startSelection: StartSelection | undefined;
 	let preparedSelection: string | undefined;
 
-	let portPlan = resolvePortPlan({
-		projectPrefix: config.projectPrefix,
-		projectName,
-		root,
-		services,
-		apps,
-		suffix,
-		worktreeName: worktreeSuffix,
-		worktreeIsolation: config.options?.worktreeIsolation,
-		// Without the resolved backend the allocator asks Docker about every
-		// port, so this project's own Apple containers look foreign and shift
-		// the offset on every run.
-		persist: false,
-		probeConflicts: false,
-	});
+	/**
+	 * A suffixed environment, or any in CI, gives its port block back when it
+	 * ends; a developer's dev checkout keeps its block while stopped.
+	 */
+	const throwaway = () => suffix !== undefined || isCI();
+	let portPlan = view.portPlan;
 	const portMap = portPlan.ports;
-	const ports = asComputedPorts<TServices, TApps>(portMap);
-
-	const hostsPlan = config.options?.hosts
-		? planNamedHosts({
-				projectPrefix: config.projectPrefix,
-				worktreeSuffix,
-				apps,
-				services,
-				ports: portMap,
-				hosts: config.options.hosts,
-				primaryApp: config.options.primaryApp,
-			})
-		: [];
-	const hosts: HostsRuntime | null = config.options?.hosts
-		? {
-				plan: hostsPlan,
-				active: false,
-				tld: resolveHostsTld(config.options.hosts),
-				mode: hostsMode() === "tailscale" ? "tailscale" : "loopback",
-				tailscaleUrls: {},
-			}
-		: null;
-
-	const plainUrls: UrlMap = computeUrls(
-		services,
-		apps,
-		portMap,
-		localIp,
-		urlHostOverride(),
-	);
-	const urls = asComputedUrls<TServices, TApps>({ ...plainUrls });
-	const loopbackUrls = asComputedLoopbackUrls<TServices, TApps>(
-		computeLoopbackUrls(services, apps, portMap),
-	);
+	const { ports, plainUrls, loopbackUrls } = view;
+	const hostsPlan = view.hostPlan;
+	const hosts = namedHostsRuntime(config.options?.hosts, hostsPlan, undefined);
+	const urls: UrlMap = { ...plainUrls };
 	const publicUrls: UrlMap = {};
 	// Loopback: the plan's hostnames being served, when only some are.
 	let servedHostnames: ReadonlySet<string> | undefined;
 
 	function refreshUrls() {
-		const urlMap = toUrlMap(urls);
-		Object.assign(urlMap, plainUrls);
-
-		if (!hosts?.active) return;
-		if (hosts.mode === "tailscale") {
-			Object.assign(urlMap, hosts.tailscaleUrls);
-			return;
-		}
-		const served = servedHostnames;
-		const plan = served
-			? hosts.plan.filter((entry) => served.has(entry.hostname))
-			: hosts.plan;
-		applyHostPlanToUrls(urlMap, plan);
+		Object.assign(urls, namedUrls(plainUrls, hosts, servedHostnames));
 	}
 
+	// Host ports the runtime picked, which outlive a later allocation.
+	const assignedHostPorts: Record<string, number> = {};
 	let model: ComposeDocument | undefined;
 	const buildModel = () =>
 		buildComposeModel(
@@ -312,7 +281,34 @@ export function createDevEnvContext<
 			config.docker,
 			{ projectName, root, worktree: worktreeSuffix },
 			runtime().name,
+			{
+				data: options.data,
+				// A runtime that cannot pick one keeps the claimed block.
+				ports:
+					options.ports === "assigned" &&
+					runtime().capabilities.assignedHostPorts
+						? "assigned"
+						: "claimed",
+			},
 		);
+
+	function composeModel(): ComposeDocument {
+		model ??= buildModel();
+		return model;
+	}
+
+	/** Point the URLs, and the named hosts' targets, at `portMap`. */
+	function refreshPorts() {
+		Object.assign(
+			plainUrls,
+			computeUrls(services, apps, portMap, localIp, urlHostOverride()),
+		);
+		Object.assign(loopbackUrls, computeLoopbackUrls(services, apps, portMap));
+		for (const host of hostsPlan) {
+			host.targetPort = portMap[host.name] ?? host.targetPort;
+		}
+		refreshUrls();
+	}
 
 	let cachedPlan: { selection: string; plan: StartPlan } | undefined;
 	function getStartPlan(
@@ -370,7 +366,7 @@ export function createDevEnvContext<
 
 		if (selectedRuntime) {
 			const selectedServices = pick(services, plan.requiredServiceKeys);
-			assertServiceCapabilities(selectedRuntime.name, selectedServices);
+			assertServiceCapabilities(selectedRuntime, selectedServices);
 		}
 
 		// App-only selection still checks host processes, without asking any runtime.
@@ -379,12 +375,12 @@ export function createDevEnvContext<
 			(withServices
 				? undefined
 				: createPortOwnerSnapshot({ containers: new Map() }));
-		portPlan = resolvePortPlan({
+		portPlan = allocatePortBlock({
 			...allocationInput(plan, selectedRuntime),
-			// Only dev has a lockfile; every environment claims its offset, so
-			// parallel suffixed runs (CI jobs on one machine) never share one.
-			persist: suffix === undefined,
+			// Every environment claims its offset, so parallel suffixed runs
+			// (CI jobs on one machine) never share one.
 			claim: true,
+			throwaway: throwaway(),
 			// The bind probe here too: this is the allocation every dev run
 			// makes, and a snapshot only knows what `lsof` lets this user see.
 			getOwner: snapshot
@@ -393,16 +389,8 @@ export function createDevEnvContext<
 		});
 
 		// Keep object identity: env callbacks may already hold these maps.
-		Object.assign(portMap, portPlan.ports);
-		Object.assign(
-			plainUrls,
-			computeUrls(services, apps, portMap, localIp, urlHostOverride()),
-		);
-		Object.assign(loopbackUrls, computeLoopbackUrls(services, apps, portMap));
-		for (const host of hostsPlan) {
-			host.targetPort = portMap[host.name] ?? host.targetPort;
-		}
-		refreshUrls();
+		Object.assign(portMap, portPlan.ports, assignedHostPorts);
+		refreshPorts();
 		// Published only with its block: an allocation that threw (the range
 		// is full) selected nothing that a caller could read as allocated.
 		hasSelectedServices = withServices;
@@ -430,37 +418,48 @@ export function createDevEnvContext<
 		},
 		getStartPlan,
 		prepareStart,
-		planPortOffset() {
+		planPortOffset(getOwner) {
 			const plan = getStartPlan();
 			const selectedRuntime =
 				plan.requiredServiceKeys.length > 0 ? runtime() : undefined;
-			// Its own probe, bind-probed like a run's when no owner is given.
-			const { offset, provenance } = resolvePortPlan({
+			const { offset, provenance } = allocatePortBlock({
 				...allocationInput(plan, selectedRuntime),
-				persist: false,
+				getOwner,
 				claim: false,
 			});
 			return { offset, provenance };
 		},
-		async releaseThrowawayClaim() {
-			if (suffix === undefined && !isCI()) return;
+		captureThrowawayClaim() {
+			if (!throwaway()) return async () => {};
 			const key = offsetClaimKey(root, suffix);
+			// Read before the teardown: another run of this environment that
+			// allocates during it rewrites the claim, and a read after would
+			// take that run's claim for this one's.
 			const read = readAllOffsetClaims()[key];
-
-			// Another run of this environment on record may still use the block,
-			// and one that starts after this check claims it again: released
-			// only if no run has used it since it was read.
-			const runs = await readAllRuns();
-			if (
-				runs.some((run) => run.projectName === projectName && run.root === root)
-			)
-				return;
-			if (read !== undefined)
-				await releaseOffsetClaimsIfUnchanged({ [key]: read });
-			// A later start() on this environment allocates and claims again, and
-			// nothing (Prisma's `allocate`) reads the released block as its own.
-			preparedSelection = undefined;
-			startSelection = undefined;
+			return async () => {
+				// Another run of this environment on record may still use the
+				// block, and one that starts after this check claims it again:
+				// released only if no run has used it since it was read.
+				const runs = await readAllRuns();
+				if (
+					runs.some(
+						(run) => run.projectName === projectName && run.root === root,
+					)
+				)
+					return;
+				// The block goes; the claim stays, naming the project its
+				// volumes belong to.
+				if (read !== undefined)
+					await markOffsetClaimsReclaimed(
+						{ [key]: read },
+						new Date().toISOString(),
+					);
+				// A later start() on this environment allocates and claims again,
+				// and nothing (Prisma's `allocate`) reads the released block as its
+				// own.
+				preparedSelection = undefined;
+				startSelection = undefined;
+			};
 		},
 		async prepareStartAsync(onlyApps, onlyServices, signal) {
 			signal?.throwIfAborted();
@@ -474,7 +473,7 @@ export function createDevEnvContext<
 				plan.requiredServiceKeys.length > 0 ? runtime() : undefined;
 			if (selectedRuntime)
 				assertServiceCapabilities(
-					selectedRuntime.name,
+					selectedRuntime,
 					pick(services, plan.requiredServiceKeys),
 				);
 			const candidatePorts = candidateAllocationPorts(
@@ -534,6 +533,17 @@ export function createDevEnvContext<
 			return resolveContainerRuntimeBinary(runtimeSelection);
 		},
 		hosts,
+		output: TERMINAL_OUTPUT,
+
+		assignedPortTargets(serviceKeys) {
+			return assignedPortTargets(pick(services, serviceKeys), composeModel());
+		},
+
+		adoptAssignedPorts(hostPorts) {
+			Object.assign(assignedHostPorts, hostPorts);
+			Object.assign(portMap, hostPorts);
+			refreshPorts();
+		},
 
 		ensureComposeFile() {
 			model = buildModel();
@@ -547,10 +557,7 @@ export function createDevEnvContext<
 			);
 		},
 
-		composeModel() {
-			model ??= buildModel();
-			return model;
-		},
+		composeModel,
 
 		setNamedHostsActive(active, extras = {}) {
 			if (!hosts) {
@@ -615,7 +622,7 @@ export function createDevEnvContext<
 						)
 					: apps,
 				ports: portMap,
-				urls: toUrlMap(urls),
+				urls,
 				localIp,
 				portOffset: portPlan.offset,
 				tunnels: tunnelRows,

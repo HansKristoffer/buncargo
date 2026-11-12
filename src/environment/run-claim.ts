@@ -1,4 +1,6 @@
+import type { SkippedLeaseApp } from "../core/app-leases";
 import { releaseLeases } from "../core/leases";
+import { externalStackProjectName } from "../core/ports";
 import type { StartDevServersOptions } from "../core/process/dev-servers";
 import {
 	appRowEvents,
@@ -9,17 +11,19 @@ import {
 } from "../core/run-publish";
 import {
 	buildRunEntryAsync,
+	CHECKOUT_HOLD,
 	holdToInherit,
 	loadRuns,
 	publishRun,
+	type RunHold,
 	type RunServiceEntry,
 	type RunStackEntry,
 	releaseRun,
 	retireProjectRuns,
 } from "../core/run-registry";
 import { ensureWatchdog as ensureWatchdogFn } from "../core/watchdog";
-import type { AnyDevConfig, AppConfig, ServiceConfig } from "../types";
-import { acquireStartLeases } from "./app-leases";
+import type { ResolvedApp, ResolvedService } from "../types";
+import { acquireStartLeases, type LeasePolicy } from "./app-leases";
 import type { DevEnvContext } from "./context";
 import { stacksForServices } from "./stacks";
 
@@ -45,8 +49,8 @@ export interface DevRunClaimApi {
 	/**
 	 * Claim the selected services' containers for this process.
 	 *
-	 * Idempotent, so the CLI can claim first with its flags and `start()` can
-	 * claim again with the defaults without changing anything.
+	 * Idempotent, so a script can claim first with its hold and `start()`
+	 * can claim again with the defaults without changing anything.
 	 */
 	claimRun(options?: ClaimOptions): Promise<void>;
 	/** Release the claim: containers are held for the idle timeout, then removed. */
@@ -71,15 +75,18 @@ export interface DevRunClaimApi {
 	ensureWatchdog(): Promise<void>;
 	/**
 	 * Claim what the apps about to spawn need from the machine: each one's
-	 * `exclusive` lease, then this session's entry listing them, published
-	 * like `buncargo dev`'s (an app-only run has no entry until here).
-	 * Returns the apps to spawn, without an `essential: false` one whose
-	 * lease another run holds; an essential one throws instead.
+	 * `exclusive` lease, then this session's entry listing them beside the
+	 * `reused` ones (an app-only run has no entry until here). Returns the
+	 * apps to spawn, without an `essential: false` one whose lease another
+	 * run holds and the policy left alone; an essential one throws instead.
 	 */
 	claimApps(
-		apps: Record<string, AppConfig>,
-		signal?: AbortSignal,
-	): Promise<Record<string, AppConfig>>;
+		apps: Record<string, ResolvedApp>,
+		options: AppClaimOptions,
+	): Promise<{
+		apps: Record<string, ResolvedApp>;
+		skipped: SkippedLeaseApp[];
+	}>;
 	/** What the spawner reports, recorded on the claimed apps' rows. */
 	readonly appEvents: Pick<
 		StartDevServersOptions,
@@ -90,7 +97,7 @@ export interface DevRunClaimApi {
 	 * named by the apps that call returned. Concurrent starts each give back
 	 * their own.
 	 */
-	abandonApps(apps: Record<string, AppConfig>): Promise<void>;
+	abandonApps(apps: Record<string, ResolvedApp>): Promise<void>;
 	/**
 	 * After the apps have stopped: give back everything they held, and
 	 * withdraw an entry that only listed them.
@@ -99,6 +106,17 @@ export interface DevRunClaimApi {
 }
 
 type ClaimState = { kind: "unclaimed" } | { kind: "claimed"; at: number };
+
+interface AppClaimOptions {
+	policy: LeasePolicy;
+	/** The services the entry lists, with the apps. */
+	serviceNames: readonly string[];
+	/** Apps another process runs, which this run uses: listed `reused`. */
+	reused?: Record<string, ResolvedApp>;
+	/** The app that owns the terminal, when one does. */
+	attached?: string;
+	signal?: AbortSignal;
+}
 
 export interface ClaimOptions {
 	signal?: AbortSignal;
@@ -132,11 +150,26 @@ export function resolveClaimHold(
 	return hold === false ? undefined : hold;
 }
 
-export function createRunClaimApi<
-	TServices extends Record<string, ServiceConfig>,
-	TApps extends Record<string, AppConfig>,
->(
-	ctx: DevEnvContext<TServices, TApps>,
+/** What a run's claim reads of its environment. */
+export type RunClaimContext = Pick<
+	DevEnvContext,
+	| "projectName"
+	| "root"
+	| "worktree"
+	| "services"
+	| "selectedServiceKeys"
+	| "hasSelectedServices"
+	| "runtimeBinary"
+> & {
+	readonly runtime: Pick<DevEnvContext["runtime"], "name">;
+	readonly config: Pick<
+		DevEnvContext["config"],
+		"projectPrefix" | "options" | "tasks" | "services" | "integrations"
+	>;
+};
+
+export function createRunClaimApi(
+	ctx: RunClaimContext,
 	/** The environment, which the app rows are built from. */
 	source: () => RunSource,
 ): DevRunClaimApi {
@@ -151,11 +184,11 @@ export function createRunClaimApi<
 	// Leases this session holds.
 	const heldLeases = new Set<string>();
 	// The apps on this session's entry.
-	const listedApps: Record<string, AppConfig> = {};
+	const listedApps: Record<string, ResolvedApp> = {};
 	// What each `claimApps` call newly took, by the record it returned, so a
 	// failed start gives back its own and not a concurrent one's.
 	const newlyClaimed = new WeakMap<
-		Record<string, AppConfig>,
+		Record<string, ResolvedApp>,
 		{ leases: string[]; apps: string[] }
 	>();
 
@@ -174,23 +207,38 @@ export function createRunClaimApi<
 		await releaseRun(sessionId);
 	}
 
-	// The hold of the last claim. `restart()` retires and then claims again
-	// with only a signal, and resolving that afresh dropped a hold the first
-	// claim asked for, which kept the containers forever.
-	let lastHold:
-		{ value: number | undefined; inherited: number | undefined } | undefined;
+	// The hold of the last claim. A later claim that names none (a `start()`
+	// after a `stop()`) keeps it: resolving that afresh dropped a hold the
+	// first claim asked for, which kept the containers forever.
+	let lastHold: RunHold | undefined;
+
+	/**
+	 * The hold a claim asks for: the one named, or, when none is (a library
+	 * `start()`), the hold of a stack another run left in its hold, which
+	 * applies after this run ends too.
+	 */
+	async function claimHold(options: ClaimOptions): Promise<RunHold> {
+		const namesHold =
+			options.idleTimeoutMs !== undefined ||
+			options.defaultIdleTimeoutMs !== undefined;
+		if (!namesHold) return lastHold ?? holdToInherit(await loadRuns(), ctx);
+		const ms = resolveClaimHold(options, ctx.config.options?.autoShutdown);
+		return ms === undefined
+			? CHECKOUT_HOLD
+			: { kind: "timed", ms, inherited: false };
+	}
 
 	function serviceEntries(): RunServiceEntry[] {
 		return ctx.selectedServiceKeys.map((name) => {
-			const service = ctx.services[name] as ServiceConfig | undefined;
+			const service = ctx.services[name] as ResolvedService | undefined;
 			const composeName = service?.serviceName ?? name;
 			return {
 				name,
-				kind: service?.kind,
+				kind: service?.kind === "job" ? ("job" as const) : undefined,
 				status: "starting" as const,
 				// A stack's own CLI names its containers; `stop` cannot reach one.
-				...(service?.external
-					? { stack: service.external.stack }
+				...(service?.kind === "external"
+					? { stack: service.stack }
 					: {
 							container: {
 								runtime: ctx.runtime.name,
@@ -204,19 +252,19 @@ export function createRunClaimApi<
 	}
 
 	function stackEntries(): RunStackEntry[] {
-		return stacksForServices(
-			ctx.config as AnyDevConfig,
-			ctx.selectedServiceKeys,
-		).map(({ name, stack }) => ({
-			name,
-			down: [
-				...stack.down({
-					projectName: ctx.projectName,
-					root: ctx.root,
-					removeVolumes: false,
-				}),
-			],
-		}));
+		return stacksForServices(ctx.config, ctx.selectedServiceKeys).map(
+			({ name, stack }) => ({
+				name,
+				down: [
+					...stack.down({
+						projectName: ctx.projectName,
+						root: ctx.root,
+						removeVolumes: false,
+					}),
+				],
+				composeProject: externalStackProjectName(ctx.projectName),
+			}),
+		);
 	}
 
 	return {
@@ -237,25 +285,10 @@ export function createRunClaimApi<
 				return;
 			}
 			if (!ctx.hasSelectedServices) return;
-			const namesHold =
-				options.idleTimeoutMs !== undefined ||
-				options.defaultIdleTimeoutMs !== undefined;
-			const hold =
-				lastHold && !namesHold
-					? lastHold.value
-					: resolveClaimHold(options, ctx.config.options?.autoShutdown);
-			// Asked for no hold at all (a library `start()`): a stack another
-			// run left in its hold keeps that hold after this run ends.
-			let inherited: number | undefined;
-			if (!namesHold)
-				inherited = lastHold
-					? lastHold.inherited
-					: holdToInherit(await loadRuns(), ctx);
-			lastHold = { value: hold, inherited };
+			const hold = await claimHold(options);
+			lastHold = hold;
 			const stacks = stackEntries();
-			// Claimed before it is published: a write that fails must not be
-			// retried on every container subset.
-			claim = { kind: "claimed", at: Date.now() };
+			const at = Date.now();
 			await publishRun({
 				...(await buildRunEntryAsync(
 					{
@@ -267,13 +300,14 @@ export function createRunClaimApi<
 					},
 					options.signal,
 				)),
-				...(hold === undefined ? {} : { idleTimeoutMs: hold }),
-				...(hold === undefined && inherited !== undefined
-					? { inheritedIdleTimeoutMs: inherited }
-					: {}),
+				hold,
 				services: serviceEntries(),
 				...(stacks.length > 0 ? { stacks } : {}),
 			});
+			// Only once the entry is on disk: a claim that failed to publish
+			// (aborted, a lock timeout, a newer registry) is retried by the next
+			// start, which would otherwise create containers nobody claimed.
+			claim = { kind: "claimed", at };
 		},
 
 		async releaseRun() {
@@ -308,7 +342,8 @@ export function createRunClaimApi<
 			return ensureWatchdogFn();
 		},
 
-		async claimApps(apps, signal) {
+		async claimApps(apps, options) {
+			const reused = options.reused ?? {};
 			const leases = await acquireStartLeases(
 				{
 					sessionId,
@@ -317,24 +352,31 @@ export function createRunClaimApi<
 					isWorktree: ctx.worktree,
 				},
 				apps,
-				{ held: heldLeases, signal },
+				{ held: heldLeases, policy: options.policy, signal: options.signal },
 			);
 			for (const key of leases.acquired) heldLeases.add(key);
 			const added = Object.keys(leases.apps).filter(
 				(name) => !(name in listedApps),
 			);
 			newlyClaimed.set(leases.apps, { leases: leases.acquired, apps: added });
-			if (added.length === 0) return leases.apps;
-
+			const claimedApps = { apps: leases.apps, skipped: leases.skipped };
 			Object.assign(listedApps, leases.apps);
+			const listed = { ...listedApps, ...reused };
+			// An entry would describe nothing: no app and no service.
+			if (Object.keys(listed).length === 0 && options.serviceNames.length === 0)
+				return claimedApps;
+
 			// Over the claim, if there is one: its services, as `dev` lists them.
 			// The describe keeps each listed row's process and state.
 			await flushRunPatches(session);
 			await publishCurrentRun(source(), {
-				apps: listedApps,
-				serviceNames: claimed() ? ctx.selectedServiceKeys : [],
+				apps: listed,
+				reusedNames: Object.keys(reused),
+				serviceNames: options.serviceNames,
+				attached: options.attached,
+				tasks: ctx.config.tasks,
 			});
-			return leases.apps;
+			return claimedApps;
 		},
 
 		appEvents: appRowEvents(session),

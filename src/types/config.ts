@@ -1,4 +1,3 @@
-import type { IntegrationAppNames } from "./all-types";
 import type { AppConfig, SecretsScopeConfig, TypedAppDefinitions } from "./app";
 import type {
 	CheckConfig,
@@ -18,7 +17,7 @@ import type {
 } from "./computed";
 import type { DevEnvironment, DevEnvironmentFor } from "./environment";
 import type { DevHooks } from "./hooks";
-import type { BuncargoIntegration } from "./integrations";
+import type { BuncargoIntegration, IntegrationAdds } from "./integrations";
 import type { MigrationConfig, PrismaConfig, SeedConfig } from "./preparation";
 import type { DockerComposeGenerationOptions, ServiceConfig } from "./service";
 import type { ConcreteStringKeys } from "./type-utils";
@@ -79,7 +78,7 @@ export interface DevOptions<
 	primaryApp?: Extract<keyof TApps, string>;
 	/**
 	 * Named `.localhost` HTTPS URLs via the shared loopback proxy.
-	 * `true` uses defaults. Off on Windows, in CI, or when `BUNCARGO_HOSTS=0`.
+	 * `true` uses defaults. Off in CI or when `BUNCARGO_HOSTS=0`.
 	 */
 	hosts?: boolean | HostsOptions<TServices>;
 	/**
@@ -318,24 +317,29 @@ export interface DevConfig<
 	secrets?: SecretsScopeConfig | false;
 	/**
 	 * Variables removed from every process buncargo starts for the project:
-	 * apps, tasks, `exec`, migrations, the seed and prisma. For tools that
-	 * change behaviour when they detect an agent's shell, e.g.
+	 * apps, tasks, `exec`, migrations and the seed. For tools that change
+	 * behaviour when they detect an agent's shell, e.g.
 	 * `["CLAUDECODE", "CODEX_SANDBOX"]` (optional).
+	 *
+	 * A tool run through `exec` loses its own agent detection with them. The
+	 * Prisma CLI that `buncargo prisma` runs keeps them: they are what Prisma
+	 * reads before a destructive Migrate action.
 	 */
 	unsetEnv?: readonly string[];
 	/** Docker Compose generation options (optional) */
 	docker?: DockerComposeGenerationOptions;
 	/** Preconditions `buncargo dev` verifies before starting (optional) */
-	checks?: readonly SetupCheck[];
+	setupChecks?: readonly SetupCheck[];
 	/** Steps `buncargo dev` runs with the terminal before it starts (optional) */
 	preflight?: readonly PreflightStep[];
 	/** Files rendered from the run's ports, URLs and captures (optional) */
 	generatedFiles?: readonly GeneratedFileConfig[];
 	/**
 	 * Integrations (`buncargo/shopify`, `buncargo/expo`, …), applied in order
-	 * before the config is validated (optional).
+	 * before the config is validated (optional). With `defineDevConfig`, the
+	 * apps and services they add can be named wherever the config's own can.
 	 */
-	integrations?: readonly BuncargoIntegration[];
+	integrations?: readonly BuncargoIntegration<IntegrationAdds>[];
 	/** Named scripts for `buncargo run <name>` (optional) */
 	tasks?: Record<
 		string,
@@ -351,12 +355,7 @@ export interface DevConfig<
 	 * Named app selections for `buncargo dev --profile=<name>` (optional).
 	 * A profile named `default` is what a bare `buncargo dev` runs.
 	 */
-	profiles?: Record<
-		string,
-		ProfileConfig<
-			Extract<keyof TApps, string> | Extract<keyof IntegrationAppNames, string>
-		>
-	>;
+	profiles?: Record<string, ProfileConfig<Extract<keyof TApps, string>>>;
 }
 
 /**
@@ -381,10 +380,18 @@ type AnyDevOptions = Omit<DevOptions, "primaryApp" | "hosts"> & {
 	hosts?: boolean | HostsOptionsLike;
 };
 
-/** {@link PrismaConfig} with its service/env-name positions widened to `string`. */
-type AnyPrismaConfig = Omit<PrismaConfig, "service" | "urlEnvVar"> & {
+/**
+ * {@link PrismaConfig} with its service/env-name positions widened to
+ * `string`, and `generateCheck`'s context erased.
+ */
+type AnyPrismaConfig = Omit<
+	PrismaConfig,
+	"service" | "urlEnvVar" | "generateCheck"
+> & {
 	service?: string;
-	urlEnvVar?: string;
+	urlEnvVar?: string | readonly string[];
+	generateCheck?:
+		"schema-hash" | ((...args: never[]) => boolean | Promise<boolean>);
 };
 
 /** {@link DevHooks} with the hook names kept but their context erased. */

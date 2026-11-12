@@ -1,23 +1,35 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
+interface SourceMap {
+	sources?: string[];
+	sourcesContent?: unknown;
+}
+
 /**
+ * The map a build output ships with: the source paths right, and no source
+ * text.
+ *
+ * The package ships no `src/`, so the maps are there for stack traces, which
+ * need only the mappings and the paths. `sourcesContent` was more than twice
+ * the size of the JavaScript.
+ *
  * `bun build --sourcemap` writes every map's `sources` relative to the output
  * directory, which is only right for the chunks at its top level: the map of
  * `dist/cli/bin.js` names `../src/cli/bin.ts`, which from `dist/cli/` is
- * `dist/src/cli/bin.ts`. The maps are there so an agent or a tool reading
- * `dist` lands in the `src/` the package ships, so make each path relative to
- * its own map.
+ * `dist/src/cli/bin.ts`. So each path is made relative to its own map, and a
+ * trace names the repository's file.
  */
-export function fixSourcePaths(
-	map: { sources?: string[] },
+export function shippedSourceMap(
+	map: SourceMap,
 	mapPath: string,
 	outdir: string,
-): { sources?: string[] } {
-	if (!map.sources) return map;
+): SourceMap {
+	const { sourcesContent: _content, ...rest } = map;
+	if (!rest.sources) return rest;
 	return {
-		...map,
-		sources: map.sources.map((source) =>
+		...rest,
+		sources: rest.sources.map((source) =>
 			relative(dirname(mapPath), resolve(outdir, source)),
 		),
 	};
@@ -32,8 +44,7 @@ function mapsUnder(dir: string): string[] {
 if (import.meta.main) {
 	const outdir = resolve(process.argv[2] ?? "dist");
 	for (const path of mapsUnder(outdir)) {
-		if (dirname(path) === outdir) continue;
 		const map = JSON.parse(readFileSync(path, "utf8"));
-		writeFileSync(path, JSON.stringify(fixSourcePaths(map, path, outdir)));
+		writeFileSync(path, JSON.stringify(shippedSourceMap(map, path, outdir)));
 	}
 }

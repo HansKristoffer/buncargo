@@ -12,8 +12,9 @@
  */
 
 import { connect } from "node:tls";
-import { getErrorMessage, promiseTimeout } from "hanzio";
+import { getErrorMessage, isNumber, isString, promiseTimeout } from "hanzio";
 import { withFileLock } from "../file-lock";
+import { type Guard, object, optional } from "../json-shape";
 import { isProcessAlive } from "../process/lifecycle";
 import { readProcessIdentitiesCached } from "../process-identity";
 import { defineListRegistry, readJsonDocumentSync } from "../registry-file";
@@ -51,7 +52,7 @@ import {
  * can meet another checkout's HTTPS port; the claims, which hold both, keep
  * them apart.
  */
-export const TAILSCALE_HTTPS_PORT_SHIFT = 20_000;
+const TAILSCALE_HTTPS_PORT_SHIFT = 20_000;
 
 /** The HTTPS port Tailscale serves `appPort` on, or undefined above 65535. */
 export function tailscaleHttpsPort(appPort: number): number | undefined {
@@ -106,21 +107,16 @@ export interface TailscaleServeEntry {
 	servedAt?: string;
 }
 
-function isServeEntry(value: unknown): value is TailscaleServeEntry {
-	if (typeof value !== "object" || value === null) return false;
-	const entry = value as Partial<TailscaleServeEntry>;
-	return (
-		typeof entry.root === "string" &&
-		typeof entry.app === "string" &&
-		typeof entry.pid === "number" &&
-		typeof entry.httpsPort === "number" &&
-		typeof entry.target === "string" &&
-		typeof entry.hostname === "string" &&
-		(entry.servedAt === undefined || typeof entry.servedAt === "string") &&
-		(entry.processIdentity === undefined ||
-			typeof entry.processIdentity === "string")
-	);
-}
+const isServeEntry: Guard<TailscaleServeEntry> = object({
+	root: isString,
+	app: isString,
+	pid: isNumber,
+	processIdentity: optional(isString),
+	httpsPort: isNumber,
+	target: isString,
+	hostname: isString,
+	servedAt: optional(isString),
+});
 
 /** The run an entry belongs to, as liveness judges it. */
 export type ServeOwner = Pick<TailscaleServeEntry, "pid" | "processIdentity">;
@@ -175,14 +171,14 @@ export function loadTailscaleServeEntries(): Promise<TailscaleServeEntry[]> {
 	return registry.read(getTailscaleServePath());
 }
 
-export function tailscaleServeUrl(entry: {
+function tailscaleServeUrl(entry: {
 	hostname: string;
 	httpsPort: number;
 }): string {
 	return `https://${entry.hostname}:${entry.httpsPort}`;
 }
 
-export function serveTarget(appPort: number): string {
+function serveTarget(appPort: number): string {
 	return `http://127.0.0.1:${appPort}`;
 }
 
@@ -295,7 +291,7 @@ export interface ServePlan {
  * `"off"` when the live config is exactly what was recorded, `"forget"` when
  * it is gone or has changed, which makes it someone else's.
  */
-export function decideRemoval(
+function decideRemoval(
 	entry: TailscaleServeEntry,
 	config: ServeConfig,
 ): "off" | "forget" {
@@ -438,7 +434,7 @@ function recordedPortMessage(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** Where a probe connects: the machine's Tailscale address, asking for the name. */
-export interface ServeProbeTarget {
+interface ServeProbeTarget {
 	hostname: string;
 	address: string;
 	httpsPort: number;

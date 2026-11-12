@@ -90,13 +90,14 @@ Prints one line per run and exits. If this says `no active runs` while
 ```
 Sources/BuncargoBar/
   App.swift          # MenuBarExtra scene, --status mode
-  RunRegistry.swift  # runs.json v1 model, supported version, liveness, grouping
+  RunRegistry.swift  # runs.json v2 model, supported version, liveness, grouping
   RunStore.swift     # directory watch + 5s poll, published state
   Views.swift        # rows, hover detail panel, status dots
   Actions.swift      # open/copy/TablePlus, and `buncargo stop` / `buncargo expo sim` invocation
   Notifications.swift # "workspace started" notifications, Open/Copy actions
 fixtures/
-  runs.v1.json       # schema contract, checked by Swift and TypeScript tests
+  runs.v2.json       # schema contract, checked by Swift and TypeScript tests
+  runs.v2.lossy.json # entries a reader drops one at a time
 scripts/
   package.sh         # build + bundle (VERSION/BUILD_NUMBER from the env)
   install.sh         # package --install --open
@@ -113,7 +114,7 @@ that still cannot decode its registry, so the failure is a clear message rather
 than a broken install, but the menus stay empty in the meantime.
 
 `package.sh` stamps the schema version into `Info.plist` from
-`fixtures/runs.v1.json`, and the smoke test fails if the plist and the Swift
+`fixtures/runs.v2.json`, and the smoke test fails if the plist and the Swift
 decoder disagree, so bumping the schema is a three-file change the CI catches:
 `core/run-registry.ts`, the fixture, and `RunRegistry.supportedVersion`.
 

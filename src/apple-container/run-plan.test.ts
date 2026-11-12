@@ -1,20 +1,17 @@
 import { describe, expect, it } from "bun:test";
 import { homedir } from "node:os";
+import { resolveServices } from "../config/resolve";
 import { buildComposeModel } from "../docker-compose";
 import {
 	configHashFor,
 	interpolate,
+	SERVICE_HASH_LABEL,
 	serviceFingerprint,
 	serviceHashEnv,
 } from "../docker-compose/interpolate";
-import type {
-	ComposeDocument,
-	DockerComposeServiceRaw,
-	ServiceConfig,
-} from "../types";
+import type { ComposeDocument, ServiceConfig } from "../types";
 import {
 	buildAppleRunPlan,
-	CONFIG_HASH_LABEL,
 	containerNameFor,
 	orderServices,
 	projectVolumeNames,
@@ -30,7 +27,7 @@ const IDENTITY = {
 };
 
 function modelFor(services: Record<string, ServiceConfig>): ComposeDocument {
-	return buildComposeModel(services, undefined, IDENTITY);
+	return buildComposeModel(resolveServices(services), undefined, IDENTITY);
 }
 
 function planFor(
@@ -43,14 +40,6 @@ function planFor(
 		root: IDENTITY.root,
 		env,
 	});
-}
-
-/**
- * Compose forms the typed config rejects but a plain JS config can still pass,
- * since nothing validates the raw service at runtime.
- */
-function untyped(service: Record<string, unknown>): DockerComposeServiceRaw {
-	return service as DockerComposeServiceRaw;
 }
 
 /** Read the value that follows each occurrence of a flag. */
@@ -218,10 +207,21 @@ describe("buildAppleRunPlan", () => {
 
 		expect(
 			valuesOf(withOverride.services[0]?.runArgs ?? [], "--publish"),
-		).toEqual(["5533:5432"]);
+		).toEqual(["127.0.0.1:5533:5432"]);
 		expect(
 			valuesOf(withDefault.services[0]?.runArgs ?? [], "--publish"),
-		).toEqual(["5432:5432"]);
+		).toEqual(["127.0.0.1:5432:5432"]);
+	});
+
+	it("publishes on the service's bind address and still names the host port", () => {
+		const plan = planFor({ postgres: { port: 5432, bind: "0.0.0.0" } });
+		const service = plan.services[0];
+		if (!service) throw new Error("expected a postgres plan");
+
+		expect(valuesOf(service.runArgs, "--publish")).toEqual([
+			"0.0.0.0:5432:5432",
+		]);
+		expect(service.publishedPorts).toEqual([5432]);
 	});
 
 	it("prefixes named volumes with the project and creates them once", () => {
@@ -267,7 +267,7 @@ describe("buildAppleRunPlan", () => {
 		expect(labels).toContain("buncargo.project=gey-main");
 		expect(labels).toContain("buncargo.service=postgres");
 		expect(labels).toContain("buncargo.root=/repo");
-		expect(labels).toContain(`${CONFIG_HASH_LABEL}=${service.configHash}`);
+		expect(labels).toContain(`${SERVICE_HASH_LABEL}=${service.configHash}`);
 	});
 
 	it("labels the service fingerprint reuse compares, whether or not the caller passed it", () => {
@@ -341,100 +341,6 @@ describe("buildAppleRunPlan", () => {
 		expect(labels).toContain("team=core");
 		expect(labels).toContain("buncargo.project=gey-main");
 		expect(labels).toContain("buncargo.service=custom");
-	});
-
-	it("reads list-form environment, taking a bare key from the environment", () => {
-		const plan = planFor(
-			{
-				custom: {
-					port: 9000,
-					docker: untyped({
-						image: "busybox",
-						environment: ["A=1", "B", "UNSET", "C=x=y"],
-					}),
-				},
-			},
-			{ B: "from-env" },
-		);
-		expect(valuesOf(plan.services[0]?.runArgs ?? [], "--env")).toEqual([
-			"A=1",
-			"B=from-env",
-			"C=x=y",
-		]);
-	});
-
-	it("takes a valueless map-form variable from the environment", () => {
-		const plan = planFor(
-			{
-				custom: {
-					port: 9000,
-					docker: untyped({
-						image: "busybox",
-						environment: { A: null, B: null },
-					}),
-				},
-			},
-			{ A: "set" },
-		);
-		expect(valuesOf(plan.services[0]?.runArgs ?? [], "--env")).toEqual([
-			"A=set",
-		]);
-	});
-
-	it("translates long-form ports and volumes", () => {
-		const plan = buildAppleRunPlan({
-			projectName: "gey-main",
-			root: "/repo",
-			model: {
-				services: {
-					app: untyped({
-						image: "busybox",
-						ports: [
-							{ target: 80, published: "8080", host_ip: "127.0.0.1" },
-							{ target: 53, published: 5353, protocol: "udp" },
-						],
-						volumes: [
-							{ type: "volume", source: "data", target: "/data" },
-							{
-								type: "bind",
-								source: "./src",
-								target: "/app",
-								read_only: true,
-							},
-							{ type: "tmpfs", target: "/tmp" },
-						],
-					}),
-				},
-				volumes: { data: {} },
-			},
-		});
-		const service = plan.services[0];
-		const args = service?.runArgs ?? [];
-		expect(valuesOf(args, "--publish")).toEqual([
-			"127.0.0.1:8080:80",
-			"5353:53/udp",
-		]);
-		expect(valuesOf(args, "--volume")).toEqual([
-			"gey-main-data:/data",
-			"/repo/src:/app:ro",
-		]);
-		expect(valuesOf(args, "--tmpfs")).toEqual(["/tmp"]);
-		expect(service?.volumes).toEqual(["gey-main-data"]);
-		expect(service?.publishedPorts).toEqual([8080, 5353]);
-	});
-
-	it("refuses a long-form port with no published host port", () => {
-		expect(() =>
-			buildAppleRunPlan({
-				projectName: "gey-main",
-				root: "/repo",
-				model: {
-					services: {
-						app: untyped({ image: "busybox", ports: [{ target: 80 }] }),
-					},
-				},
-			}),
-		).toThrow(/without both "target" and "published"/);
 	});
 
 	it("lists the host ports a service publishes", () => {
@@ -600,6 +506,25 @@ describe("buildAppleRunPlan", () => {
 				model: { services: { web: { build: "." } } },
 			}),
 		).toThrow(/no image/);
+	});
+
+	it("refuses interpolation it cannot translate rather than passing it on as text", () => {
+		const planFor = (value: string) =>
+			buildAppleRunPlan({
+				projectName: IDENTITY.projectName,
+				root: IDENTITY.root,
+				env: { MODE: "debug" },
+				model: {
+					services: { web: { image: "nginx:1", environment: { FLAG: value } } },
+				},
+			});
+		// biome-ignore-start lint/suspicious/noTemplateCurlyInString: the literal `${...}` is the input under test.
+		expect(() => planFor("${MODE:+--verbose}")).toThrow(
+			/"web" uses "\$\{MODE:\+--verbose\}", which Apple container cannot interpolate/,
+		);
+		expect(() => planFor("${PORT:-${FALLBACK}}")).toThrow(/cannot interpolate/);
+		expect(() => planFor("${MODE:-x} costs $$5")).not.toThrow();
+		// biome-ignore-end lint/suspicious/noTemplateCurlyInString: end
 	});
 });
 

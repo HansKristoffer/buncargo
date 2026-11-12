@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { ConnectionDirectory } from "../../../server/connect/directory";
 import { createAPI } from "../../../server/connect/http";
 import { Store } from "../../../server/connect/store";
-import type { RunEntry } from "../run-registry";
+import { runEntry } from "../run-registry.testing";
 import { newCredential } from "./credentials";
 import { createPublisher } from "./publisher";
 
@@ -35,22 +35,17 @@ function relay() {
 }
 
 /** A run whose only target is still starting, so no tunnel is opened. */
-const run: RunEntry = {
+const run = runEntry({
 	sessionId: "run-a",
 	cli: { program: process.execPath },
 	pid: process.pid,
 	root: "/tmp/fixture",
 	projectPrefix: "test",
 	projectName: "test",
-	worktree: null,
-	hosts: null,
-	startedAt: new Date().toISOString(),
-	updatedAt: new Date().toISOString(),
-	apps: [],
 	services: [
 		{ name: "db", preset: "postgres", port: 5432, status: "starting" },
 	],
-};
+});
 
 test("a publication the relay forgot is registered again on the next refresh", async () => {
 	const { directory, store, origin } = relay();

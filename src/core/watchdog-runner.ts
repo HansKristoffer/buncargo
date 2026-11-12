@@ -26,11 +26,14 @@ import {
 	readCurrentProcessIdentityAsync,
 } from "./process-identity";
 import { writeJsonDocumentSync } from "./registry-file";
-import { removalActor } from "./removal-log";
+import { recordEvents, removalActor } from "./removal-log";
 import { lastCheckoutCommandAt } from "./run-activity";
-import { createRunLimiter, terminateRun } from "./run-limits";
+import {
+	createRunLimiter,
+	readConnectionActivity,
+	terminateRun,
+} from "./run-limits";
 import { readAllRuns, runLivenessAsync } from "./run-registry";
-import { recordRunStops } from "./run-stops";
 import { tailnetDirectoryEnabled, watchdogParent } from "./runtime-flags";
 import { getStateDir } from "./state-paths";
 import { serveTailnetDirectory } from "./tailnet-directory";
@@ -59,8 +62,9 @@ const stopRuns = createRunLimiter({
 	checkoutPresence,
 	lastCommandAt: lastCheckoutCommandAt,
 	readProxyActivity,
+	readConnections: readConnectionActivity,
 	stopRun: terminateRun,
-	recordStops: (records) => recordRunStops(records),
+	recordStops: (records) => recordEvents(records),
 	now: Date.now,
 });
 

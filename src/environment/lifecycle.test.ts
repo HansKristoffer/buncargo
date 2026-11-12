@@ -1,7 +1,20 @@
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import type { ContainerRuntimeAdapter } from "../container-runtime";
+import { dirname, join } from "node:path";
+import {
+	resolveApp,
+	resolveApps,
+	resolveService,
+	resolveServices,
+} from "../config/resolve";
+import {
+	fakeRuntime,
+	runtimeContainer,
+} from "../container-runtime/fake-runtime.testing";
+import { waitForDevServers } from "../core/network";
 import { readRemovals } from "../core/removal-log";
+import { buildRunEntry, publishRun, retireRuns } from "../core/run-registry";
 import { CI_ENV_VARS } from "../core/runtime-flags";
 import { InfisicalLoginError } from "../core/secrets/errors";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
@@ -9,43 +22,47 @@ import {
 	clearScopeSecretsCache,
 	loadScopeSecrets,
 	resolveScope,
-} from "../core/secrets/infisical";
-import { isolateHome } from "../core/test-env.testing";
+} from "../core/secrets/index";
+import { useTempHome } from "../core/test-env.testing";
 import { planStart } from "../planning";
-import type { AppConfig, ServiceConfig } from "../types";
-import type { DevEnvContext } from "./context";
+import type { ResolvedApp } from "../types";
 import type { DevEnvVarsApi } from "./env-vars";
-import { createLifecycleApi } from "./lifecycle";
+import { createLifecycleApi, type LifecycleContext } from "./lifecycle";
 import { LifecycleCoordinator } from "./lifecycle-coordinator";
+import { createAppPipeline } from "./pipeline";
+import { createServerHookRunner } from "./servers";
 import { createServiceWatch } from "./service-watch";
+import { TERMINAL_OUTPUT } from "./status-output";
 
 // Starting and stopping take the project's lifecycle lock and record the
 // removal under `~/.buncargo`: a home of the test's own, never the developer's.
-isolateHome("buncargo-lifecycle-");
+useTempHome("all");
 
-function fixture() {
+function fixture(
+	where: Partial<Pick<LifecycleContext, "root" | "loopbackUrls">> = {},
+) {
 	const events: string[] = [];
-	const services = { db: { port: 5432, healthCheck: false } };
-	const apps = {
+	const services = resolveServices({ db: { port: 5432, healthCheck: false } });
+	const apps = resolveApps({
 		web: {
 			port: 3000,
 			requiredServices: ["db"],
 			devCommand: "exit 0",
 			healthEndpoint: false,
 		},
-	};
-	const runtime = {
-		name: "docker",
-		displayName: "Docker",
+	});
+	// Not started: the first listing fails, so a start asks it to start.
+	const runtime = fakeRuntime({
+		containers: async () => {
+			throw new Error("Cannot connect to the Docker daemon");
+		},
 		ensureRunning: async () => {
 			events.push("runtime");
 		},
-		up: () => {
+		up: async () => {
 			events.push("up");
 		},
-		projectServiceStates: () => [],
-		containerPortOwners: () => new Map(),
-	} as unknown as ContainerRuntimeAdapter;
+	});
 	const config = {
 		services,
 		apps,
@@ -72,29 +89,37 @@ function fixture() {
 			},
 		},
 	};
-	const ctx = {
+	const ctx: LifecycleContext & { apps: Record<string, ResolvedApp> } = {
 		config,
 		services,
 		apps,
 		runtime,
 		root: tmpdir(),
 		projectName: "test",
+		ownedServerPids: {},
 		ports: {},
 		urls: {},
 		loopbackUrls: {},
+		publicUrls: {},
+		captured: {},
+		composeFile: "compose.yml",
 		ensureComposeFile: () => {
 			events.push("artifact");
+			return "compose.yml";
 		},
 		composeModel: () => ({ services: { db: { image: "postgres:16" } } }),
-	} as unknown as DevEnvContext<
-		Record<string, ServiceConfig>,
-		Record<string, AppConfig>
-	>;
-	ctx.getStartPlan = (onlyApps, onlyServices) =>
-		planStart(ctx.apps, ctx.services, { onlyApps, onlyServices });
-	ctx.prepareStartAsync = async () => {};
-	ctx.releaseThrowawayClaim = async () => {
-		events.push("release claim");
+		getStartPlan: (onlyApps, onlyServices) =>
+			planStart(ctx.apps, ctx.services, { onlyApps, onlyServices }),
+		prepareStartAsync: async () => {},
+		captureThrowawayClaim: () => async () => {
+			events.push("release claim");
+		},
+		logInfo: () => {},
+		onSecretsWait: undefined,
+		output: TERMINAL_OUTPUT,
+		assignedPortTargets: () => ({}),
+		adoptAssignedPorts: () => {},
+		...where,
 	};
 
 	const envVars = {
@@ -106,10 +131,7 @@ function fixture() {
 			events.push(command);
 			return { exitCode: 0, stdout: "", stderr: "" };
 		},
-	} as unknown as DevEnvVarsApi<
-		Record<string, ServiceConfig>,
-		Record<string, AppConfig>
-	>;
+	} as unknown as DevEnvVarsApi;
 	const runClaim = {
 		sessionId: "test-session",
 		claimedAt: undefined,
@@ -126,23 +148,43 @@ function fixture() {
 		ensureWatchdog: async () => {
 			events.push("watchdog");
 		},
-		claimApps: async (apps: Record<string, AppConfig>) => apps,
+		claimApps: async (apps: Record<string, ResolvedApp>) => ({
+			apps,
+			skipped: [],
+		}),
 		appEvents: {},
 		abandonApps: async () => {},
-		releaseApps: async () => {},
+		releaseApps: async () => {
+			events.push("release apps");
+		},
 	};
-	return {
-		events,
+	const serviceWatch = createServiceWatch(ctx, runClaim.sessionId);
+	const appPipeline = createAppPipeline({
+		root: ctx.root,
+		ports: {},
+		projectName: ctx.projectName,
+		unsetEnv: undefined,
+		runtime: () => runtime,
+		appEnv: (name, production) => envVars.buildAppEnvVars(name, production),
+		runHook: createServerHookRunner(ctx, envVars),
+		waitForHealth: (apps, productionBuild, signal) =>
+			waitForDevServers(apps, {}, { productionBuild, signal, verbose: false }),
+		recordCapture: async () => [],
+		renderGeneratedFiles: () => [],
+		runSeed: (options) => lifecycle.runSeed(options),
+		claim: runClaim,
+		ensureWatchdog: () => lifecycle.ensureWatchdog(),
+		ownedServerPids: ctx.ownedServerPids,
+	});
+	const lifecycle = createLifecycleApi(
 		ctx,
 		envVars,
-		lifecycle: createLifecycleApi(
-			ctx,
-			envVars,
-			runClaim,
-			new LifecycleCoordinator(),
-			createServiceWatch(ctx, runClaim.sessionId),
-		),
-	};
+		runClaim,
+		new LifecycleCoordinator(),
+		serviceWatch,
+		appPipeline,
+	);
+	return { events, ctx, envVars, runClaim, serviceWatch, lifecycle };
 }
 
 describe("startup modes and hooks", () => {
@@ -207,6 +249,32 @@ describe("startup modes and hooks", () => {
 		expect(events).toContain("migrate");
 		expect(events).not.toContain("generate");
 	});
+	it('generateCheck "schema-hash" generates only when the schema changed since the last generate', async () => {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-generate-check-"));
+		const schema = join(root, "packages/prisma/prisma/schema.prisma");
+		mkdirSync(dirname(schema), { recursive: true });
+		writeFileSync(schema, "model User { id Int @id }");
+		const startIn = async () => {
+			const { ctx, events, lifecycle } = fixture();
+			if (!ctx.config.prisma) throw new Error("fixture needs prisma");
+			Object.assign(ctx, { root });
+			Object.assign(ctx.config.prisma, { generateCheck: "schema-hash" });
+			await lifecycle.start({
+				startServers: false,
+				verbose: false,
+				wait: false,
+			});
+			return events.includes("generate");
+		};
+		try {
+			expect(await startIn()).toBe(true);
+			expect(await startIn()).toBe(false);
+			writeFileSync(schema, "model User { id Int @id\n name String }");
+			expect(await startIn()).toBe(true);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 	it("a library start ensures the watchdog unless told not to", async () => {
 		// Only the CLI used to start one, so a script that started containers
 		// and then crashed left them for somebody's next CLI command.
@@ -225,11 +293,11 @@ describe("startup modes and hooks", () => {
 		// without containers is in the registry for its apps alone.
 		for (const watchdog of [true, false]) {
 			const { ctx, events, lifecycle } = fixture();
-			ctx.apps.site = {
+			ctx.apps.site = resolveApp({
 				port: 3001,
 				devCommand: "exit 0",
 				healthEndpoint: false,
-			};
+			});
 			await lifecycle.start({ onlyApps: ["site"], verbose: false, watchdog });
 			expect(events).toEqual(
 				watchdog ? ["before", "after", "watchdog"] : ["before", "after"],
@@ -262,6 +330,93 @@ describe("startup modes and hooks", () => {
 			},
 		]);
 	});
+	it("keeps the services another live run of the project uses, and tears them down with force", async () => {
+		const { ctx, events, lifecycle } = fixture();
+		ctx.runtime.down = async () => {
+			events.push("down");
+		};
+		// A second run in this checkout, claimed as every run claims before
+		// its first container: two `ci` runs once shared one project, and the
+		// first to finish removed the other's database mid-test.
+		const other = buildRunEntry({
+			sessionId: "other-run",
+			projectPrefix: "test",
+			projectName: ctx.projectName,
+			root: ctx.root,
+			isWorktree: false,
+		});
+		await publishRun(other);
+		try {
+			const start = () =>
+				lifecycle.start({
+					prepare: "containers",
+					startServers: false,
+					verbose: false,
+					wait: false,
+				});
+			await start();
+			await lifecycle.stop({ verbose: false });
+			// Released for the other run, its block and containers intact.
+			expect(events).not.toContain("down");
+			expect(events.at(-1)).toBe("release");
+
+			await start();
+			await lifecycle.stop({ verbose: false, force: true });
+			expect(events.slice(-3)).toEqual(["down", "retire", "release claim"]);
+		} finally {
+			await retireRuns([other]);
+		}
+	});
+	it("stops the apps, their leases, the containers and the entry when beforeStop throws, then rejects with its error", async () => {
+		const { ctx, events, lifecycle } = fixture();
+		ctx.runtime.down = async () => {
+			events.push("down");
+		};
+		const hookFailed = new Error("beforeStop failed");
+		ctx.config.hooks = {
+			beforeStop: async () => {
+				throw hookFailed;
+			},
+		};
+		ctx.apps.web.devCommand = "sleep 60";
+		const pids = await lifecycle.start({ verbose: false, wait: false });
+		const app = pids?.web;
+		if (app === undefined) throw new Error("web did not start");
+
+		await expect(lifecycle.stop({ verbose: false })).rejects.toBe(hookFailed);
+
+		expect(() => process.kill(app, 0)).toThrow();
+		expect(events.slice(-4)).toEqual([
+			"release apps",
+			"artifact",
+			"down",
+			"retire",
+		]);
+		// A stop that failed gives no block back.
+		expect(events).not.toContain("release claim");
+	});
+	it("says once that the watchdog did not start, where the run's service changes are said", async () => {
+		// Swallowed, a missing runner left nothing sweeping until a `ls`.
+		const { lifecycle, runClaim, serviceWatch } = fixture();
+		const said: [string, boolean][] = [];
+		serviceWatch.report((message, problem) => said.push([message, problem]));
+		let attempt: Promise<void> = Promise.resolve();
+		runClaim.ensureWatchdog = () => {
+			attempt = Promise.reject(new Error("runner missing"));
+			return attempt;
+		};
+		for (const _ of [1, 2]) {
+			await lifecycle.start({
+				prepare: "containers",
+				startServers: false,
+				verbose: false,
+				wait: false,
+			});
+			// Settles after the lifecycle's own handler, attached first.
+			await attempt.catch(() => {});
+		}
+		expect(said).toEqual([[expect.stringContaining("runner missing"), true]]);
+	});
 	it("stop tears down the containers a start brought up, whatever a later start selected", async () => {
 		const { ctx, events, lifecycle } = fixture();
 		ctx.runtime.down = async () => {
@@ -287,10 +442,16 @@ describe("startup modes and hooks", () => {
 	it("reads as running with every service up, a finished job included", async () => {
 		// A job's container exits once it has run, which read as not running.
 		const { ctx, lifecycle } = fixture();
-		ctx.services.schema = { kind: "job", rerun: "always" };
-		ctx.runtime.projectServiceStates = async () => [
-			{ service: "db", state: "running", running: true },
-			{ service: "schema", state: "stopped", running: false },
+		ctx.services.schema = resolveService("schema", {
+			kind: "job",
+			rerun: "always",
+		});
+		ctx.runtime.containers = async () => [
+			runtimeContainer({ labels: { project: ctx.projectName, service: "db" } }),
+			runtimeContainer({
+				state: "exited",
+				labels: { project: ctx.projectName, service: "schema" },
+			}),
 		];
 		await lifecycle.start({
 			prepare: "containers",
@@ -300,8 +461,11 @@ describe("startup modes and hooks", () => {
 		});
 		expect(await lifecycle.isRunning()).toBe(true);
 
-		ctx.runtime.projectServiceStates = async () => [
-			{ service: "db", state: "stopped", running: false },
+		ctx.runtime.containers = async () => [
+			runtimeContainer({
+				state: "exited",
+				labels: { project: ctx.projectName, service: "db" },
+			}),
 		];
 		expect(await lifecycle.isRunning()).toBe(false);
 	});
@@ -318,6 +482,70 @@ describe("startup modes and hooks", () => {
 			lifecycle.start({ signal: AbortSignal.abort(new Error("cancelled")) }),
 		).rejects.toThrow("cancelled");
 		expect(events).toEqual([]);
+	});
+});
+
+describe("withServices", () => {
+	it("claims and starts the services, runs the command, then releases them however it ends", async () => {
+		const { events, lifecycle } = fixture();
+		const order: string[] = [];
+		const result = await lifecycle.withServices(
+			["db"],
+			{ verbose: false, wait: false, watchdog: false },
+			async () => {
+				order.push(...events);
+				return 7;
+			},
+		);
+		expect(result).toBe(7);
+		expect(order.slice(0, 2)).toEqual(["claim", "artifact"]);
+		expect(events.at(-1)).toBe("release");
+
+		events.length = 0;
+		await expect(
+			lifecycle.withServices(["db"], { verbose: false, wait: false }, () =>
+				Promise.reject(new Error("tests failed")),
+			),
+		).rejects.toThrow("tests failed");
+		expect(events.at(-1)).toBe("release");
+	});
+
+	it("tears the services down instead with after: stop", async () => {
+		const { ctx, events, lifecycle } = fixture();
+		ctx.runtime.down = async () => {
+			events.push("down");
+		};
+		await lifecycle.withServices(
+			["db"],
+			{
+				verbose: false,
+				wait: false,
+				watchdog: false,
+				after: { stop: { removeVolumes: true } },
+			},
+			async () => {},
+		);
+		expect(events.slice(-3)).toEqual(["down", "retire", "release claim"]);
+	});
+
+	it("hands the command a forced seed's outcome, a failed one included, without asking seed.check", async () => {
+		const { envVars, events, lifecycle } = fixture();
+		envVars.resolveSecrets = async () => ({});
+		// The fixture's seed command does not exist: it fails, and `ci` turns
+		// that into its exit code rather than a thrown start.
+		const outcome = await lifecycle.withServices(
+			["db"],
+			{
+				prepare: "all",
+				seed: "force",
+				verbose: false,
+				wait: false,
+				watchdog: false,
+			},
+			async ({ seed }) => seed,
+		);
+		expect(outcome).toMatchObject({ status: "failed" });
+		expect(events).not.toContain("seed check");
 	});
 });
 
@@ -390,12 +618,12 @@ describe("production or development, in CI", () => {
 
 it("rejects missing library app directories before starting containers", async () => {
 	const { ctx, events, lifecycle } = fixture();
-	ctx.apps.web = {
+	ctx.apps.web = resolveApp({
 		...ctx.apps.web,
 		kind: "server",
 		port: 3000,
 		cwd: "missing-buncargo-directory",
-	};
+	});
 	await expect(lifecycle.start({ verbose: false })).rejects.toThrow(
 		"apps.web.cwd",
 	);
@@ -444,12 +672,15 @@ it("containers-only does not invoke bootstrap", async () => {
 });
 it("starts services requiring preparation after migrations and seeds using one artifact", async () => {
 	const { ctx, events, lifecycle } = fixture();
-	ctx.services.sync = { port: 8080, afterPreparation: true };
-	ctx.apps.web = {
+	ctx.services.sync = resolveService("sync", {
+		port: 8080,
+		afterPreparation: true,
+	});
+	ctx.apps.web = resolveApp({
 		port: 3000,
 		devCommand: false,
 		requiredServices: ["db", "sync"],
-	};
+	});
 	ctx.runtime.up = async (request) => {
 		events.push(`up:${request.serviceNames.join(",")}:${!!request.noDeps}`);
 	};
@@ -484,7 +715,10 @@ it("cancels a pending bootstrap before migrations can start", async () => {
 
 it("onlyServices starts just those services, with no app selecting them", async () => {
 	const { ctx, events, lifecycle } = fixture();
-	ctx.services.cache = { port: 6379, healthCheck: false };
+	ctx.services.cache = resolveService("cache", {
+		port: 6379,
+		healthCheck: false,
+	});
 	// No app requires cache; a services-only start selects it anyway.
 	ctx.runtime.up = async (request) => {
 		events.push(`up:${request.serviceNames.join(",")}`);
@@ -500,96 +734,93 @@ it("onlyServices starts just those services, with no app selecting them", async 
 	expect(events).not.toContain("up:db");
 });
 
-it("starts selected scope fetches before container preparation and skips containers-only", async () => {
-	const fake = startFakeInfisical();
-	const home = process.env.HOME;
-	const binary = process.env.BUNCARGO_INFISICAL_PATH;
-	process.env.HOME = fake.home;
-	process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
-	clearScopeSecretsCache();
-	fake.projects.app = { secrets: { KEY: "app" } };
-	fake.projects.preparation = { secrets: { KEY: "preparation" } };
-	const { ctx, lifecycle } = fixture();
-	ctx.config.secrets = { projectId: "preparation", siteUrl: fake.siteUrl };
-	const web = ctx.apps.web;
-	if (!web) throw new Error("fixture needs web");
-	const appScope = { projectId: "app", siteUrl: fake.siteUrl };
-	web.secrets = appScope;
-	const runtimeStart = ctx.runtime.ensureRunning;
-	try {
-		await lifecycle.start({
-			prepare: "containers",
-			startServers: false,
-			wait: false,
-			verbose: false,
-			watchdog: false,
-		});
-		expect(fake.cliCalls()).toEqual([]);
-		ctx.runtime.ensureRunning = async () => {
-			const deadline = Date.now() + 5000;
-			while (fake.requests.length < 2 && Date.now() < deadline)
-				await Bun.sleep(10);
-			expect(fake.requests).toHaveLength(2);
-		};
-		await lifecycle.start({
-			startServers: false,
-			wait: false,
-			verbose: false,
-			watchdog: false,
-		});
-		await Promise.all(
-			[ctx.config.secrets, appScope].map((scope) => {
-				const resolved = resolveScope(scope, undefined);
-				return resolved && loadScopeSecrets(resolved);
-			}),
-		);
-		expect(fake.cliCalls()).toHaveLength(1);
-	} finally {
-		ctx.runtime.ensureRunning = runtimeStart;
-		clearScopeSecretsCache();
-		fake.stop();
-		if (home === undefined) delete process.env.HOME;
-		else process.env.HOME = home;
-		if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
-		else process.env.BUNCARGO_INFISICAL_PATH = binary;
-	}
-});
+describe("Infisical secrets at start", () => {
+	// Sessions and secrets are cached under HOME: each test starts with none.
+	useTempHome();
 
-it("stops on an expired Infisical session before the claim or any container", async () => {
-	const fake = startFakeInfisical({ cliLogin: "prompt" });
-	const home = process.env.HOME;
-	const binary = process.env.BUNCARGO_INFISICAL_PATH;
-	// A developer's machine: CI and an exported token only warn.
-	const ambient = [...CI_ENV_VARS, "INFISICAL_TOKEN"].map(
-		(name) => [name, process.env[name]] as const,
-	);
-	for (const [name] of ambient) delete process.env[name];
-	process.env.HOME = fake.home;
-	process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
-	clearScopeSecretsCache();
-	const { ctx, events, lifecycle } = fixture();
-	ctx.config.secrets = { projectId: "p1", siteUrl: fake.siteUrl };
-	try {
-		const failure = await lifecycle
-			.start({ startServers: false, verbose: false, watchdog: false })
-			.catch((error: unknown) => error);
-
-		expect(failure).toBeInstanceOf(InfisicalLoginError);
-		expect((failure as InfisicalLoginError).message).toContain(
-			`infisical login --domain=${fake.siteUrl}`,
-		);
-		expect(events).not.toContain("claim");
-		expect(events).not.toContain("runtime");
-	} finally {
-		for (const [name, value] of ambient)
-			if (value !== undefined) process.env[name] = value;
+	it("starts selected scope fetches before container preparation and skips containers-only", async () => {
+		const fake = startFakeInfisical();
+		const binary = process.env.BUNCARGO_INFISICAL_PATH;
+		process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
 		clearScopeSecretsCache();
-		fake.stop();
-		if (home === undefined) delete process.env.HOME;
-		else process.env.HOME = home;
-		if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
-		else process.env.BUNCARGO_INFISICAL_PATH = binary;
-	}
+		fake.projects.app = { secrets: { KEY: "app" } };
+		fake.projects.preparation = { secrets: { KEY: "preparation" } };
+		const { ctx, lifecycle } = fixture();
+		ctx.config.secrets = { projectId: "preparation", siteUrl: fake.siteUrl };
+		const web = ctx.apps.web;
+		if (!web) throw new Error("fixture needs web");
+		const appScope = { projectId: "app", siteUrl: fake.siteUrl };
+		web.secrets = appScope;
+		const runtimeStart = ctx.runtime.ensureRunning;
+		try {
+			await lifecycle.start({
+				prepare: "containers",
+				startServers: false,
+				wait: false,
+				verbose: false,
+				watchdog: false,
+			});
+			expect(fake.cliCalls()).toEqual([]);
+			ctx.runtime.ensureRunning = async () => {
+				const deadline = Date.now() + 5000;
+				while (fake.requests.length < 2 && Date.now() < deadline)
+					await Bun.sleep(10);
+				expect(fake.requests).toHaveLength(2);
+			};
+			await lifecycle.start({
+				startServers: false,
+				wait: false,
+				verbose: false,
+				watchdog: false,
+			});
+			await Promise.all(
+				[ctx.config.secrets, appScope].map((scope) => {
+					const resolved = resolveScope(scope, undefined);
+					return resolved && loadScopeSecrets(resolved);
+				}),
+			);
+			expect(fake.cliCalls()).toHaveLength(1);
+		} finally {
+			ctx.runtime.ensureRunning = runtimeStart;
+			clearScopeSecretsCache();
+			fake.stop();
+			if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
+			else process.env.BUNCARGO_INFISICAL_PATH = binary;
+		}
+	});
+
+	it("stops on an expired Infisical session before the claim or any container", async () => {
+		const fake = startFakeInfisical({ cliLogin: "prompt" });
+		const binary = process.env.BUNCARGO_INFISICAL_PATH;
+		// A developer's machine: CI and an exported token only warn.
+		const ambient = [...CI_ENV_VARS, "INFISICAL_TOKEN"].map(
+			(name) => [name, process.env[name]] as const,
+		);
+		for (const [name] of ambient) delete process.env[name];
+		process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
+		clearScopeSecretsCache();
+		const { ctx, events, lifecycle } = fixture();
+		ctx.config.secrets = { projectId: "p1", siteUrl: fake.siteUrl };
+		try {
+			const failure = await lifecycle
+				.start({ startServers: false, verbose: false, watchdog: false })
+				.catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(InfisicalLoginError);
+			expect((failure as InfisicalLoginError).message).toContain(
+				`infisical login --domain=${fake.siteUrl}`,
+			);
+			expect(events).not.toContain("claim");
+			expect(events).not.toContain("runtime");
+		} finally {
+			for (const [name, value] of ambient)
+				if (value !== undefined) process.env[name] = value;
+			clearScopeSecretsCache();
+			fake.stop();
+			if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
+			else process.env.BUNCARGO_INFISICAL_PATH = binary;
+		}
+	});
 });
 
 it("keeps preparation services serial when seed.beforeApps opts into overlap", async () => {
@@ -597,12 +828,15 @@ it("keeps preparation services serial when seed.beforeApps opts into overlap", a
 	const seed = ctx.config.seed;
 	if (!seed) throw new Error("fixture needs seed");
 	seed.beforeApps = false;
-	ctx.services.sync = { port: 8080, afterPreparation: true };
-	ctx.apps.web = {
+	ctx.services.sync = resolveService("sync", {
+		port: 8080,
+		afterPreparation: true,
+	});
+	ctx.apps.web = resolveApp({
 		port: 3000,
 		devCommand: false,
 		requiredServices: ["db", "sync"],
-	};
+	});
 	ctx.runtime.up = async (request) => {
 		events.push(`up:${request.serviceNames.join(",")}`);
 	};
@@ -627,5 +861,47 @@ it("keeps preparation services serial when seed.beforeApps opts into overlap", a
 		).toHaveLength(1);
 	} finally {
 		console.log = log;
+	}
+});
+
+// `migrate deploy` against a database that applied migrations the checkout
+// lost fails without saying why, and only a reset gets past it.
+it("names a squashed chain when the Prisma deploy fails", async () => {
+	const { Database } = await import("bun:sqlite");
+	const root = mkdtempSync(join(tmpdir(), "buncargo-squashed-"));
+	const migrations = join(root, "packages/prisma/prisma/migrations");
+	mkdirSync(join(migrations, "20250101000000_squashed"), { recursive: true });
+	writeFileSync(join(migrations, "20250101000000_squashed/migration.sql"), "");
+	const file = join(root, "db.sqlite");
+	const db = new Database(file);
+	db.run(
+		"CREATE TABLE _prisma_migrations (migration_name TEXT, finished_at TEXT, rolled_back_at TEXT)",
+	);
+	db.run(
+		"INSERT INTO _prisma_migrations VALUES ('20240101000000_init', '2025-01-01', NULL), ('20240201000000_users', '2025-01-01', NULL)",
+	);
+	db.close();
+	const { envVars, lifecycle } = fixture({
+		root,
+		loopbackUrls: { db: `sqlite://${file}` },
+	});
+	envVars.exec = async (command: string) => ({
+		exitCode: command.includes("migrate deploy") ? 1 : 0,
+		stdout: "",
+		stderr: "",
+	});
+	const error = console.error;
+	const messages: string[] = [];
+	console.error = (message) => messages.push(String(message));
+	try {
+		await expect(
+			lifecycle.start({ startServers: false, wait: false, verbose: false }),
+		).rejects.toThrow();
+		expect(messages.join("\n")).toContain(
+			"applied 2 migrations this checkout no longer has (20240101000000_init, 20240201000000_users): the chain was squashed or rewritten. Only recreating the database gets past it, and that drops its data: bunx buncargo dev --reset --yes.",
+		);
+	} finally {
+		console.error = error;
+		rmSync(root, { recursive: true, force: true });
 	}
 });

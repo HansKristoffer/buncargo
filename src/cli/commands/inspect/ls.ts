@@ -10,29 +10,45 @@ import {
 	sweepTailscaleServe,
 	tailscaleServeDeps,
 } from "../../../core/hosts/tailscale-serve";
-import { describeIdleState, readIdleState } from "../../../core/run-limits";
-import { getRunsPath } from "../../../core/run-registry";
 import {
 	describeRunStop,
 	readRunStops,
 	recentRunStops,
-} from "../../../core/run-stops";
+} from "../../../core/removal-log";
+import {
+	describeIdleState,
+	readIdleState,
+	readRunConnections,
+} from "../../../core/run-limits";
+import {
+	getRunsPath,
+	holdExpiry,
+	newestLifecycleFirst,
+	type RunEntry,
+	runPhase,
+} from "../../../core/run-registry";
+import { WATCHDOG_OWNER_DEAD_GRACE_MS } from "../../../core/watchdog-constants";
 import { describeSwept } from "../../../core/watchdog-loop";
+import { BASE_EXITS, defineCommand } from "../../command-spec";
 import * as log from "../../log";
 
-/** "held, 2m left" for a finished run, or nothing while one is live. */
-function describeHold(
-	releasedAt: string,
-	idleTimeoutMs: number | undefined,
-	now: number,
-): string {
-	if (idleTimeoutMs === undefined) return "held until this checkout is removed";
-	const left = Date.parse(releasedAt) + idleTimeoutMs - now;
-	if (left <= 0) return "held, removal due";
-	return `held, ${Math.ceil(left / 60_000)}m left`;
+/**
+ * "released; held, 2m left": how the containers of a run no live session
+ * speaks for wait, and for how long. A crashed run's grace shows the same way.
+ */
+export function describeFinishedRun(run: RunEntry, now: number): string {
+	const ended = runPhase(run, false) === "released" ? "released" : "owner gone";
+	const expiry = holdExpiry(run, WATCHDOG_OWNER_DEAD_GRACE_MS);
+	if (!expiry) {
+		const kept = run.hold.kind === "checkout";
+		return kept ? `${ended}; held until this checkout is removed` : ended;
+	}
+	const left = expiry.endedAt + expiry.holdMs - now;
+	if (left <= 0) return `${ended}; held, removal due`;
+	return `${ended}; held, ${Math.ceil(left / 60_000)}m left`;
 }
 
-export async function handleLs(): Promise<void> {
+async function ls(): Promise<void> {
 	// Tailscale Serve entries of runs that ended: one file read when there are none.
 	const serve = await sweepTailscaleServe(tailscaleServeDeps());
 	for (const line of serve.removed) log.info(line);
@@ -63,6 +79,10 @@ export async function handleLs(): Promise<void> {
 	}
 	const now = Date.now();
 	const proxy = readProxyActivity(now);
+	const connections = await readRunConnections(
+		result.runs.filter((run) => result.liveSessions.has(run.sessionId)),
+		now,
+	);
 	const multipleRuntimes = result.answered.length > 1;
 
 	for (const group of result.remaining) {
@@ -75,24 +95,20 @@ export async function handleLs(): Promise<void> {
 			(run) => run.projectName === group.projectName && run.root === group.root,
 		);
 		const live = owners.find((run) => result.liveSessions.has(run.sessionId));
-		const released = owners
-			.filter((run) => run.releasedAt !== undefined)
-			.sort((a, b) =>
-				(b.releasedAt ?? "").localeCompare(a.releasedAt ?? ""),
-			)[0];
+		const [newest] = owners.sort(newestLifecycleFirst);
 
 		log.line(group.projectName);
 		log.line(`  root: ${group.root || "(unknown)"}`);
 		if (first.worktree) log.line(`  worktree: ${first.worktree}`);
 		if (multipleRuntimes) log.line(`  runtime: ${group.runtime}`);
 		if (live) {
-			const idle = describeIdleState(readIdleState(live, proxy), now);
+			const idle = describeIdleState(
+				readIdleState(live, proxy, connections),
+				now,
+			);
 			const limit = idle ? `; ${idle}` : "";
 			log.line(`  run: active, pid ${live.pid}${limit}`);
-		} else if (released?.releasedAt)
-			log.line(
-				`  run: ${describeHold(released.releasedAt, released.idleTimeoutMs ?? released.inheritedIdleTimeoutMs, now)}`,
-			);
+		} else if (newest) log.line(`  run: ${describeFinishedRun(newest, now)}`);
 		const foreign = foreignStackOf(result, group);
 		if (foreign) {
 			log.line(`  owner: not this user's (${foreign.reason})`);
@@ -128,3 +144,16 @@ function logForeignStacks(): void {
 		"Stacks marked \"not this user's\" belong to another user's buncargo, or to buncargo state that was wiped, so the sweep leaves them alone. If one really is orphaned, remove it with the command shown; its volumes stay.",
 	);
 }
+
+export const lsCommand = defineCommand({
+	spec: {
+		name: "ls",
+		summary: "List every buncargo environment on this machine",
+		flags: {},
+	},
+	exits: BASE_EXITS,
+	run: async () => {
+		await ls();
+		return 0;
+	},
+});

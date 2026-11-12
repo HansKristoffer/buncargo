@@ -21,6 +21,35 @@ const REAL_MACHINE_SUITES = [
 	"BUNCARGO_TEST_SHOPIFY_CLI",
 ] as const;
 
+// A shell's flags (`BUNCARGO_HOSTS=0`, `BUNCARGO_URL_HOST`, …) change what
+// the code under test does, so the run starts with none of them. Only the
+// `BUNCARGO_TEST_*` opt-ins pass through.
+for (const name of Object.keys(process.env)) {
+	if (name.startsWith("BUNCARGO_") && !name.startsWith("BUNCARGO_TEST_")) {
+		delete process.env[name];
+	}
+}
+
+// Bun 1.4 gives a `Bun.spawn` without `env` the environment the process
+// started with, not `process.env`: the child would see the real HOME, the real
+// `docker` on PATH and the flags deleted above. Default it to `process.env`,
+// as Node's child_process does, so every isolation below reaches children.
+type SpawnOptions = { env?: Record<string, string | undefined> };
+function withEnv<A extends unknown[]>(args: A): A {
+	const [first, second] = args as unknown as [unknown, SpawnOptions?];
+	if (Array.isArray(first)) {
+		return [first, { ...second, env: second?.env ?? process.env }] as never;
+	}
+	const options = first as SpawnOptions;
+	return [{ ...options, env: options.env ?? process.env }] as never;
+}
+const realSpawn = Bun.spawn;
+const realSpawnSync = Bun.spawnSync;
+Bun.spawn = ((...args: Parameters<typeof Bun.spawn>) =>
+	realSpawn(...withEnv(args))) as typeof Bun.spawn;
+Bun.spawnSync = ((...args: Parameters<typeof Bun.spawnSync>) =>
+	realSpawnSync(...withEnv(args))) as typeof Bun.spawnSync;
+
 // Every watchdog a test starts, under any HOME, exits once this run has
 // ended: a temporary HOME alone does not keep a sweep off the machine's
 // container daemon.

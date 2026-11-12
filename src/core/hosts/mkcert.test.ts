@@ -1,10 +1,23 @@
 import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import {
+	chmodSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { withFileLock } from "../file-lock";
+import { useTempHome } from "../test-env.testing";
+import {
 	certificateShortfall,
 	linuxTrustAnchorPath,
+	mintCert,
 	verifyCertFailureTrust,
 } from "./mkcert";
+import { getCertPath } from "./paths";
 
 describe("certificateShortfall", () => {
 	const now = Date.parse("2026-10-17T00:00:00Z");
@@ -96,5 +109,37 @@ describe("verifyCertFailureTrust", () => {
 		);
 		expect(verifyCertFailureTrust(missing)).toBe("unknown");
 		expect(verifyCertFailureTrust(refused)).toBe("untrusted");
+	});
+});
+
+describe("mintCert", () => {
+	useTempHome();
+
+	it("kills an mkcert that never exits and releases the certificate lock", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-mint-"));
+		try {
+			const pidFile = join(dir, "pid");
+			const mkcertPath = join(dir, "mkcert");
+			writeFileSync(
+				mkcertPath,
+				`#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 600\n`,
+			);
+			chmodSync(mkcertPath, 0o755);
+			const certPath = getCertPath();
+
+			await expect(
+				withFileLock(certPath, async () =>
+					mintCert(["app.localhost"], { mkcertPath, timeoutMs: 100 }),
+				),
+			).rejects.toThrow("ETIMEDOUT");
+
+			const pid = Number(readFileSync(pidFile, "utf8"));
+			expect(() => process.kill(pid, 0)).toThrow();
+			expect(
+				await withFileLock(certPath, async () => "acquired", { timeoutMs: 0 }),
+			).toBe("acquired");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

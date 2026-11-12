@@ -50,7 +50,63 @@ function importGraph(entry: string): Set<string> {
 	return new Set([...seen].map((file) => relative(ROOT, file)));
 }
 
+/**
+ * Where `source` lets a caller relocate state through an optional `home`
+ * instead of `HOME`: a `home?:` parameter or field, or a `home` defaulted in
+ * a parameter list.
+ */
+function optionalHomeParameters(source: string): string[] {
+	const optional = /\bhome(?:Dir)?\?\s*:|[(,]\s*home(?:Dir)?\s*=(?![=>])/g;
+	return [...source.matchAll(optional)].map((match) => match[0].trim());
+}
+
 describe("architecture", () => {
+	it("relocates state through HOME, never an optional home parameter", () => {
+		// `docs/internals/core.md`: a second way to relocate `~/.buncargo`
+		// outranks HOME and leaks between test files that isolate through it.
+		// A test sets HOME; production takes no `home` it only a test passes.
+		const allowed: Record<string, string> = {
+			"src/core/state-paths.ts":
+				"owns home resolution; getStateDir takes the home it resolved",
+			// These three predate the rule. Remove an entry once its file
+			// relocates through HOME alone.
+			"src/core/bar-update.ts": "getBarCheckPath(home?)",
+			"src/core/checkout-files/store.ts": "storeDir(repoKey, home?)",
+			"src/core/checkout-files/sync.ts": "CheckoutFilesOptions.home",
+			"src/shopify/cli.ts": "the Shopify CLI's own home, not ~/.buncargo",
+		};
+		const offenders = sourceFiles()
+			.filter((file) => !(file in allowed))
+			.flatMap((file) =>
+				optionalHomeParameters(readFileSync(join(ROOT, file), "utf8")).map(
+					(found) => `${file}: ${found}`,
+				),
+			);
+
+		expect(offenders).toEqual([]);
+	});
+
+	it("catches an optional home however it is written", () => {
+		expect(
+			optionalHomeParameters(
+				[
+					"export function statePath(home?: string) {}",
+					"function find(name: string, home = homedir()) {}",
+					"type Options = { homeDir?: string };",
+				].join("\n"),
+			),
+		).toHaveLength(3);
+		expect(
+			optionalHomeParameters(
+				[
+					"const home = resolveUserHome();",
+					"function find(home: string) {}",
+					"const same = home === other;",
+				].join("\n"),
+			),
+		).toEqual([]);
+	});
+
 	it("reads BUNCARGO_* and CI only through core/runtime-flags.ts", () => {
 		// Tests inject a plain environment into the getters there, and nothing
 		// is captured at import time.
@@ -128,11 +184,23 @@ describe("architecture", () => {
 	});
 
 	it("keeps the sweep out of the watchdog module every run loads", () => {
-		// core/watchdog.ts is a published subpath and on every run's path to
-		// ensureWatchdog. Its loop needs only the sweep's types; a value import
+		// core/watchdog.ts is on every run's path to ensureWatchdog. Its loop needs only the sweep's types; a value import
 		// once tripled its graph.
 		const graph = importGraph("src/core/watchdog.ts");
 		expect(graph.has("src/container-runtime/sweep.ts")).toBe(false);
+	});
+
+	it("keeps the authoring entry free of what runs an environment", () => {
+		// Every config load imports `buncargo`; it once pulled in the whole
+		// library (about 360 modules). The environment, the loader and the
+		// CLI are `buncargo/api`.
+		const forbidden = [...importGraph("src/index.ts")].filter((file) =>
+			/^src\/(api|cli|environment|loader|container-runtime|docker|apple-container|typecheck|planning|config\/validation)\//.test(
+				file,
+			),
+		);
+
+		expect(forbidden).toEqual([]);
 	});
 
 	it("keeps the entry points loaded inside users' apps small", () => {

@@ -1,9 +1,8 @@
 # CLI
 
-`src/cli/bin.ts` is the executable; `src/cli/index.ts` the module entry (`buncargo/cli`: `runCli` and
-`CliOptions`, nothing else). `run-cli.ts` is the dev flow; `flags.ts` (argv primitives),
-`dev-flags.ts` (the dev command's typed args and help), `dev-hosts.ts` and `dev-tunnels.ts` hold the
-pieces it orchestrates.
+`src/cli/bin.ts` is the executable; `runCli` is published through `buncargo/api`. `run-cli.ts` is the
+dev flow; `dev-flags.ts` (the dev command's spec and the rules between its flags), `dev-hosts.ts`
+and `dev-tunnels.ts` hold the pieces it orchestrates.
 
 ## Commands, flags and errors
 
@@ -21,7 +20,7 @@ pieces it orchestrates.
   over. A missing `node_modules` installs for every command (none of the project's buncargo runs
   without it); a stale one only for the commands that run the project's code
   (`refreshesStaleInstall`). `stop`, `status` and BuncargoBar's buttons must neither reinstall
-  under a running run nor fail on a broken lockfile. "Installed from" is `install-stamp.ts`'s hash of `bun.lock`, shared with `check`: Bun
+  under a running run nor fail on a broken lockfile. "Installed from" is `install-stamp.ts`'s hash of `bun.lock`: Bun
   1.4 writes nothing into `node_modules` on a no-op install, so no file of its own can say, and
   `git checkout` rewrites the lockfile's time without its content. A checkout with no stamp
   falls back to `node_modules` being newer than `bun.lock`, so one installed by hand is left
@@ -31,26 +30,32 @@ pieces it orchestrates.
   The guard never installs from source or after a hand-over. An install that replaces the
   package this process runs from re-executes it, since the rest of its modules load lazily.
 
-- `command-spec.ts` is the flag-spec primitive: one `CommandSpec` per command drives parsing,
-  unknown-flag detection, value validation and generated help, so those four cannot drift. Add a
-  flag to the spec, not to a parallel list. `readPositionals` finds subcommands and stray
-  arguments, skipping `--flag value` pairs, so no command re-walks argv itself.
-- `commands/registry.ts` is the single source for top-level command names (`CliCommandName`, used
-  by `bin.ts`'s command table and by `help.ts`) and for the `hosts` and `bar` subcommands. Every
-  dispatch over them is an exhaustive hanzio `typedSwitch`.
-- `bin.ts` dispatches through `hanzio/cli` (`defineCli`), and every command is `raw`: it gets its
-  arguments unparsed and keeps its own spec, help and exit codes. A command with a Zod `input`
-  would load `zod` on every run, which a raw-only CLI never does, and hanzio's generated help has
-  its own layout (a description section, a `-h, --help` row). hanzio's `defaultCommand` (`help`),
-  `unknownCommand` (an integration's namespace, else `Unknown command`) and `onError` (`log.fail`)
-  keep the root's output. One check stays in `bin.ts`: buncargo reads only the first argument as
-  the command, so `--help dev` is help and `--json runs` is an unknown command, where hanzio would
-  take leading flags as globals and keep looking. `cli-output.test.ts` pins every command's
-  `--help` and the root. A changed or removed line in its snapshot is a breaking change; an added
-  command or flag only adds lines.
+- Every command module exports one `defineCommand({ spec, exits, json?, run })` (`command-spec.ts`),
+  or a `defineGroup` of them for subcommands (`files`, `ports`, `hosts`, …). The spec is the only
+  description of what the command accepts: `parseArgs(spec, argv)` reads it (over `node:util`
+  `parseArgs` tokens), and the same spec renders `--help`, the root help row and, with `exits`,
+  the `help agents exits` table. Add a flag to the spec and read it from `parsed.values`, typed
+  by the spec; never look at argv again. Rules between flags (`--keep` needs `--detach`) live
+  beside the spec and throw `argumentsError`.
+- `parseArgs` is strict on purpose: an ignored flag was a silent wrong answer (`status --jsno`
+  printed prose and exited 0, `dev --profile` ran the default profile). A separated value that
+  starts with `-` is refused rather than read, so `--profile --apps=x` cannot name a profile
+  `--apps=x`. An optional value (`--expose[=x]`) is only ever inline, or `dev --expose api` would
+  be ambiguous now that `dev` takes app names. `forwardUnknown` is for `prisma` alone, whose
+  arguments are Prisma's.
+- `exits` lists every code a command returns. `1` is failure or bad arguments everywhere; the
+  others mean one thing per command, and `stop`, `send` and `restart` share theirs (2 no such
+  target, 3 refused) because BuncargoBar and agents branch on them.
+- `commands/registry.ts` lists the top-level commands as lazy loaders: `bin.ts` loads only the one
+  it runs, and only the root help and `help agents exits` load them all (about 70 ms). buncargo
+  reads only the first argument as the command, so `--help dev` is help and `--json runs` is an
+  unknown command. `cli-output.test.ts` pins every command's `--help` and the root. A changed or
+  removed line in its snapshot is a breaking change; an added command or flag only adds lines.
+- Each JSON document a command prints has a type in `json-documents.ts`, which the command builds
+  with `satisfies`, and a test that pins its keys: scripts and agents parse them.
 - Failures inside a command flow throw `CliError` (`errors.ts`) so the flow can release tunnels,
-  host routes and the terminal before exiting 1. Argv problems, which happen before anything
-  starts, exit through `log.fail`.
+  host routes and the terminal before exiting 1. Argv problems are an `ArgumentsError`, which
+  `runCommand` prints and turns into exit 1.
 - `log.ts` is the CLI status and error facade (`info`/`success`/`done`/`warn`/`error`/`hint`/`fail`);
   `src/environment/logging.ts` stays responsible for the rich environment banner.
 - `commands/` contains command-specific behavior; `commands/inspect/` holds `ls`, `status` and
@@ -97,7 +102,9 @@ pieces it orchestrates.
   dead and they are a minute old, keeping the newest ended run's log.
   The parent waits on the run registry entry whose `pid` is the
   child's until every app has settled; an empty `apps` list is the claim, not "done", unless the
-  selection has no app to spawn. A child that exits 0 had nothing to keep running (every app
+  selection has no app to spawn. Whether it has one is the child's to say, in its report
+  (`expectApps`): the parent never loads the config, which cost a second environment build on
+  every `dev --detach`. A config error reaches the parent as the child's exit. A child that exits 0 had nothing to keep running (every app
   reused) and is a success, as it is for attached `dev`; its exit is checked before the entry,
   which can outlive it. The run hands the parent its failures in
   `.buncargo/logs/detached-report-<pid>.json`, one per run for the same reason
@@ -126,16 +133,19 @@ pieces it orchestrates.
 ## Other commands
 
 - `commands/run.ts` is `exec` for `config.tasks` (which injects the app's secrets), with
-  `requiredServices` started through `start({ onlyServices })`. It claims with the CLI's idle
+  `requiredServices` started through `env.withServices`. It claims with the CLI's idle
   hold, not the library's keep-forever default. Extra argv goes through `withAppendedArgs`
   (`sh -c '<cmd> "$@"'`), so nothing is re-parsed. Tasks are published into the run entry for
   BuncargoBar's run button, which calls `buncargo run` *unscoped*: `--root`/`--run` name a run, and
   a task only needs the checkout (the working directory).
-- `commands/ci.ts` runs on `env.withSuffix("ci")`, starts services with `onlyServices`, forces the
-  seed (a CI database is never warm), runs the command and always `stop({ removeVolumes: true })`s.
-  The suffix is not optional: on the shared project that teardown deletes a developer's dev
-  database. A suffixed environment writes its own compose file and never persists `ports.json`, or
-  it would overwrite the dev run's. `--profile` lives in `dev-flags.ts`; `selectProfileApps` in
+- `commands/ci.ts` runs on `env.withSuffix("ci-<id>", { data: "tmpfs", ports: "assigned" })`, starts services with
+  `withServices` (`after: { stop: { removeVolumes: true } }`), forces the seed (a CI database is
+  never warm) and runs the command; `--schema=push` is the preparation's `schema: "push"`. The suffix is not optional: on the shared project that teardown
+  deletes a developer's dev database. The id is per run because two runs on one `-ci` project took
+  each other's stack down mid-test (lasauna), and tmpfs because a killed run's volume was nobody's to
+  remove. A suffixed environment writes its own compose file, or it would overwrite the dev
+  run's; `ci` deletes its file after the teardown. Its services publish on Docker-assigned ports
+  (`127.0.0.1::5432`, read back from the listing; see `container-runtimes.md`). `--profile` lives in `dev-flags.ts`; `selectProfileApps` in
   `run-cli.ts` turns it (or a `default` profile) into the same selection `--apps` makes.
 - `agents-guide.ts` is the one copy of the agent guide (`help agents`) and the `AGENTS.md` block
   `setup --agents` keeps between `<!-- buncargo:start/end -->` markers. It lives in code, not
@@ -144,7 +154,7 @@ pieces it orchestrates.
   agents read it through `| head -60` or a grep, and the 12 KB single page they cut that way
   never showed them the database and port-block recipes.
 - `commands/ports.ts` shows the offset claims and `pin`s one: it checks every port of the block
-  through `withBindProbe` and the claims before writing the lockfile and the claim. `release`
+  through `withBindProbe` and the claims before writing the claim. `release`
   drops another checkout's claims under the claims lock, refusing while that checkout has a live or
   held run.
 - `commands/send.ts` types into an app over the same request-file channel as `restart`
@@ -153,12 +163,14 @@ pieces it orchestrates.
   request carries an id, and the run answers it in `send/<session>.replies/<id>`, typed or why
   not, so `send` can exit 3 rather than report keys that reached nothing.
 - `commands/restart.ts` never writes the app's row: only the run knows a restart began, and it
-  marks the row `starting` itself (`onAppRestarting`, on both entry points). A library `start()`
-  records pids but reads no requests, so a row the command marked stayed `starting` and
-  `restart && wait --app` hung. The command waits for the request file to be taken (`dev` reads
-  it from before its first app spawns, so a pid means a reader if there is one), then for the
-  row to move on, so the `wait` that follows sees the new process; a request nobody takes is
-  withdrawn and the command exits 3.
+  marks the row `starting` itself. A library `start()` records pids but reads no requests, so a
+  row the command marked stayed `starting` and `restart && wait --app` hung. Like `send`, each
+  request carries an id the run answers in `restart/<session>.replies/<id>`: `began` once the
+  supervisor replaced the process, `failed` with why, or `not-ours` for an app it did not spawn.
+  The command first waits for the request file to be taken (`dev` reads it from before its first
+  app spawns, so a pid means a reader if there is one); a request nobody takes is withdrawn and
+  the command exits 3. The answer waits out the app's `stopGraceMs`, since the old process
+  stops before the new one spawns.
 - `commands/inspect/file-table.ts` reads the machine's open-file table (`sysctl` /
   `/proc/sys/fs/file-nr`); `doctor` runs the full `lsof` for the top holders only past half full,
   because it takes seconds on a crowded machine.
@@ -184,7 +196,7 @@ pieces it orchestrates.
   `--create-scratch` always prefixes `scratch_`, so `--drop-scratch` cannot reach a database the
   project uses, and uses two `-c`s because `CREATE DATABASE` refuses the transaction one
   multi-statement `-c` becomes. It starts the database service when it is down, through the
-  `run` task path (allocate, claim, `start({ onlyServices, prepare: "containers" })`, release)
+  `run` task path (`withServices`: claim, start, release)
   with no idle hold, as `dev --up-only` leaves its containers: the command that uses the scratch
   database runs after `sql` exits, and a three-minute hold would stop it under a test suite.
   `exec --db` (`exec-database.ts`) checks the database exists with one Bun SQL query, and refuses
@@ -195,8 +207,16 @@ pieces it orchestrates.
 
 ## Check and predeploy
 
-`commands/check/` is `buncargo check`; `plan.ts` (gate and test selection) is pure apart from the
-glob scan, `docs.ts` is also `check docs`. Steps run one at a time with their output buffered: the
+`commands/check/` is `buncargo check`. `planCheck` (`plan.ts`) is a pure function from the config,
+the files and the mode to a list of named steps; the command reads the files and the repository
+first, then filters the list (`--only`, `--skip`), prints it (`--list`) or runs it (`runner.ts`).
+Step names are the filter's contract, so a chunked step (`biome --write (200 files)`) keeps one
+name, and validation refuses a gate named like a built-in step or an earlier gate. `docs.ts` is
+also `check docs`. Deferred tests (`check.testDeferred`) are a pass with a count by default:
+a non-zero default fails every check in every repo with database tests. They used to run with no
+database, every test skipped, and `check` printed `PASS`.
+
+Steps run one at a time with their output buffered: the
 point is one line per step and the tail of the failure, not a live log. The verdict is the exit
 code alone and comes last, with each failure's rerun command: agents read `check | tail`, and a
 format step once printed ✓ over a command that never ran. The typecheck is spawned
@@ -207,16 +227,20 @@ workspace in `typecheck --changed` (`isRootWideFile`).
 
 `commands/predeploy.ts` runs on a deploy host, not in a checkout: it never builds an environment,
 so no ports, containers or secrets, and the migrations and seed see only the host's variables.
-It reuses the dev run's migration list (`prisma`, then `migrations`) without `requiredServices`
-filtering, since a deploy has no local services to select. Unlike `typecheck`, a config that
+It reuses the dev run's migration list (`migrationsFor` in `src/prisma/migrations-for.ts`)
+without `requiredServices` filtering, since a deploy has no local services to select. It fails
+closed: an environment no variable names is not seeded, because the default seed is the dev
+run's, which in one project created a super admin with a known password on a deploy that set
+neither variable. It is not in the auto-install commands: a deploy image's install layer comes
+from a cache older than its `bun.lock`. Unlike `typecheck`, a config that
 fails to import is an error here: migrating with half a config is worse than failing the deploy.
-`typecheck/config-settings.ts` is the one loader for these config-only commands.
+`loader/config-settings.ts` is the one loader for these config-only commands.
 
 ## Typecheck
 
 `src/typecheck/typecheck.ts` runs a real process pool (`execAsync`); `scheduling.ts` is
 longest-first (cached durations, then descending file count) and holds the CPU/CI concurrency
-default. The CLI spec lives in `src/cli/typecheck-flags.ts` (`--concurrency`, `--only`).
+default. The CLI spec lives in `src/cli/commands/typecheck.ts` (`--concurrency`, `--only`).
 `config-settings.ts` reads only the config's `typecheck` key (`include`/`exclude`, validated by
 `validateTypecheckShape`) by importing the module, never building an environment; an `include`
 entry with nothing to check is a failed result, not a skip. `project-tsc.ts` finds the project's

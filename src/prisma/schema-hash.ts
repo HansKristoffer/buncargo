@@ -47,10 +47,7 @@ export function readGeneratedPrismaHash(root: string): string | undefined {
 }
 
 /** Best-effort: a checkout that cannot write its state dir just re-checks. */
-export function recordGeneratedPrismaHash(
-	root: string,
-	prismaDir: string,
-): void {
+function recordGeneratedPrismaHash(root: string, prismaDir: string): void {
 	const schemaHash = prismaSchemaHash(prismaDir);
 	if (!schemaHash) return;
 	try {
@@ -72,4 +69,14 @@ export async function generatePrismaClient(
 	const { exitCode } = await run();
 	if (exitCode === 0) recordGeneratedPrismaHash(root, join(root, cwd));
 	return exitCode;
+}
+
+/**
+ * Whether `prisma.generate` has to run: the `.prisma` files under `cwd`
+ * differ from the ones buncargo last generated from. A schema it cannot
+ * find runs generate.
+ */
+export function prismaClientStale(root: string, cwd: string): boolean {
+	const current = prismaSchemaHash(join(root, cwd));
+	return current === undefined || current !== readGeneratedPrismaHash(root);
 }

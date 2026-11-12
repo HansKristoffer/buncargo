@@ -6,6 +6,7 @@ import {
 } from "../container-runtime/types";
 import { abortableSleep, remainingTime } from "../core/deadline";
 import { execAsync } from "../core/process/exec";
+import { isProcessAlive } from "../core/process/lifecycle";
 import { askConfirm, isInteractive } from "../core/prompt";
 import { isCI } from "../core/runtime-flags";
 import { formatDone, formatStep, formatWait } from "../core/style";
@@ -120,7 +121,7 @@ function detectDockerRuntime(binary?: string): DockerRuntime {
  * transport timeout, a pipe this user may not open), so only a Windows pipe
  * that does not exist counts among them.
  */
-export function isDaemonDownMessage(message: string): boolean {
+function isDaemonDownMessage(message: string): boolean {
 	const cannotConnect =
 		/cannot connect to the docker daemon|is the docker daemon running|docker daemon is not running/i;
 	const noPipe = /error during connect:.*pipe.*cannot find the file specified/i;
@@ -147,8 +148,8 @@ export function dockerDaemonStateFrom(
 	result: DockerRunResult,
 ): DockerDaemonState {
 	if (result.ok) return { state: "up" };
-	if (result.spawnErrorCode === "ENOENT") return { state: "down" };
-	if (result.spawnErrorCode === "ETIMEDOUT") return { state: "silent" };
+	if (result.status === "notFound") return { state: "down" };
+	if (result.status === "timedOut") return { state: "silent" };
 	if (/permission denied/i.test(result.stderr)) return { state: "denied" };
 	if (isDaemonDownMessage(result.stderr)) return { state: "down" };
 	const detail =
@@ -194,6 +195,21 @@ function socketPermissionError(runtime: DockerRuntime): DockerUnavailableError {
 	);
 }
 
+function dockerBinaryMissingError(
+	binary = DEFAULT_DOCKER_BINARY,
+): DockerUnavailableError {
+	const runtime = runtimeFromContext(
+		"",
+		process.platform,
+		installedDockerRuntime(binary),
+	);
+	return new DockerUnavailableError(
+		runtime,
+		"Install Docker, or put your runtime's `docker` on PATH (OrbStack: ~/.orbstack/bin), or point `docker.binary` in dev.config.ts at it.",
+		`The Docker CLI (\`${binary}\`) was not found.`,
+	);
+}
+
 /** Why Docker cannot be used and what to do, for a caller that does not wait for it. */
 export function dockerUnavailableError(
 	daemon: Exclude<DockerDaemonState, { state: "up" }>,
@@ -218,7 +234,7 @@ export function dockerUnavailableError(
 	});
 }
 
-export function remediationFor(runtime: DockerRuntime): string {
+function remediationFor(runtime: DockerRuntime): string {
 	return typedSwitch(runtime, {
 		orbstack: () => "Start OrbStack (open -a OrbStack) and try again.",
 		"docker-desktop": () =>
@@ -348,15 +364,6 @@ export function isDockerDesktopHung(uptimeMs: number): boolean {
 	return uptimeMs >= DESKTOP_COLD_START_MS;
 }
 
-function isAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 /**
  * End Docker Desktop's processes and start it again. Only the pids just
  * listed for this user, by pid; a quit request leaves the backend alive in
@@ -378,7 +385,7 @@ async function forceRestartDockerDesktop(
 	};
 	signalAll("SIGTERM");
 	const deadline = performance.now() + 10_000;
-	while (pids.some(isAlive) && remainingTime(deadline) > 0)
+	while (pids.some(isProcessAlive) && remainingTime(deadline) > 0)
 		await abortableSleep(250, signal);
 	signalAll("SIGKILL");
 	await abortableSleep(1000, signal);
@@ -433,6 +440,10 @@ export async function ensureDockerRunning(
 	const daemonRunning = async () => (await probe()).ok;
 	const first = await probe();
 	if (first.ok) return;
+	// No binary to run: starting a runtime or polling cannot change that, and
+	// a Mac with OrbStack installed but its `docker` off PATH would otherwise
+	// open OrbStack and wait out the whole deadline.
+	if (first.status === "notFound") throw dockerBinaryMissingError(binary);
 	const context = await runDockerAsync(binary, ["context", "show"], {
 		signal,
 		timeoutMs: Math.min(5000, remainingTime(deadline)),

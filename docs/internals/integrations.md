@@ -7,10 +7,20 @@ User-facing guide: [integrations](../integrations.md).
 `config/integrations.ts` (`applyIntegrations`) in order before validation. It composes hooks (the
 config's first), appends checks, and is idempotent (a symbol marks an applied config).
 
-Core reaches integrations only through `appEnv`, `describeApp`, `bannerHint`, `describe`, `checks`
+Core reaches integrations only through `appEnv`, `describeApp`, `bannerHint`, `describe`, `setupChecks`
 and `commands`. Expo lives entirely there: without `expo()` no app is Expo.
 `cli/integration-commands.ts` dispatches `buncargo <name> <cmd>`, preferring the configured
 instance (its options) and falling back to the built-ins, so `expo sim` works without a config.
+
+The names an integration adds reach a config's types through `BuncargoIntegration<TAdds>` and the
+`integrations` tuple `defineDevConfig` infers. Before 16.0 they came from a global interface
+augmentation, so importing `buncargo/firebase` anywhere made `"firebase"` legal in every config.
+`TAdds` lives in a type-only `"~adds"` property; an integration typed plain `BuncargoIntegration`
+adds no names.
+
+The config's own values win over an integration's: its `env` over the integration's `env` keys, an
+app it defines over one the integration adds, and an app's `staticEnv` and `envVars` over `appEnv`.
+Shopify's `env` and every `appEnv` over `staticEnv` were on top until 16.0.
 
 ## Shopify
 
@@ -49,8 +59,13 @@ the services one provides.
   instead of `container`), so the sweep can stop a released stack after its hold with no config:
   `sweepStacks` decides with the same `decideSweep`, counting the stack as running (its containers
   carry none of our labels, so nothing lists them), clears `stacks` once stopped, and
-  `finishedSessions` never retires an entry that still has some. `pendingStacks` keeps the
+  `finishedRuns` never retires an entry that still has some. `pendingStacks` keeps the
   watchdog alive meanwhile.
+- The recorded argv starts with the checkout's own `node_modules/.bin/supabase`, which a deleted
+  worktree takes with it; the spawn failed every pass and the stack stayed up for good. So
+  `runStackDowns` retries the basename on `PATH`, and failing that stops the containers by the
+  `composeProject` the entry records, through the Docker adapter (stopped, never removed: volumes
+  stay). Docker only: no integration CLI runs on Apple's runtime.
 - `stop` refuses one external service (exit 3) and runs the stacks when stopping the whole run.
 - A buncargo older than this retires a stack-only entry at once, leaving that stack running as it
   would without the integration.

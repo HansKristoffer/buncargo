@@ -1,36 +1,39 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
-	existsSync,
 	mkdtempSync,
 	readFileSync,
-	renameSync,
 	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { withFileLock } from "../file-lock";
 import {
 	CERTIFICATE_RECHECK_MS,
-	createDebouncedTrigger,
 	createHostsReloader,
-	createReloadWakeup,
-	createStallRecovery,
-	createStallRecoveryPolicy,
+	createStallHandler,
 	type HostsReloaderDeps,
 	nextReloadDelayMs,
+	RELOAD_STALL_MS,
+	STALLED_EXIT_MS,
 	truncateOversizedLog,
-	watchHostsState,
 } from "./daemon";
 import {
+	DAEMON_RESTART_GRACE_MS,
 	describeLoopbackHijack,
+	ensureHostsDaemonRunning,
+	type HostsDaemonProbe,
 	SERVICE_START_TIMEOUT_MS,
-	waitForDaemonHealthy,
 	waitForDaemonRoutes,
 } from "./daemon-client";
-import { writeDaemonConfig } from "./daemon-config";
-import { type LocalProxy, startLocalProxy } from "./proxy";
+import {
+	createProxyFetch,
+	HEALTH_PATH,
+	type LocalProxy,
+	type ProxyRouteLookup,
+	startLocalProxy,
+} from "./proxy";
+import { TEST_TLS } from "./test-tls.testing";
 
 describe("nextReloadDelayMs", () => {
 	it("polls every second while reloads succeed", () => {
@@ -44,310 +47,40 @@ describe("nextReloadDelayMs", () => {
 		expect(nextReloadDelayMs(3)).toBe(4000);
 	});
 
-	// Short, because `watchHostsState` is the primary trigger and this is only
-	// the backstop. A long ceiling meant one project's failure delayed picking
-	// up every other project's routes for that long.
+	// Short: a browser on a route nobody refreshed for waits on this loop, so
+	// a long ceiling meant one project's failure delayed every other
+	// project's routes for that long.
 	it("caps the backoff so recovery is still noticed", () => {
 		expect(nextReloadDelayMs(50)).toBe(5_000);
 	});
 });
 
-describe("createStallRecoveryPolicy", () => {
-	function policy() {
-		let now = 1_000_000;
-		let lastReloadAt = now;
-		const recovery = createStallRecoveryPolicy({
-			lastReloadAt: () => lastReloadAt,
-			now: () => now,
-			staleAfterMs: 45_000,
-			maxFailures: 2,
+describe("createStallHandler", () => {
+	function stalledDaemon() {
+		const events: string[] = [];
+		const onStale = createStallHandler({
+			reload: () => events.push("reload"),
+			log: () => {},
+			exit: (code) => events.push(`exit ${code}`),
 		});
-		return {
-			// The map stalls; the in-band reload either refreshes it or does not.
-			stallThenRecover(refreshed: boolean): boolean {
-				now += 60_000;
-				if (refreshed) lastReloadAt = now;
-				return recovery.shouldExitAfterRecovery();
-			},
-		};
+		return { events, onStale };
 	}
 
-	// The daemon used to count every recovery for its whole lifetime, so the
-	// third stall in weeks exited it even though each one had been repaired.
-	it("keeps running through any number of successful recoveries", () => {
-		const daemon = policy();
-		const exits = [1, 2, 3, 4].map(() => daemon.stallThenRecover(true));
-		expect(exits).toEqual([false, false, false, false]);
+	// An exit drops every proxied websocket on the machine, so the first
+	// answer to a stall is a reload from the request that noticed it.
+	it("reloads in-band while the stall is younger than the exit window", () => {
+		const { events, onStale } = stalledDaemon();
+		onStale(RELOAD_STALL_MS + 1);
+		onStale(STALLED_EXIT_MS);
+		expect(events).toEqual(["reload", "reload"]);
 	});
 
-	it("exits once in-band reloads keep leaving the map stale", () => {
-		const daemon = policy();
-		const exits = [1, 2, 3].map(() => daemon.stallThenRecover(false));
-		expect(exits).toEqual([false, false, true]);
-	});
-
-	it("starts counting again after a recovery that worked", () => {
-		const daemon = policy();
-		daemon.stallThenRecover(false);
-		daemon.stallThenRecover(false);
-		daemon.stallThenRecover(true);
-		expect(daemon.stallThenRecover(false)).toBe(false);
-	});
-});
-
-describe("createStallRecovery", () => {
-	/** A reload that never settles, timers fired by hand, a map that stays stale. */
-	function hungDaemon() {
-		const timers: Array<() => void> = [];
-		const exits: number[] = [];
-		let reloads = 0;
-		const recovery = createStallRecovery({
-			reload: () => {
-				reloads += 1;
-				return new Promise<void>(() => {});
-			},
-			policy: createStallRecoveryPolicy({
-				lastReloadAt: () => 0,
-				now: () => 60_000,
-				staleAfterMs: 45_000,
-				maxFailures: 2,
-			}),
-			log: () => {},
-			exit: (code) => exits.push(code),
-			startTimer: (_ms, onTimeout) => {
-				timers.push(onTimeout);
-				return () => {};
-			},
-		});
-		return {
-			exits,
-			reloads: () => reloads,
-			async stallAndTimeOut(): Promise<void> {
-				const recovering = recovery.recover(60_000);
-				timers.shift()?.();
-				await recovering;
-			},
-			recover: () => recovery.recover(60_000),
-		};
-	}
-
-	// The reloader joins every caller onto its one in-flight reload, so a hung
-	// reload used to hold recovery forever and the daemon never exited.
-	it("exits after reloads that never settle keep timing out", async () => {
-		const daemon = hungDaemon();
-		await daemon.stallAndTimeOut();
-		await daemon.stallAndTimeOut();
-		expect(daemon.exits).toEqual([]);
-		await daemon.stallAndTimeOut();
-		expect(daemon.exits).toEqual([1]);
-		expect(daemon.reloads()).toBe(3);
-	});
-
-	it("runs one recovery at a time", () => {
-		const daemon = hungDaemon();
-		expect(daemon.recover()).toBeDefined();
-		expect(daemon.recover()).toBeUndefined();
-		expect(daemon.reloads()).toBe(1);
-	});
-
-	it("stays up when the reload refreshes the map in time", async () => {
-		let lastReloadAt = 0;
-		const exits: number[] = [];
-		let cancelled = 0;
-		const recovery = createStallRecovery({
-			reload: async () => {
-				lastReloadAt = 60_000;
-			},
-			policy: createStallRecoveryPolicy({
-				lastReloadAt: () => lastReloadAt,
-				now: () => 60_000,
-				staleAfterMs: 45_000,
-				maxFailures: 0,
-			}),
-			log: () => {},
-			exit: (code) => exits.push(code),
-			startTimer: () => () => {
-				cancelled += 1;
-			},
-		});
-		await recovery.recover(60_000);
-		expect(exits).toEqual([]);
-		expect(cancelled).toBe(1);
-	});
-});
-
-describe("createReloadWakeup", () => {
-	it("returns early when a change is signalled", async () => {
-		const wakeup = createReloadWakeup();
-		const started = Date.now();
-		setTimeout(() => wakeup.signal(), 20);
-		await wakeup.wait(5_000);
-		expect(Date.now() - started).toBeLessThan(1_000);
-	});
-
-	it("falls back to the poll interval when nothing happens", async () => {
-		const wakeup = createReloadWakeup();
-		const started = Date.now();
-		await wakeup.wait(60);
-		expect(Date.now() - started).toBeGreaterThanOrEqual(40);
-	});
-
-	// A change landing while a reload is in flight must cause the next pass
-	// rather than being dropped in the gap between two waits.
-	it("remembers a signal that arrives while nothing is waiting", async () => {
-		const wakeup = createReloadWakeup();
-		wakeup.signal();
-		const started = Date.now();
-		await wakeup.wait(5_000);
-		expect(Date.now() - started).toBeLessThan(1_000);
-	});
-
-	it("consumes the remembered signal only once", async () => {
-		const wakeup = createReloadWakeup();
-		wakeup.signal();
-		await wakeup.wait(5_000);
-		const started = Date.now();
-		await wakeup.wait(60);
-		expect(Date.now() - started).toBeGreaterThanOrEqual(40);
-	});
-});
-
-describe("createDebouncedTrigger", () => {
-	// An atomic write is a create plus a rename, and a mint lands two files, so
-	// one logical change arrives as several events.
-	it("collapses a burst into one call", async () => {
-		let calls = 0;
-		const trigger = createDebouncedTrigger({
-			onTrigger: () => {
-				calls += 1;
-			},
-			debounceMs: 10,
-		});
-		trigger.fire();
-		trigger.fire();
-		trigger.fire();
-		await Bun.sleep(60);
-		expect(calls).toBe(1);
-	});
-
-	it("does not fire after it is cancelled", async () => {
-		let calls = 0;
-		const trigger = createDebouncedTrigger({
-			onTrigger: () => {
-				calls += 1;
-			},
-			debounceMs: 10,
-		});
-		trigger.fire();
-		trigger.cancel();
-		await Bun.sleep(60);
-		expect(calls).toBe(0);
-	});
-});
-
-describe("watchHostsState", () => {
-	const cleanups: Array<() => void> = [];
-	const watchDirs: string[] = [];
-
-	afterEach(() => {
-		for (const stop of cleanups.splice(0)) stop();
-		for (const dir of watchDirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	// Directories, not files: writes land through a temp file and a rename, so
-	// a file watch would be holding an inode that never comes back.
-	it("fires when a registry write lands through a rename", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "buncargo-watch-"));
-		watchDirs.push(dir);
-		let changes = 0;
-		cleanups.push(
-			watchHostsState({
-				directories: [dir],
-				onChange: () => {
-					changes += 1;
-				},
-				log: () => {},
-				debounceMs: 10,
-			}),
-		);
-
-		await Bun.sleep(50);
-		writeFileSync(join(dir, "routes.json.tmp"), "{}");
-		renameSync(join(dir, "routes.json.tmp"), join(dir, "routes.json"));
-
-		for (let i = 0; i < 100 && changes === 0; i++) await Bun.sleep(10);
-		expect(changes).toBeGreaterThan(0);
-	});
-
-	// Best-effort: the poll is still running, so an unwatchable directory is a
-	// note rather than a failure.
-	it("reports an unwatchable directory instead of throwing", () => {
-		const logs: string[] = [];
-		expect(() => {
-			cleanups.push(
-				watchHostsState({
-					directories: ["/proc/nonexistent/buncargo-should-not-exist"],
-					onChange: () => {},
-					log: (message) => logs.push(message),
-				}),
-			);
-		}).not.toThrow();
-	});
-});
-
-describe("hosts reload isolation", () => {
-	// Every reload takes the registry lock, which creates `routes.json.lock.v2`
-	// beside the watched file. Waking on that would turn a reload into the
-	// next one; waking on temp files or run-status writes reloads for nothing.
-	//
-	// A watched sentinel goes through the same watcher after the noise, and
-	// every wakeup records what it saw, so one caused by noise shows up as a
-	// reading without the sentinel or as a repeated reading.
-	it("wakes once per registry write, not on lock churn, temp files or run status", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "buncargo-watch-feedback-"));
-		const routes = join(dir, "routes.json");
-		const sentinel = join(dir, "sentinel");
-		const read = (path: string) =>
-			existsSync(path) ? readFileSync(path, "utf8") : "-";
-		const seen: string[] = [];
-		let reloading = Promise.resolve();
-		let next = Promise.withResolvers<void>();
-		const stop = watchHostsState({
-			directories: [dir],
-			files: [routes, sentinel],
-			debounceMs: 0,
-			log: () => {},
-			onChange: () => {
-				seen.push(`${read(routes)} ${read(sentinel)}`);
-				// What the daemon does next: reload under the real lock.
-				reloading = withFileLock(routes, async () => {});
-				next.resolve();
-			},
-		});
-		const change = async (write: () => void) => {
-			next = Promise.withResolvers<void>();
-			write();
-			await next.promise;
-			await reloading;
-		};
-		const land = (contents: string) => () => {
-			writeFileSync(`${routes}.tmp`, contents);
-			renameSync(`${routes}.tmp`, routes);
-		};
-		try {
-			writeFileSync(join(dir, "runs.json"), "{}");
-			writeFileSync(join(dir, "routes.json.tmp"), "{}");
-			await change(() => writeFileSync(sentinel, "1"));
-			await change(land("a"));
-			await change(land("b"));
-			await change(() => writeFileSync(sentinel, "2"));
-			expect(seen).toEqual(["- 1", "a 1", "b 1", "b 2"]);
-		} finally {
-			stop();
-			rmSync(dir, { recursive: true, force: true });
-		}
+	// A reload that hangs is joined, not stacked on: only an exit gets the
+	// supervisor to start a daemon that is not stuck behind it.
+	it("exits for the supervisor once in-band reloads have not refreshed the map", () => {
+		const { events, onStale } = stalledDaemon();
+		onStale(STALLED_EXIT_MS + 1);
+		expect(events).toEqual(["exit 1"]);
 	});
 });
 
@@ -434,7 +167,7 @@ describe("createHostsReloader", () => {
 		await Promise.all([
 			reloader.reload("poll"),
 			reloader.reload("recovery"),
-			reloader.reload("filesystem"),
+			reloader.reload("manual"),
 		]);
 		expect(binds).toBe(1);
 		expect(maximum).toBe(1);
@@ -569,6 +302,49 @@ describe("createHostsReloader", () => {
 		await reloader.reload();
 		expect(state.binds).toBe(2);
 		expect(state.stops).toBe(1);
+	});
+
+	// The proxy reads this view on every request, for its age. Building the
+	// list there cost each proxied request a certificate check per route.
+	it("builds the served hostname list for health, not for a proxied request", async () => {
+		let certificateChecks = 0;
+		let lookup: ProxyRouteLookup = () => undefined;
+		const { state, reloader } = reloaderHarness({
+			certificateServes: () => () => {
+				certificateChecks += 1;
+				return true;
+			},
+			startProxy: async (input) => {
+				lookup = input.lookup;
+				return { httpsPort: 443, stop: () => {} } satisfies LocalProxy;
+			},
+		});
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+		const fetchHandler = createProxyFetch({
+			lookup,
+			routes: reloader.routes,
+			upstream: { resolve: async () => undefined, forget: () => {} },
+		});
+
+		certificateChecks = 0;
+		const proxied = await fetchHandler(
+			new Request("https://web.demo.localhost/", {
+				headers: { host: "web.demo.localhost" },
+			}),
+			{} as never,
+		);
+		expect(proxied.status).toBe(502);
+		expect(certificateChecks).toBe(0);
+
+		const health = await fetchHandler(
+			new Request(`https://127.0.0.1${HEALTH_PATH}`),
+			{} as never,
+		);
+		expect(await health.json()).toMatchObject({
+			hostnames: ["web.demo.localhost"],
+		});
+		expect(certificateChecks).toBe(1);
 	});
 
 	// The failure this pins: health listed the new hostnames while the old
@@ -756,16 +532,103 @@ describe("createHostsReloader", () => {
 		expect(state.stops).toBe(0);
 	});
 
-	it("advances the reload timestamp only on a successful load", async () => {
+	// `routes.json` is user-writable and the daemon is root: a newline in a
+	// hostname was lines of anyone's choosing in /etc/hosts.
+	it("keeps a hostname that is not a DNS name out of the map and /etc/hosts, and says so once", async () => {
+		const injected = "evil.localhost\n203.0.113.7 bank.example";
 		const { state, reloader } = reloaderHarness();
+		state.routes = [route("web.demo.localhost", 5173), route(injected, 4000)];
+
+		await reloader.reload();
+		await reloader.reload();
+
+		expect(state.syncedHostnames.at(-1)).toEqual(["web.demo.localhost"]);
+		expect(reloader.routes().hostnames).toEqual(["web.demo.localhost"]);
+		const said = state.logs.filter((line) => line.includes("not a DNS name"));
+		expect(said).toEqual([expect.stringContaining(JSON.stringify(injected))]);
+	});
+
+	// Advanced on success alone, a registry the daemon could not read looked
+	// like a loop that had stopped, and stall recovery exited the daemon.
+	it("advances the reload timestamp on every reload that finishes", async () => {
+		let unreadable = false;
+		const { state, reloader } = reloaderHarness({
+			pruneRoutes: async () => {
+				if (unreadable) throw new Error("routes.json is not valid JSON");
+				return state.routes;
+			},
+		});
 		state.clock = 1_000;
 		state.routes = [route("web.demo.localhost", 5173)];
 		await reloader.reload();
 		expect(reloader.routes().lastReloadAt).toBe(1_000);
 
+		unreadable = true;
 		state.clock = 2_000;
-		await reloader.reload();
+		await expect(reloader.reload()).rejects.toThrow("not valid JSON");
 		expect(reloader.routes().lastReloadAt).toBe(2_000);
+	});
+
+	// The reload already running may have read the registry before the CLI's
+	// write landed: a refresh that joined it answered without the new route.
+	it("refreshes with a reload that starts after it is asked", async () => {
+		const passes = Promise.withResolvers<void>();
+		const reads: string[][] = [];
+		const { state, reloader } = reloaderHarness({
+			pruneRoutes: async () => {
+				reads.push(state.routes.map((entry) => entry.hostname));
+				if (reads.length === 1) await passes.promise;
+				return state.routes;
+			},
+		});
+		const polling = reloader.reload("poll");
+		state.routes = [route("web.demo.localhost", 5173)];
+		const refreshing = reloader.refresh();
+		passes.resolve();
+		await Promise.all([polling, refreshing]);
+
+		expect(reads).toEqual([[], ["web.demo.localhost"]]);
+		expect(reloader.routes().hostnames).toEqual(["web.demo.localhost"]);
+	});
+
+	it("gives refreshes that arrive together one reload", async () => {
+		const passes = Promise.withResolvers<void>();
+		let reads = 0;
+		const { state, reloader } = reloaderHarness({
+			pruneRoutes: async () => {
+				reads += 1;
+				if (reads === 1) await passes.promise;
+				return state.routes;
+			},
+		});
+		const polling = reloader.reload("poll");
+		const refreshes = [reloader.refresh(), reloader.refresh()];
+		passes.resolve();
+		await Promise.all([polling, ...refreshes]);
+
+		expect(reads).toBe(2);
+	});
+
+	// Every remint binds again and meets the same holder of :80.
+	it("says once that https is serving without the http redirect", async () => {
+		const { state, reloader } = reloaderHarness({
+			startProxy: async () =>
+				({
+					httpsPort: 443,
+					redirectError: "could not bind :80 (EADDRINUSE)",
+					stop: () => {},
+				}) satisfies LocalProxy,
+		});
+		state.routes = [route("web.demo.localhost", 5173)];
+		await reloader.reload();
+		state.fingerprint = "cert-v2";
+		await reloader.reload();
+
+		expect(reloader.isBound()).toBe(true);
+		const said = state.logs.filter((line) => line.includes(":80"));
+		expect(said).toEqual([
+			"[buncargo hosts] serving https without the http:// redirect: could not bind :80 (EADDRINUSE)",
+		]);
 	});
 
 	// mkcert runs under the certificate lock. A slow mint used to read as a
@@ -866,51 +729,68 @@ describe("createHostsReloader", () => {
 
 describe("waitForDaemonRoutes", () => {
 	const servers: LocalProxy[] = [];
-	const dirs: string[] = [];
-	const originalHome = process.env.HOME;
 
 	afterEach(() => {
 		for (const server of servers.splice(0)) server.stop();
-		process.env.HOME = originalHome;
-		for (const dir of dirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
-		}
 	});
 
-	/** A plain-HTTP proxy the config points at, so no certificate is needed. */
-	async function daemonServing(hostnames: string[]): Promise<number> {
-		const home = mkdtempSync(join(tmpdir(), "buncargo-daemon-test-"));
-		dirs.push(home);
-		process.env.HOME = home;
-
+	/** A proxy bound the way the daemon binds it, on a port of its own. */
+	async function daemonServing(
+		hostnames: string[],
+		options: { bindError?: string } = {},
+	): Promise<number> {
 		const proxy = await startLocalProxy({
 			lookup: () => undefined,
-			routes: () => ({ hostnames, lastReloadAt: Date.now() }),
+			routes: () => ({ hostnames, lastReloadAt: Date.now(), ...options }),
+			tls: TEST_TLS,
 			httpsPort: 0,
 			hostname: "127.0.0.1",
 		});
 		servers.push(proxy);
-		writeDaemonConfig({
-			httpsPort: proxy.httpsPort,
-			httpPort: 0,
-			tls: false,
-		});
 		return proxy.httpsPort;
 	}
 
 	it("passes once the daemon reports the hostnames", async () => {
-		await daemonServing(["web.demo.localhost"]);
-		expect(await waitForDaemonRoutes(["web.demo.localhost"])).toEqual({
-			ok: true,
+		const port = await daemonServing(["web.demo.localhost"]);
+		expect(await waitForDaemonRoutes(["web.demo.localhost"], { port })).toEqual(
+			{ ok: true },
+		);
+	});
+
+	// The route lands in the registry just before the check: the daemon's own
+	// loop has not read it yet, and the one probe the budget allows has the
+	// daemon reload before it answers.
+	it("settles in one round trip by asking the daemon to reload first", async () => {
+		let hostnames: string[] = [];
+		const proxy = await startLocalProxy({
+			lookup: () => undefined,
+			routes: () => ({ hostnames, lastReloadAt: Date.now() }),
+			refresh: async () => {
+				hostnames = ["web.demo.localhost"];
+			},
+			tls: TEST_TLS,
+			httpsPort: 0,
+			hostname: "127.0.0.1",
 		});
+		servers.push(proxy);
+
+		expect(
+			await waitForDaemonRoutes(["web.demo.localhost"], {
+				port: proxy.httpsPort,
+				timeoutMs: 0,
+			}),
+		).toEqual({ ok: true });
 	});
 
 	// The failure this exists to prevent: the registry has the route, the
-	// daemon does not, and the banner advertises an https URL that 404s.
-	it("fails a hostname the daemon never picks up", async () => {
-		await daemonServing(["other.demo.localhost"]);
+	// daemon does not, and the banner advertises an https URL that 404s. Still
+	// told apart from a daemon that never answered: a registry it is not
+	// picking up is a different repair.
+	it("names a hostname the daemon never picks up", async () => {
+		const port = await daemonServing(["other.demo.localhost"]);
 		const result = await waitForDaemonRoutes(["web.demo.localhost"], {
 			timeoutMs: 150,
+			port,
 		});
 		expect(result).toEqual({
 			ok: false,
@@ -921,10 +801,11 @@ describe("waitForDaemonRoutes", () => {
 	});
 
 	it("reports a daemon that is not answering at all", async () => {
-		await daemonServing([]);
+		const port = await daemonServing([]);
 		for (const server of servers.splice(0)) server.stop();
 		const result = await waitForDaemonRoutes(["web.demo.localhost"], {
 			timeoutMs: 0,
+			port,
 		});
 		expect(result).toEqual({
 			ok: false,
@@ -932,84 +813,55 @@ describe("waitForDaemonRoutes", () => {
 		});
 	});
 
-	// The daemon rebinds whenever the CLI remints, so a probe that goes
-	// unanswered is the normal shape of a first run in a new worktree. Failing
-	// on it downgraded that run to localhost:port while everything was fine.
-	it("retries a probe that does not answer instead of giving up", async () => {
-		const home = mkdtempSync(join(tmpdir(), "buncargo-daemon-test-"));
-		dirs.push(home);
-		process.env.HOME = home;
-
-		// Bind, take the port, and only start answering on a later probe.
-		const placeholder = await startLocalProxy({
-			lookup: () => undefined,
-			routes: () => ({ hostnames: [], lastReloadAt: Date.now() }),
-			httpsPort: 0,
+	// A refresh that remints rebinds the listener, and the rebind cuts off the
+	// very probe that asked for it: the normal shape of a first run in a new
+	// worktree. Failing on it downgraded that run to localhost:port while
+	// everything was fine.
+	it("retries a probe the rebind cut off instead of giving up", async () => {
+		let replacement: Promise<LocalProxy> | undefined;
+		const previous = Bun.serve({
 			hostname: "127.0.0.1",
+			port: 0,
+			tls: TEST_TLS,
+			reusePort: true,
+			fetch: async (_request, server) => {
+				replacement ??= startLocalProxy({
+					lookup: () => undefined,
+					routes: () => ({
+						hostnames: ["web.demo.localhost"],
+						lastReloadAt: Date.now(),
+					}),
+					tls: TEST_TLS,
+					httpsPort: server.port ?? 0,
+					hostname: "127.0.0.1",
+				});
+				servers.push(await replacement);
+				server.stop(true);
+				return new Response("cut off");
+			},
 		});
-		const port = placeholder.httpsPort;
-		placeholder.stop();
-		writeDaemonConfig({ httpsPort: port, httpPort: 0, tls: false });
 
-		const check = waitForDaemonRoutes(["web.demo.localhost"], {
-			timeoutMs: 3000,
-			port,
-		});
-
-		await Bun.sleep(250);
-		const proxy = await startLocalProxy({
-			lookup: () => undefined,
-			routes: () => ({
-				hostnames: ["web.demo.localhost"],
-				lastReloadAt: Date.now(),
+		expect(
+			await waitForDaemonRoutes(["web.demo.localhost"], {
+				timeoutMs: 3000,
+				port: previous.port,
 			}),
-			httpsPort: port,
-			hostname: "127.0.0.1",
-		});
-		servers.push(proxy);
-
-		expect(await check).toEqual({ ok: true });
+		).toEqual({ ok: true });
+		expect(replacement).toBeDefined();
 	});
 
 	it("names a certificate the daemon cannot load as the reason", async () => {
-		const home = mkdtempSync(join(tmpdir(), "buncargo-daemon-test-"));
-		dirs.push(home);
-		process.env.HOME = home;
-		const proxy = await startLocalProxy({
-			lookup: () => undefined,
-			routes: () => ({
-				hostnames: ["other.demo.localhost"],
-				lastReloadAt: Date.now(),
-				bindError: "key values mismatch",
-			}),
-			httpsPort: 0,
-			hostname: "127.0.0.1",
+		const port = await daemonServing(["other.demo.localhost"], {
+			bindError: "key values mismatch",
 		});
-		servers.push(proxy);
-		writeDaemonConfig({ httpsPort: proxy.httpsPort, httpPort: 0, tls: false });
-
 		const result = await waitForDaemonRoutes(["web.demo.localhost"], {
 			timeoutMs: 0,
+			port,
 		});
 		expect(result).toEqual({
 			ok: false,
 			reason: expect.stringContaining(
 				"could not load the certificate covering web.demo.localhost (key values mismatch)",
-			),
-		});
-	});
-
-	// Still distinguishable: a daemon that answers without the hostname has a
-	// registry it is not picking up, which is a different repair.
-	it("names the hostnames a live daemon is not serving", async () => {
-		await daemonServing(["other.demo.localhost"]);
-		const result = await waitForDaemonRoutes(["web.demo.localhost"], {
-			timeoutMs: 150,
-		});
-		expect(result).toEqual({
-			ok: false,
-			reason: expect.stringContaining(
-				"the daemon is not serving web.demo.localhost",
 			),
 		});
 	});
@@ -1031,50 +883,76 @@ describe("waitForDaemonRoutes", () => {
 		}
 		servers.push({ httpsPort: port, stop: () => squatter?.stop(true) });
 		expect(await describeLoopbackHijack(port)).toContain(`[::1]:${port}`);
-		expect(await waitForDaemonRoutes(["web.demo.localhost"])).toEqual({
-			ok: false,
-			reason: expect.stringContaining(`[::1]:${port}`),
-		});
+		expect(await waitForDaemonRoutes(["web.demo.localhost"], { port })).toEqual(
+			{
+				ok: false,
+				reason: expect.stringContaining(`[::1]:${port}`),
+			},
+		);
 	});
 
-	// A daemon predating the health fields cannot prove what it serves. It is
-	// not served on trust: the run falls back and says how to update it.
-	it("tells the user to update a daemon that does not report hostnames", async () => {
-		const home = mkdtempSync(join(tmpdir(), "buncargo-daemon-test-"));
-		dirs.push(home);
-		process.env.HOME = home;
-
+	// What every machine runs until `hosts install` replaces it. It cannot
+	// prove what it serves the way this CLI asks, so it is not served on
+	// trust: the run falls back and says how to update it.
+	it("tells the user to update a daemon from before the protocol", async () => {
 		const outdated = Bun.serve({
 			hostname: "127.0.0.1",
 			port: 0,
-			fetch: () => Response.json({ ok: true, routes: 0 }),
+			tls: TEST_TLS,
+			fetch: () =>
+				Response.json({
+					ok: true,
+					routes: 1,
+					hostnames: ["web.demo.localhost"],
+					lastReloadAt: Date.now(),
+				}),
 		});
 		const port = outdated.port ?? 0;
 		servers.push({ httpsPort: port, stop: () => outdated.stop(true) });
-		writeDaemonConfig({ httpsPort: port, httpPort: 0, tls: false });
 
-		expect(await waitForDaemonRoutes(["web.demo.localhost"])).toEqual({
-			ok: false,
-			reason: expect.stringContaining(
-				"Run `buncargo hosts install` to update it.",
-			),
-		});
+		expect(await waitForDaemonRoutes(["web.demo.localhost"], { port })).toEqual(
+			{
+				ok: false,
+				reason: expect.stringContaining(
+					"Run `buncargo hosts install` to update it.",
+				),
+			},
+		);
 	});
 });
 
-describe("waitForDaemonHealthy", () => {
-	it("fails a closed port without waiting the launchd budget", async () => {
-		const started = Date.now();
-		expect(await waitForDaemonHealthy(59_999, 0)).toBe(false);
-		expect(Date.now() - started).toBeLessThan(2_000);
+describe("ensureHostsDaemonRunning", () => {
+	/** An installed, current unit whose daemon first answers at `answersAt`. */
+	function restartingDaemon(answersAt: number) {
+		const clock = { now: 0 };
+		const probe: HostsDaemonProbe = {
+			healthy: async () => clock.now >= answersAt,
+			serviceInstalled: () => true,
+			staleService: () => undefined,
+			squatter: () => undefined,
+			now: () => clock.now,
+			sleep: async (ms) => {
+				clock.now += ms;
+			},
+		};
+		return { clock, probe };
+	}
+
+	// Down after its own stall exit, another project's reinstall, or login:
+	// one unanswered probe kept the run on localhost:port for its whole life.
+	it("attaches to a daemon that answers a second after the first probe", async () => {
+		const { probe } = restartingDaemon(1_000);
+		expect(await ensureHostsDaemonRunning(probe)).toEqual({ ok: true });
 	});
 
-	it("returns as soon as the wait budget elapses", async () => {
-		const started = Date.now();
-		expect(await waitForDaemonHealthy(59_999, 400)).toBe(false);
-		const elapsed = Date.now() - started;
-		expect(elapsed).toBeGreaterThanOrEqual(200);
-		expect(elapsed).toBeLessThan(1_500);
+	it("reports the service once the restart grace has passed", async () => {
+		const { clock, probe } = restartingDaemon(Number.POSITIVE_INFINITY);
+		const result = await ensureHostsDaemonRunning(probe);
+		expect(result).toMatchObject({
+			ok: false,
+			message: expect.stringContaining("did not answer"),
+		});
+		expect(clock.now).toBe(DAEMON_RESTART_GRACE_MS);
 	});
 });
 

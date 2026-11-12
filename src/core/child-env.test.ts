@@ -1,11 +1,8 @@
-import { afterEach, expect, it } from "bun:test";
-import { childProcessEnv, connectProcessEnv, setUnsetEnv } from "./child-env";
+import { expect, it } from "bun:test";
+import { childProcessEnv, connectProcessEnv } from "./child-env";
 import { execAsync } from "./process";
 
-afterEach(() => setUnsetEnv(undefined));
-
 it("gives buncargo's own tools everything but the connect tokens", () => {
-	setUnsetEnv(["CLAUDECODE"]);
 	expect(
 		connectProcessEnv({
 			CLAUDECODE: "1",
@@ -16,13 +13,15 @@ it("gives buncargo's own tools everything but the connect tokens", () => {
 });
 
 it("removes the config's unsetEnv and the connect tokens from a child's env", () => {
-	setUnsetEnv(["CLAUDECODE"]);
 	expect(
-		childProcessEnv({
-			CLAUDECODE: "1",
-			BUNCARGO_CONNECT_TOKENS: "secret",
-			PATH: "/bin",
-		}),
+		childProcessEnv(
+			{
+				CLAUDECODE: "1",
+				BUNCARGO_CONNECT_TOKENS: "secret",
+				PATH: "/bin",
+			},
+			["CLAUDECODE"],
+		),
 	).toEqual({ PATH: "/bin" });
 });
 
@@ -34,13 +33,13 @@ it("keeps a detached run's mark from its apps, so a buncargo they start is not d
 
 it("reaches commands buncargo runs", async () => {
 	process.env.BUNCARGO_TEST_AGENT = "1";
-	setUnsetEnv(["BUNCARGO_TEST_AGENT"]);
 	try {
 		const result = await execAsync(
 			// biome-ignore lint/suspicious/noTemplateCurlyInString: a shell expansion
 			'printf "%s" "${BUNCARGO_TEST_AGENT:-unset}"',
 			process.cwd(),
 			{},
+			{ unsetEnv: ["BUNCARGO_TEST_AGENT"] },
 		);
 		expect(result.stdout).toBe("unset");
 		// buncargo's own environment is left alone.

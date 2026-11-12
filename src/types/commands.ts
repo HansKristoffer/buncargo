@@ -46,7 +46,7 @@ export interface SetupCheck {
 }
 
 /** What a {@link PreflightStep} is handed. */
-export interface PreflightContext extends CheckContext {
+interface PreflightContext extends CheckContext {
 	/**
 	 * Whether a person is at the terminal: the step may prompt, open a browser
 	 * or run an interactive login. False in CI, agents and piped output.
@@ -150,6 +150,13 @@ export interface TypecheckConfig {
 	 * split the check across runners without listing every workspace.
 	 */
 	groups?: Record<string, TypecheckGroupConfig>;
+	/**
+	 * The `package.json` scripts that check a workspace, each its own job in
+	 * the pool (`["typecheck", "typecheck:e2e"]`). A workspace is discovered
+	 * when it has any of them and runs the ones it has. Default:
+	 * `["typecheck"]`.
+	 */
+	scripts?: readonly string[];
 }
 
 /** One `typecheck.groups` entry. */
@@ -181,6 +188,45 @@ export interface CheckGateConfig {
 	when?: readonly string[];
 	/** Also run in `check --staged` (the pre-commit hook). Default: true. */
 	staged?: boolean;
+	/**
+	 * Selected by a change to a root manifest, lockfile, tsconfig or the dev
+	 * config, as well as by `when`. Default: true.
+	 */
+	rootWide?: boolean;
+	/**
+	 * Shell command that repairs what the gate reports (`bun run gen`). In
+	 * the default changed-files mode a failing gate runs it from `cwd` and
+	 * checks again; `--staged` and `--all` only report.
+	 */
+	fix?: string;
+}
+
+/**
+ * One `check.testAlso` entry: tests that guard files they do not sit next
+ * to, such as an integration test over a whole folder.
+ */
+export interface CheckTestAlsoConfig {
+	/** Globs of changed files that select the tests. */
+	when: readonly string[];
+	/** The test files to run: paths or globs relative to the root. */
+	tests: readonly string[];
+}
+
+/**
+ * `check.testDeferred`: tests `check` selects but does not run, because
+ * they need services (a database, a queue). They are listed with the
+ * command that runs them, and the verdict counts them.
+ */
+export interface CheckTestDeferredConfig {
+	/** Globs of the test files to leave out (`**\/*.database.test.ts`). */
+	files: readonly string[];
+	/**
+	 * The command the files are passed to, shown for running them by hand or
+	 * in CI (`bunx buncargo ci -- bun test`). Default: `check.testCommand`.
+	 */
+	command?: string;
+	/** Fail the check when it leaves a test out. Default: false. */
+	strict?: boolean;
 }
 
 /** `buncargo check`: one command for the change in front of you. */
@@ -194,6 +240,10 @@ export interface CheckConfig {
 	testCommand?: string;
 	/** Globs of test files never run by `check` (e2e suites). */
 	testExclude?: readonly string[];
+	/** Tests a change selects beyond the ones next to the changed files. */
+	testAlso?: readonly CheckTestAlsoConfig[];
+	/** Selected tests that need services: listed, not run. */
+	testDeferred?: CheckTestDeferredConfig;
 	/**
 	 * Format with `bun fmt` before Biome: the changed files (written), the
 	 * staged ones (`--check`), the whole repo with `--all` (`--check`). `true`
@@ -252,17 +302,24 @@ export interface PredeployContext {
 export interface PredeployConfig {
 	/**
 	 * Variables naming the deploy environment, first set wins.
-	 * Default: `["SECRETS_ENV", "NODE_ENV"]`; neither set means `dev`.
+	 * Default: `["SECRETS_ENV", "NODE_ENV"]`. With none set the environment is
+	 * `dev`, and it is not seeded: a deploy that names nothing is not known to
+	 * be a throwaway one.
 	 */
 	environmentVars?: readonly string[];
 	/** Environment names that are never seeded. Default: `["prod", "production"]`. */
 	production?: readonly string[];
 	/**
-	 * What to seed outside production. A command, run from the root, replaces
-	 * the dev run's `seed.command` (a deploy's database is remote, so its seeder
-	 * may need other flags); `false` never seeds. Default: `seed.command`.
+	 * The only environment names that are seeded, e.g. `["staging", "preview"]`.
+	 * Default: every named environment outside `production`.
 	 */
-	seed?: false | string;
+	seedIn?: readonly string[];
+	/**
+	 * What to seed outside production: a command, run from the root (a
+	 * deploy's database is remote, so its seeder may need other flags), or
+	 * `true` for the dev run's `seed.command`. Default: nothing is seeded.
+	 */
+	seed?: true | string;
 	/**
 	 * Retry a migration whose output contains `match`: a small Postgres
 	 * refuses connections while the previous deploy's pool still holds its
@@ -275,6 +332,29 @@ export interface PredeployConfig {
 	afterMigrate?: (ctx: PredeployContext) => void | Promise<void>;
 	/** After seeding, or after migrations when nothing was seeded. */
 	afterSeed?: (ctx: PredeployContext) => void | Promise<void>;
+	/**
+	 * When a step fails, before `predeploy` exits nonzero: to alert someone,
+	 * or to record the failure. What it throws is printed and the deploy
+	 * still fails.
+	 */
+	onFailure?: (
+		ctx: PredeployContext,
+		failure: PredeployFailure,
+	) => void | Promise<void>;
+}
+
+/** What {@link PredeployConfig.onFailure} is told about the failed step. */
+export interface PredeployFailure {
+	step: "beforeMigrate" | "migrate" | "afterMigrate" | "seed" | "afterSeed";
+	/** The migration's `name`, when `step` is `migrate`. */
+	migration?: string;
+	/** The error `predeploy` prints. */
+	message: string;
+	/**
+	 * The migration Prisma recorded as failed (P3009, P3018). Every later
+	 * deploy stops at it until `prisma migrate resolve` runs.
+	 */
+	failedPrismaMigration?: string;
 }
 
 /** A named app selection for `buncargo dev --profile=<name>`. */

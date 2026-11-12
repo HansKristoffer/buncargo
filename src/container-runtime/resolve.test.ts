@@ -158,23 +158,21 @@ describe("containerRuntimeCandidates", () => {
 	}
 
 	/** What the Docker candidate executed while listing. */
-	function dockerListCalls(env: NodeJS.ProcessEnv, calls: () => string) {
+	async function dockerListCalls(env: NodeJS.ProcessEnv, calls: () => string) {
 		const docker = containerRuntimeCandidates({ env }).find(
 			(adapter) => adapter.name === "docker",
 		);
 		expect(docker).toBeDefined();
-		try {
-			docker?.list();
-		} catch {
+		await docker?.containers().catch(() => {
 			// Both stubs fail; only which binary ran matters here.
-		}
+		});
 		return calls();
 	}
 
-	it("gives the environment's binary only to the runtime the environment names", () => {
+	it("gives the environment's binary only to the runtime the environment names", async () => {
 		const { binary, calls } = recordingBinary();
 		expect(
-			dockerListCalls(
+			await dockerListCalls(
 				{
 					BUNCARGO_CONTAINER_RUNTIME: "apple",
 					BUNCARGO_CONTAINER_BINARY: binary,
@@ -184,10 +182,10 @@ describe("containerRuntimeCandidates", () => {
 		).toBe("");
 	});
 
-	it("gives it to Docker when the environment names no runtime", () => {
+	it("gives it to Docker when the environment names no runtime", async () => {
 		const { binary, calls } = recordingBinary();
 		expect(
-			dockerListCalls({ BUNCARGO_CONTAINER_BINARY: binary }, calls),
+			await dockerListCalls({ BUNCARGO_CONTAINER_BINARY: binary }, calls),
 		).not.toBe("");
 	});
 });

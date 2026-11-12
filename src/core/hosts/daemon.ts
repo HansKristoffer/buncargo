@@ -1,48 +1,22 @@
-import {
-	type FSWatcher,
-	mkdirSync,
-	statSync,
-	truncateSync,
-	watch,
-	writeFileSync,
-	writeSync,
-} from "node:fs";
-import { join, resolve } from "node:path";
-import { debounce, exponentialBackoff, getErrorMessage } from "hanzio";
-import { createThrottledFailureLog } from "../failure-log";
+import { statSync, truncateSync, writeFileSync, writeSync } from "node:fs";
+import { exponentialBackoff, getErrorMessage } from "hanzio";
 // The leaf module, not `../process`: its index re-exports the port-ownership
 // helpers, which reach into the container backends. The root daemon spawns
 // nothing and should not carry them.
 import { isProcessAlive } from "../process/lifecycle";
-import {
-	DEFAULT_HOSTS_DAEMON_PORT,
-	shouldSyncHostsFile,
-} from "../runtime-flags";
-import { chownToInvokingUser, getStateDir } from "../state-paths";
+import { shouldSyncHostsFile } from "../runtime-flags";
 import {
 	certificateFingerprint,
 	certificateServes,
 	describeCertificateGap,
 	readCertificatePair,
 } from "./certificates";
-import {
-	daemonConfigFromFlags,
-	readDaemonConfig,
-	readDaemonPid,
-	releaseDaemonState,
-	writeDaemonConfig,
-} from "./daemon-config";
+import { readDaemonPid, releaseDaemonPid, writeDaemonPid } from "./daemon-pid";
+import { createThrottledFailureLog } from "./failure-log";
 import { cleanHostsFile, syncHostsFile } from "./hosts-file";
-import {
-	CERT_FILENAME,
-	getCertPath,
-	getCertsDir,
-	getKeyPath,
-	getPidfilePath,
-	getRoutesPath,
-	KEY_FILENAME,
-	ROUTES_FILENAME,
-} from "./paths";
+import { getCertPath, getRoutesPath } from "./paths";
+import { isDnsHostname } from "./plan";
+import { HOSTS_HTTP_PORT, HOSTS_HTTPS_PORT } from "./protocol";
 import {
 	type LocalProxy,
 	type ProxyRouteLookup,
@@ -70,27 +44,21 @@ export const CERTIFICATE_RECHECK_MS = 60 * 60_000;
 /**
  * Ceiling on the retry interval after repeated reload failures.
  *
- * Deliberately short: a reload is a file read, the failure log is throttled
- * separately, and {@link watchHostsState} means the loop is a backstop rather
- * than the primary trigger. A longer ceiling meant one project's problem
- * delayed picking up every other project's routes by up to that long.
+ * Deliberately short: a reload is a file read, and the failure log is
+ * throttled separately. A CLI waiting on its routes asks for its own reload
+ * (`?refresh`), but a browser hitting a route nobody refreshed for still waits
+ * on the loop, so one project's problem delayed every other project's routes
+ * by up to this long.
  */
 const MAX_RELOAD_BACKOFF_MS = 5_000;
 
 /**
- * How long without a successful refresh before the route map is presumed frozen.
+ * How long without a finished reload before the loop is presumed stopped.
  *
  * Comfortably above {@link MAX_RELOAD_BACKOFF_MS} so a daemon that is merely
  * backing off through a run of failures is not mistaken for a dead one.
  */
 export const RELOAD_STALL_MS = 45_000;
-
-/**
- * Consecutive failed in-band recoveries tolerated before the daemon gives up
- * and lets the supervisor restart it. Two is enough to tell a transient read
- * error from a wedge.
- */
-const MAX_STALL_RECOVERIES = 2;
 
 /**
  * Write straight to fd 2, bypassing the buffering Bun applies when stderr is a
@@ -123,99 +91,43 @@ export function nextReloadDelayMs(consecutiveFailures: number): number {
 }
 
 /**
- * Whether the daemon should give up after an in-band stall recovery.
+ * How long without a finished reload before the daemon gives up and exits for
+ * the supervisor to restart it.
  *
- * Only recoveries that left the map stale count, and a successful one resets
- * the count: a daemon that stalls now and then over weeks and recovers each
- * time is working, and exiting it drops every proxied websocket on the machine.
+ * Twice {@link RELOAD_STALL_MS}: a stall gets an in-band reload from the first
+ * request that notices it, and only one that a full stall window of those did
+ * not repair ends in an exit. An exit drops every proxied websocket on the
+ * machine, so a stall a reload fixed must never add up to one; and since any
+ * finished reload resets the age, it cannot.
  */
-export function createStallRecoveryPolicy(input: {
-	lastReloadAt: () => number | undefined;
-	now: () => number;
-	staleAfterMs?: number;
-	maxFailures?: number;
-}): { shouldExitAfterRecovery: () => boolean } {
-	const staleAfterMs = input.staleAfterMs ?? RELOAD_STALL_MS;
-	const maxFailures = input.maxFailures ?? MAX_STALL_RECOVERIES;
-	let failures = 0;
-	return {
-		shouldExitAfterRecovery: () => {
-			const at = input.lastReloadAt();
-			if (at !== undefined && input.now() - at <= staleAfterMs) {
-				failures = 0;
-				return false;
-			}
-			failures += 1;
-			return failures > maxFailures;
-		},
-	};
-}
+export const STALLED_EXIT_MS = 2 * RELOAD_STALL_MS;
 
 /**
- * How long an in-band stall recovery waits for its reload. A reload is a file
- * read and at most a rebind; one still running after this has hung.
- */
-export const STALL_RECOVERY_TIMEOUT_MS = 10_000;
-
-/**
- * Recover a route map that has stopped refreshing, from the request path.
+ * What the request path does about a route map that has stopped refreshing.
  *
- * Reloading in-band is tried first because it fixes the common case without
- * dropping a single connection; `policy` decides when failures add up to an
- * exit ({@link createStallRecoveryPolicy}). A reload that hangs counts as a failed
- * recovery once {@link STALL_RECOVERY_TIMEOUT_MS} passes: the reloader joins
- * every caller onto the one in-flight reload, so waiting on it unbounded left
- * recovery stuck behind the very hang it exists to repair, and the daemon never
- * reached the exit that lets launchd/systemd `KeepAlive` restart it.
+ * The request path, not a timer: the failure this catches is a loop whose
+ * scheduling stopped, and a watchdog on the same timers would stop with it.
+ * The reload joins one already in flight, so a reload that hangs is not
+ * stacked on; the exit is what gets the daemon past it.
  */
-export function createStallRecovery(input: {
-	reload: () => Promise<void>;
-	policy: { shouldExitAfterRecovery: () => boolean };
+export function createStallHandler(input: {
+	reload: () => void;
 	log: (message: string) => void;
 	exit: (code: number) => void;
-	timeoutMs?: number;
-	/** Calls `onTimeout` after `ms`; returns a function that cancels it. */
-	startTimer?: (ms: number, onTimeout: () => void) => () => void;
-}): { recover: (ageMs: number) => Promise<void> | undefined } {
-	const timeoutMs = input.timeoutMs ?? STALL_RECOVERY_TIMEOUT_MS;
-	const startTimer =
-		input.startTimer ??
-		((ms, onTimeout) => {
-			const timer = setTimeout(onTimeout, ms);
-			return () => clearTimeout(timer);
-		});
-	let recovering: Promise<void> | undefined;
-
-	async function recoverOnce(): Promise<void> {
-		let cancel = () => {};
-		const timedOut = new Promise<"timeout">((resolve) => {
-			cancel = startTimer(timeoutMs, () => resolve("timeout"));
-		});
-		const outcome = await Promise.race([input.reload(), timedOut]);
-		cancel();
-		if (outcome === "timeout") {
+}): (ageMs: number) => void {
+	return (ageMs) => {
+		const seconds = Math.round(ageMs / 1000);
+		if (ageMs > STALLED_EXIT_MS) {
 			input.log(
-				`[buncargo hosts] in-band reload did not finish within ${Math.round(timeoutMs / 1000)}s`,
+				`[buncargo hosts] route map has not refreshed in ${seconds}s despite in-band reloads; exiting so the service restarts`,
 			);
+			input.exit(1);
+			return;
 		}
-		if (!input.policy.shouldExitAfterRecovery()) return;
 		input.log(
-			"[buncargo hosts] route map is still stale after in-band reloads; exiting so the service restarts",
+			`[buncargo hosts] route map has not refreshed in ${seconds}s; reloading`,
 		);
-		input.exit(1);
-	}
-
-	return {
-		recover: (ageMs) => {
-			if (recovering) return undefined;
-			input.log(
-				`[buncargo hosts] route map has not refreshed in ${Math.round(ageMs / 1000)}s; reloading`,
-			);
-			recovering = recoverOnce().finally(() => {
-				recovering = undefined;
-			});
-			return recovering;
-		},
+		input.reload();
 	};
 }
 
@@ -250,178 +162,17 @@ export function truncateOversizedLog(
 /** Above this, the log is more noise than history. */
 const MAX_SERVICE_LOG_BYTES = 5_000_000;
 
-export interface ReloadWakeup {
-	/** Ask the next {@link ReloadWakeup.wait} to return immediately. */
-	signal(): void;
-	/** Resolve on the next signal, or after `ms`, whichever comes first. */
-	wait(ms: number): Promise<void>;
-}
-
-/**
- * The reload loop's sleep, interruptible by a filesystem event.
- *
- * A signal that arrives while nothing is waiting is remembered, so a change
- * landing mid-reload still causes the following pass rather than being lost
- * between the two.
- */
-export function createReloadWakeup(): ReloadWakeup {
-	let wake: (() => void) | undefined;
-	let pending = false;
-
-	return {
-		signal() {
-			pending = true;
-			const resume = wake;
-			wake = undefined;
-			resume?.();
-		},
-		async wait(ms: number): Promise<void> {
-			if (pending) {
-				pending = false;
-				return;
-			}
-			await new Promise<void>((resolve) => {
-				const timer = setTimeout(() => {
-					wake = undefined;
-					resolve();
-				}, ms);
-				wake = () => {
-					clearTimeout(timer);
-					resolve();
-				};
-			});
-			pending = false;
-		},
-	};
-}
-
-/**
- * Collapse a burst of filesystem events into one callback.
- *
- * An atomic write is a create plus a rename, and a mint lands two files, so a
- * single logical change arrives as several events. Without the debounce the
- * daemon would reload once per event.
- */
-export function createDebouncedTrigger(deps: {
-	onTrigger: () => void;
-	debounceMs: number;
-}): { fire: () => void; cancel: () => void } {
-	const fire = debounce(() => deps.onTrigger(), deps.debounceMs);
-	return { fire, cancel: fire.cancel };
-}
-
-/** How long to coalesce filesystem events before reloading. */
-export const WATCH_DEBOUNCE_MS = 20;
-
-/**
- * Reload as soon as the registry or the certificate changes, instead of on the
- * next poll.
- *
- * Polling alone put 0-1000ms of pure waiting into every `buncargo dev` before
- * its hostnames could be advertised, which is paid on every run in every
- * worktree. Watching the directories rather than the files is deliberate:
- * writes land through a temp file and a rename, so the inode a file watch was
- * holding is not the one that ends up in place.
- *
- * Best-effort by construction — a platform or filesystem where this does not
- * work simply falls back to the poll, which is still running.
- */
-export function watchHostsState(deps: {
-	directories: string[];
-	/** Exact inputs; defaults to the hosts filenames in each watched directory. */
-	files?: string[];
-	onChange: () => void;
-	log: (message: string) => void;
-	debounceMs?: number;
-}): () => void {
-	const files =
-		deps.files ??
-		deps.directories.flatMap((directory) =>
-			[ROUTES_FILENAME, CERT_FILENAME, KEY_FILENAME].map((name) =>
-				join(directory, name),
-			),
-		);
-	const inputs = new Set(files.map((path) => resolve(path)));
-	const fingerprint = () =>
-		[...inputs]
-			.map((path) => {
-				try {
-					const stat = statSync(path);
-					return `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
-				} catch {
-					return "missing";
-				}
-			})
-			.join("|");
-	let previous = fingerprint();
-	const trigger = createDebouncedTrigger({
-		onTrigger: () => {
-			// Some filesystems omit the event filename. Fingerprints suppress
-			// their lock/temp-file events without losing atomic replacements.
-			const current = fingerprint();
-			if (current === previous) return;
-			previous = current;
-			deps.onChange();
-		},
-		debounceMs: deps.debounceMs ?? WATCH_DEBOUNCE_MS,
-	});
-	const watchers: FSWatcher[] = [];
-
-	for (const directory of deps.directories) {
-		try {
-			mkdirSync(directory, { recursive: true });
-			chownToInvokingUser(directory);
-			const watcher = watch(directory, (_event, filename) => {
-				if (
-					filename !== null &&
-					!inputs.has(resolve(directory, filename.toString()))
-				)
-					return;
-				trigger.fire();
-			});
-			// A watcher that errors later must not take the daemon down; the
-			// poll covers it.
-			watcher.on("error", () => {});
-			watchers.push(watcher);
-		} catch (error) {
-			const message = getErrorMessage(error);
-			deps.log(
-				`[buncargo hosts] could not watch ${directory}, falling back to polling: ${message}`,
-			);
-		}
-	}
-
-	return () => {
-		trigger.cancel();
-		for (const watcher of watchers) {
-			try {
-				watcher.close();
-			} catch {
-				// already closed
-			}
-		}
-	};
-}
-
 /** Every way the daemon ends on purpose: leave no state naming this process. */
 function exitDaemon(code: number): never {
 	try {
-		releaseDaemonState(process.pid);
+		releaseDaemonPid(process.pid);
 	} catch {
 		// best-effort: readers check the pid is alive before trusting it
 	}
 	process.exit(code);
 }
 
-function writePidfile(pid: number): void {
-	mkdirSync(getStateDir(), { recursive: true });
-	const path = getPidfilePath();
-	writeFileSync(path, `${pid}\n`);
-	chownToInvokingUser(path);
-}
-
-export type HostsReloadReason =
-	"startup" | "poll" | "filesystem" | "recovery" | "manual";
+type HostsReloadReason = "startup" | "poll" | "refresh" | "recovery" | "manual";
 
 export interface HostsReloaderDeps {
 	/** Optional diagnostics; never printed on the ordinary reload path. */
@@ -462,7 +213,14 @@ export interface HostsReloaderDeps {
 }
 
 export interface HostsReloader {
+	/** Reload, or join the reload already running. */
 	reload: (reason?: HostsReloadReason) => Promise<void>;
+	/**
+	 * A reload that starts after this call: one already running may have read
+	 * the registry before the caller's write landed. Callers arriving together
+	 * share it.
+	 */
+	refresh: () => Promise<void>;
 	stop: () => void;
 	/** Whether a listener is currently bound. */
 	isBound: () => boolean;
@@ -483,6 +241,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	const routeMap = new Map<string, { port: number; root: string }>();
 	let proxy: LocalProxy | undefined;
 	let inFlight: Promise<void> | undefined;
+	let queuedRefresh: Promise<void> | undefined;
 	let stopped = false;
 	let reloadCount = 0;
 	let lastHostKey = "";
@@ -490,6 +249,8 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	let idleSince: number | undefined;
 	let lastHostsFileFailure: string | undefined;
 	let lastCertificateGap: string | undefined;
+	let lastInvalidHostnames = "";
+	let lastRedirectError: string | undefined;
 	let lastGapCheckAt = Number.NEGATIVE_INFINITY;
 	// What the listener actually serves. Nothing until the first bind, and
 	// only advanced by a bind that succeeded: a route in the map that the
@@ -507,12 +268,14 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		if (route) deps.onRequest(route.root);
 		return route?.port;
 	};
+	// `hostnames` is a getter: every proxied request reads this view, and only
+	// health and a 404 read the list.
 	const routes = (): ProxyRoutesView => {
 		const now = deps.now();
 		return {
-			hostnames: [...routeMap.keys()].filter((hostname) =>
-				serves(hostname, now),
-			),
+			get hostnames() {
+				return [...routeMap.keys()].filter((hostname) => serves(hostname, now));
+			},
 			lastReloadAt,
 			...(bindError === undefined ? {} : { bindError }),
 		};
@@ -545,6 +308,29 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		);
 	}
 
+	/**
+	 * A hostname that is not a DNS name never reaches the map or `/etc/hosts`:
+	 * `routes.json` is user-writable and this process is root, so a newline in
+	 * one would be lines of the user's choosing in the hosts file. Logged once
+	 * per distinct set, since the file is read every second.
+	 */
+	function servableRoutes(
+		loaded: Awaited<ReturnType<HostsReloaderDeps["pruneRoutes"]>>,
+	): typeof loaded {
+		const servable = loaded.filter((route) => isDnsHostname(route.hostname));
+		const invalid = loaded
+			.filter((route) => !servable.includes(route))
+			.map((route) => JSON.stringify(route.hostname))
+			.join(", ");
+		if (invalid !== "" && invalid !== lastInvalidHostnames) {
+			deps.log(
+				`[buncargo hosts] ignoring routes whose hostname is not a DNS name: ${invalid}. Remove them from ${getRoutesPath()}.`,
+			);
+		}
+		lastInvalidHostnames = invalid;
+		return servable;
+	}
+
 	async function performReload(reason: HostsReloadReason): Promise<void> {
 		if (stopped) return;
 		reloadCount += 1;
@@ -552,13 +338,12 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		// Load before clearing, so a registry that could not be read leaves the
 		// previous map serving. An unreadable file is not a file with no routes,
 		// and clearing first would 404 every named URL on the machine.
-		const loaded = await deps.pruneRoutes();
+		const loaded = servableRoutes(await deps.pruneRoutes());
 		if (stopped) return;
 		routeMap.clear();
 		for (const route of loaded) {
 			routeMap.set(route.hostname, { port: route.port, root: route.root });
 		}
-		lastReloadAt = deps.now();
 		const hostnames = [...routeMap.keys()].sort();
 		const hostKey = hostnames.join(",");
 		if (hostnames.length === 0) {
@@ -650,6 +435,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		proxy = next;
 		previous?.stop();
 		lastCertKey = certKey;
+		reportRedirectError(next.redirectError);
 		const leafServes = deps.certificateServes(cert);
 		// The listener took it, so it serves something: list the route map
 		// rather than nothing, which would put every run on `localhost:port`.
@@ -664,14 +450,48 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		bindError = undefined;
 	}
 
-	return {
-		reload: (reason = "manual") => {
-			// Timer, watcher, and in-request recovery share this operation.
-			inFlight ??= performReload(reason).finally(() => {
-				inFlight = undefined;
+	/**
+	 * `:80` only redirects to https, so the listener serves without it. Said
+	 * once per cause: every remint binds again and meets the same holder.
+	 */
+	function reportRedirectError(error: string | undefined): void {
+		if (error === lastRedirectError) return;
+		lastRedirectError = error;
+		if (error === undefined) return;
+		deps.log(
+			`[buncargo hosts] serving https without the http:// redirect: ${error}`,
+		);
+	}
+
+	function reload(reason: HostsReloadReason = "manual"): Promise<void> {
+		// The poll, a CLI's refresh and in-request recovery share this
+		// operation. Every reload that finishes advances `lastReloadAt`,
+		// failed or not: it says the loop is running. Advanced on success
+		// alone, a registry the daemon could not read (corrupt, or written by
+		// a newer CLI) read as a stalled loop, and stall recovery exited a
+		// daemon that a restart could not help.
+		inFlight ??= performReload(reason).finally(() => {
+			lastReloadAt = deps.now();
+			inFlight = undefined;
+		});
+		return inFlight;
+	}
+
+	function refresh(): Promise<void> {
+		const running = inFlight;
+		if (!running) return reload("refresh");
+		queuedRefresh ??= running
+			.catch(() => {})
+			.then(() => {
+				queuedRefresh = undefined;
+				return reload("refresh");
 			});
-			return inFlight;
-		},
+		return queuedRefresh;
+	}
+
+	return {
+		reload,
+		refresh,
 		stop: () => {
 			stopped = true;
 			proxy?.stop();
@@ -685,11 +505,6 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 export async function runHostsDaemon(
 	options: { service?: boolean } = {},
 ): Promise<void> {
-	// What this daemon binds comes from its own environment. The stored file
-	// is what the *running* daemon bound, for readers: binding from it made a
-	// port one foreground `BUNCARGO_HOSTS_PORT` run chose stick for the service.
-	const config = daemonConfigFromFlags();
-	const running = readDaemonConfig();
 	const service = options.service ?? false;
 
 	// The listener sets SO_REUSEPORT so a reload can bind its replacement before
@@ -706,12 +521,10 @@ export async function runHostsDaemon(
 			other !== undefined &&
 			other !== process.pid &&
 			isProcessAlive(other) &&
-			(await readProxyHealth(running.httpsPort, "127.0.0.1", {
-				tls: running.tls,
-			})) !== undefined
+			(await readProxyHealth(HOSTS_HTTPS_PORT)) !== undefined
 		) {
 			logDaemonError(
-				`[buncargo hosts] a daemon is already serving :${running.httpsPort} (pid ${other}); nothing to do`,
+				`[buncargo hosts] a daemon is already serving :${HOSTS_HTTPS_PORT} (pid ${other}); nothing to do`,
 			);
 			return;
 		}
@@ -719,70 +532,13 @@ export async function runHostsDaemon(
 
 	if (service) truncateOversizedLog(HOSTS_SERVICE_LOG);
 
-	writeDaemonConfig(config);
-	writePidfile(process.pid);
+	writeDaemonPid(process.pid);
 
 	const syncHosts = shouldSyncHostsFile();
 	const activity = createProxyActivityRecorder({
 		write: (seen, now) => writeProxyActivity(seen, now),
 		now: Date.now,
 	});
-	// Assigned by the reloader's own startProxy callback, which runs before any
-	// request can arrive.
-	let recoverFromStall: (ageMs: number) => void = () => {};
-	const reloader = createHostsReloader({
-		// Strict: an unreadable registry must reach the reloader as a failure,
-		// not as an empty list it would serve as "no routes".
-		pruneRoutes: () => pruneHostRoutes(undefined, { strict: true }),
-		certificateFingerprint,
-		describeCertificateGap,
-		readCertificatePair,
-		certificateServes,
-		startProxy: ({ cert, key, ...input }) =>
-			startLocalProxy({
-				...input,
-				tls: { cert, key },
-				httpsPort: config.httpsPort,
-				httpPort:
-					config.httpsPort === DEFAULT_HOSTS_DAEMON_PORT
-						? config.httpPort
-						: undefined,
-				staleAfterMs: RELOAD_STALL_MS,
-				onStale: (ageMs) => recoverFromStall(ageMs),
-			}),
-		syncHostsFile: syncHosts ? syncHostsFile : undefined,
-		cleanHostsFile: syncHosts ? cleanHostsFile : undefined,
-		log: logDaemonError,
-		now: Date.now,
-		onIdleExit: () => {
-			stopWatching();
-			exitDaemon(0);
-		},
-		onRequest: activity.note,
-		service,
-	});
-
-	const wakeup = createReloadWakeup();
-	let filesystemChanged = false;
-	const stopWatching = watchHostsState({
-		// The registry and the certificate: the two inputs a reload reads.
-		directories: [getStateDir(), getCertsDir()],
-		files: [getRoutesPath(), getCertPath(), getKeyPath()],
-		onChange: () => {
-			filesystemChanged = true;
-			wakeup.signal();
-		},
-		log: logDaemonError,
-	});
-
-	const onStop = () => {
-		stopWatching();
-		reloader.stop();
-		exitDaemon(0);
-	};
-	process.on("SIGINT", onStop);
-	process.on("SIGTERM", onStop);
-
 	let consecutiveFailures = 0;
 	const failureLog = createThrottledFailureLog({
 		log: logDaemonError,
@@ -791,9 +547,9 @@ export async function runHostsDaemon(
 
 	// A throw here (no mkcert, :443 taken, unreadable registry) must not end the
 	// process: stderr is the service log, and the next tick retries.
-	async function reloadOrReport(reason: HostsReloadReason): Promise<void> {
+	async function reloadOrReport(run: () => Promise<void>): Promise<void> {
 		try {
-			await reloader.reload(reason);
+			await run();
 			if (consecutiveFailures > 0) {
 				logDaemonError(
 					`[buncargo hosts] reload recovered after ${consecutiveFailures} failed ${consecutiveFailures === 1 ? "attempt" : "attempts"}`,
@@ -808,31 +564,58 @@ export async function runHostsDaemon(
 		}
 	}
 
-	// The loop below is the only thing that reads the registry, and a loop that
-	// stops advancing is invisible: `Bun.serve` keeps answering, so the daemon
-	// looks healthy while every named URL 404s against a frozen map. Serving a
-	// request is the one signal still known to work, so it drives the repair.
-	const stallRecovery = createStallRecovery({
-		reload: () => reloadOrReport("recovery"),
-		policy: createStallRecoveryPolicy({
-			lastReloadAt: () => reloader.routes().lastReloadAt,
-			now: Date.now,
-		}),
+	// The loop below is the only thing that reads the registry unasked, and a
+	// loop that stops advancing is invisible: `Bun.serve` keeps answering, so
+	// the daemon looks healthy while every named URL 404s against a frozen map.
+	// Serving a request is the one signal still known to work, so it drives
+	// the repair.
+	const onStale = createStallHandler({
+		reload: () => void reloadOrReport(() => reloader.reload("recovery")),
 		log: logDaemonError,
 		exit: exitDaemon,
 	});
-	recoverFromStall = stallRecovery.recover;
+	const reloader: HostsReloader = createHostsReloader({
+		// Strict: an unreadable registry must reach the reloader as a failure,
+		// not as an empty list it would serve as "no routes".
+		pruneRoutes: () => pruneHostRoutes({ strict: true }),
+		certificateFingerprint,
+		describeCertificateGap,
+		readCertificatePair,
+		certificateServes,
+		startProxy: ({ cert, key, ...input }) =>
+			startLocalProxy({
+				...input,
+				tls: { cert, key },
+				httpsPort: HOSTS_HTTPS_PORT,
+				httpPort: HOSTS_HTTP_PORT,
+				refresh: () => reloadOrReport(() => reloader.refresh()),
+				staleAfterMs: RELOAD_STALL_MS,
+				onStale,
+			}),
+		syncHostsFile: syncHosts ? syncHostsFile : undefined,
+		cleanHostsFile: syncHosts ? cleanHostsFile : undefined,
+		log: logDaemonError,
+		now: Date.now,
+		onIdleExit: () => exitDaemon(0),
+		onRequest: activity.note,
+		service,
+	});
 
-	await reloadOrReport("startup");
+	const onStop = () => {
+		reloader.stop();
+		exitDaemon(0);
+	};
+	process.on("SIGINT", onStop);
+	process.on("SIGTERM", onStop);
+
+	await reloadOrReport(() => reloader.reload("startup"));
 	await activity.flush();
 	for (;;) {
-		// Whichever comes first: a change on disk, or the poll. The poll is the
-		// backstop — it is also what prunes routes whose owner died, which no
-		// filesystem event announces.
-		await wakeup.wait(nextReloadDelayMs(consecutiveFailures));
-		const reason = filesystemChanged ? "filesystem" : "poll";
-		filesystemChanged = false;
-		await reloadOrReport(reason);
+		// The poll picks up what nobody asked about: routes whose owner died,
+		// which no write announces, and registrations by anything that does not
+		// ask for a refresh.
+		await Bun.sleep(nextReloadDelayMs(consecutiveFailures));
+		await reloadOrReport(() => reloader.reload("poll"));
 		await activity.flush();
 	}
 }

@@ -6,7 +6,7 @@ import { defineDevConfig } from "../config";
 import { getProjectName } from "../core/ports";
 import { CI_ENV_VARS } from "../core/runtime-flags";
 import type { DevConfig, ServiceConfig } from "../types";
-import { createDevEnvironment } from ".";
+import { createDevEnvironment, internalsOf } from ".";
 
 function createBaseConfig(
 	options?: DevConfig<
@@ -85,13 +85,38 @@ describe("createDevEnvironment worktree isolation", () => {
 	});
 });
 
+it("keeps the CLI's internals off the environment a library user gets", () => {
+	const env = createDevEnvironment(
+		{
+			...createBaseConfig(),
+			seed: { command: "true" },
+			tasks: { lint: { command: "true" } },
+			setupChecks: [{ name: "ok", check: () => true }],
+			preflight: [{ name: "ok", run: () => {} }],
+		},
+		{ root: tmpdir() },
+	);
+
+	const internal = [
+		"seed",
+		"setupChecks",
+		"preflight",
+		"tasks",
+		"setNamedHostsActive",
+		"composeModel",
+		"ensureComposeFile",
+		"planPortOffset",
+	];
+	expect(internal.filter((name) => name in env)).toEqual([]);
+});
+
 describe("createDevEnvironment compose generation", () => {
 	it("uses generated compose path by default", () => {
 		const root = createWorktreeRoot("Feature_Compose_Default");
 		try {
 			process.chdir(root);
 			const env = createDevEnvironment(createBaseConfig());
-			const composeFile = env.ensureComposeFile();
+			const composeFile = internalsOf(env).ensureComposeFile();
 
 			expect(env.composeFile).toBe(".buncargo/docker-compose.generated.yml");
 			expect(composeFile).toBe(".buncargo/docker-compose.generated.yml");
@@ -114,7 +139,7 @@ describe("createDevEnvironment compose generation", () => {
 					generatedFile: ".buncargo/custom-compose.yml",
 				},
 			});
-			const composeFile = env.ensureComposeFile();
+			const composeFile = internalsOf(env).ensureComposeFile();
 
 			expect(env.composeFile).toBe(".buncargo/custom-compose.yml");
 			expect(composeFile).toBe(".buncargo/custom-compose.yml");
@@ -124,6 +149,24 @@ describe("createDevEnvironment compose generation", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+});
+
+describe("withSuffix ports: assigned", () => {
+	// Apple's `--publish` needs a host port: there the stack keeps its block.
+	for (const [runtime, published] of [
+		["docker", "127.0.0.1::5432"],
+		["apple", "127.0.0.1:$" + "{POSTGRES_PORT:-5432}:5432"],
+	] as const) {
+		it(`publishes ${published} on ${runtime}`, () => {
+			const env = createDevEnvironment(createBaseConfig(), {
+				containerRuntime: runtime,
+			}).withSuffix("ci-1a2b3c", { ports: "assigned" });
+
+			expect(internalsOf(env).composeModel().services.postgres?.ports).toEqual([
+				published,
+			]);
+		});
+	}
 });
 
 describe("createDevEnvironment env builders", () => {
@@ -305,7 +348,7 @@ describe("createDevEnvironment env builders", () => {
 
 			expect(env.hosts?.plan.some((entry) => entry.name === "api")).toBe(true);
 			expect(env.urls.api).toBe(`http://localhost:${env.ports.api}`);
-			env.setNamedHostsActive(true);
+			internalsOf(env).setNamedHostsActive(true);
 			expect(env.urls.web).toBe("https://feature-hosts.serpier.localhost");
 			expect(env.urls.api).toBe("https://feature-hosts.api.serpier.localhost");
 			expect(env.urls.mailpit).toBe(
@@ -328,12 +371,12 @@ describe("createDevEnvironment env builders", () => {
 				"feature-hosts.api.serpier.localhost",
 			);
 			// `env` and `status` name only the entries whose route is live.
-			env.setNamedHostsActive(true, {
+			internalsOf(env).setNamedHostsActive(true, {
 				hostnames: ["feature-hosts.serpier.localhost"],
 			});
 			expect(env.urls.web).toBe("https://feature-hosts.serpier.localhost");
 			expect(env.urls.api).toBe(`http://localhost:${env.ports.api}`);
-			env.setNamedHostsActive(false);
+			internalsOf(env).setNamedHostsActive(false);
 			expect(env.urls.api).toBe(`http://localhost:${env.ports.api}`);
 			// No named host means the browser reaches the dev server directly, so
 			// advertising a hostname would send HMR to a proxy that is not serving.
@@ -388,7 +431,9 @@ describe("createDevEnvironment env builders", () => {
 
 			expect(env.hosts?.mode).toBe("tailscale");
 			expect(env.urls.web).toBe(`http://localhost:${env.ports.web}`);
-			env.setNamedHostsActive(true, { tailscaleUrls: { web: served } });
+			internalsOf(env).setNamedHostsActive(true, {
+				tailscaleUrls: { web: served },
+			});
 
 			expect(env.urls.web).toBe(served);
 			// Not served (Tailscale did not answer for it): its plain URL.
@@ -415,7 +460,7 @@ describe("createDevEnvironment env builders", () => {
 				env.buildAppEnvVars("web");
 			expect(webEnv.BUNCARGO_APP_HOSTNAME).toBeUndefined();
 
-			env.setNamedHostsActive(false);
+			internalsOf(env).setNamedHostsActive(false);
 			expect(env.urls.web).toBe(`http://localhost:${env.ports.web}`);
 		} finally {
 			apply(previous);
@@ -460,14 +505,19 @@ describe("suffixed environments", () => {
 		}
 	});
 
-	it("keeps an explicitly configured compose path", () => {
+	// Sharing a configured file, `ci` overwrote the dev stack's model with
+	// its tmpfs one, and threw with `writeStrategy: "if-missing"`.
+	it("puts its compose file beside an explicitly configured one", () => {
 		const root = createWorktreeRoot("explicit");
 		try {
-			const env = createDevEnvironment(
-				{ ...createBaseConfig(), docker: { generatedFile: "compose.yml" } },
-				{ root, suffix: "ci" },
-			);
-			expect(env.composeFile).toBe("compose.yml");
+			const config = {
+				...createBaseConfig(),
+				docker: { generatedFile: "docker/compose.yml" },
+			};
+			const dev = createDevEnvironment(config, { root });
+			const ci = createDevEnvironment(config, { root, suffix: "ci" });
+			expect(dev.composeFile).toBe("docker/compose.yml");
+			expect(ci.composeFile).toBe("docker/compose.ci.yml");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -546,11 +596,43 @@ describe("createDevEnvironment integrations", () => {
 						},
 					],
 				},
-				{ root, readOnly: true },
+				{ root },
 			);
 			expect(seen).toBe(root);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+});
+
+// `unsetEnv` was module state: the environment built last decided for every
+// environment in the process.
+it("keeps each environment's own unsetEnv from the commands it runs", async () => {
+	const root = createWorktreeRoot("unset-env");
+	process.env.BUNCARGO_TEST_FIRST = "first";
+	process.env.BUNCARGO_TEST_SECOND = "second";
+	const environment = (unsetEnv: string[]) =>
+		createDevEnvironment(
+			{ projectPrefix: "unset", services: {}, apps: {}, unsetEnv },
+			{ root },
+		);
+	const seen = async (env: ReturnType<typeof environment>) =>
+		(
+			await env.exec(
+				// biome-ignore lint/suspicious/noTemplateCurlyInString: shell expansions
+				'printf "%s %s" "${BUNCARGO_TEST_FIRST:-unset}" "${BUNCARGO_TEST_SECOND:-unset}"',
+				{ secrets: false },
+			)
+		).stdout;
+	try {
+		const first = environment(["BUNCARGO_TEST_FIRST"]);
+		const second = environment(["BUNCARGO_TEST_SECOND"]);
+
+		expect(await seen(first)).toBe("unset second");
+		expect(await seen(second)).toBe("first unset");
+	} finally {
+		delete process.env.BUNCARGO_TEST_FIRST;
+		delete process.env.BUNCARGO_TEST_SECOND;
+		rmSync(root, { recursive: true, force: true });
+	}
 });

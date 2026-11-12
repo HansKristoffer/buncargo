@@ -8,7 +8,7 @@ import { RunTui } from "./run-tui";
 
 const [how, pager] = process.argv.slice(2);
 if (pager) process.env.PAGER = pager;
-const output = new RunOutput();
+const output = new RunOutput({ terminals: "pty" });
 const tui = new RunTui({
 	output,
 	apps: ["api"],

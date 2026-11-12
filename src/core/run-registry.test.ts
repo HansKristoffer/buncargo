@@ -1,58 +1,53 @@
 import {
-	afterEach,
 	beforeEach,
 	describe,
 	expect,
 	it,
 	setSystemTime,
+	spyOn,
 } from "bun:test";
 import {
 	mkdirSync,
-	mkdtempSync,
+	readdirSync,
 	readFileSync,
-	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import * as fsPromises from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { readProcessIdentity } from "./process-identity";
 import {
 	buildRunEntry,
+	CHECKOUT_HOLD,
+	clearRunStacks,
 	describeRun,
 	getRunsPath,
 	groupRunsByProject,
+	holdExpiry,
+	LIVE,
 	loadRuns,
 	markOwnersLost,
 	patchRun,
 	publishRun,
 	type RunEntry,
+	type RunHold,
 	readLiveRuns,
 	releaseRun,
 	retireProjectRuns,
 	retireRuns,
 	runLivenessAsync,
+	runPhase,
 } from "./run-registry";
+import { DEAD_PID, runEntry } from "./run-registry.testing";
+import { useTempHome } from "./test-env.testing";
 
-const realHome = process.env.HOME;
-let dir: string;
+useTempHome();
 let path: string;
 
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "buncargo-runs-"));
-	process.env.HOME = dir;
 	path = getRunsPath();
 	mkdirSync(dirname(path), { recursive: true });
 });
-
-afterEach(() => {
-	if (realHome === undefined) delete process.env.HOME;
-	else process.env.HOME = realHome;
-	rmSync(dir, { recursive: true, force: true });
-});
-
-/** A pid that is certainly not running. */
-const DEAD_PID = 2 ** 22;
 
 const DB = { name: "db", status: "ready" as const };
 const CONTAINER = {
@@ -61,19 +56,17 @@ const CONTAINER = {
 	service: "db",
 };
 
+function timed(ms: number, inherited = false): RunHold {
+	return { kind: "timed", ms, inherited };
+}
+
+/** A live run (this process) of lullu with one app starting. */
 function makeRun(overrides: Partial<RunEntry> = {}): RunEntry {
-	const now = new Date().toISOString();
-	return {
-		sessionId: "s1",
+	return runEntry({
 		projectPrefix: "lullu",
 		projectName: "lullu-lullu",
 		root: "/repos/lullu",
-		worktree: null,
 		pid: process.pid,
-		startedAt: now,
-		updatedAt: now,
-		hosts: null,
-		cli: { program: "/bin/bun" },
 		apps: [
 			{
 				name: "api",
@@ -83,9 +76,8 @@ function makeRun(overrides: Partial<RunEntry> = {}): RunEntry {
 				status: "starting",
 			},
 		],
-		services: [],
 		...overrides,
-	};
+	});
 }
 
 async function sessions(): Promise<string[]> {
@@ -110,7 +102,7 @@ describe("publishRun", () => {
 	it("updates a session in place, keeping when it started and the hold it claimed", async () => {
 		// The claim, then the CLI's richer entry for the same session.
 		await publishRun(
-			makeRun({ startedAt: "2026-01-01T00:00:00.000Z", idleTimeoutMs: 60_000 }),
+			makeRun({ startedAt: "2026-01-01T00:00:00.000Z", hold: timed(60_000) }),
 		);
 		await describeRun(makeRun({ projectName: "renamed" }));
 		const runs = await loadRuns();
@@ -118,7 +110,7 @@ describe("publishRun", () => {
 		expect(runs[0]).toMatchObject({
 			projectName: "renamed",
 			startedAt: "2026-01-01T00:00:00.000Z",
-			idleTimeoutMs: 60_000,
+			hold: timed(60_000),
 		});
 	});
 
@@ -133,7 +125,7 @@ describe("publishRun", () => {
 		await publishRun(
 			makeRun({
 				services: [{ ...DB, container: CONTAINER }],
-				idleTimeoutMs: 1,
+				hold: timed(1),
 			}),
 		);
 		await patchRun("s1", {
@@ -142,20 +134,14 @@ describe("publishRun", () => {
 			services: [{ name: "db", problem }],
 		});
 		await releaseRun("s1");
-		await markOwnersLost({
-			lost: ["s1"],
-			back: [],
-			at: "2026-01-01T00:00:00.000Z",
-		});
-		const released = (await loadRuns())[0]?.releasedAt;
+		const released = (await loadRuns())[0]?.lifecycle;
 
 		const described = { port: 5432, url: "u", loopbackUrl: "u" };
 		await describeRun(makeRun({ services: [{ ...DB, ...described }] }));
 		const [entry] = await loadRuns();
-		expect(entry?.releasedAt).toBe(released);
-		// The owner wrote it, so it is not lost.
-		expect(entry?.ownerLostAt).toBeUndefined();
-		expect(entry?.idleTimeoutMs).toBe(1);
+		expect(released?.state).toBe("released");
+		expect(entry?.lifecycle).toEqual(released);
+		expect(entry?.hold).toEqual(timed(1));
 		expect(entry?.captures).toEqual({ appUrl: "https://preview.example" });
 		expect(entry?.details).toHaveLength(1);
 		expect(entry?.services[0]).toMatchObject({
@@ -173,14 +159,33 @@ describe("publishRun", () => {
 		await releaseRun("s1");
 		const [entry] = await loadRuns();
 		expect(entry?.services.map((service) => service.name)).toEqual(["db"]);
-		expect(entry?.releasedAt).toBeString();
+		expect(entry?.lifecycle.state).toBe("released");
 	});
 
-	it("keeps each app's process and state through a describe", async () => {
+	it("makes an entry the sweep stamped lost live again when its owner describes it", async () => {
+		const claimed = makeRun({ services: [DB] });
+		await publishRun(claimed);
+		await markOwnersLost({
+			lost: [claimed],
+			back: [],
+			at: "2026-01-01T00:00:00.000Z",
+		});
+		expect((await loadRuns())[0]?.lifecycle.state).toBe("lost");
+		await describeRun(makeRun({ services: [DB] }));
+		expect((await loadRuns())[0]?.lifecycle).toEqual(LIVE);
+	});
+
+	it("keeps each app's process, state and tunnel through a describe", async () => {
 		await publishRun(makeRun());
 		await patchRun("s1", {
 			apps: [
-				{ name: "api", pid: 42, processIdentity: "v2:x", status: "ready" },
+				{
+					name: "api",
+					pid: 42,
+					processIdentity: "v2:x",
+					status: "ready",
+					tunnelUrl: "https://api.trycloudflare.com",
+				},
 			],
 		});
 		await describeRun(makeRun());
@@ -188,17 +193,17 @@ describe("publishRun", () => {
 			pid: 42,
 			processIdentity: "v2:x",
 			status: "ready",
+			tunnelUrl: "https://api.trycloudflare.com",
 		});
 	});
 
 	it("gives a claim exactly the hold it names, and reopens a released entry", async () => {
-		await publishRun(makeRun({ services: [DB], inheritedIdleTimeoutMs: 5 }));
+		await publishRun(makeRun({ services: [DB], hold: timed(5, true) }));
 		await releaseRun("s1");
-		await publishRun(makeRun({ services: [DB], idleTimeoutMs: 60_000 }));
+		await publishRun(makeRun({ services: [DB], hold: timed(60_000) }));
 		const [entry] = await loadRuns();
-		expect(entry?.idleTimeoutMs).toBe(60_000);
-		expect(entry?.inheritedIdleTimeoutMs).toBeUndefined();
-		expect(entry?.releasedAt).toBeUndefined();
+		expect(entry?.hold).toEqual(timed(60_000));
+		expect(entry?.lifecycle).toEqual(LIVE);
 	});
 
 	it("dates a reopened entry from the new claim and keeps the stacks it held", async () => {
@@ -247,21 +252,54 @@ describe("publishRun", () => {
 		await publishRun(makeRun({ sessionId: "live" }));
 		expect(await sessions()).toEqual(["stack", "live"]);
 	});
+
+	it("reads runs.json once per write through a four-app start", async () => {
+		const names = ["web", "api", "admin", "docs"];
+		const reads = spyOn(fsPromises, "readFile");
+		try {
+			const writes = [
+				() => publishRun(makeRun({ services: [DB] })),
+				() =>
+					describeRun(
+						makeRun({
+							services: [DB],
+							apps: names.map((name) => ({
+								name,
+								kind: "worker",
+								status: "starting",
+							})),
+						}),
+					),
+				...names.flatMap((name, index) => [
+					() => patchRun("s1", { apps: [{ name, pid: 1000 + index }] }),
+					() => patchRun("s1", { apps: [{ name, status: "ready" }] }),
+				]),
+			];
+			for (const write of writes) await write();
+			const runsReads = reads.mock.calls.filter(([file]) => file === path);
+			expect(runsReads).toHaveLength(writes.length);
+		} finally {
+			reads.mockRestore();
+		}
+		expect((await loadRuns())[0]?.apps.map((app) => app.status)).toEqual(
+			names.map(() => "ready"),
+		);
+	});
 });
 
 describe("releaseRun", () => {
 	it("keeps the first release, so repeated teardown cannot push the hold later", async () => {
 		await publishRun(makeRun({ services: [DB] }));
 		await releaseRun("s1");
-		const first = (await loadRuns())[0]?.releasedAt;
-		expect(first).toBeString();
+		const first = (await loadRuns())[0]?.lifecycle;
+		expect(first?.state).toBe("released");
 		setSystemTime(new Date(Date.now() + 60_000));
 		try {
 			await releaseRun("s1");
 		} finally {
 			setSystemTime();
 		}
-		expect((await loadRuns())[0]?.releasedAt).toBe(first);
+		expect((await loadRuns())[0]?.lifecycle).toEqual(first);
 	});
 
 	it("removes a session with no services outright", async () => {
@@ -278,11 +316,39 @@ describe("releaseRun", () => {
 });
 
 describe("retiring entries", () => {
-	it("retireRuns drops exactly the sessions it is given", async () => {
+	it("retireRuns drops exactly the entries it is given", async () => {
 		for (const sessionId of ["a", "b", "c"])
 			await publishRun(makeRun({ sessionId, services: [DB] }));
-		await retireRuns(["a", "c"]);
+		const read = await loadRuns();
+		await retireRuns(read.filter((run) => run.sessionId !== "b"));
 		expect(await sessions()).toEqual(["b"]);
+	});
+
+	it("keeps a session that released and claimed again after it was read", async () => {
+		// The sweep reads, spends minutes on `down`s, then retires: a library
+		// session can have claimed again under the same id by then.
+		await publishRun(makeRun({ services: [DB] }));
+		await releaseRun("s1");
+		const read = await loadRuns();
+		await publishRun(makeRun({ services: [DB] }));
+		await retireRuns(read);
+		expect(await sessions()).toEqual(["s1"]);
+	});
+
+	it("keeps the stacks of a session that claimed again after it was read", async () => {
+		const stacks = [{ name: "supabase", down: ["supabase", "stop"] }];
+		await publishRun(makeRun({ services: [DB], stacks }));
+		await releaseRun("s1");
+		const read = await loadRuns();
+		await clearRunStacks(read);
+		expect((await loadRuns())[0]?.stacks).toBeUndefined();
+
+		await publishRun(makeRun({ services: [DB], stacks }));
+		await releaseRun("s1");
+		const stale = await loadRuns();
+		await publishRun(makeRun({ services: [DB], stacks }));
+		await clearRunStacks(stale);
+		expect((await loadRuns())[0]?.stacks).toEqual(stacks);
 	});
 
 	it("an explicit teardown drops its own session and finished ones, not a live neighbour's", async () => {
@@ -352,27 +418,33 @@ describe("retiring entries", () => {
 });
 
 describe("markOwnersLost", () => {
+	const FIRST = "2026-01-01T00:00:00.000Z";
+
 	it("stamps a session once and never moves the stamp", async () => {
 		await publishRun(makeRun({ services: [DB] }));
-		const mark = (at: string) => markOwnersLost({ lost: ["s1"], back: [], at });
-		await mark("2026-01-01T00:00:00.000Z");
+		const mark = (at: string) =>
+			markOwnersLost({ lost: [makeRun()], back: [], at });
+		await mark(FIRST);
 		await mark("2026-06-01T00:00:00.000Z");
-		expect((await loadRuns())[0]?.ownerLostAt).toBe("2026-01-01T00:00:00.000Z");
+		expect((await loadRuns())[0]?.lifecycle).toEqual({
+			state: "lost",
+			at: FIRST,
+		});
 	});
 
-	it("forgets the stamp of an owner found running again", async () => {
+	it("makes an owner found running again live, and never stamps a released run", async () => {
 		await publishRun(makeRun({ services: [DB] }));
-		await markOwnersLost({
-			lost: ["s1"],
-			back: [],
-			at: "2026-01-01T00:00:00.000Z",
-		});
-		await markOwnersLost({
-			lost: [],
-			back: ["s1"],
-			at: "2026-06-01T00:00:00.000Z",
-		});
-		expect((await loadRuns())[0]?.ownerLostAt).toBeUndefined();
+		await markOwnersLost({ lost: [makeRun()], back: [], at: FIRST });
+		const back = makeRun({ lifecycle: { state: "lost", at: FIRST } });
+		await markOwnersLost({ lost: [], back: [back], at: FIRST });
+		expect((await loadRuns())[0]?.lifecycle).toEqual(LIVE);
+		// The entry the sweep holds reads as on disk for the rest of its pass.
+		expect(back.lifecycle).toEqual(LIVE);
+
+		await releaseRun("s1");
+		const released = (await loadRuns())[0]?.lifecycle;
+		await markOwnersLost({ lost: [makeRun()], back: [], at: FIRST });
+		expect((await loadRuns())[0]?.lifecycle).toEqual(released);
 	});
 });
 
@@ -461,7 +533,7 @@ describe("patchRun", () => {
 		await patchRun("s1", { apps: [{ name: "api", status: "failed" }] });
 		expect(await read()).toBe("stopped");
 
-		await retireRuns(["s1"]);
+		await retireRuns(await loadRuns());
 		await publishRun(makeRun());
 		await patchRun("s1", { apps: [{ name: "api", status: "failed" }] });
 		await patchRun("s1", { apps: [{ name: "api", status: "stopped" }] });
@@ -473,7 +545,7 @@ describe("patchRun", () => {
 		// `ready` and `restart && wait` returned on the replaced process.
 		const read = async () => (await loadRuns())[0]?.apps[0];
 		for (const before of ["ready", "failed", "stopped"] as const) {
-			await retireRuns(["s1"]);
+			await retireRuns(await loadRuns());
 			await publishRun(makeRun());
 			await patchRun("s1", {
 				apps: [{ name: "api", pid: 41, status: before }],
@@ -524,7 +596,7 @@ describe("liveness", () => {
 		const released = makeRun({
 			sessionId: "released",
 			processIdentity: identity,
-			releasedAt: new Date().toISOString(),
+			lifecycle: { state: "released", at: new Date().toISOString() },
 		});
 		const dead = makeRun({ sessionId: "dead", pid: DEAD_PID });
 		const alive = await runLivenessAsync([live, released, dead]);
@@ -536,6 +608,87 @@ describe("liveness", () => {
 		const before = readFileSync(path, "utf8");
 		expect(await readLiveRuns()).toEqual([]);
 		expect(readFileSync(path, "utf8")).toBe(before);
+	});
+});
+
+describe("runPhase", () => {
+	const at = "2026-01-01T00:00:00.000Z";
+
+	it("is live only while the owner is alive and has not released", () => {
+		expect(runPhase({ lifecycle: LIVE }, true)).toBe("live");
+		expect(runPhase({ lifecycle: LIVE }, false)).toBe("lost");
+		// Its owner reads as itself again: the sweep's stamp was wrong.
+		expect(runPhase({ lifecycle: { state: "lost", at } }, true)).toBe("live");
+		expect(runPhase({ lifecycle: { state: "lost", at } }, false)).toBe("lost");
+		// A released run's pid may belong to anything by now.
+		expect(runPhase({ lifecycle: { state: "released", at } }, true)).toBe(
+			"released",
+		);
+	});
+});
+
+describe("holdExpiry", () => {
+	const GRACE = 15_000;
+	const at = "2026-01-01T00:00:00.000Z";
+	const endedAt = Date.parse(at);
+	const expiry = (lifecycle: RunEntry["lifecycle"], hold: RunHold) =>
+		holdExpiry({ lifecycle, hold }, GRACE);
+
+	it("dates a released run's own hold from its release", () => {
+		expect(expiry({ state: "released", at }, timed(180_000))).toEqual({
+			ended: "released",
+			endedAt,
+			holdMs: 180_000,
+			inherited: false,
+		});
+	});
+
+	it("gives a crashed run's own hold the grace, and keeps a reused hold", () => {
+		expect(expiry({ state: "lost", at }, timed(180_000))?.holdMs).toBe(GRACE);
+		expect(expiry({ state: "lost", at }, timed(180_000, true))?.holdMs).toBe(
+			180_000,
+		);
+	});
+
+	it("dates nothing for a live run, a hold of the checkout or an unreadable end", () => {
+		expect(expiry(LIVE, timed(1))).toBeUndefined();
+		expect(expiry({ state: "released", at }, CHECKOUT_HOLD)).toBeUndefined();
+		expect(
+			expiry({ state: "released", at: "not a date" }, timed(1)),
+		).toBeUndefined();
+	});
+});
+
+describe("runs.json schema", () => {
+	function writeRuns(version: number, runs: unknown[]): void {
+		writeFileSync(path, JSON.stringify({ version, runs }));
+	}
+
+	it("drops an entry whose worktree, branch, primary app or hosts do not read", async () => {
+		const valid = makeRun({ sessionId: "valid" });
+		writeRuns(2, [
+			valid,
+			{ ...valid, sessionId: "worktree", worktree: 7 },
+			{ ...valid, sessionId: "branch", branch: ["main"] },
+			{ ...valid, sessionId: "primary", primaryApp: 1 },
+			{ ...valid, sessionId: "hosts", hosts: { active: "yes" } },
+			{ ...valid, sessionId: "no-hosts", hosts: undefined },
+			{ ...valid, sessionId: "hold", hold: { kind: "timed", ms: 1 } },
+		]);
+		expect(await sessions()).toEqual(["valid"]);
+	});
+
+	it("reads a v1 registry as empty, strictly too, and replaces it on the next write", async () => {
+		writeRuns(1, [{ sessionId: "old", releasedAt: "2026-01-01T00:00:00Z" }]);
+		expect(await loadRuns({ strict: true })).toEqual([]);
+		expect(await readLiveRuns()).toEqual([]);
+
+		await publishRun(makeRun({ sessionId: "new" }));
+		expect(await sessions()).toEqual(["new"]);
+		const backups = readdirSync(dirname(path)).filter((name) =>
+			name.startsWith("runs.json.recovery-"),
+		);
+		expect(backups).toHaveLength(1);
 	});
 });
 
@@ -579,7 +732,7 @@ describe("the persisted boundary", () => {
 		writeFileSync(
 			path,
 			JSON.stringify({
-				version: 1,
+				version: 2,
 				runs: [
 					{ ...run, pid: -1 },
 					{ ...run, apps: [{ ...run.apps[0], port: 70000 }] },
@@ -593,7 +746,7 @@ describe("the persisted boundary", () => {
 		const { sessionId: _dropped, ...unnamed } = makeRun();
 		writeFileSync(
 			path,
-			JSON.stringify({ version: 1, runs: [unnamed, makeRun()] }),
+			JSON.stringify({ version: 2, runs: [unnamed, makeRun()] }),
 		);
 		expect(await sessions()).toEqual(["s1"]);
 	});

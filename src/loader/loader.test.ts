@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as childProcess from "node:child_process";
 import { spawnSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
-	readFileSync,
 	realpathSync,
 	rmSync,
 	writeFileSync,
@@ -12,15 +12,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineDevConfig } from "../config";
 import { storeDir, writeStoreEntries } from "../core/checkout-files";
+import { offsetClaimsOf } from "../core/offset-claims";
 import { CI_ENV_VARS } from "../core/runtime-flags";
+import { useTempHome } from "../core/test-env.testing";
 import { service } from "../docker-compose/services";
-import {
-	CONFIG_FILES,
-	clearDevEnvCache,
-	findConfigFile,
-	getDevEnv,
-	loadDevEnv,
-} from ".";
+import { CONFIG_FILES, clearDevEnvCache, findConfigFile, loadDevEnv } from ".";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // findConfigFile Tests
@@ -133,31 +129,6 @@ describe("CONFIG_FILES", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// getDevEnv / clearDevEnvCache Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("getDevEnv", () => {
-	afterEach(() => {
-		clearDevEnvCache();
-	});
-
-	it("throws when environment not loaded", () => {
-		expect(() => getDevEnv()).toThrow(
-			"Dev environment not loaded. Call loadDevEnv() first.",
-		);
-	});
-});
-
-describe("clearDevEnvCache", () => {
-	it("clears the cached environment", () => {
-		// After clearing, getDevEnv should throw
-		clearDevEnvCache();
-
-		expect(() => getDevEnv()).toThrow();
-	});
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
 // loadDevEnv Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -210,20 +181,6 @@ describe("loadDevEnv", () => {
 		expect(env.urls.missing).toBeUndefined();
 	});
 
-	it("returns the same typed environment from getDevEnv", async () => {
-		writeFileSync(
-			join(testDir, "dev.config.ts"),
-			`export default ${JSON.stringify(typedConfig)}`,
-		);
-
-		const loaded = await loadDevEnv<typeof typedConfig>({ cwd: testDir });
-		const fetched = getDevEnv<typeof typedConfig>();
-
-		expect(fetched).toBe(loaded);
-		const apiUrl: string = fetched.urls.api;
-		expect(apiUrl).toBe(loaded.urls.api);
-	});
-
 	it("creates independent fresh sessions while keeping the config import and default cache", async () => {
 		writeFileSync(
 			join(testDir, "dev.config.ts"),
@@ -257,8 +214,8 @@ describe("loadDevEnv", () => {
 			`await Bun.sleep(20); export default ${JSON.stringify(typedConfig)}`,
 		);
 		const [first, second] = await Promise.all([
-			loadDevEnv({ cwd: testDir, readOnly: true }),
-			loadDevEnv({ cwd: testDir, readOnly: true }),
+			loadDevEnv({ cwd: testDir }),
+			loadDevEnv({ cwd: testDir }),
 		]);
 		expect(second).toBe(first);
 		expect(second.sessionId).toBe(first.sessionId);
@@ -270,32 +227,29 @@ describe("loadDevEnv", () => {
 			entry,
 			`export default { ...${JSON.stringify(typedConfig)}, options: { envFiles: [{ path: ".env.local", optional: true }] } };`,
 		);
-		const withFiles = await loadDevEnv({ cwd: testDir, readOnly: true });
-		expect(await loadDevEnv({ cwd: testDir, readOnly: true })).not.toBe(
-			withFiles,
-		);
+		const withFiles = await loadDevEnv({ cwd: testDir });
+		expect(await loadDevEnv({ cwd: testDir })).not.toBe(withFiles);
 
 		writeFileSync(entry, `export default ${JSON.stringify(typedConfig)}`);
 		const reloaded = await loadDevEnv({
 			cwd: testDir,
-			readOnly: true,
 			reload: true,
 		});
-		expect(await loadDevEnv({ cwd: testDir, readOnly: true })).toBe(reloaded);
+		expect(await loadDevEnv({ cwd: testDir })).toBe(reloaded);
 	});
 
-	it("does not answer getDevEnv with the config from before a reload that failed", async () => {
+	it("does not answer with the config from before a reload that failed", async () => {
 		const entry = join(testDir, "dev.config.ts");
 		writeFileSync(entry, `export default ${JSON.stringify(typedConfig)}`);
-		await loadDevEnv({ cwd: testDir, readOnly: true });
+		await loadDevEnv({ cwd: testDir });
 		writeFileSync(
 			entry,
 			`export default { projectPrefix: "broken", services: {}, apps: { web: { devCommand: false } }, env: () => { throw new Error("broken config"); } };`,
 		);
-		await loadDevEnv({ cwd: testDir, readOnly: true, reload: true }).catch(
-			() => undefined,
+		await loadDevEnv({ cwd: testDir, reload: true }).catch(() => undefined);
+		await expect(loadDevEnv({ cwd: testDir })).rejects.toThrow(
+			"Invalid dev config",
 		);
-		expect(() => getDevEnv()).toThrow("Dev environment not loaded");
 	});
 
 	it("throws when no config file exists", async () => {
@@ -323,13 +277,12 @@ describe("loadDevEnv", () => {
 			join(second, "dev.config.ts"),
 			`export default ${JSON.stringify({ ...typedConfig, projectPrefix: "second" })}`,
 		);
-		const first = await loadDevEnv({ cwd: testDir, readOnly: true });
-		const other = await loadDevEnv({ cwd: second, readOnly: true });
+		const first = await loadDevEnv({ cwd: testDir });
+		const other = await loadDevEnv({ cwd: second });
 		expect(other).not.toBe(first);
 		expect(first.root).toBe(realpathSync(testDir));
 		expect(other.root).toBe(realpathSync(second));
-		expect(await loadDevEnv({ cwd: testDir, readOnly: true })).toBe(first);
-		expect(getDevEnv()).toBe(first);
+		expect(await loadDevEnv({ cwd: testDir })).toBe(first);
 		expect(process.cwd()).toBe(previousCwd);
 	});
 
@@ -340,7 +293,7 @@ describe("loadDevEnv", () => {
 			entry,
 			`import prefix from "./helper"; export default { ...${JSON.stringify(typedConfig)}, projectPrefix: prefix };`,
 		);
-		const first = await loadDevEnv({ cwd: testDir, readOnly: true });
+		const first = await loadDevEnv({ cwd: testDir });
 		writeFileSync(join(testDir, "helper.ts"), 'export default "two";');
 		writeFileSync(
 			entry,
@@ -348,15 +301,14 @@ describe("loadDevEnv", () => {
 		);
 		const reloaded = await loadDevEnv({
 			cwd: testDir,
-			readOnly: true,
 			reload: true,
 		});
 		expect(reloaded.projectPrefix).toBe("one-edited");
 		expect(first.projectPrefix).toBe("one");
 		clearDevEnvCache();
-		expect(
-			(await loadDevEnv({ cwd: testDir, readOnly: true })).projectPrefix,
-		).toBe("one-edited");
+		expect((await loadDevEnv({ cwd: testDir })).projectPrefix).toBe(
+			"one-edited",
+		);
 	});
 
 	it.each([false, true])(
@@ -373,7 +325,6 @@ describe("loadDevEnv", () => {
 			);
 			const older = loadDevEnv({
 				cwd: testDir,
-				readOnly: true,
 				reload: olderReload,
 			});
 			try {
@@ -389,17 +340,15 @@ describe("loadDevEnv", () => {
 				);
 				const newer = await loadDevEnv({
 					cwd: testDir,
-					readOnly: true,
 					reload: true,
 				});
 				writeFileSync(release, "yes");
 				await older;
-				expect(getDevEnv()).toBe(newer);
-				expect(await loadDevEnv({ cwd: testDir, readOnly: true })).toBe(newer);
+				expect(await loadDevEnv({ cwd: testDir })).toBe(newer);
 				clearDevEnvCache();
-				expect(
-					(await loadDevEnv({ cwd: testDir, readOnly: true })).projectPrefix,
-				).toBe("newer");
+				expect((await loadDevEnv({ cwd: testDir })).projectPrefix).toBe(
+					"newer",
+				);
 			} finally {
 				writeFileSync(release, "yes");
 				await older;
@@ -407,7 +356,7 @@ describe("loadDevEnv", () => {
 		},
 	);
 
-	it("invalidates runtime and environment inputs and separates read-only resolutions", async () => {
+	it("builds a new environment when the runtime or the environment variables change", async () => {
 		writeFileSync(
 			join(testDir, "dev.config.ts"),
 			`export default ${JSON.stringify(typedConfig)}`,
@@ -415,12 +364,10 @@ describe("loadDevEnv", () => {
 		const first = await loadDevEnv({
 			cwd: testDir,
 			containerRuntime: "docker",
-			readOnly: true,
 		});
 		const apple = await loadDevEnv({
 			cwd: testDir,
 			containerRuntime: "apple",
-			readOnly: true,
 		});
 		expect(apple.containerRuntime).toBe("apple");
 		expect(apple).not.toBe(first);
@@ -428,70 +375,85 @@ describe("loadDevEnv", () => {
 		const moved = await loadDevEnv({
 			cwd: testDir,
 			containerRuntime: "docker",
-			readOnly: true,
 		});
 		expect(moved.ports.api).toBe(first.ports.api + 100);
-		expect(
-			await loadDevEnv({ cwd: testDir, containerRuntime: "docker" }),
-		).not.toBe(moved);
+		expect(await loadDevEnv({ cwd: testDir, containerRuntime: "docker" })).toBe(
+			moved,
+		);
 	});
 
-	it("read-only resolution never creates or rewrites the port lockfile", async () => {
+	it("loading never claims a block", async () => {
 		delete process.env.BUNCARGO_PORT_OFFSET;
 		writeFileSync(
 			join(testDir, "dev.config.ts"),
 			`export default ${JSON.stringify(typedConfig)}`,
 		);
-		await loadDevEnv({ cwd: testDir, readOnly: true });
-		const lock = join(testDir, ".buncargo", "ports.json");
-		expect(existsSync(lock)).toBe(false);
-		mkdirSync(join(testDir, ".buncargo"));
-		writeFileSync(lock, '{"fixture":"preserve"}');
-		await loadDevEnv({ cwd: testDir, readOnly: true, reload: true });
-		expect(readFileSync(lock, "utf8")).toBe('{"fixture":"preserve"}');
+		await loadDevEnv({ cwd: testDir });
+		expect(offsetClaimsOf(testDir)).toEqual({});
 	});
 
-	it("copies checkout files from the store before envFiles are read", async () => {
-		const home = join(testDir, "home");
-		const saved = new Map(
-			["HOME", ...CI_ENV_VARS].map((name) => [name, process.env[name]]),
-		);
-		for (const name of CI_ENV_VARS) delete process.env[name];
-		process.env.HOME = home;
-		try {
-			spawnSync("git", ["init", "-q"], { cwd: testDir });
-			spawnSync(
-				"git",
-				["remote", "add", "origin", "https://github.com/acme/loader.git"],
-				{ cwd: testDir },
-			);
-			writeFileSync(join(testDir, ".gitignore"), ".env.local\n");
-			writeStoreEntries(
-				storeDir("github.com/acme/loader"),
-				{ version: 1, files: {} },
-				[
-					{
-						path: ".env.local",
-						data: Buffer.from("TOKEN=abc\n"),
-						machine: false,
-					},
-				],
-			);
-			writeFileSync(
-				join(testDir, "dev.config.ts"),
-				`export default { projectPrefix: "files", services: {}, options: { envFiles: [".env.local"], checkoutFiles: [".env.local"] }, env: (_p, _u, ctx) => ({ TOKEN: ctx.env?.TOKEN }) };`,
-			);
+	describe("with a store under HOME", () => {
+		useTempHome();
 
-			await expect(
-				loadDevEnv({ cwd: testDir, readOnly: true, syncCheckoutFiles: false }),
-			).rejects.toThrow("Cannot load environment input");
-			const env = await loadDevEnv({ cwd: testDir, readOnly: true });
-			expect((env.buildEnvVars() as Record<string, string>).TOKEN).toBe("abc");
-		} finally {
-			for (const [name, value] of saved) {
-				if (value === undefined) delete process.env[name];
-				else process.env[name] = value;
+		it("copies checkout files from the store before envFiles are read", async () => {
+			const saved = new Map(
+				CI_ENV_VARS.map((name) => [name, process.env[name]]),
+			);
+			for (const name of CI_ENV_VARS) delete process.env[name];
+			try {
+				spawnSync("git", ["init", "-q"], { cwd: testDir });
+				spawnSync(
+					"git",
+					["remote", "add", "origin", "https://github.com/acme/loader.git"],
+					{ cwd: testDir },
+				);
+				writeFileSync(join(testDir, ".gitignore"), ".env.local\n");
+				writeStoreEntries(
+					storeDir("github.com/acme/loader"),
+					{ version: 1, files: {} },
+					[
+						{
+							path: ".env.local",
+							data: Buffer.from("TOKEN=abc\n"),
+							machine: false,
+						},
+					],
+				);
+				writeFileSync(
+					join(testDir, "dev.config.ts"),
+					`export default { projectPrefix: "files", services: {}, options: { envFiles: [".env.local"], checkoutFiles: [".env.local"] }, env: (_p, _u, ctx) => ({ TOKEN: ctx.env?.TOKEN }) };`,
+				);
+
+				await expect(
+					loadDevEnv({ cwd: testDir, syncCheckoutFiles: false }),
+				).rejects.toThrow("Cannot load environment input");
+				const env = await loadDevEnv({ cwd: testDir });
+				expect((env.buildEnvVars() as Record<string, string>).TOKEN).toBe(
+					"abc",
+				);
+
+				// In step with the store, a load forks no git at all.
+				const nodeSpawns = spyOn(childProcess, "spawnSync");
+				const bunSpawns = spyOn(Bun, "spawnSync");
+				try {
+					await loadDevEnv({ cwd: testDir, reload: true });
+					const gitCalls = [
+						...nodeSpawns.mock.calls.map(([command]) => command),
+						...bunSpawns.mock.calls.map(([command]) =>
+							Array.isArray(command) ? command[0] : command,
+						),
+					].filter((command) => command === "git");
+					expect(gitCalls).toEqual([]);
+				} finally {
+					nodeSpawns.mockRestore();
+					bunSpawns.mockRestore();
+				}
+			} finally {
+				for (const [name, value] of saved) {
+					if (value === undefined) delete process.env[name];
+					else process.env[name] = value;
+				}
 			}
-		}
+		});
 	});
 });

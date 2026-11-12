@@ -2,10 +2,11 @@ import { afterEach, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isolateHome } from "../core/test-env.testing";
+import { offsetClaimsOf } from "../core/offset-claims";
+import { useTempHome } from "../core/test-env.testing";
 import { createDevEnvironment } from "./create-dev-environment";
 
-isolateHome("buncargo-app-only-home-");
+useTempHome("all");
 
 const roots: string[] = [];
 afterEach(() => {
@@ -63,7 +64,12 @@ it("starts an HTTP app without containers or database preparation", async () => 
 		await env.stop();
 		await expect(fetch(env.urls.marketing)).rejects.toThrow();
 	} finally {
-		for (const pid of Object.values(pids ?? {})) await env.stopProcess(pid);
+		for (const pid of Object.values(pids ?? {}))
+			try {
+				process.kill(pid, "SIGTERM");
+			} catch {
+				// `stop()` already ended it.
+			}
 	}
 });
 
@@ -72,5 +78,5 @@ it("rejects invalid selection before persisting allocation", async () => {
 	await expect(
 		env.start({ onlyApps: ["missing" as "marketing"] }),
 	).rejects.toThrow("Unknown app");
-	expect(existsSync(join(root, ".buncargo/ports.json"))).toBe(false);
+	expect(offsetClaimsOf(root)).toEqual({});
 });

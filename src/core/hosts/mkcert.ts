@@ -19,21 +19,12 @@ import {
 import { getCertPath, getKeyPath } from "./paths";
 import { certificateCovers } from "./plan";
 
-export const MKCERT_RELEASE_BASE =
-	"https://github.com/FiloSottile/mkcert/releases/";
+const MKCERT_RELEASE_BASE = "https://github.com/FiloSottile/mkcert/releases/";
 
 const RENEW_BEFORE_MS = 1000 * 60 * 60 * 24 * 30;
 
-function mkcertFileName(version: string): string {
-	return process.platform === "win32"
-		? `mkcert.${version}.exe`
-		: `mkcert.${version}`;
-}
-
-export function cachedMkcertBinPath(version = mkcertVersion()): string {
-	return toolCachePath(
-		`${mkcertFileName(version)}.${process.platform}-${process.arch}`,
-	);
+function cachedMkcertBinPath(version = mkcertVersion()): string {
+	return toolCachePath(`mkcert.${version}.${process.platform}-${process.arch}`);
 }
 
 function mkcertResolution() {
@@ -66,6 +57,22 @@ function mkcertAssetName(version: string): string {
 	return `mkcert-${version}-${os}-${arch}`;
 }
 
+/**
+ * sha256 of each release asset buncargo downloads by default. mkcert publishes
+ * no checksums and GitHub records no digest for v1.4.4's assets, so these were
+ * hashed from the assets downloaded over HTTPS from the GitHub release.
+ */
+const PINNED_SHA256: Record<string, string> = {
+	"mkcert-v1.4.4-darwin-amd64":
+		"a32dfab51f1845d51e810db8e47dcf0e6b51ae3422426514bf5a2b8302e97d4e",
+	"mkcert-v1.4.4-darwin-arm64":
+		"c8af0df44bce04359794dad8ea28d750437411d632748049d08644ffb66a60c6",
+	"mkcert-v1.4.4-linux-amd64":
+		"6d31c65b03972c6dc4a14ab429f2928300518b26503f58723e532d1b0a3bbb52",
+	"mkcert-v1.4.4-linux-arm64":
+		"b98f2cc69fd9147fe4d405d859c57504571adec0d3611c3eefd04107c7ac00d0",
+};
+
 export async function ensureMkcert(): Promise<string> {
 	const existing = resolvedMkcertPath();
 	if (existing) return existing;
@@ -84,11 +91,19 @@ export async function ensureMkcert(): Promise<string> {
 		url: `${MKCERT_RELEASE_BASE}download/${version}/${asset}`,
 		versionArgs: ["-version"],
 		expectedVersion: new RegExp(`^${escaped}\\s*$`, "m"),
-		githubAsset: { repository: "FiloSottile/mkcert", version, name: asset },
+		sha256: PINNED_SHA256[asset] ?? {
+			repository: "FiloSottile/mkcert",
+			version,
+			name: asset,
+			settings: {
+				version: "BUNCARGO_MKCERT_VERSION",
+				path: "BUNCARGO_MKCERT_PATH",
+			},
+		},
 	});
 }
 
-export const CA_FILENAME = "rootCA.pem";
+const CA_FILENAME = "rootCA.pem";
 
 /**
  * Where mkcert keeps its CA, by its own documented rules, without asking it.
@@ -98,21 +113,15 @@ export const CA_FILENAME = "rootCA.pem";
  * answers the same question — one this can answer from the environment for
  * every machine that has not moved it.
  */
-export function caRootCandidates(
-	env: NodeJS.ProcessEnv = process.env,
-	home = resolveUserHome(env),
-): string[] {
+function caRootCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
 	const explicit = env.CAROOT?.trim();
 	if (explicit) return [explicit];
+	const home = resolveUserHome(env);
 
 	return typedSwitch(
 		process.platform,
 		{
 			darwin: () => [join(home, "Library", "Application Support", "mkcert")],
-			win32: () => {
-				const localAppData = env.LOCALAPPDATA?.trim();
-				return localAppData ? [join(localAppData, "mkcert")] : [];
-			},
 		},
 		() => {
 			const xdg = env.XDG_DATA_HOME?.trim();
@@ -138,7 +147,7 @@ function caRootFromBinary(mkcertPath?: string): string | undefined {
 	}
 }
 
-export function getCaRoot(mkcertPath?: string): string | undefined {
+function getCaRoot(mkcertPath?: string): string | undefined {
 	for (const candidate of caRootCandidates()) {
 		if (existsSync(join(candidate, CA_FILENAME))) return candidate;
 	}
@@ -152,10 +161,6 @@ export function getCaPath(mkcertPath?: string): string | undefined {
 	if (!root) return undefined;
 	const pem = join(root, CA_FILENAME);
 	return existsSync(pem) ? pem : undefined;
-}
-
-export function isCaPresent(mkcertPath?: string): boolean {
-	return getCaPath(mkcertPath) !== undefined;
 }
 
 /**
@@ -205,7 +210,7 @@ export function verifyCertFailureTrust(error: unknown): CaTrust {
  * `mkcert -uninstall` removes the trust and keeps the CA files, so a check
  * on `rootCA.pem` alone passed while every named URL failed TLS.
  */
-export function readCaTrust(caPath: string): CaTrust {
+function readCaTrust(caPath: string): CaTrust {
 	return typedSwitch(
 		process.platform,
 		{
@@ -312,17 +317,21 @@ export function certNeedsRenewal(
 	return !leaf || certificateShortfall(leaf, hostnames, now) !== undefined;
 }
 
+/**
+ * Mint the proxy's pair for `hostnames`, unless the certificate already
+ * covers them. A mint that runs past `timeoutMs` is killed.
+ */
 export function mintCert(
 	hostnames: string[],
-	options: { mkcertPath?: string; certPath?: string; keyPath?: string } = {},
+	options: { mkcertPath: string | undefined; timeoutMs: number },
 ): { certPath: string; keyPath: string; minted: boolean } {
 	const unique = [...new Set(hostnames)].sort();
-	const certPath = options.certPath ?? getCertPath();
-	const keyPath = options.keyPath ?? getKeyPath();
+	const certPath = getCertPath();
+	const keyPath = getKeyPath();
 	if (!certNeedsRenewal(certPath, unique)) {
 		return { certPath, keyPath, minted: false };
 	}
-	const mkcertPath = options.mkcertPath ?? resolvedMkcertPath();
+	const { mkcertPath } = options;
 	if (!mkcertPath) {
 		throw new Error("mkcert is not available. Run buncargo hosts install.");
 	}
@@ -341,6 +350,8 @@ export function mintCert(
 			["-cert-file", pendingCert, "-key-file", pendingKey, ...unique],
 			{
 				stdio: ["pipe", "pipe", "pipe"],
+				timeout: options.timeoutMs,
+				killSignal: "SIGKILL",
 			},
 		);
 		// Key first. Two renames are two steps, and the certificate is what

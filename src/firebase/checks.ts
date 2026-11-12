@@ -2,12 +2,7 @@ import { relative } from "node:path";
 import { appendToGitignore, isGitIgnored } from "../core/gitignore";
 import { lookupOnPath } from "../core/tool-binary";
 import type { SetupCheck } from "../types";
-import {
-	firebaseVersion,
-	isFirebaseInstalled,
-	isTestedFirebaseVersion,
-	resolveFirebaseBin,
-} from "./cli";
+import { firebaseCli } from "./cli";
 import type { FirebaseEmulator } from "./emulators";
 import type { FirebaseProject } from "./project";
 
@@ -28,7 +23,7 @@ export function firebaseChecks(state: {
 	return [
 		{
 			name: "Firebase CLI is installed",
-			check: ({ root }) => isFirebaseInstalled(root, state.workdir(root)),
+			check: ({ root }) => firebaseCli.installed([state.workdir(root), root]),
 			fix: "bun add -d firebase-tools",
 		},
 		{
@@ -92,14 +87,14 @@ export function firebaseChecks(state: {
 			fast: false,
 			severity: "warning",
 			check: ({ root }) => {
-				const version = firebaseVersion(
-					resolveFirebaseBin(root, state.workdir(root)),
+				const version = firebaseCli.version(
+					firebaseCli.resolve([state.workdir(root), root]),
 					root,
 				);
 				if (!version)
 					return { ok: false, detail: "`firebase --version` failed" };
 				return (
-					isTestedFirebaseVersion(version) || {
+					firebaseCli.isTested(version) || {
 						ok: false,
 						detail: `Firebase CLI ${version} is outside the tested 13.x–15.x range`,
 					}

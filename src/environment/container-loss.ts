@@ -1,24 +1,27 @@
-import type { ContainerRuntimeAdapter } from "../container-runtime";
+import {
+	buncargoContainersOn,
+	type ContainerRuntimeAdapter,
+} from "../container-runtime";
 import {
 	explainContainerLoss,
 	type RemovalRecord,
 	readRemovals,
-	recordRemovals,
+	recordEvents,
 	removalActor,
 } from "../core/removal-log";
 import { formatWarn } from "../core/style";
 import { resolveComposeServiceNames } from "../planning";
-import type { ServiceConfig } from "../types";
+import type { ResolvedService } from "../types";
 import { composeServicesOf } from "./stacks";
 
 interface TeardownTarget {
 	projectName: string;
 	root: string;
-	runtime: Pick<ContainerRuntimeAdapter, "name" | "list">;
+	runtime: Pick<ContainerRuntimeAdapter, "name" | "containers">;
 }
 
 interface LossTarget extends TeardownTarget {
-	services: Readonly<Record<string, ServiceConfig>>;
+	services: Readonly<Record<string, ResolvedService>>;
 	selectedServiceKeys: readonly string[];
 }
 
@@ -30,14 +33,14 @@ interface LossTarget extends TeardownTarget {
  * is working has no reason to pay for that. `since` is when the run claimed
  * them, so a removal from before this run is not blamed for its failure.
  */
-export function explainMissingContainers(
+export async function explainMissingContainers(
 	target: LossTarget,
 	since: number,
 	deps: { now?: number; records?: () => RemovalRecord[] } = {},
-): string | undefined {
+): Promise<string | undefined> {
 	const selected = Object.fromEntries(
 		target.selectedServiceKeys.flatMap((key) => {
-			const service = target.services[key] as ServiceConfig | undefined;
+			const service = target.services[key];
 			return service ? [[key, service]] : [];
 		}),
 	);
@@ -47,9 +50,9 @@ export function explainMissingContainers(
 
 	let present: Set<string>;
 	try {
+		const containers = await buncargoContainersOn(target.runtime);
 		present = new Set(
-			target.runtime
-				.list()
+			containers
 				.filter((container) => container.project === target.projectName)
 				.map((container) => container.service),
 		);
@@ -76,8 +79,9 @@ export function recordTeardown(
 ): Promise<void> {
 	const at = new Date().toISOString();
 	const by = removalActor();
-	return recordRemovals(
+	return recordEvents(
 		input.runtimes.map((runtime) => ({
+			kind: "containers" as const,
 			at,
 			projectName: target.projectName,
 			root: target.root,
@@ -98,13 +102,13 @@ export function recordTeardown(
  * a caller that matches on the error sees the one it always did.
  */
 export async function withLossNotice<T>(
-	explain: () => string | undefined,
+	explain: () => Promise<string | undefined>,
 	work: () => Promise<T>,
 ): Promise<T> {
 	try {
 		return await work();
 	} catch (error) {
-		const loss = isAbort(error) ? undefined : explain();
+		const loss = isAbort(error) ? undefined : await explain();
 		if (loss) console.warn(formatWarn(loss));
 		throw error;
 	}

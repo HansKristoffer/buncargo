@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { resolveApps } from "../config/resolve";
 import {
 	classifyCliApps,
 	parseRequiredCommaSeparatedFlag,
@@ -29,7 +30,7 @@ describe("parseRequiredCommaSeparatedFlag", () => {
 describe("classifyCliApps", () => {
 	it("reuses busy healthy apps and starts the rest", async () => {
 		const result = await classifyCliApps(
-			{
+			resolveApps({
 				api: {
 					port: 3000,
 					devCommand: "bun run api",
@@ -39,7 +40,7 @@ describe("classifyCliApps", () => {
 					port: 3001,
 					devCommand: "bun run web",
 				},
-			},
+			}),
 			{ api: 3000, web: 3001 },
 			{
 				isPortBusy: (port) => port === 3000,
@@ -58,13 +59,13 @@ describe("classifyCliApps", () => {
 	it("throws when a busy app fails its health check", async () => {
 		await expect(
 			classifyCliApps(
-				{
+				resolveApps({
 					api: {
 						port: 3000,
 						devCommand: "bun run api",
 						healthEndpoint: "/health",
 					},
-				},
+				}),
 				{ api: 3000 },
 				{
 					isPortBusy: () => true,
@@ -80,7 +81,9 @@ describe("classifyCliApps", () => {
 
 	const unhealthyWeb = (holder: UnhealthyHolder) =>
 		classifyCliApps(
-			{ web: { port: 4321, devCommand: "bun run dev", healthEndpoint: "/" } },
+			resolveApps({
+				web: { port: 4321, devCommand: "bun run dev", healthEndpoint: "/" },
+			}),
 			{ web: 4321 },
 			{
 				isPortBusy: () => true,
@@ -122,13 +125,13 @@ describe("classifyCliApps", () => {
 	it("refuses to reuse a port owned by another compose project", async () => {
 		await expect(
 			classifyCliApps(
-				{
+				resolveApps({
 					api: {
 						port: 3000,
 						devCommand: "bun run api",
 						healthEndpoint: "/health",
 					},
-				},
+				}),
 				{ api: 3000 },
 				{
 					isPortBusy: () => true,
@@ -144,12 +147,12 @@ describe("classifyCliApps", () => {
 
 	it("falls back to inferred reuse when no health endpoint exists", async () => {
 		const result = await classifyCliApps(
-			{
+			resolveApps({
 				api: {
 					port: 3000,
 					devCommand: "bun run api",
 				},
-			},
+			}),
 			{ api: 3000 },
 			{
 				isPortBusy: () => true,

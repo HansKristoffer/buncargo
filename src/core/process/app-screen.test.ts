@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { AppScreen } from "./app-screen";
+import { AppScreen, MAX_PENDING_BYTES } from "./app-screen";
+
+const noDrops = () => {
+	throw new Error("output dropped");
+};
 
 async function feed(screen: AppScreen, ...chunks: string[]): Promise<void> {
 	for (const chunk of chunks) {
@@ -10,9 +14,31 @@ async function feed(screen: AppScreen, ...chunks: string[]): Promise<void> {
 }
 
 describe("AppScreen", () => {
+	// xterm throws past 50 MB of unparsed output, inside the pty's callback.
+	it("drops a flood past its backlog and says so once, instead of throwing", async () => {
+		let dropped = 0;
+		const screen = new AppScreen(
+			80,
+			24,
+			() => {},
+			() => dropped++,
+		);
+		const megabyte = `${"x".repeat(1023)}\n`.repeat(1024);
+		for (let index = 0; index < 60; index++) screen.write(megabyte);
+		await new Promise<void>((resolve) => screen.term.write("", resolve));
+		expect(dropped).toBe(1);
+
+		// Drained: output is taken again, and a later flood is reported anew.
+		for (let index = 0; index <= MAX_PENDING_BYTES / megabyte.length; index++)
+			screen.write(megabyte);
+		await new Promise<void>((resolve) => screen.term.write("", resolve));
+		expect(dropped).toBe(2);
+		screen.dispose();
+	});
+
 	it("emits ordinary lines as soon as the cursor leaves them", async () => {
 		const lines: string[] = [];
-		const screen = new AppScreen(40, 5, (line) => lines.push(line));
+		const screen = new AppScreen(40, 5, (line) => lines.push(line), noDrops);
 		await feed(screen, "one\r\ntwo\r\n");
 		expect(lines).toEqual(["one", "two"]);
 		screen.dispose();
@@ -20,7 +46,7 @@ describe("AppScreen", () => {
 
 	it("holds a redrawing footer back and feeds the log lines printed above it", async () => {
 		const lines: string[] = [];
-		const screen = new AppScreen(40, 10, (line) => lines.push(line));
+		const screen = new AppScreen(40, 10, (line) => lines.push(line), noDrops);
 		// Ink-style: a footer drawn, then erased (cursor up) and redrawn under a new log line.
 		const footer = (n: number) => `status ${n}\r\nkeys: p q`;
 		const erase = "\u001b[2K\u001b[1A\u001b[2K\u001b[G";
@@ -45,7 +71,7 @@ describe("AppScreen", () => {
 
 	it("keeps the alternate screen out of the feed until the app exits in it", async () => {
 		const lines: string[] = [];
-		const screen = new AppScreen(40, 5, (line) => lines.push(line));
+		const screen = new AppScreen(40, 5, (line) => lines.push(line), noDrops);
 		await feed(
 			screen,
 			"before\r\n",
@@ -61,7 +87,7 @@ describe("AppScreen", () => {
 	it("emits an app's last screen once, however often it is flushed", async () => {
 		// Flushed when the app exits and again when the run's output closes.
 		const lines: string[] = [];
-		const screen = new AppScreen(40, 5, (line) => lines.push(line));
+		const screen = new AppScreen(40, 5, (line) => lines.push(line), noDrops);
 		await feed(screen, "\u001b[?1049h\u001b[Hfull screen\r\nmore");
 		await screen.flush();
 		await screen.flush();
@@ -76,7 +102,7 @@ describe("AppScreen", () => {
 
 	it("feeds every line of an app that scrolls, and recovers after a clear screen", async () => {
 		const lines: string[] = [];
-		const screen = new AppScreen(40, 5, (line) => lines.push(line));
+		const screen = new AppScreen(40, 5, (line) => lines.push(line), noDrops);
 		const many = Array.from({ length: 30 }, (_, i) => `line ${i}\r\n`);
 		await feed(screen, ...many);
 		expect(lines).toEqual(many.map((line) => line.trim()));
@@ -104,7 +130,7 @@ describe("AppScreen", () => {
 
 	it("joins a wrapped line that arrives in two chunks", async () => {
 		const lines: string[] = [];
-		const screen = new AppScreen(10, 5, (line) => lines.push(line));
+		const screen = new AppScreen(10, 5, (line) => lines.push(line), noDrops);
 		await feed(screen, "0123456789abcdef", "ghijkl\r\n", "next\r\n");
 		expect(lines).toEqual(["0123456789abcdefghijkl", "next"]);
 		screen.dispose();
@@ -112,7 +138,7 @@ describe("AppScreen", () => {
 
 	it("keeps feeding after a burst longer than the scrollback", async () => {
 		const lines: string[] = [];
-		const screen = new AppScreen(40, 5, (line) => lines.push(line));
+		const screen = new AppScreen(40, 5, (line) => lines.push(line), noDrops);
 		const block = (from: number, count: number) =>
 			Array.from({ length: count }, (_, i) => `line ${from + i}\r\n`).join("");
 		await feed(screen, block(0, 5000));
@@ -129,7 +155,7 @@ describe("AppScreen", () => {
 
 	it("joins a wrapped line back into one", async () => {
 		const lines: string[] = [];
-		const screen = new AppScreen(10, 5, (line) => lines.push(line));
+		const screen = new AppScreen(10, 5, (line) => lines.push(line), noDrops);
 		await feed(screen, "0123456789abcdef\r\n");
 		expect(lines).toEqual(["0123456789abcdef"]);
 		screen.dispose();

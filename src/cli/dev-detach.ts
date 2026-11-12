@@ -10,7 +10,8 @@ import {
 	symlinkSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { promiseTimeout } from "hanzio";
+import { isBoolean, isRecord, isString, promiseTimeout } from "hanzio";
+import { arrayOf, object, optional } from "../core/json-shape";
 import { logsRoot } from "../core/process/app-logs";
 import { isProcessAlive } from "../core/process/lifecycle";
 import { inOwnUserScope } from "../core/process/user-scope";
@@ -25,6 +26,8 @@ import {
 	type RunEntry,
 } from "../core/run-registry";
 import { DETACHED_ENV, detachedRunEnv } from "../core/runtime-flags";
+import { DETACH_ONLY_FLAGS } from "./dev-flags";
+import type { DetachedResultJson } from "./json-documents";
 import * as log from "./log";
 import {
 	describeAppFailure,
@@ -87,6 +90,13 @@ function linkNewestDetachedLog(root: string, logPath: string): void {
 export interface DetachedReport {
 	setupHints: string[];
 	failures: RunFailure[];
+	/** Why named URLs fell back to `localhost:port`, which is otherwise silent. */
+	hostsWarnings: string[];
+	/**
+	 * Whether the run's selection has apps to spawn (see {@link settledRun}),
+	 * recorded once it has planned: only the run loads the config.
+	 */
+	expectApps?: boolean;
 }
 
 /**
@@ -100,8 +110,6 @@ export function detachedReportPath(root: string, pid: number): string {
 
 const REPORT_FILE = /^detached-report-(\d+)\.json$/;
 const LOG_FILE = /^detached-(\d+)\.log$/;
-/** What earlier versions shared between runs, before reports and logs were per pid. */
-const LEGACY_FILES = new Set(["detached-report.json", "detached.previous.log"]);
 
 /**
  * How long a run's report and log outlive the run: its parent polls every
@@ -137,8 +145,7 @@ export function pruneDetachedFiles(root: string, now: number): void {
 	}
 	const ended = names.flatMap((name) => {
 		const pid = runPid(name);
-		const candidate =
-			LEGACY_FILES.has(name) || (pid !== undefined && !isProcessAlive(pid));
+		const candidate = pid !== undefined && !isProcessAlive(pid);
 		const path = join(logsRoot(root), name);
 		const modified = candidate ? modifiedAt(path) : undefined;
 		return modified === undefined ? [] : [{ name, path, modified }];
@@ -153,14 +160,30 @@ export function pruneDetachedFiles(root: string, now: number): void {
 	}
 }
 
+const isRunFailure = object({
+	cause: isString,
+	step: optional(isString),
+	output: arrayOf(isString),
+	hints: arrayOf(isString),
+	next: arrayOf(isString),
+});
+
 function validateReport(value: unknown): DetachedReport | undefined {
-	const report = value as Partial<DetachedReport> | null;
-	const valid =
-		typeof report === "object" &&
-		report !== null &&
-		Array.isArray(report.setupHints) &&
-		Array.isArray(report.failures);
-	return valid ? (report as DetachedReport) : undefined;
+	if (
+		!isRecord(value) ||
+		!Array.isArray(value.setupHints) ||
+		!Array.isArray(value.failures) ||
+		!Array.isArray(value.hostsWarnings) ||
+		!(value.expectApps === undefined || isBoolean(value.expectApps))
+	)
+		return undefined;
+	// A malformed entry never rejected a report; it is left out of its list.
+	return {
+		setupHints: value.setupHints.filter(isString),
+		failures: value.failures.filter(isRunFailure),
+		hostsWarnings: value.hostsWarnings.filter(isString),
+		...(value.expectApps !== undefined && { expectApps: value.expectApps }),
+	};
 }
 
 export function readDetachedReport(
@@ -183,6 +206,7 @@ export function recordDetachedReport(
 	const current = readDetachedReport(root, process.pid) ?? {
 		setupHints: [],
 		failures: [],
+		hostsWarnings: [],
 	};
 	try {
 		writeJsonDocumentSync(
@@ -194,24 +218,24 @@ export function recordDetachedReport(
 	}
 }
 
-/** Print a failure block, past Bun's buffer: the parent exits right after. */
-function printFailure(failure: RunFailure): void {
-	const { message, hints } = formatRunFailure(failure);
-	log.errorNow(message, hints);
-}
-
 /**
- * Argv for the background run: this same invocation without `--detach` and
- * `--keep`, so a script wrapping `runCli` is re-run the same way `buncargo
- * dev` is. `--keep` reaches the run through `BUNCARGO_DETACHED` instead.
+ * Argv for the background run: this same invocation without the flags only
+ * `dev --detach` reads ({@link DETACH_ONLY_FLAGS}), so a script wrapping
+ * `runCli` is re-run the same way `buncargo dev` is. Args after `--` are the
+ * attached app's and pass through untouched.
  */
 export function detachedArgv(
 	argv: readonly string[],
 	execPath = process.execPath,
 ): string[] {
+	const args = argv.slice(1);
+	const separator = args.indexOf("--");
+	const flagsEnd = separator === -1 ? args.length : separator;
+	const detachOnly = new Set(DETACH_ONLY_FLAGS);
 	return [
 		execPath,
-		...argv.slice(1).filter((arg) => arg !== "--detach" && arg !== "--keep"),
+		...args.slice(0, flagsEnd).filter((arg) => !detachOnly.has(arg)),
+		...args.slice(flagsEnd),
 	];
 }
 
@@ -261,10 +285,6 @@ export const DETACH_EXIT = { ok: 0, failed: 1, timeout: 2 } as const;
 /** How long `dev --detach` waits for apps to settle before exiting 2. */
 export const DETACH_TIMEOUT_MS = 10 * 60_000;
 
-function describeApp(app: RunAppEntry): string {
-	return `${app.name}: ${app.status}${app.openUrl ? `  ${app.openUrl}` : ""}`;
-}
-
 function readLog(path: string): string {
 	try {
 		return readFileSync(path, "utf8");
@@ -277,41 +297,61 @@ function tail(path: string, lines = 30): string {
 	return readLog(path).trimEnd().split("\n").slice(-lines).join("\n");
 }
 
-const HOSTS_FALLBACK = "Named URLs unavailable:";
+/** What the wait for a background run ended on. */
+type DetachedOutcome = Omit<DetachedResultJson, "version" | "exitCode"> & {
+	/** The run exited, with this code. */
+	exited?: number;
+	/** The run's last output, for a run that exited. */
+	output?: string;
+};
 
-/**
- * Why the run's URLs are `localhost:port`, from its output. The run printed
- * it into the detached log, where nobody looking at the app list would see
- * it, and the fallback is otherwise silent.
- */
-export function namedHostsFallbacks(output: string): string[] {
-	return Bun.stripANSI(output)
-		.split("\n")
-		.flatMap((line) => {
-			const at = line.indexOf(HOSTS_FALLBACK);
-			return at === -1 ? [] : [line.slice(at).trimEnd()];
-		});
-}
+const OUTCOME_EXIT = {
+	up: DETACH_EXIT.ok,
+	finished: DETACH_EXIT.ok,
+	failed: DETACH_EXIT.failed,
+	timeout: DETACH_EXIT.timeout,
+} as const satisfies Record<DetachedResultJson["outcome"], number>;
 
 /**
  * Start the run in the background and wait for it. 0 when every app came up,
  * or when the run finished cleanly with nothing left to run (every selected
  * app already running elsewhere, as attached `dev` exits 0 on); 1 when the run
  * failed or an app did not come up (the others keep running); 2 when apps are
- * still starting at the timeout ({@link DETACH_EXIT}).
+ * still starting at the timeout ({@link DETACH_EXIT}). `json` prints the
+ * outcome as one {@link DetachedResultJson} instead of prose.
  */
 export async function runDetached(input: {
 	root: string;
-	/** Whether the selection has apps to spawn and wait for (see {@link settledRun}). */
-	expectApps: boolean;
 	/** `--keep`: no idle limit. */
 	keep: boolean;
+	json: boolean;
 	/** The `dev --detach` invocation, re-run without the flag ({@link detachedArgv}). */
 	argv: readonly string[];
 	/** How long apps may take to settle before this exits 2. */
 	timeoutMs: number;
 }): Promise<number> {
-	const { root, expectApps, timeoutMs } = input;
+	const outcome = await startAndWait(input);
+	const exitCode = OUTCOME_EXIT[outcome.outcome];
+	if (input.json) {
+		const { exited: _, output: __, ...result } = outcome;
+		log.line(
+			JSON.stringify(
+				{ version: 1, exitCode, ...result } satisfies DetachedResultJson,
+				null,
+				2,
+			),
+		);
+	} else printOutcome(outcome, input.timeoutMs);
+	return exitCode;
+}
+
+async function startAndWait(input: {
+	root: string;
+	keep: boolean;
+	argv: readonly string[];
+	timeoutMs: number;
+}): Promise<DetachedOutcome> {
+	const { root, timeoutMs } = input;
 	const argv = detachedArgv(input.argv);
 	mkdirSync(logsRoot(root), { recursive: true });
 	pruneDetachedFiles(root, Date.now());
@@ -355,84 +395,136 @@ export async function runDetached(input: {
 	void child.exited.then((code) => {
 		exited = code;
 	});
+	const base = {
+		pid: child.pid,
+		log: logPath,
+		apps: [] as DetachedResultJson["apps"],
+		idleLimitMs: null,
+	};
 
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
 		// First: an entry can outlive its run, released for the idle hold.
 		if (exited !== undefined) {
-			const output = tail(logPath);
-			if (exited === 0) {
-				if (output) log.line(output);
-				log.success("The run had nothing to keep running in the background.");
-				return DETACH_EXIT.ok;
-			}
+			const report = readDetachedReport(root, child.pid);
 			// The cause last, where `| tail` reads it.
-			const failure = readDetachedReport(root, child.pid)?.failures.at(-1);
-			if (!failure) {
-				if (output) log.line(output);
-				log.errorNow(
-					`The run exited with code ${exited} before its apps came up.`,
-					[`Full output: ${logPath}`],
-				);
-				return DETACH_EXIT.failed;
-			}
-			log.line(
-				`  The run exited with code ${exited} before its apps came up. Full output: ${logPath}`,
-			);
-			printFailure(failure);
-			return DETACH_EXIT.failed;
+			const failure = report?.failures.at(-1);
+			return {
+				...base,
+				outcome: exited === 0 ? "finished" : "failed",
+				hostsWarnings: report?.hostsWarnings ?? [],
+				failures: exited === 0 || !failure ? [] : [failure],
+				exited,
+				output: tail(logPath),
+			};
 		}
 		const run = (await findRunsByRoot(root).catch(() => [])).find(
 			(entry) => entry.pid === child.pid,
 		);
-		const settled = run !== undefined && settledRun(run, expectApps);
+		const report = readDetachedReport(root, child.pid);
+		const expectApps = report?.expectApps;
+		const settled =
+			run !== undefined &&
+			expectApps !== undefined &&
+			settledRun(run, expectApps);
 		const down = (run?.apps ?? []).filter(
 			(app) => app.status === "failed" || app.status === "stopped",
 		);
-		const report = readDetachedReport(root, child.pid);
 		if (settled) settledAt ??= Date.now();
 		else settledAt = undefined;
 		const awaitingReport =
 			settledAt !== undefined &&
 			unreportedApps(down, report).length > 0 &&
 			Date.now() - settledAt < REPORT_GRACE_MS;
-		if (run && settled && !awaitingReport) {
-			for (const app of run.apps) log.line(`  ${describeApp(app)}`);
-			log.line(`  pid ${child.pid} · output: ${logPath}`);
-			for (const warning of namedHostsFallbacks(readLog(logPath)))
-				log.warn(warning);
-			if (down.length === 0) {
-				log.success(
-					// What the run recorded: Tailscale mode records no limit, whatever
-					// `--keep` said.
-					run.idleLimitMs === undefined
-						? "Running in the background until you stop it with `buncargo stop`."
-						: `Running in the background; it stops after ${formatDuration(run.idleLimitMs)} with no request or buncargo command (\`dev --detach --keep\` keeps it). Stop it now with \`buncargo stop\`.`,
-				);
-				return DETACH_EXIT.ok;
-			}
-			log.line(
-				`  ${down.map((app) => app.name).join(", ")} did not come up; the other apps keep running.`,
-			);
-			for (const app of down)
-				printFailure(
-					report?.failures.find((failure) => failure.step === app.name) ??
+		const apps = (run?.apps ?? []).map((app) => ({
+			name: app.name,
+			status: app.status,
+			url: app.openUrl ?? null,
+		}));
+		if (run && settled && !awaitingReport)
+			return {
+				...base,
+				apps,
+				// What the run recorded: Tailscale mode records no limit, whatever
+				// `--keep` said.
+				idleLimitMs: run.idleLimitMs ?? null,
+				outcome: down.length === 0 ? "up" : "failed",
+				hostsWarnings: report?.hostsWarnings ?? [],
+				failures: down.map(
+					(app) =>
+						report?.failures.find((failure) => failure.step === app.name) ??
 						describeAppFailure({
 							app: app.name,
 							reason: app.status,
 							tail: [],
 							setupHints: report?.setupHints ?? [],
 						}),
-				);
-			return DETACH_EXIT.failed;
-		}
-		if (Date.now() >= deadline) {
-			log.error(
-				`Apps still starting after ${Math.round(timeoutMs / 1000)}s; the run keeps going (pid ${child.pid}).`,
-			);
-			log.hint(`Follow it: buncargo logs -f · output: ${logPath}`);
-			return DETACH_EXIT.timeout;
-		}
+				),
+			};
+		if (Date.now() >= deadline)
+			return {
+				...base,
+				apps,
+				outcome: "timeout",
+				hostsWarnings: report?.hostsWarnings ?? [],
+				failures: [],
+			};
 		await promiseTimeout(POLL_MS);
 	}
+}
+
+/** Print a failure block, past Bun's buffer: the parent exits right after. */
+function printFailure(failure: RunFailure): void {
+	const { message, hints } = formatRunFailure(failure);
+	log.errorNow(message, hints);
+}
+
+function printOutcome(outcome: DetachedOutcome, timeoutMs: number): void {
+	const { pid, log: logPath } = outcome;
+	if (outcome.exited !== undefined) {
+		if (outcome.output && !outcome.failures.length) log.line(outcome.output);
+		if (outcome.outcome === "finished") {
+			log.success("The run had nothing to keep running in the background.");
+			return;
+		}
+		const [failure] = outcome.failures;
+		if (!failure) {
+			log.errorNow(
+				`The run exited with code ${outcome.exited} before its apps came up.`,
+				[`Full output: ${logPath}`],
+			);
+			return;
+		}
+		log.line(
+			`  The run exited with code ${outcome.exited} before its apps came up. Full output: ${logPath}`,
+		);
+		printFailure(failure);
+		return;
+	}
+	if (outcome.outcome === "timeout") {
+		log.error(
+			`Apps still starting after ${Math.round(timeoutMs / 1000)}s; the run keeps going (pid ${pid}).`,
+		);
+		log.hint(`Follow it: buncargo logs -f · output: ${logPath}`);
+		return;
+	}
+	for (const app of outcome.apps)
+		log.line(`  ${app.name}: ${app.status}${app.url ? `  ${app.url}` : ""}`);
+	log.line(`  pid ${pid} · output: ${logPath}`);
+	for (const warning of outcome.hostsWarnings) log.warn(warning);
+	if (outcome.outcome === "up") {
+		log.success(
+			outcome.idleLimitMs === null
+				? "Running in the background until you stop it with `buncargo stop`."
+				: `Running in the background; it stops after ${formatDuration(outcome.idleLimitMs)} with no request or buncargo command (\`dev --detach --keep\` keeps it). Stop it now with \`buncargo stop\`.`,
+		);
+		return;
+	}
+	const down = outcome.apps.filter(
+		(app) => app.status === "failed" || app.status === "stopped",
+	);
+	log.line(
+		`  ${down.map((app) => app.name).join(", ")} did not come up; the other apps keep running.`,
+	);
+	for (const failure of outcome.failures) printFailure(failure);
 }

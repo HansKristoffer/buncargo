@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { RunInterrupted } from "../core/process/process-owner";
+import { RunInterrupted } from "../core/process/app-lifecycle";
 import {
 	decideSignal,
 	type InterruptState,
