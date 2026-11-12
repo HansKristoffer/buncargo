@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { withoutCiEnv } from "../core/test-env.testing";
 import { service } from "../docker-compose/services";
 import { resolveApp, resolveService } from "./resolve";
 import { validateConfig } from "./validate-config";
@@ -76,18 +77,19 @@ describe("resolveApp", () => {
 	});
 
 	it("gives an app a minute to become ready, two in CI", () => {
-		delete process.env.CI;
-		expect(resolveApp({ port: 3000, devCommand: "dev" }).healthTimeout).toBe(
-			60_000,
-		);
-		process.env.CI = "true";
-		expect(resolveApp({ port: 3000, devCommand: "dev" }).healthTimeout).toBe(
-			120_000,
-		);
-		expect(
-			resolveApp({ port: 3000, devCommand: "dev", healthTimeout: 5000 })
-				.healthTimeout,
-		).toBe(5000);
+		withoutCiEnv(() => {
+			expect(resolveApp({ port: 3000, devCommand: "dev" }).healthTimeout).toBe(
+				60_000,
+			);
+			process.env.CI = "true";
+			expect(resolveApp({ port: 3000, devCommand: "dev" }).healthTimeout).toBe(
+				120_000,
+			);
+			expect(
+				resolveApp({ port: 3000, devCommand: "dev", healthTimeout: 5000 })
+					.healthTimeout,
+			).toBe(5000);
+		});
 	});
 });
 

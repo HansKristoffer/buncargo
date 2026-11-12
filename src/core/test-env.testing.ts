@@ -25,14 +25,24 @@ export function withoutCiEnv<T>(body: () => T): T {
 		saved.set(name, process.env[name]);
 		delete process.env[name];
 	}
-	try {
-		return body();
-	} finally {
+	const restore = () => {
 		for (const [name, value] of saved) {
 			if (value === undefined) delete process.env[name];
 			else process.env[name] = value;
 		}
+	};
+	let result: T;
+	try {
+		result = body();
+	} catch (error) {
+		restore();
+		throw error;
 	}
+	// An async body reads the environment after its first await, so the
+	// signals stay cleared until it settles.
+	if (result instanceof Promise) return result.finally(restore) as T;
+	restore();
+	return result;
 }
 
 /**

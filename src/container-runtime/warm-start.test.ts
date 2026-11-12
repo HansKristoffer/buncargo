@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { resolveServices } from "../config/resolve";
-import { freePorts } from "../core/test-env.testing";
+import { freePorts, withoutCiEnv } from "../core/test-env.testing";
 import { dockerRuntimeAdapter } from "../docker/adapter";
 import { dockerListLine, fakeDocker } from "../docker/fake-docker.testing";
 import { serviceHashEnv } from "../docker-compose/interpolate";
@@ -64,19 +64,22 @@ describe("ensureServicesRunning against Docker", () => {
 		});
 		fakes.push(docker);
 
-		await expect(
-			ensureServicesRunning({
-				runtime: dockerRuntimeAdapter({ binary: docker.binary }),
-				root: docker.root,
-				projectName: "demo",
-				envVars: {},
-				services: resolveServices({ postgres: { healthCheck: false } }),
-				ports: {},
-				model: { services: { postgres: { image: "postgres:16" } } },
-				verbose: false,
-				autoStartRuntime: false,
-			}),
-		).rejects.toThrow(/Docker is not running/);
+		// Outside CI: there Docker's preflight waits out its 90 s start window.
+		await withoutCiEnv(() =>
+			expect(
+				ensureServicesRunning({
+					runtime: dockerRuntimeAdapter({ binary: docker.binary }),
+					root: docker.root,
+					projectName: "demo",
+					envVars: {},
+					services: resolveServices({ postgres: { healthCheck: false } }),
+					ports: {},
+					model: { services: { postgres: { image: "postgres:16" } } },
+					verbose: false,
+					autoStartRuntime: false,
+				}),
+			).rejects.toThrow(/Docker is not running/),
+		);
 		expect(docker.calls()[0]?.[0]).toBe("ps");
 		expect(docker.calls().map((args) => args[0])).toContain("version");
 	});
