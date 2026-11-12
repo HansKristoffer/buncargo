@@ -137,7 +137,8 @@ async function verifyPreparation(): Promise<void> {
 						// carries its own Compose healthcheck for `init`'s
 						// service_healthy, with a startup budget for the slow init.
 						healthcheck: {
-							test: ["CMD-SHELL", "pg_isready -U postgres"],
+							// Over TCP: the init server listens on the socket only.
+							test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres"],
 							interval: "1s",
 							retries: 60,
 							start_period: "15s",
