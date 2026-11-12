@@ -133,8 +133,15 @@ async function verifyPreparation(): Promise<void> {
 					docker: {
 						image: "postgres:16",
 						environment: { POSTGRES_PASSWORD: "postgres" },
-						// Give the deliberately slow initialization its own startup budget.
-						healthcheck: { start_period: "15s" },
+						// A raw `docker` block makes this a custom container, so it
+						// carries its own Compose healthcheck for `init`'s
+						// service_healthy, with a startup budget for the slow init.
+						healthcheck: {
+							test: ["CMD-SHELL", "pg_isready -U postgres"],
+							interval: "1s",
+							retries: 60,
+							start_period: "15s",
+						},
 						volumes: [
 							"dbdata:/var/lib/postgresql/data",
 							`${slowInit}:/docker-entrypoint-initdb.d/slow-init.sql:ro`,
