@@ -854,6 +854,8 @@ describe("startDevServers keepOthersOnFailure", () => {
 		const output = new RunOutput({ terminals: "pty" });
 		output.screenSize = () => ({ cols: 80, rows: 10 });
 		const failed: string[] = [];
+		const { promise: marketingFailed, resolve: markFailed } =
+			Promise.withResolvers<void>();
 		let pids: Record<string, number> = {};
 		try {
 			pids = await startDevServers(
@@ -874,10 +876,14 @@ describe("startDevServers keepOthersOnFailure", () => {
 					output,
 					keepOthersOnFailure: true,
 					onAppPhase: (name, life, previous) => {
-						if (newFailure(life, previous)) failed.push(name);
+						if (!newFailure(life, previous)) return;
+						failed.push(name);
+						if (name === "marketing") markFailed();
 					},
 				},
 			);
+			// The start can return before marketing's health check gives up.
+			await marketingFailed;
 			expect(failed).toEqual(["marketing"]);
 			expect(processExists(pids.api)).toBe(true);
 			for (
