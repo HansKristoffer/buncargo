@@ -5,6 +5,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -15,7 +16,10 @@ import { dirname, join, resolve } from "node:path";
 const root = resolve(import.meta.dir, "..");
 
 /** Every module of the installed package in `modules` is one of its built files. */
-function assertOneBuild(modules: readonly string[], installed: string) {
+function assertOneBuild(modules: readonly string[], linked: string) {
+	// Loaded module paths are resolved: on macOS the temporary directory is
+	// `/var/…`, a link to `/private/var/…`.
+	const installed = realpathSync(linked);
 	const own = modules.filter((path) => path.startsWith(`${installed}/`));
 	assert(own.length > 0, "no module of the installed package loaded");
 	const foreign = own.filter((path) => !path.startsWith(`${installed}/dist/`));
