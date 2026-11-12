@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defineDevConfig } from "../src";
+import { defineDevConfig, service } from "../src";
 import { createDevEnvironment } from "../src/api/index";
 import { observeStartupMetrics } from "../src/core/startup-metrics";
 
@@ -127,17 +127,14 @@ async function verifyPreparation(): Promise<void> {
 		return defineDevConfig({
 			projectPrefix: prefix,
 			services: {
-				postgres: {
+				// The preset, so the contract gets the URL, credentials and TCP
+				// healthcheck a project's database gets. The raw fields add the
+				// slow init and give it its own startup budget.
+				postgres: service.postgres({
 					port: 5432,
-					healthCheck: "pg_isready",
 					docker: {
 						image: "postgres:16",
-						environment: { POSTGRES_PASSWORD: "postgres" },
-						// A raw `docker` block makes this a custom container, so it
-						// carries its own Compose healthcheck for `init`'s
-						// service_healthy, with a startup budget for the slow init.
 						healthcheck: {
-							// Over TCP: the init server listens on the socket only.
 							test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres"],
 							interval: "1s",
 							retries: 60,
@@ -148,7 +145,7 @@ async function verifyPreparation(): Promise<void> {
 							`${slowInit}:/docker-entrypoint-initdb.d/slow-init.sql:ro`,
 						],
 					},
-				},
+				}),
 				init: {
 					kind: "job",
 					rerun: "always",
