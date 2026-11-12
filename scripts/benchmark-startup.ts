@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -371,7 +372,9 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 						cleanupMs = sinceCancel();
 					try {
 						const claimed =
-							scenario === "allocation" ? claimedOffset(root) : undefined;
+							scenario === "allocation"
+								? claimedOffset(root, project)
+								: undefined;
 						const effectivePort = claimed === undefined ? port : 3000 + claimed;
 						const response = await fetch(
 							`http://127.0.0.1:${effectivePort}/ready`,
@@ -574,11 +577,18 @@ try {
 }
 
 /** The offset the run under `home` claimed, once it has: its block moved off the hash. */
-function claimedOffset(home: string): number | undefined {
+/**
+ * The offset `project` claimed. Every worker shares one HOME, so the claims
+ * file holds every worker's checkout, and in CI the throwaway claims of runs
+ * already torn down too: only this checkout's own, unreleased claim names its
+ * ports.
+ */
+function claimedOffset(home: string, project: string): number | undefined {
 	const file = join(home, ".buncargo/offsets.json");
 	if (!existsSync(file)) return undefined;
 	const { claims } = JSON.parse(readFileSync(file, "utf8")) as {
-		claims: Record<string, { offset: number }>;
+		claims: Record<string, { offset: number; reclaimedAt?: string }>;
 	};
-	return Object.values(claims)[0]?.offset;
+	const claim = claims[project] ?? claims[realpathSync(project)];
+	return claim?.reclaimedAt === undefined ? claim?.offset : undefined;
 }
