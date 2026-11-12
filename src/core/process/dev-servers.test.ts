@@ -849,8 +849,9 @@ describe("startDevServers keepOthersOnFailure", () => {
 
 	it("stops the app that never came up and keeps the healthy one", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-"));
-		const [api] = freePorts(1);
-		const marketing = api + 1;
+		// Both from the OS: a port next to a free one can be anything's, and a
+		// stranger answering on marketing's port would read as marketing up.
+		const [api, marketing] = freePorts(2);
 		const output = new RunOutput({ terminals: "pty" });
 		output.screenSize = () => ({ cols: 80, rows: 10 });
 		const failed: string[] = [];
