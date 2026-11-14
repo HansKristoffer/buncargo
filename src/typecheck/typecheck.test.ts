@@ -337,6 +337,200 @@ describe("typecheck changedFiles", () => {
 	});
 });
 
+/** Makes `root` a repository of its own with one commit of what it holds. */
+function commitFixture(root: string): void {
+	for (const args of [
+		["init", "-q"],
+		["add", "."],
+		["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"],
+	]) {
+		const result = Bun.spawnSync(["git", ...args], { cwd: root });
+		if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+	}
+}
+
+describe("typecheck reuse", () => {
+	const reuse = { by: "buncargo typecheck --changed" };
+	const lines = (file: string) =>
+		existsSync(file) ? readFileSync(file, "utf8").trim().split("\n") : [];
+
+	/** One workspace whose check appends a line to a file outside the tree. */
+	function fixture(body = "") {
+		const root = makeFixture();
+		const runs = join(makeFixture(), "runs");
+		writeEventWorkspace(
+			root,
+			"one",
+			`appendFileSync(file, "ran\\n"); ${body}`,
+			runs,
+		);
+		commitFixture(root);
+		const check = (options: { reuse?: typeof reuse } = { reuse }) =>
+			runWorkspaceTypecheck({
+				root,
+				verbose: false,
+				includeRootConfig: false,
+				...options,
+			});
+		return { root, runs, check };
+	}
+
+	it("skips a workspace that passed on this exact working tree, and names the run", async () => {
+		const { runs, check } = fixture();
+
+		expect((await check()).results[0]?.reused).toBeUndefined();
+		const second = await check();
+
+		expect(second.success).toBe(true);
+		expect(second.results[0]?.reused?.by).toBe("buncargo typecheck --changed");
+		expect(lines(runs)).toHaveLength(1);
+	});
+
+	it("checks again once a file changed, staged or not", async () => {
+		const { root, runs, check } = fixture();
+		await check();
+
+		writeFileSync(join(root, "apps/one/new.ts"), "export const x = 1;\n");
+		expect((await check()).results[0]?.reused).toBeUndefined();
+		expect(lines(runs)).toHaveLength(2);
+
+		// Staging the same content is the same tree.
+		Bun.spawnSync(["git", "add", "-A"], { cwd: root });
+		expect((await check()).results[0]?.reused).toBeDefined();
+		expect(lines(runs)).toHaveLength(2);
+	});
+
+	it("checks again when the caller does not ask for reuse", async () => {
+		const { runs, check } = fixture();
+		await check();
+		await check({});
+		expect(lines(runs)).toHaveLength(2);
+	});
+
+	it("takes the caller's slot only when a workspace has to be checked", async () => {
+		const { root, check } = fixture();
+		let slots = 0;
+		const slot = async (run: () => Promise<void>) => {
+			slots++;
+			await run();
+		};
+		const withSlot = () =>
+			runWorkspaceTypecheck({
+				root,
+				verbose: false,
+				includeRootConfig: false,
+				reuse,
+				slot,
+			});
+
+		expect((await withSlot()).success).toBe(true);
+		expect(slots).toBe(1);
+		// Every pass reused: nothing to queue behind other checkouts for.
+		expect((await withSlot()).results[0]?.reused).toBeDefined();
+		expect(slots).toBe(1);
+		expect((await check({})).success).toBe(true);
+	});
+
+	it("never reuses a failure", async () => {
+		const { runs, check } = fixture("process.exit(1);");
+		expect((await check()).success).toBe(false);
+		expect((await check()).success).toBe(false);
+		expect(lines(runs)).toHaveLength(2);
+	});
+
+	it("does not record a pass on a tree the check itself changed", async () => {
+		// The check writes a file, so the tree it finished on is not the one
+		// it started on, and its pass stands for neither: with the file gone
+		// again the tree is the first one, and nothing passed on it.
+		const { root, runs, check } = fixture(
+			`await Bun.write(new URL("./generated.ts", import.meta.url), "// generated\\n");`,
+		);
+		await check();
+		rmSync(join(root, "apps/one/generated.ts"));
+		await check();
+		expect(lines(runs)).toHaveLength(2);
+	});
+});
+
+describe("typecheck bail", () => {
+	it("stops at the first failure: the running check is terminated and the rest never start", async () => {
+		const root = makeFixture();
+		const events = join(root, "events");
+		// `slow` holds a slot with a child of its own; `bad` fails once `slow`
+		// runs; `later` would start in the slot `bad` frees.
+		writeEventWorkspace(
+			root,
+			"slow",
+			`const sleeper = Bun.spawn(["sleep", "60"]); appendFileSync(file, "slow " + process.pid + " " + sleeper.pid + "\\n"); await sleeper.exited;`,
+			events,
+		);
+		writeEventWorkspace(
+			root,
+			"bad",
+			`const deadline = Date.now() + 10_000; while (!(await Bun.file(file).exists()) && Date.now() < deadline) await Bun.sleep(5); process.exit(1);`,
+			events,
+		);
+		writeEventWorkspace(
+			root,
+			"later",
+			`appendFileSync(file, "later\\n");`,
+			events,
+		);
+		// Longest first would start `slow` and `later`; a run that bails starts
+		// the shortest beside the longest.
+		mkdirSync(join(root, ".buncargo"));
+		writeFileSync(
+			join(root, ".buncargo/typecheck-timings.json"),
+			JSON.stringify({
+				version: 1,
+				timings: { "apps/slow": 30, "apps/later": 2, "apps/bad": 1 },
+			}),
+		);
+
+		const result = await runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			includeRootConfig: false,
+			concurrency: 2,
+			bail: true,
+		});
+
+		expect(result.success).toBe(false);
+		expect(result.results.map((entry) => entry.workspace)).toEqual([
+			"apps/bad",
+		]);
+		expect(result.notRun?.sort()).toEqual(["apps/later", "apps/slow"]);
+		const [event, ...more] = readFileSync(events, "utf8").trim().split("\n");
+		expect(more).toEqual([]);
+		const pids = (event ?? "").split(" ").slice(1).map(Number);
+		expect(pids).toHaveLength(2);
+		await waitFor(() => pids.every((pid) => !isProcessAlive(pid)));
+	});
+
+	it("checks every workspace past a failure without it", async () => {
+		const root = makeFixture();
+		const events = join(root, "events");
+		writeEventWorkspace(root, "bad", "process.exit(1);", events);
+		writeEventWorkspace(
+			root,
+			"good",
+			`appendFileSync(file, "good\\n");`,
+			events,
+		);
+
+		const result = await runWorkspaceTypecheck({
+			root,
+			verbose: false,
+			includeRootConfig: false,
+			concurrency: 1,
+		});
+
+		expect(result.success).toBe(false);
+		expect(result.notRun).toBeUndefined();
+		expect(readFileSync(events, "utf8")).toBe("good\n");
+	});
+});
+
 describe("typecheck include and exclude", () => {
 	it("checks an included directory with a typecheck script outside discovery", async () => {
 		const root = makeFixture();

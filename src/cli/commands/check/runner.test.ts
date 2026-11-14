@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { passKey, type RecordedPasses } from "../../../core/check-passes";
 import type { CommandStep } from "./plan";
 import {
 	bunTestFailures,
@@ -59,11 +62,146 @@ it("fails a step that exits non-zero, is killed or cannot start, and names each 
 	]);
 
 	const verdict = formatVerdict(steps.failures);
-	expect(verdict[0]).toBe("FAIL: fmt, killed, huge");
-	expect(verdict[1]).toBe(
+	expect(verdict[0]).toBe(
 		"  ✗ fmt (exit 2) · rerun: sh -c 'echo '\\''E2BIG: argument list too long'\\'' >&2; exit 2'",
 	);
+	expect(verdict.at(-1)).toBe("FAIL: fmt, killed, huge");
 	expect(formatVerdict([])).toEqual(["PASS"]);
+});
+
+// Agents read `check | tail -1`: one grepped for `FAIL|passed`, saw nothing on
+// a `PASS` and reran a 47 s check for its exit code.
+describe("the verdict", () => {
+	const deferred = {
+		files: ["a.database.test.ts", "b.database.test.ts"],
+		command: "bunx buncargo ci -- bun test",
+		strict: false,
+	};
+	const failure = (name: string, label = name) => ({
+		name,
+		label,
+		reason: "exit 1",
+		rerun: `run ${name}`,
+	});
+
+	it("is the last line, exactly PASS, with the tests left out above it", () => {
+		expect(formatVerdict([], deferred)).toEqual([
+			"  - 2 test files not run, they need services: bunx buncargo ci -- bun test",
+			"PASS",
+		]);
+	});
+
+	it("is the last line, FAIL: and the names --only takes, each once", () => {
+		const lines = formatVerdict(
+			[
+				failure("biome", "biome --write (200 files)"),
+				failure("biome", "biome --write (12 files)"),
+				failure("i18n"),
+			],
+			{ ...deferred, strict: true },
+			["typecheck", "tests"],
+		);
+		expect(lines.at(-1)).toBe("FAIL: biome, i18n, tests");
+		expect(lines).toContain(
+			"  ✗ biome --write (12 files) (exit 1) · rerun: run biome",
+		);
+		expect(lines).toContain(
+			"  - stopped at the first failure, not run: typecheck, tests (--keep-going runs every step)",
+		);
+	});
+});
+
+describe("a step that passed on this exact tree", () => {
+	const gate = (dir: string) => step("gate", `touch ${join(dir, "ran")}`);
+	const recorded = (command: CommandStep, tree: string): RecordedPasses => ({
+		[passKey(command.command, command.cwd)]: {
+			tree,
+			at: Date.now() - 14_000,
+			by: "buncargo check",
+		},
+	});
+	const reusing = (passes: RecordedPasses, tree: () => string | undefined) => {
+		const printed: string[] = [];
+		const steps = stepRunner(tmpdir(), (line) => printed.push(line), {
+			github: false,
+			reuse: { passes, tree },
+		});
+		return { printed, steps };
+	};
+
+	it("is not run again, and its line names the run it passed in", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-runner-"));
+		const { printed, steps } = reusing(recorded(gate(dir), "t1"), () => "t1");
+
+		expect(await steps.run(gate(dir))).toBe(0);
+
+		expect(existsSync(join(dir, "ran"))).toBe(false);
+		expect(printed).toEqual([
+			expect.stringMatching(
+				/^✓ gate reused \(passed 1[45]s ago in `buncargo check`\)$/,
+			) as unknown as string,
+		]);
+	});
+
+	it("runs on another tree, and when the tree cannot be told", async () => {
+		for (const tree of ["t2", undefined]) {
+			const dir = mkdtempSync(join(tmpdir(), "buncargo-runner-"));
+			const { steps } = reusing(recorded(gate(dir), "t1"), () => tree);
+			await steps.run(gate(dir));
+			expect(existsSync(join(dir, "ran"))).toBe(true);
+		}
+	});
+
+	it("records a pass only for a step that left the tree as it found it", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-runner-"));
+		const treeFile = join(dir, "tree");
+		writeFileSync(treeFile, "t1");
+		const { steps } = reusing({}, () => readFileSync(treeFile, "utf8"));
+		// The formatter writes, so what it checked is gone; the failing gate
+		// has no pass to record.
+		const format = step("format", `printf t2 > ${treeFile}`);
+		const lint = step("lint", "true");
+		const broken = step("broken", "false");
+
+		await steps.run(format);
+		await steps.run(lint);
+		await steps.run(broken);
+
+		expect(steps.passedOnTree()).toEqual({
+			keys: [passKey(lint.command)],
+			tree: "t2",
+		});
+	});
+
+	it("always runs a step that opts out, and records no pass for it", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-runner-"));
+		const drift = { ...gate(dir), reuse: false as const };
+		const { printed, steps } = reusing(recorded(drift, "t1"), () => "t1");
+
+		await steps.run(drift);
+
+		expect(existsSync(join(dir, "ran"))).toBe(true);
+		expect(printed[0]).toMatch(/^✓ gate \d+\.\ds$/);
+		expect(steps.passedOnTree().keys).toEqual([]);
+	});
+
+	it("always runs the typecheck, which reuses per workspace, and repeats what it reused", async () => {
+		const summary = "2 of 2 reused (passed 14s ago in `buncargo check`)";
+		const typecheck = step(
+			"typecheck",
+			`echo 'All typecheck checks passed! Total time: 0.1s (9 files), ${summary}'`,
+			{ reuse: false },
+		);
+		const { printed, steps } = reusing(recorded(typecheck, "t1"), () => "t1");
+
+		await steps.run(typecheck);
+
+		expect(printed).toEqual([
+			expect.stringMatching(
+				/^✓ typecheck \d+\.\ds · 2 of 2 reused \(passed 14s ago in `buncargo check`\)$/,
+			) as unknown as string,
+		]);
+	});
 });
 
 it("shortens a rerun command that lists many files", () => {

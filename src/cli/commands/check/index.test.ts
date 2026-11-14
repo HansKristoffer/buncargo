@@ -3,12 +3,14 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { CI_ENV_VARS } from "../../../core/runtime-flags";
 import type { CheckPlanJson } from "../../json-documents";
 
 /**
@@ -50,10 +52,17 @@ function repo(check: unknown, changed: Record<string, string>): string {
 	return root;
 }
 
+/** A developer's machine: in CI `check` prints workflow commands and reuses nothing. */
+function localEnv(): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+	for (const name of CI_ENV_VARS) delete env[name];
+	return env;
+}
+
 function check(root: string, args: string[]) {
 	const result = Bun.spawnSync([process.execPath, BIN, "check", ...args], {
 		cwd: root,
-		env: { ...process.env, GITHUB_ACTIONS: "", NO_COLOR: "1" },
+		env: localEnv(),
 	});
 	return {
 		exitCode: result.exitCode,
@@ -121,9 +130,8 @@ describe("check testDeferred", () => {
 		const root = repo({ testDeferred: deferred }, changed);
 		const result = check(root, ["--base=HEAD", "--skip=typecheck"]);
 		expect(result.stdout).toContain("✓ tests (1 files)");
-		expect(result.stdout).toContain("PASS, 1 test file not run");
-		expect(result.stdout).toContain(
-			"bunx buncargo ci -- bun test ./src/a.database.test.ts",
+		expect(result.stdout).toEndWith(
+			"  - 1 test file not run, they need services: bunx buncargo ci -- bun test ./src/a.database.test.ts\nPASS\n",
 		);
 		expect(result.exitCode).toBe(0);
 	});
@@ -131,7 +139,7 @@ describe("check testDeferred", () => {
 	it("fails with strict", () => {
 		const root = repo({ testDeferred: { ...deferred, strict: true } }, changed);
 		const result = check(root, ["--base=HEAD", "--skip=typecheck"]);
-		expect(result.stdout).toContain("FAIL: 1 test file not run");
+		expect(result.stdout).toEndWith("\nFAIL: tests\n");
 		expect(result.exitCode).toBe(1);
 	});
 });
@@ -148,6 +156,109 @@ describe("check gate fix", () => {
 		expect(result.stdout).toEndWith("PASS\n");
 		expect(result.exitCode).toBe(0);
 	});
+});
+
+describe("check on a failure", () => {
+	const gates = [
+		{ name: "first", command: "echo first-output; exit 3" },
+		{ name: "second", command: "touch second-ran" },
+	];
+
+	it("stops at the first failing step and ends with FAIL: and its name", () => {
+		const root = repo({ gates }, { "src/a.ts": "" });
+		const result = check(root, ["--base=HEAD", "--skip=typecheck"]);
+
+		expect(existsSync(join(root, "second-ran"))).toBe(false);
+		expect(result.stdout).toContain("first-output\n✗ first ");
+		expect(result.stdout).toContain(
+			"  - stopped at the first failure, not run: second (--keep-going runs every step)\n",
+		);
+		expect(result.stdout).toEndWith("\nFAIL: first\n");
+		expect(result.exitCode).toBe(1);
+	});
+
+	it("runs every step with --keep-going", () => {
+		const root = repo({ gates }, { "src/a.ts": "" });
+		const result = check(root, [
+			"--base=HEAD",
+			"--skip=typecheck",
+			"--keep-going",
+		]);
+
+		expect(existsSync(join(root, "second-ran"))).toBe(true);
+		expect(result.stdout).not.toContain("not run");
+		expect(result.stdout).toEndWith("\nFAIL: first\n");
+		expect(result.exitCode).toBe(1);
+	});
+});
+
+// A commit paid for the same gates twice: `check`, then the pre-commit hook's
+// `check --staged` seconds later on the tree that had just passed.
+describe("check on a tree that already passed", () => {
+	/** A gate that counts its runs in a file outside the repository. */
+	function counted() {
+		const counter = join(
+			realpathSync(mkdtempSync(join(tmpdir(), "buncargo-check-count-"))),
+			"runs",
+		);
+		roots.push(dirname(counter));
+		const gates = [{ name: "count", command: `echo ran >> ${counter}` }];
+		const root = repo({ gates }, { "src/a.ts": "export const a = 1;\n" });
+		const runs = () => readFileSync(counter, "utf8").trim().split("\n").length;
+		const run = (...args: string[]) =>
+			check(root, ["--skip=typecheck", ...args]);
+		return { root, runs, run };
+	}
+
+	it("reuses the pass in the next check and in the hook's check --staged", () => {
+		const { root, runs, run } = counted();
+
+		expect(run("--base=HEAD").stdout).toMatch(/✓ count \d/);
+		const again = run("--base=HEAD");
+		git(root, "add", "-A");
+		const hook = run("--staged");
+
+		expect(runs()).toBe(1);
+		for (const result of [again, hook]) {
+			expect(result.stdout).toMatch(
+				/✓ count reused \(passed \d+s ago in `buncargo check --skip=typecheck --base=HEAD`\)\n/,
+			);
+			expect(result.stdout).toEndWith("\nPASS\n");
+			expect(result.exitCode).toBe(0);
+		}
+	});
+
+	it("runs again once a file changed, and with --no-reuse", () => {
+		const { root, runs, run } = counted();
+		run("--base=HEAD");
+
+		writeFileSync(join(root, "src/a.ts"), "export const a = 2;\n");
+		run("--base=HEAD");
+		expect(runs()).toBe(2);
+
+		run("--base=HEAD", "--no-reuse");
+		expect(runs()).toBe(3);
+	});
+
+	it("runs again in CI, which checks what it was given", () => {
+		const { root, runs, run } = counted();
+		run("--base=HEAD");
+
+		const result = Bun.spawnSync(
+			[process.execPath, BIN, "check", "--skip=typecheck", "--base=HEAD"],
+			{ cwd: root, env: { ...localEnv(), CI: "true" } },
+		);
+
+		expect(result.exitCode).toBe(0);
+		expect(runs()).toBe(2);
+	});
+});
+
+it("check says so and passes when nothing changed", () => {
+	const root = repo({}, {});
+	const result = check(root, ["--base=HEAD"]);
+	expect(result.stdout).toBe("nothing changed\nPASS\n");
+	expect(result.exitCode).toBe(0);
 });
 
 it("check docs says how many files it read", () => {

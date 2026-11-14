@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getErrorMessage, startTimer } from "hanzio";
+import type { RecordedPass } from "../core/check-passes";
 import { execAsync } from "../core/process";
 import { getProjectStateDir, STATE_DIRNAME } from "../core/state-paths";
 import { findRootConfigFile } from "../loader/find-config-file";
@@ -15,6 +16,13 @@ export interface ConfigTypecheckResult {
 	success: boolean;
 	duration: number;
 	errorOutput?: string;
+	/** Set when it did not run: the pass on the same tree it stands on. */
+	reused?: RecordedPass;
+}
+
+/** The result of a root config check that did not have to run. */
+export function passedRootConfig(root: string): ConfigTypecheckResult {
+	return { configFile: findRootConfigFile(root), success: true, duration: 0 };
 }
 
 /**

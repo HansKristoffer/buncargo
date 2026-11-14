@@ -413,14 +413,14 @@ function validateGatesShape(value: unknown, checks: ShapeChecks): void {
 		unknownKeys(
 			gate,
 			path,
-			["name", "command", "cwd", "when", "staged", "rootWide", "fix"],
+			["name", "command", "cwd", "when", "staged", "rootWide", "fix", "reuse"],
 			errors,
 		);
 		for (const key of ["name", "command"])
 			if (typeof gate[key] !== "string" || !gate[key])
 				errors.push(`${path}.${key} must be a nonempty string`);
 		fields(gate, `${path}.`, ["cwd", "fix"], "string");
-		fields(gate, `${path}.`, ["staged", "rootWide"], "boolean");
+		fields(gate, `${path}.`, ["staged", "rootWide", "reuse"], "boolean");
 		pathList(gate.when, `${path}.when`, checks);
 
 		const name = gate.name;

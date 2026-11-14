@@ -1,4 +1,6 @@
 import { getErrorMessage } from "hanzio";
+import { runName } from "../../core/check-passes";
+import { isCI } from "../../core/runtime-flags";
 import {
 	BASE_EXITS,
 	commaList,
@@ -36,6 +38,16 @@ export const typecheckCommand = defineCommand({
 				value: "<ref>",
 				description:
 					"Check only workspaces changed since the merge base with <ref> (default: origin's default branch), and their dependents",
+			},
+			bail: {
+				kind: "boolean",
+				description:
+					"Stop at the first workspace that fails instead of checking them all",
+			},
+			"no-reuse": {
+				kind: "boolean",
+				description:
+					"Check every workspace again, even one that passed on this exact working tree",
 			},
 		},
 		examples: [
@@ -122,48 +134,60 @@ export const typecheckCommand = defineCommand({
 			}
 		}
 
-		// A machine-wide slot: typechecks from many checkouts at once exhaust memory.
 		const { withCheckSlot, formatCheckSlotWait, processCheckSlot } =
 			await import("../../core/check-slots");
+		const { withSignal } = await import("../../core/deadline");
 		const { runForwardingSignals } = await import("./exec");
-		const exitCode = await withCheckSlot(
-			"typecheck",
-			// Each check runs in its own process group, which the terminal's
-			// Ctrl-C does not reach: the signal is forwarded, or every `tsc` would
-			// outlive this process.
-			() =>
-				runForwardingSignals(async (signal) => {
-					try {
-						const result = await runWorkspaceTypecheck({
-							root,
-							verbose: true,
-							concurrency: requestedTypecheckConcurrency(
-								concurrency,
-								settings.config?.concurrency,
-							),
-							only: only ?? (group?.only ? [...group.only] : undefined),
-							include: settings.config?.include,
-							scripts: settings.config?.scripts,
-							exclude: [
-								...(settings.config?.exclude ?? []),
-								...(group?.exclude ?? []),
-							],
-							includeRootConfig: group?.rootConfig,
-							changedFiles,
+		// Each check runs in its own process group, which the terminal's
+		// Ctrl-C does not reach: the signal is forwarded, or every `tsc` would
+		// outlive this process.
+		const exitCode = await runForwardingSignals(async (signal) => {
+			try {
+				const result = await runWorkspaceTypecheck({
+					root,
+					verbose: true,
+					concurrency: requestedTypecheckConcurrency(
+						concurrency,
+						settings.config?.concurrency,
+					),
+					only: only ?? (group?.only ? [...group.only] : undefined),
+					include: settings.config?.include,
+					scripts: settings.config?.scripts,
+					exclude: [
+						...(settings.config?.exclude ?? []),
+						...(group?.exclude ?? []),
+					],
+					includeRootConfig: group?.rootConfig,
+					changedFiles,
+					signal,
+					bail: values.bail,
+					// CI checks what it was given: a runner that keeps its
+					// checkout must not answer from an earlier job.
+					reuse:
+						values["no-reuse"] || isCI()
+							? undefined
+							: { by: runName(process.argv.slice(2)) },
+					// A machine-wide slot: typechecks from many checkouts at once
+					// exhaust memory. Taken only once a workspace has to be
+					// checked, so a run that reuses every pass (the pre-commit
+					// hook after a green check) does not queue behind them. The
+					// wait for one ends with the signal.
+					slot: (run) =>
+						withSignal(
+							withCheckSlot("typecheck", run, {
+								...processCheckSlot,
+								onWait: (wait) => log.info(formatCheckSlotWait(wait)),
+							}),
 							signal,
-						});
-						return { exitCode: result.success ? 0 : 1, stdout: "", stderr: "" };
-					} catch (error) {
-						// Interrupted: the signal's exit code says so.
-						if (signal.aborted) return { exitCode: 1, stdout: "", stderr: "" };
-						throw error;
-					}
-				}),
-			{
-				...processCheckSlot,
-				onWait: (wait) => log.info(formatCheckSlotWait(wait)),
-			},
-		);
+						),
+				});
+				return { exitCode: result.success ? 0 : 1, stdout: "", stderr: "" };
+			} catch (error) {
+				// Interrupted: the signal's exit code says so.
+				if (signal.aborted) return { exitCode: 1, stdout: "", stderr: "" };
+				throw error;
+			}
+		});
 		process.exit(exitCode);
 	},
 });

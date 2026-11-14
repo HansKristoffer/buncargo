@@ -1,16 +1,28 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { getErrorMessage, startTimer, sumBy } from "hanzio";
+import {
+	describePass,
+	passKey,
+	type RecordedPass,
+	readPasses,
+	recordPasses,
+	reusablePass,
+	reusedSummary,
+	treeFingerprint,
+} from "../core/check-passes";
 import { execAsync } from "../core/process";
 import { readWorkspaceGraph, selectChangedWorkspaces } from "./changed";
 import {
 	type ConfigTypecheckResult,
+	passedRootConfig,
 	typecheckRootConfig,
 } from "./config-typecheck";
 import { countTypeScriptFiles, globPaths } from "./glob";
 import { resolveProjectTsc } from "./project-tsc";
 import {
 	defaultTypecheckConcurrency,
+	orderForFirstFailure,
 	runBounded,
 	selectWorkspaces,
 	sortWorkspacesByExpectedDuration,
@@ -62,6 +74,22 @@ export interface WorkspaceTypecheckOptions {
 	 * all, none is started after, and the promise rejects with the abort reason.
 	 */
 	signal?: AbortSignal;
+	/**
+	 * Stop at the first check that fails: the ones still running are
+	 * terminated, the rest never start, and the result lists them in `notRun`.
+	 */
+	bail?: boolean;
+	/**
+	 * Skip a check that passed on this exact working tree within the last half
+	 * hour, and record this run's passes for the next one. `by` is what a later
+	 * run calls this one (`buncargo typecheck --changed`).
+	 */
+	reuse?: { by: string };
+	/**
+	 * Runs the checks inside it, when any has to run: the CLI's machine-wide
+	 * check slot. A run that reuses every pass never waits for one.
+	 */
+	slot?: (run: () => Promise<void>) => Promise<void>;
 }
 
 /**
@@ -74,6 +102,8 @@ export interface WorkspaceTypecheckResult {
 	success: boolean;
 	fileCount: number;
 	errorOutput?: string;
+	/** Set when it did not run: the pass on the same tree it stands on. */
+	reused?: RecordedPass;
 }
 
 /**
@@ -89,6 +119,8 @@ export interface TypecheckResult {
 	rootConfig?: ConfigTypecheckResult;
 	/** Set when `--only` named a workspace that does not exist */
 	selectionError?: string;
+	/** With `bail`: the checks a failure stopped or kept from starting. */
+	notRun?: string[];
 }
 
 /** One job of the pool: a workspace and one way to check it. */
@@ -102,6 +134,9 @@ interface Workspace {
 }
 
 const DEFAULT_SCRIPTS = ["typecheck"];
+
+/** The root dev config's check: what `notRun` and its recorded pass call it. */
+const ROOT_CONFIG_JOB = "dev config";
 
 /**
  * The jobs for a workspace's scripts. The first configured script keeps the
@@ -326,10 +361,16 @@ function logWorkspaceResult(
 	verbose: boolean,
 ): void {
 	if (!verbose) return;
+	const label = workspaceLabel(result.workspace, result.fileCount);
+	if (result.reused) {
+		const from = describePass(result.reused, Date.now());
+		console.log(`✅ ${label} reused (${from})`);
+		return;
+	}
 	const icon = result.success ? "✅" : "❌";
 	const log = result.success ? console.log : console.error;
 	log(
-		`${icon} ${workspaceLabel(result.workspace, result.fileCount)} ${result.success ? "completed" : "failed"} in ${result.duration.toFixed(2)}s`,
+		`${icon} ${label} ${result.success ? "completed" : "failed"} in ${result.duration.toFixed(2)}s`,
 	);
 	if (!result.success && result.errorOutput) {
 		console.error(`\n${formatErrorOutput(result.errorOutput)}`);
@@ -341,6 +382,11 @@ function logRootConfigResult(
 	verbose: boolean,
 ): void {
 	if (!verbose || !rootConfig.configFile) return;
+	if (rootConfig.reused) {
+		const from = describePass(rootConfig.reused, Date.now());
+		console.log(`✅ ${rootConfig.configFile} reused (${from})`);
+		return;
+	}
 	const icon = rootConfig.success ? "✅" : "❌";
 	const log = rootConfig.success ? console.log : console.error;
 	log(
@@ -379,6 +425,9 @@ export async function runWorkspaceTypecheck(
 		exclude,
 		changedFiles,
 		signal,
+		bail = false,
+		reuse,
+		slot,
 		scripts = DEFAULT_SCRIPTS,
 	} = options;
 	let includeRootConfig = options.includeRootConfig ?? true;
@@ -482,6 +531,7 @@ export async function runWorkspaceTypecheck(
 		}),
 		timings,
 	).map((ranked) => ranked.workspace);
+	if (bail) workspaces = orderForFirstFailure(workspaces, concurrency);
 	const workspaceCount = fileCounts.size;
 
 	if (workspaces.length === 0) {
@@ -513,37 +563,129 @@ export async function runWorkspaceTypecheck(
 		);
 	}
 
-	const results: WorkspaceTypecheckResult[] = [];
+	// Read before anything runs: a pass recorded below stands for this tree
+	// only when the tree is still the same once the checks have ended.
+	const tree = reuse ? treeFingerprint(root) : undefined;
+	const passes = reuse ? await readPasses(root) : {};
+	const startedAt = Date.now();
+	const passOf = (key: string) => reusablePass(passes, key, tree, startedAt);
+
+	// A failure under `bail` aborts this, and the caller's signal does too.
+	const stop = new AbortController();
+	const stopSignal = signal
+		? AbortSignal.any([signal, stop.signal])
+		: stop.signal;
+	const stopOnFailure = (success: boolean) => {
+		if (!success && bail) stop.abort();
+	};
+
+	// In schedule order, whichever check ends first.
+	const scheduled: (WorkspaceTypecheckResult | undefined)[] = [];
+	const passedKeys: string[] = [];
+	const reused: RecordedPass[] = [];
+	const notRun = new Set<string>();
 	const jobs: (() => Promise<void>)[] = [];
-	if (includeRootConfig)
-		jobs.push(async () => {
-			rootConfig = await typecheckRootConfig({ root, verbose: false, signal });
+	if (includeRootConfig) {
+		const rootConfigKey = passKey(["typecheck", ROOT_CONFIG_JOB]);
+		const pass = passOf(rootConfigKey);
+		if (pass) {
+			reused.push(pass);
+			rootConfig = { ...passedRootConfig(root), reused: pass };
 			logRootConfigResult(rootConfig, verbose);
-		});
-	for (const [i, workspace] of workspaces.entries())
-		jobs.push(async () => {
-			const result = await runSingleTypecheck(workspace, root, verbose, signal);
-			results[i] = result;
+		} else {
+			notRun.add(ROOT_CONFIG_JOB);
+			jobs.push(async () => {
+				const result = await typecheckRootConfig({
+					root,
+					verbose: false,
+					signal: stopSignal,
+				});
+				// Terminated by another check's failure: it has no result of its own.
+				if (stopSignal.aborted) return;
+				notRun.delete(ROOT_CONFIG_JOB);
+				rootConfig = result;
+				if (result.success && result.configFile) passedKeys.push(rootConfigKey);
+				logRootConfigResult(result, verbose);
+				stopOnFailure(result.success);
+			});
+		}
+	}
+	for (const [i, workspace] of workspaces.entries()) {
+		const key = passKey(workspace.command, workspace.path);
+		const pass = passOf(key);
+		if (pass) {
+			reused.push(pass);
+			const result: WorkspaceTypecheckResult = {
+				workspace: workspace.job,
+				duration: 0,
+				success: true,
+				fileCount: workspace.fileCount,
+				reused: pass,
+			};
+			scheduled[i] = result;
 			logWorkspaceResult(result, verbose);
+			continue;
+		}
+		notRun.add(workspace.job);
+		jobs.push(async () => {
+			const result = await runSingleTypecheck(
+				workspace,
+				root,
+				verbose,
+				stopSignal,
+			);
+			if (stopSignal.aborted) return;
+			notRun.delete(workspace.job);
+			scheduled[i] = result;
+			if (result.success) passedKeys.push(key);
+			logWorkspaceResult(result, verbose);
+			stopOnFailure(result.success);
 		});
+	}
 
 	// The checks resolve once their processes are gone, so a cancelled or
-	// failed run rejects only after it has stopped everything it started. Its
-	// durations are not real ones and stay out of the timings.
-	await runBounded(jobs, concurrency, signal);
+	// failed run rejects only after it has stopped everything it started.
+	const runJobs = () => runBounded(jobs, concurrency, stopSignal);
+	try {
+		await (slot && jobs.length > 0 ? slot(runJobs) : runJobs());
+	} catch (error) {
+		// A `bail` stop is this run's own; anything else is the caller's.
+		if (signal?.aborted || !stop.signal.aborted) throw error;
+	}
 
-	await writeTypecheckTimings(root, timings, results);
+	const results = scheduled.filter((result) => result !== undefined);
+	// A check that was terminated or reused has no duration of its own.
+	await writeTypecheckTimings(
+		root,
+		timings,
+		results.filter((result) => !result.reused),
+	);
+	if (reuse && tree !== undefined && treeFingerprint(root) === tree)
+		await recordPasses(root, passedKeys, {
+			tree,
+			at: Date.now(),
+			by: reuse.by,
+		});
 
 	const totalDuration = Number((totalElapsed() / 1000).toFixed(2));
 	const totalFiles = sumBy([...fileCounts.values()], (count) => count);
 	results.push(...problemResults);
 	const success =
-		results.every((r) => r.success) && (rootConfig?.success ?? true);
+		notRun.size === 0 &&
+		results.every((r) => r.success) &&
+		(rootConfig?.success ?? true);
 
 	if (verbose) {
+		if (notRun.size > 0)
+			console.error(
+				`\nStopped at the first failure; not checked: ${[...notRun].join(", ")}`,
+			);
 		if (success) {
+			const checked = results.length + (rootConfig?.configFile ? 1 : 0);
+			const summary = reusedSummary(reused, checked, Date.now());
+			const reusedNote = summary ? `, ${summary}` : "";
 			console.log(
-				`\nAll typecheck checks passed! Total time: ${totalDuration}s (${totalFiles} files)`,
+				`\nAll typecheck checks passed! Total time: ${totalDuration}s (${totalFiles} files)${reusedNote}`,
 			);
 		} else {
 			console.error(`\nTypecheck failed. Total time: ${totalDuration}s`);
@@ -557,5 +699,6 @@ export async function runWorkspaceTypecheck(
 		workspaceCount,
 		results,
 		...(rootConfig ? { rootConfig } : {}),
+		...(notRun.size > 0 ? { notRun: [...notRun] } : {}),
 	};
 }

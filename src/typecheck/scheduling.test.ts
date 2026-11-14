@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
 	defaultTypecheckConcurrency,
 	LOCAL_TYPECHECK_CONCURRENCY_CAP,
+	orderForFirstFailure,
 	requestedTypecheckConcurrency,
 	runBounded,
 	selectWorkspaces,
@@ -172,5 +173,35 @@ describe("runBounded", () => {
 			"interrupted",
 		);
 		expect(started).toEqual([0]);
+	});
+});
+
+describe("orderForFirstFailure", () => {
+	const longestFirst = [
+		"platform 24s",
+		"marketing 9s",
+		"expo 3s",
+		"backend 2s",
+	];
+
+	it("keeps the longest job first and runs the rest shortest first beside it", () => {
+		expect(orderForFirstFailure(longestFirst, 2)).toEqual([
+			"platform 24s",
+			"backend 2s",
+			"expo 3s",
+			"marketing 9s",
+		]);
+		expect(orderForFirstFailure(longestFirst, 3)).toEqual([
+			"platform 24s",
+			"marketing 9s",
+			"backend 2s",
+			"expo 3s",
+		]);
+	});
+
+	it("runs shortest first when one job runs at a time", () => {
+		expect(orderForFirstFailure(longestFirst, 1)).toEqual(
+			longestFirst.toReversed(),
+		);
 	});
 });

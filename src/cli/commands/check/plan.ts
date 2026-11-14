@@ -31,6 +31,12 @@ export interface CommandStep {
 	fix?: string[];
 	/** Its output is `bun test`'s, so a failure prints the failed tests. */
 	bunTest?: boolean;
+	/**
+	 * False for a step `check` always runs: a gate that says its result
+	 * depends on more than the working tree, and the typecheck, which skips
+	 * the workspaces that already passed itself and says so in its output.
+	 */
+	reuse?: false;
 }
 
 interface InlineStepBase {
@@ -86,6 +92,14 @@ export interface CheckRepo {
 	buncargo: readonly string[];
 	/** `--base=<ref>`. */
 	base?: string;
+}
+
+/** How this run goes about the plan: `--keep-going` and `--no-reuse`. */
+export interface CheckRun {
+	/** Run every step, and every workspace's typecheck, past a failure. */
+	keepGoing: boolean;
+	/** Skip what passed on this exact working tree. */
+	reuse: boolean;
 }
 
 /**
@@ -241,6 +255,7 @@ export function planCheck(
 	files: CheckFiles,
 	mode: CheckMode,
 	repo: CheckRepo,
+	run: CheckRun,
 ): CheckPlan {
 	if (mode !== "all" && files.changed.length === 0) return { steps: [] };
 	const steps: Step[] = [];
@@ -281,7 +296,8 @@ export function planCheck(
 
 	// The typecheck picks the changed workspaces and their dependents, and
 	// waits for one of the machine-wide check slots. Staged mode compares the
-	// working tree with HEAD.
+	// working tree with HEAD. It stops at its first failing workspace when
+	// `check` stops at its first failing step.
 	const changedRef = mode === "staged" ? "HEAD" : repo.base;
 	const changedFlag = changedRef ? `--changed=${changedRef}` : "--changed";
 	steps.push({
@@ -292,7 +308,10 @@ export function planCheck(
 			...repo.buncargo,
 			"typecheck",
 			...(mode === "all" ? [] : [changedFlag]),
+			...(run.keepGoing ? [] : ["--bail"]),
+			...(run.reuse ? [] : ["--no-reuse"]),
 		],
+		reuse: false,
 	});
 
 	for (const gate of selectGates(config.gates ?? [], files.changed, mode))
@@ -304,6 +323,7 @@ export function planCheck(
 			cwd: gate.cwd,
 			// Only the default mode writes: --staged and --all report.
 			fix: gate.fix && mode === "changed" ? ["sh", "-c", gate.fix] : undefined,
+			...(gate.reuse === false ? { reuse: false as const } : {}),
 		});
 
 	// The tests next to the changed files are a handful: light enough to run

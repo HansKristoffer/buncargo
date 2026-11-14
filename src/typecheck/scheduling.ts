@@ -39,6 +39,22 @@ export function sortWorkspacesByExpectedDuration<T extends RankedWorkspace>(
 }
 
 /**
+ * The longest-first schedule, reordered for a run that stops at its first
+ * failure: the longest jobs still start first, one fewer than the pool holds,
+ * and the remaining slot takes the rest shortest first. A two-second
+ * workspace's error is then known after two seconds, where longest-first held
+ * it behind every longer job, and the longest job still bounds the run.
+ */
+export function orderForFirstFailure<T>(
+	longestFirst: readonly T[],
+	concurrency: number,
+): T[] {
+	const head = longestFirst.slice(0, concurrency - 1);
+	const rest = longestFirst.slice(concurrency - 1);
+	return [...head, ...rest.reverse()];
+}
+
+/**
  * How many typecheck processes to run at once.
  *
  * CLI `--concurrency` is applied by the caller. Here the env override wins

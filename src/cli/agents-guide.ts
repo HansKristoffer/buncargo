@@ -41,6 +41,7 @@ Use:
 - \`bunx buncargo url <app|service>\`, \`bunx buncargo env --get DATABASE_URL\`.
 - \`bunx buncargo exec -- <command>\` runs a command with this checkout's env.
 - \`bunx buncargo sql -c "<sql>"\`, \`bunx buncargo logs <app> --errors\`.
+- \`bunx buncargo check\`: its last line is exactly \`PASS\` or \`FAIL: <steps>\`.
 - \`bunx buncargo stop\` stops this checkout's run. Before you finish a task,
   run it unless the person is still using the app. A run in their own
   terminal is left running (exit 3): leave it.
@@ -58,8 +59,7 @@ When something fails:
 
 More: \`bunx buncargo help agents <topic>\` (or \`all\`), topics:
 TOPICS.
-Source: https://github.com/HansKristoffer/buncargo; the package ships it in
-node_modules/buncargo/src, and dist/*.js.map map the bundles back to it.`;
+Source: https://github.com/HansKristoffer/buncargo (dist/*.js.map map to it).`;
 
 interface Topic {
 	name: string;
@@ -310,10 +310,24 @@ const TOPICS: readonly Topic[] = [
 - \`bunx buncargo check\` is the check for your change: \`bun fmt\` (when the
   config sets \`check.format\`) and Biome on the changed files, writing their
   fixes, \`typecheck --changed\`, the project's gates and the tests next to
-  the changed files. It ends with \`PASS\`, or \`FAIL:\` and one line per failed
-  step with its exit code and the command that reruns it, and exits 1 on a
-  failure. \`--staged\` is the pre-commit hook and writes nothing; \`--all\`
-  checks everything.
+  the changed files. \`--staged\` is the pre-commit hook and writes nothing;
+  \`--all\` checks everything.
+- The last line of its output is the verdict, exactly \`PASS\` or
+  \`FAIL: <step names>\`, and the exit code is 0 or 1 to match: read
+  \`bunx buncargo check | tail -1\`, never grep for other words. The lines
+  above it name each failed step with its exit code and the command that
+  reruns it. Any other last line means it never ran (bad arguments, a config
+  that does not load).
+- It stops at the first step that fails, and the typecheck at the first
+  workspace, so a failure is printed when it is known. \`--keep-going\` runs
+  every step for the full report.
+- A step that passed on this exact working tree in the last 30 minutes is not
+  run again: \`✓ <step> reused (passed 14s ago in \`buncargo check\`)\`. So
+  a \`check\` after a \`typecheck\`, and the hook's \`check --staged\` after a
+  green \`check\`, take about a second; do not skip the hook to save time.
+  Any edit, staged or not, runs the step again; \`--no-reuse\` forces it
+  (after changing a file git ignores, such as a generated client), and a
+  gate with \`reuse: false\` in the config always runs.
 - \`bunx buncargo typecheck --changed\` checks the workspaces this branch
   touched and the ones depending on them.
 - Typechecks share a few slots across every checkout of this user on the
@@ -402,6 +416,9 @@ const TOPICS: readonly Topic[] = [
   reload the page, and do not share one network between projects to avoid it.
 - \`bunx buncargo setup --yes\` runs the fix of every failing check (missing
   dependencies, generated files).
+- After upgrading buncargo, \`node_modules/buncargo/CHANGELOG.md\` lists what
+  changed in each version and \`node_modules/buncargo/docs/migration.md\` what
+  a project has to change for a major one.
 - Docker out of disk, or hanging: \`bunx buncargo prune --dry-run\` lists the
   volumes of deleted checkouts on the machine (\`--older-than=7d\` for those
   deleted a week ago or longer), and \`bunx buncargo prune --project --dry-run\`

@@ -199,6 +199,13 @@ export interface CheckGateConfig {
 	 * checks again; `--staged` and `--all` only report.
 	 */
 	fix?: string;
+	/**
+	 * Skip the gate when it passed on this exact working tree in the last
+	 * half hour. Default: true. Set false for a gate whose result depends on
+	 * more than the tracked and untracked files: a database, the network, a
+	 * file git ignores.
+	 */
+	reuse?: boolean;
 }
 
 /**

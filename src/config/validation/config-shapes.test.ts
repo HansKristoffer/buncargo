@@ -12,7 +12,7 @@ function errorsOf(
 }
 
 describe("check steps in the config", () => {
-	it("accepts testAlso, testDeferred, a gate fix and rootWide", () => {
+	it("accepts testAlso, testDeferred, a gate fix, rootWide and reuse", () => {
 		expect(
 			errorsOf(validateCheckShape, {
 				testAlso: [{ when: ["src/api/**"], tests: ["test/api.test.ts"] }],
@@ -27,10 +27,16 @@ describe("check steps in the config", () => {
 						command: "x",
 						fix: "bun run gen",
 						rootWide: false,
+						reuse: false,
 					},
 				],
 			}),
 		).toEqual([]);
+		expect(
+			errorsOf(validateCheckShape, {
+				gates: [{ name: "codegen", command: "x", reuse: "no" }],
+			}),
+		).toEqual(["check.gates.0.reuse must be a boolean"]);
 	});
 
 	it("rejects a gate that shadows a built-in step or an earlier gate", () => {
