@@ -1,5 +1,22 @@
 # Changelog
 
+## [15.0.0](https://github.com/HansKristoffer/buncargo/compare/bar-v14.3.0...bar-v15.0.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** Update projects to import runtime APIs from `buncargo/api`, bind services to `127.0.0.1` by default, and adopt the new config, integration, run registry and named-host contracts. Stop existing runs before upgrading; follow the migration guide.
+* **cli:** DockerUnavailableError now extends ContainerRuntimeUnavailableError, its runtime is "docker" and the Docker flavour moved to dockerRuntime. Custom ContainerRuntimeAdapter implementations must add availability(), and projectServiceStates and dockerProjectServiceStates throw when the runtime cannot answer instead of returning an empty list. ServiceRuntimeState requires state. isContainerUp counts paused, restarting, stopping and unknown containers as up. getEnvVar, env, status and url return localhost unless a run of the checkout serves the named URLs. docs/migration.md lists each change and what to do.
+
+### Features
+
+* **cli:** unify run, config and command contracts ([#145](https://github.com/HansKristoffer/buncargo/issues/145)) ([425b23d](https://github.com/HansKristoffer/buncargo/commit/425b23d31fa24c35a5e3b2a052e7082009adb312))
+
+
+### Bug Fixes
+
+* **cli:** fix bugs in buncargo's implicit state machines ([#144](https://github.com/HansKristoffer/buncargo/issues/144)) ([3fbff7d](https://github.com/HansKristoffer/buncargo/commit/3fbff7d659b62078e8bcff2459c22be9fe341c93))
+
 ## [14.3.0](https://github.com/HansKristoffer/buncargo/compare/bar-v14.2.1...bar-v14.3.0) (2026-11-03)
 
 

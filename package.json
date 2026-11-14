@@ -1,6 +1,6 @@
 {
   "name": "buncargo",
-  "version": "15.1.0",
+  "version": "16.0.0",
   "description": "Bun-first dev environments for many checkouts at once: isolated ports, containers, databases and https://*.localhost hosts per worktree, with supervised dev servers",
   "type": "module",
   "module": "./dist/index.js",
