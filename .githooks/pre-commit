@@ -1,0 +1,8 @@
+#!/bin/sh
+# The repo's lint (typecheck, knip, Biome, bun fmt --check), as CI's lint job
+# runs it: about 10 s. `bun install` points git at this directory (the
+# `prepare` script). A commit of only Markdown or menubar/ files, which lint
+# does not read, skips it.
+if git diff --cached --name-only | grep -qvE '\.md$|^menubar/'; then
+	exec bun run lint
+fi

@@ -350,13 +350,14 @@ describe("detached app supervision", () => {
 
 	it("reports a clean exit that leaves no listener", async () => {
 		const exits: (number | null)[] = [];
+		const [port] = freePorts(1);
 		await startDevServers(
 			resolveApps({
-				app: { port: 47001, devCommand: "exit 0", healthEndpoint: false },
+				app: { port, devCommand: "exit 0", healthEndpoint: false },
 			}),
 			process.cwd(),
 			{},
-			{ app: 47001 },
+			{ app: port },
 			{
 				verbose: false,
 				skipContainers: true,
@@ -993,7 +994,8 @@ describe("startDevServers keepOthersOnFailure", () => {
 
 	it("still fails the run when nothing came up, or a later app waits on it", async () => {
 		const root = await mkdtemp(join(tmpdir(), "buncargo-keep-others-"));
-		const [port] = freePorts(1);
+		// Both from the OS: the port next to a free one can be anything's.
+		const [port, nextPort] = freePorts(2);
 		try {
 			await expect(
 				startDevServers(
@@ -1012,14 +1014,14 @@ describe("startDevServers keepOthersOnFailure", () => {
 					resolveApps({
 						base: { port, healthTimeout: 300, devCommand: silent },
 						next: {
-							port: port + 1,
+							port: nextPort,
 							startAfter: ["base"],
-							devCommand: serve(port + 1),
+							devCommand: serve(nextPort),
 						},
 					}),
 					root,
 					{},
-					{ base: port, next: port + 1 },
+					{ base: port, next: nextPort },
 					{ verbose: false, waitForExit: false, keepOthersOnFailure: true },
 				),
 			).rejects.toThrow("next starts after base");

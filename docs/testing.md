@@ -5,7 +5,20 @@
 which keeps unit tests off the developer's machine: failing `docker` and `container` stubs first on
 `PATH`, `DOCKER_HOST` pointed at nothing, a temporary `HOME` for the run, and
 `BUNCARGO_WATCHDOG_PARENT`, so every watchdog a test starts ends with the run. Tests are co-located with their module as `*.test.ts`; test helpers
-shared across files are `*.testing.ts` and excluded from the package.
+shared across files are `*.testing.ts` and excluded from the package. The preload also clears the
+shell's `BUNCARGO_*` flags (only `BUNCARGO_TEST_*` pass through), and a test takes every port it
+listens on or starts an app on from `freePorts` (`src/core/test-env.testing.ts`); the
+architecture test rejects a literal or `+ 1` port.
+
+## What CI runs
+
+`bun run ci:local` runs the jobs of `.github/workflows/ci.yml` on this machine, reading their
+commands from the workflow, with `CI=true` and `GITHUB_ACTIONS=true` set and the shell's
+`BUNCARGO_*` flags removed. By default that is `lint`, `test` and `startup` (about two minutes);
+a job that reaches outside the checkout runs only when named: `--job=docker` creates real
+containers and writes port claims to `~/.buncargo`, `--job=frp` downloads frp and needs Go.
+`--job=lint,test` runs a subset and `--list` prints the commands. The last line is `PASS` or
+`FAIL: <jobs>`. It cannot run the macOS legs of a matrix, and says which jobs have one.
 
 ## Opt-in suites
 
