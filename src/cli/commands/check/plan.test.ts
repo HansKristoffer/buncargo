@@ -166,6 +166,7 @@ describe("planCheck", () => {
 		pinnedBun: "1.4.4",
 		buncargo: ["buncargo"],
 	};
+	const run = { keepGoing: false, reuse: true };
 	const files: CheckFiles = {
 		changed: ["src/a.ts", "readme.md", "gone.ts"],
 		existing: ["src/a.ts", "readme.md"],
@@ -180,7 +181,7 @@ describe("planCheck", () => {
 	} as const;
 
 	it("orders the steps and leaves the deferred tests out of the test run", () => {
-		const plan = planCheck(config, files, "changed", repo);
+		const plan = planCheck(config, files, "changed", repo, run);
 		expect(plan.steps.map((step) => [step.name, step.label])).toEqual([
 			["bun-version", "bun 1.4.4 (.bun-version)"],
 			["format", "bun fmt (2 files)"],
@@ -199,7 +200,7 @@ describe("planCheck", () => {
 
 	it("gives a gate its fix only in the default mode", () => {
 		const gateFix = (mode: "changed" | "staged" | "all") => {
-			const gate = planCheck(config, files, mode, repo).steps.find(
+			const gate = planCheck(config, files, mode, repo, run).steps.find(
 				(step) => step.name === "codegen",
 			);
 			return gate?.kind === "command" ? gate.fix : "missing";
@@ -210,15 +211,57 @@ describe("planCheck", () => {
 	});
 
 	it("drops the deferred tests with the tests step", () => {
-		const plan = planCheck(config, files, "changed", repo);
+		const plan = planCheck(config, files, "changed", repo, run);
 		expect(filterPlan(plan, { skip: ["tests"] }).deferred).toBeUndefined();
 		expect(filterPlan(plan, { only: ["tests"] }).deferred).toEqual(
 			plan.deferred,
 		);
 	});
 
+	it("has the typecheck stop at its first failure and reuse passes as the run does", () => {
+		const typecheck = (mode: "changed" | "staged", options = run) => {
+			const step = planCheck(config, files, mode, repo, options).steps.find(
+				(candidate) => candidate.name === "typecheck",
+			);
+			return step?.kind === "command" ? step.command : [];
+		};
+		expect(typecheck("changed")).toEqual([
+			"buncargo",
+			"typecheck",
+			"--changed",
+			"--bail",
+		]);
+		expect(typecheck("staged")).toEqual([
+			"buncargo",
+			"typecheck",
+			"--changed=HEAD",
+			"--bail",
+		]);
+		expect(typecheck("changed", { keepGoing: true, reuse: false })).toEqual([
+			"buncargo",
+			"typecheck",
+			"--changed",
+			"--no-reuse",
+		]);
+	});
+
+	it("marks a gate that opts out of reuse, and the typecheck, as always run", () => {
+		const gates = [
+			{ name: "codegen", command: "bun run gen --check" },
+			{ name: "schema drift", command: "bun run db:diff", reuse: false },
+		];
+		const plan = planCheck({ gates }, files, "staged", repo, run);
+		const reuse = (name: string) => {
+			const step = plan.steps.find((candidate) => candidate.name === name);
+			return step?.kind === "command" ? step.reuse : "missing";
+		};
+		expect(reuse("codegen")).toBeUndefined();
+		expect(reuse("schema drift")).toBe(false);
+		expect(reuse("typecheck")).toBe(false);
+	});
+
 	it("plans nothing for an empty change", () => {
 		const empty = { changed: [], existing: [], tests: [] };
-		expect(planCheck(config, empty, "staged", repo).steps).toEqual([]);
+		expect(planCheck(config, empty, "staged", repo, run).steps).toEqual([]);
 	});
 });

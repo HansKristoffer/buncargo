@@ -36,6 +36,7 @@ of these anywhere else has written a second owner: flag it and name the first.
 | Which local ports have an established connection (the idle limit's evidence) | `readConnectionActivity` in `src/core/run-limits.ts` |
 | Runs the watchdog stopped, and why | `src/core/removal-log.ts` (`kind: "run-stopped"`) |
 | When a checkout was last used (commands, proxied requests) | `src/core/run-activity.ts`, `src/core/hosts/proxy-activity.ts` |
+| Whether a check step or typecheck job already passed on this working tree | `src/core/check-passes.ts` (`treeFingerprint`, `reusablePass`, `recordPasses`) |
 | JSON state on disk | `src/core/registry-file.ts` (temp file and rename), `src/core/file-lock.ts` (`withFileLock` around a read-modify-write) |
 | The shape a JSON state file must have | a guard built from `src/core/json-shape.ts` and hanzio's `isString`, `isBoolean`, `isOneOf`, its type inferred with `Guarded` |
 

@@ -217,13 +217,39 @@ a non-zero default fails every check in every repo with database tests. They use
 database, every test skipped, and `check` printed `PASS`.
 
 Steps run one at a time with their output buffered: the
-point is one line per step and the tail of the failure, not a live log. The verdict is the exit
-code alone and comes last, with each failure's rerun command: agents read `check | tail`, and a
+point is one line per step and the tail of the failure, not a live log. A run stops at its first
+failing step unless `--keep-going`: agents read the output when the process ends, so a formatting
+failure known at once was read after a 24 s typecheck. The verdict is the exit code alone and is
+the last line by itself, exactly `PASS` or `FAIL: <step names>`, with each failure's rerun command
+above it: agents read `check | tail`, guessed at words to grep for, and a
 format step once printed ✓ over a command that never ran. The typecheck is spawned
 as `buncargo typecheck --changed` through `buncargoCli()`, so it takes a check slot and reads
 `typecheck.concurrency` the same way a typecheck run by hand does; the nearby tests take no slot
 (they are a handful). A root-wide file selects every gate for the reason it selects every
 workspace in `typecheck --changed` (`isRootWideFile`).
+
+Passes are reused (`core/check-passes.ts`, `<root>/.buncargo/check-passes.json`): a command that
+passed on the same working tree within 30 minutes is not run again. One change paid for the same
+typecheck three times: on its own, in `check`, and in the hook's `check --staged` seconds later.
+
+- The tree is `HEAD`'s tree plus the content of every path `git status` lists, untracked files
+  included and the staging letters left out. Every step reads the files on disk, never the index,
+  so the tree `check` passed on is the tree its pre-commit hook sees after `git add`.
+- A pass is keyed by the command's words and working directory. `check` and `check --staged` share
+  a gate's command but not the formatter's or Biome's (write against check, different file lists),
+  which is why those two still run in the hook.
+- The typecheck step is never reused as a step: which workspaces `--changed` selects depends on
+  the merge base, which the tree does not hold. `buncargo typecheck` reuses per workspace job
+  instead, so `check` always spawns it and repeats the `N of M reused (…)` part of its last line.
+  It takes its check slot only once a job has to run: a hook whose every pass is reused would
+  otherwise queue behind other checkouts' typechecks for up to 15 minutes.
+- A pass is recorded only when the tree after the run is the tree the step started on. A formatter
+  that wrote, a gate's `fix`, or an edit made while the typecheck ran leaves a pass that stands
+  for no tree.
+- Ignored files are not part of the tree. `node_modules` is covered because `bun.lock` is tracked
+  and `check` and `typecheck` install when it moves; a generated client is not, which is what the
+  30 minutes, a gate's `reuse: false` and `--no-reuse` are for. CI never reuses: a self-hosted
+  runner keeps its checkout.
 
 `commands/predeploy.ts` runs on a deploy host, not in a checkout: it never builds an environment,
 so no ports, containers or secrets, and the migrations and seed see only the host's variables.
@@ -246,3 +272,7 @@ default. The CLI spec lives in `src/cli/commands/typecheck.ts` (`--concurrency`,
 entry with nothing to check is a failed result, not a skip. `project-tsc.ts` finds the project's
 own `tsc` for both the root config and tsconfig-only includes. Do not shell out to
 `bun run --filter --parallel typecheck`: Bun's workspace graph would serialize dependents.
+`--bail` (what `check` passes) aborts the pool on the first failure and reorders it
+(`orderForFirstFailure`): the longest jobs still start first, one fewer than the pool holds, and
+the last slot takes the rest shortest first. Longest-first alone held a 2 s workspace's error
+behind every longer job.

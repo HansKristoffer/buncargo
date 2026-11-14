@@ -135,6 +135,15 @@ How a run fits together, and the startup invariants: `docs/internals/overview.md
   (`bun check`, Biome lint, then `bun fmt`) and `bun run test`. Leave the repo with all three
   passing. `bun run test` runs the files in parallel (about 15 s); plain `bun test` runs them one
   after another, for a failure that only shows serially.
+- Before opening or updating a PR, run `bun run ci:local`: the jobs of `.github/workflows/ci.yml`
+  on this machine with CI's variables set (`CI`, `GITHUB_ACTIONS`), which is where tests that
+  only fail on a runner and the scripts only CI runs (the startup benchmark, the package check)
+  show up. About two minutes; its last line is `PASS` or `FAIL: <jobs>`. The Docker and frp
+  jobs run only when named (`--job=docker`): the first creates real containers. Details:
+  `docs/testing.md`.
+- `bun install` points git at `.githooks/`, whose pre-commit hook runs `bun run lint` (about
+  10 s) unless the commit holds only Markdown or `menubar/` files. Fix what it reports; do not
+  commit with `--no-verify`.
 - A branch of several commits: `bun scripts/check-commits.ts <base>` runs `bun run lint` on each
   commit on its own (`--test` adds `bun test`).
 - Before handing back a branch, or merging commits another agent made, review the diff with the
@@ -144,6 +153,9 @@ How a run fits together, and the startup invariants: `docs/internals/overview.md
   module observably does, not how it is wired.
 - A test that needs a sleep to pass is wrong. Await the event, poll a condition against a deadline,
   or inject the clock.
+- A test that listens on a port, or starts an app on one, takes it from `freePorts`
+  (`src/core/test-env.testing.ts`). A literal port, or the one next to a free port, belongs to
+  whatever else runs on the machine.
 - Rules with a history of being broken are enforced by `src/architecture.test.ts`. Fix the code
   rather than widening its allow-list.
 - Opt-in suites (real tunnels, mkcert, the hosts soak, Apple `container`, frp, the Shopify CLI)

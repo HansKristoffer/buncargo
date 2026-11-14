@@ -1,5 +1,12 @@
 import { join } from "node:path";
 import { getErrorMessage, startTimer } from "hanzio";
+import {
+	describePass,
+	findReusedSummary,
+	passKey,
+	type RecordedPasses,
+	reusablePass,
+} from "../../../core/check-passes";
 import { childProcessEnv } from "../../../core/child-env";
 import { shellQuote } from "../../../core/shell-quote";
 import type { CommandStep, DeferredTests, InlineStep, Step } from "./plan";
@@ -8,7 +15,10 @@ const OUTPUT_TAIL_LINES = 80;
 
 /** A step that failed: what the verdict at the end of `check` names. */
 export interface StepFailure {
+	/** What `--only` calls the step, and the verdict's last line. */
 	name: string;
+	/** The step line's text, which also counts a chunk's files. */
+	label: string;
 	/** The exit code, or why the command could not start (`E2BIG: …`). */
 	reason: string;
 	/** How to run it again by hand, from the repository root. */
@@ -46,32 +56,40 @@ function plural(count: number, noun: string): string {
 	return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
+/** What ends `check` on a failure: the last line of its output. */
+const FAIL_PREFIX = "FAIL: ";
+
 /**
- * The last lines `check` prints: `PASS` or the failed steps, each with its
- * exit code and the command to rerun it, and the tests it left out, so
- * `buncargo check | tail` has the whole verdict. Strict deferred tests fail
- * it.
+ * The last lines `check` prints: each failed step with its exit code and the
+ * command to rerun it, the steps a failure kept from running, the tests it
+ * left out, and then the verdict alone on the last line, exactly `PASS` or
+ * `FAIL: <step names>`, so `buncargo check | tail -1` is the whole answer.
+ * The names are the ones `--only` takes. Strict deferred tests fail it.
  */
 export function formatVerdict(
 	failures: readonly StepFailure[],
 	deferred?: DeferredTests,
+	notRun: readonly string[] = [],
 ): string[] {
-	const notRun = deferred
+	const notRunTests = deferred
 		? `${plural(deferred.files.length, "test file")} not run`
 		: undefined;
-	const failedNames = failures.map((failure) => failure.name);
-	if (notRun && deferred?.strict) failedNames.push(notRun);
-	let head = notRun ? `PASS, ${notRun}` : "PASS";
-	if (failedNames.length > 0) head = `FAIL: ${failedNames.join(", ")}`;
+	const failed = new Set(failures.map((failure) => failure.name));
+	if (deferred?.strict) failed.add("tests");
 	return [
-		head,
 		...failures.map(
 			(failure) =>
-				`  ✗ ${failure.name} (${failure.reason}) · rerun: ${failure.rerun}`,
+				`  ✗ ${failure.label} (${failure.reason}) · rerun: ${failure.rerun}`,
 		),
-		...(deferred
-			? [`  - ${notRun}, they need services: ${deferred.command}`]
+		...(notRun.length > 0
+			? [
+					`  - stopped at the first failure, not run: ${notRun.join(", ")} (--keep-going runs every step)`,
+				]
 			: []),
+		...(deferred
+			? [`  - ${notRunTests}, they need services: ${deferred.command}`]
+			: []),
+		failed.size > 0 ? `${FAIL_PREFIX}${[...failed].join(", ")}` : "PASS",
 	];
 }
 
@@ -159,11 +177,28 @@ async function attempt(
 	return { code, reason, output: `${stdout}${stderr}`.trim() };
 }
 
+/** The passes a run may reuse, and how it reads the tree they stand for. */
+export interface StepReuse {
+	passes: RecordedPasses;
+	/** The working tree now ({@link treeFingerprint}); a step may have written. */
+	tree: () => string | undefined;
+}
+
+/** A command step that passed, and the tree it started on. */
+interface StepPass {
+	key: string;
+	tree: string;
+}
+
 /**
  * Runs steps one at a time: one line per step, the output of a failing one,
  * and the failures for the verdict. A step passes on exit code 0 and nothing
  * else: a command that cannot even start (`E2BIG`, not installed) fails, and
  * so does one killed by a signal.
+ *
+ * With `reuse`, a command that passed on this exact tree is not run again:
+ * its line names the run it passed in. A step with `reuse: false` always
+ * runs; the typecheck is one, and its line repeats what it reused itself.
  *
  * In GitHub Actions each step is a collapsed `::group::`, a failure prints
  * its whole output and an `::error` annotation; elsewhere it prints the last
@@ -172,9 +207,11 @@ async function attempt(
 export function stepRunner(
 	root: string,
 	print: (line: string) => void,
-	{ github }: { github: boolean },
+	{ github, reuse }: { github: boolean; reuse?: StepReuse },
 ) {
 	const failures: StepFailure[] = [];
+	const passed: StepPass[] = [];
+	let tree = reuse?.tree();
 
 	const showOutput = (output: string, bunTest: boolean) => {
 		if (!output) return;
@@ -189,12 +226,14 @@ export function stepRunner(
 	const finish = (
 		step: Step,
 		elapsed: () => number,
-		failure: Omit<StepFailure, "name" | "rerun"> | undefined,
+		failure: Pick<StepFailure, "reason"> | undefined,
+		note?: string,
 	) => {
 		if (github) print("::endgroup::");
 		const seconds = (elapsed() / 1000).toFixed(1);
 		if (!failure) {
-			print(`✓ ${step.label} ${seconds}s`);
+			const suffix = note ? ` · ${note}` : "";
+			print(`✓ ${step.label} ${seconds}s${suffix}`);
 			return;
 		}
 		const rerun = stepRerun(step);
@@ -203,7 +242,12 @@ export function stepRunner(
 			print(
 				`::error title=${escapeWorkflowProperty(step.name)}::${escapeWorkflowData(`${failure.reason} · rerun: ${rerun}`)}`,
 			);
-		failures.push({ name: step.label, reason: failure.reason, rerun });
+		failures.push({
+			name: step.name,
+			label: step.label,
+			reason: failure.reason,
+			rerun,
+		});
 	};
 
 	const begin = (step: Step) => {
@@ -211,33 +255,65 @@ export function stepRunner(
 		return startTimer();
 	};
 
+	/** Runs the step, with its `fix` and one more try when it fails. */
+	const execute = async (step: CommandStep): Promise<number> => {
+		const elapsed = begin(step);
+		const cwd = step.cwd ? join(root, step.cwd) : root;
+		let result = await attempt(step.command, cwd);
+		if (result.code !== 0 && step.fix) {
+			print(
+				`… ${step.label} failed; running its fix: ${rerunCommand({ command: step.fix })}`,
+			);
+			const fix = await attempt(step.fix, cwd);
+			if (fix.code !== 0) {
+				showOutput(fix.output, false);
+				finish(step, elapsed, { reason: `fix: ${fix.reason}` });
+				return fix.code;
+			}
+			result = await attempt(step.command, cwd);
+			if (result.code === 0)
+				print(`fixed by ${rerunCommand({ command: step.fix })}`);
+		}
+		if (result.code !== 0) showOutput(result.output, step.bunTest === true);
+		// The typecheck's own account of the workspaces it did not check again.
+		const note =
+			step.reuse === false ? findReusedSummary(result.output) : undefined;
+		finish(step, elapsed, result.code === 0 ? undefined : result, note);
+		return result.code;
+	};
+
 	return {
 		failures,
+		/**
+		 * The steps whose pass stands for the tree as it is now. One that ran
+		 * before another step wrote a file checked a tree that is gone.
+		 */
+		passedOnTree(): { keys: string[]; tree: string | undefined } {
+			const onTree = passed.filter((pass) => pass.tree === tree);
+			return { keys: onTree.map((pass) => pass.key), tree };
+		},
 		/**
 		 * Resolves to the step's exit code; a command that could not start is
 		 * 127. A failing step with a `fix` runs it and is checked once more.
 		 */
 		async run(step: CommandStep): Promise<number> {
-			const elapsed = begin(step);
-			const cwd = step.cwd ? join(root, step.cwd) : root;
-			let result = await attempt(step.command, cwd);
-			if (result.code !== 0 && step.fix) {
-				print(
-					`… ${step.label} failed; running its fix: ${rerunCommand({ command: step.fix })}`,
-				);
-				const fix = await attempt(step.fix, cwd);
-				if (fix.code !== 0) {
-					showOutput(fix.output, false);
-					finish(step, elapsed, { reason: `fix: ${fix.reason}` });
-					return fix.code;
-				}
-				result = await attempt(step.command, cwd);
-				if (result.code === 0)
-					print(`fixed by ${rerunCommand({ command: step.fix })}`);
+			const key = passKey(step.command, step.cwd);
+			const pass =
+				reuse && step.reuse !== false
+					? reusablePass(reuse.passes, key, tree, Date.now())
+					: undefined;
+			if (pass) {
+				print(`✓ ${step.label} reused (${describePass(pass, Date.now())})`);
+				return 0;
 			}
-			if (result.code !== 0) showOutput(result.output, step.bunTest === true);
-			finish(step, elapsed, result.code === 0 ? undefined : result);
-			return result.code;
+
+			const treeBefore = tree;
+			const code = await execute(step);
+			// Read again: the step, or its fix, may have written files.
+			tree = reuse?.tree();
+			if (code === 0 && treeBefore !== undefined && step.reuse !== false)
+				passed.push({ key, tree: treeBefore });
+			return code;
 		},
 		/** A step `check` does itself: it fails with any problem. */
 		inline(step: InlineStep, problems: readonly string[]) {

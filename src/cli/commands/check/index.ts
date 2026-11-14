@@ -1,9 +1,15 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { getErrorMessage, typedSwitch } from "hanzio";
+import {
+	readPasses,
+	recordPasses,
+	runName,
+	treeFingerprint,
+} from "../../../core/check-passes";
 import { buncargoCli } from "../../../core/cli-entry";
 import { findMonorepoRoot } from "../../../core/ports";
-import { isGitHubActions } from "../../../core/runtime-flags";
+import { isCI, isGitHubActions } from "../../../core/runtime-flags";
 import { loadCheckConfig } from "../../../loader/config-settings";
 import { changedFilesSince } from "../../../typecheck/changed";
 import type { CheckConfig } from "../../../types";
@@ -26,6 +32,7 @@ import {
 import {
 	type CheckMode,
 	type CheckPlan,
+	type CheckRun,
 	filterPlan,
 	type InlineStep,
 	planCheck,
@@ -141,6 +148,16 @@ const CHECK_SPEC = {
 			value: "<steps>",
 			description: "Leave these steps out (comma-separated names from --list)",
 		},
+		"keep-going": {
+			kind: "boolean",
+			description:
+				"Run every step past a failure, for the full report (default: stop at the first)",
+		},
+		"no-reuse": {
+			kind: "boolean",
+			description:
+				"Run every step again, even one that passed on this exact working tree",
+		},
 		list: {
 			kind: "boolean",
 			description: "Print the steps this change would run, and run nothing",
@@ -172,6 +189,10 @@ const CHECK_SPEC = {
 			command: "buncargo check --skip=typecheck",
 			description: "The rest, when the typecheck runs as its own CI job",
 		},
+		{
+			command: "buncargo check --all --keep-going",
+			description: "Every failure in one run, not only the first",
+		},
 	],
 } as const;
 
@@ -196,6 +217,12 @@ async function check({
 		errors.push("--base only applies to the default changed-files mode.");
 	if (json && !list) errors.push("--json only applies to --list.");
 	if (errors.length > 0) throw argumentsError(errors, "check");
+	// CI checks what it was given: a runner that keeps its checkout must not
+	// answer from an earlier job.
+	const run: CheckRun = {
+		keepGoing: values["keep-going"],
+		reuse: !values["no-reuse"] && !isCI(),
+	};
 
 	const root = findMonorepoRoot();
 	const config = await loadConfig(root);
@@ -229,12 +256,18 @@ async function check({
 			: [];
 	const cli = buncargoCli();
 	const plan = filterPlan(
-		planCheck(config, { changed, existing, tests }, mode, {
-			biome: BIOME_CONFIGS.some((file) => existsSync(join(root, file))),
-			pinnedBun: pinnedBunVersion(root),
-			buncargo: [cli.program, ...(cli.script ? [cli.script] : [])],
-			base,
-		}),
+		planCheck(
+			config,
+			{ changed, existing, tests },
+			mode,
+			{
+				biome: BIOME_CONFIGS.some((file) => existsSync(join(root, file))),
+				pinnedBun: pinnedBunVersion(root),
+				buncargo: [cli.program, ...(cli.script ? [cli.script] : [])],
+				base,
+			},
+			run,
+		),
 		{ only, skip },
 	);
 
@@ -243,25 +276,52 @@ async function check({
 		return 0;
 	}
 	if (mode !== "all" && changed.length === 0) {
-		console.log("nothing changed: PASS");
+		console.log("nothing changed");
+		console.log(formatVerdict([]).join("\n"));
 		return 0;
 	}
-	return runPlan(root, config, plan);
+	return runPlan(root, config, plan, run);
 }
 
-/** Runs the plan's steps in order and prints the verdict; resolves to the exit code. */
+/**
+ * Runs the plan's steps in order, up to the first failure unless the run
+ * keeps going, and prints the verdict; resolves to the exit code.
+ */
 async function runPlan(
 	root: string,
 	config: CheckConfig,
 	plan: CheckPlan,
+	run: CheckRun,
 ): Promise<number> {
-	const runner = stepRunner(root, console.log, { github: isGitHubActions() });
-	for (const step of plan.steps) {
+	const runner = stepRunner(root, console.log, {
+		github: isGitHubActions(),
+		reuse: run.reuse
+			? {
+					passes: await readPasses(root),
+					tree: () => treeFingerprint(root),
+				}
+			: undefined,
+	});
+	let notRun: string[] = [];
+	for (const [index, step] of plan.steps.entries()) {
 		if (step.kind === "command") await runner.run(step);
 		else runner.inline(step, inlineProblems(root, config, step));
+		if (runner.failures.length > 0 && !run.keepGoing) {
+			const rest = plan.steps.slice(index + 1).map((later) => later.name);
+			notRun = [...new Set(rest)];
+			break;
+		}
 	}
 
-	for (const line of formatVerdict(runner.failures, plan.deferred))
+	const { keys, tree } = runner.passedOnTree();
+	if (tree !== undefined)
+		await recordPasses(root, keys, {
+			tree,
+			at: Date.now(),
+			by: runName(process.argv.slice(2)),
+		});
+
+	for (const line of formatVerdict(runner.failures, plan.deferred, notRun))
 		console.log(line);
 	return verdictFails(runner.failures, plan.deferred) ? 1 : 0;
 }

@@ -184,6 +184,9 @@ try {
 	// Bun loads the same build the CLI runs: a second copy of a module keeps
 	// its own module state. The package ships no source to load.
 	assert(!existsSync(join(installed, "src")), "the package ships src/");
+	// What an agent upgrading buncargo in a project reads to see what changed.
+	for (const file of ["CHANGELOG.md", "docs/migration.md"])
+		assert(existsSync(join(installed, file)), `the package omits ${file}`);
 	const rootModules: string[] = JSON.parse(
 		command(
 			[

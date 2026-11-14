@@ -300,6 +300,8 @@ Options:
   --only=<workspaces>  Check only these workspaces (path or basename, comma-separated)
   --group=<name>       Check one of the config's typecheck.groups (CI runners)
   --changed[=<ref>]    Check only workspaces changed since the merge base with <ref> (default: origin's default branch), and their dependents
+  --bail               Stop at the first workspace that fails instead of checking them all
+  --no-reuse           Check every workspace again, even one that passed on this exact working tree
   --help, -h           Show this help message
 
 Exit codes:
@@ -337,6 +339,8 @@ Options:
   --base=<ref>    Compare with the merge base of <ref> (default: origin's default branch)
   --only=<steps>  Run only these steps (comma-separated names from --list)
   --skip=<steps>  Leave these steps out (comma-separated names from --list)
+  --keep-going    Run every step past a failure, for the full report (default: stop at the first)
+  --no-reuse      Run every step again, even one that passed on this exact working tree
   --list          Print the steps this change would run, and run nothing
   --json          With --list: one JSON document on stdout
   --help, -h      Show this help message
@@ -353,6 +357,7 @@ Examples:
   buncargo check --all                Every check but the tests, e.g. as \`bun run lint\`
   buncargo check --all --list --json  Every step's name and command, e.g. for a CI matrix
   buncargo check --skip=typecheck     The rest, when the typecheck runs as its own CI job
+  buncargo check --all --keep-going   Every failure in one run, not only the first
 
 Run "bunx buncargo check <command> --help" for a command's options.
 
@@ -1250,6 +1255,7 @@ Use:
 - \`bunx buncargo url <app|service>\`, \`bunx buncargo env --get DATABASE_URL\`.
 - \`bunx buncargo exec -- <command>\` runs a command with this checkout's env.
 - \`bunx buncargo sql -c "<sql>"\`, \`bunx buncargo logs <app> --errors\`.
+- \`bunx buncargo check\`: its last line is exactly \`PASS\` or \`FAIL: <steps>\`.
 - \`bunx buncargo stop\` stops this checkout's run. Before you finish a task,
   run it unless the person is still using the app. A run in their own
   terminal is left running (exit 3): leave it.
@@ -1267,8 +1273,7 @@ When something fails:
 
 More: \`bunx buncargo help agents <topic>\` (or \`all\`), topics:
 start, runs, env, db, ports, logs, check, files, share, fail, config, exits.
-Source: https://github.com/HansKristoffer/buncargo; the package ships it in
-node_modules/buncargo/src, and dist/*.js.map map the bundles back to it.
+Source: https://github.com/HansKristoffer/buncargo (dist/*.js.map map to it).
 
 --- stderr
 "

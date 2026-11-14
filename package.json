@@ -29,6 +29,7 @@
   "files": [
     "dist",
     "readme.md",
+    "CHANGELOG.md",
     "docs/reference.md",
     "docs/integrations.md",
     "docs/migration.md",
@@ -98,6 +99,7 @@
     "build:js": "bun build ./src/index.ts ./src/api/index.ts ./src/cli/bin.ts ./src/core/watchdog-runner.ts ./src/vite/index.ts ./src/next/index.ts ./src/expo/index.ts ./src/shopify/index.ts ./src/supabase/index.ts ./src/firebase/index.ts ./src/client/index.ts ./src/runtime/index.ts --outdir ./dist --root ./src --target node --packages external --splitting --sourcemap=linked",
     "build:types": "tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
+    "prepare": "git config core.hooksPath .githooks || true",
     "fmt": "bun fmt --no-script '{src,scripts,example,server/connect}/**/*.{ts,tsx,js,jsx,mjs,cjs,json,jsonc}'",
     "lint": "bun run typecheck && knip && biome check src scripts example server/connect && bun fmt --no-script --check '{src,scripts,example,server/connect}/**/*.{ts,tsx,js,jsx,mjs,cjs,json,jsonc}'",
     "lint:write": "bun run typecheck && knip && biome check --fix src scripts example server/connect && bun run fmt",
@@ -110,6 +112,7 @@
     "test:integration-hosts-soak": "BUNCARGO_TEST_HOSTS_SOAK=1 bun test src/core/hosts/worktree-soak.test.ts",
     "test:integration-apple": "BUNCARGO_TEST_APPLE_CONTAINER=1 bun test src/apple-container/apple-container.integration.test.ts",
     "verify:package": "bun scripts/verify-package.ts",
+    "ci:local": "bun scripts/ci-local.ts",
     "test:integration-frp": "BUNCARGO_TEST_FRP=1 bun test src/core/connect/frp.integration.test.ts",
     "test:integration-shopify-cli": "BUNCARGO_TEST_SHOPIFY_CLI=1 bun test src/shopify/cli-contract.test.ts",
     "benchmark:startup": "bun scripts/benchmark-startup-matrix.ts",

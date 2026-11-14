@@ -50,6 +50,48 @@ function importGraph(entry: string): Set<string> {
 	return new Set([...seen].map((file) => relative(ROOT, file)));
 }
 
+/** Every test file and test helper under `src/` and `scripts/`, but this one. */
+function testFiles(): string[] {
+	return allTypeScriptFiles().filter(
+		(path) =>
+			/\.test\.ts$|\.testing\.ts$/.test(path) &&
+			path !== "src/architecture.test.ts",
+	);
+}
+
+/**
+ * Where a test's `source` fixes a port the machine may already use: a number
+ * added to a port, a literal port given to a listener, and a literal `port:`
+ * in a file that starts apps with `startDevServers`.
+ */
+function hostDependentPorts(source: string): string[] {
+	const fromOs = [...source.matchAll(/\[([\w\s,]+)\]\s*=\s*freePorts\(/g)]
+		.flatMap((match) => (match[1] ?? "").split(","))
+		.map((name) => name.trim())
+		.filter(Boolean);
+	// `port`, `apiPort`, and whatever `freePorts` was destructured into.
+	const portNames = ["port", "\\w*Port", ...fromOs].join("|");
+	const computed = new RegExp(
+		`(?<![\\w$.])((?:\\w+\\.)*(?:${portNames}) \\+ \\d+)\\b`,
+		"g",
+	);
+	// The first object of the call, as far as its `port`.
+	const listener = /Bun\.(?:serve|listen)\(\{[^}]*?\b(port:\s*[1-9]\d*)\b/g;
+	const listen = /(\.listen\([1-9]\d*)\b/g;
+	const startsApps = /\bstartDevServers\(/.test(source);
+	const literal = /\b(port:\s*[1-9]\d*)\b/g;
+
+	const found = [
+		...[...source.matchAll(computed)].map((match) => match[1] ?? ""),
+		...[...source.matchAll(listener)].map((match) => match[1] ?? ""),
+		...[...source.matchAll(listen)].map((match) => match[1] ?? ""),
+		...(startsApps
+			? [...source.matchAll(literal)].map((match) => match[1] ?? "")
+			: []),
+	];
+	return [...new Set(found)];
+}
+
 /**
  * Where `source` lets a caller relocate state through an optional `home`
  * instead of `HOME`: a `home?:` parameter or field, or a `home` defaulted in
@@ -150,6 +192,64 @@ describe("architecture", () => {
 			.filter((file) => emptied.test(readFileSync(join(ROOT, file), "utf8")));
 
 		expect(offenders).toEqual([]);
+	});
+
+	it("takes every port a test listens on, or starts an app on, from the OS", () => {
+		// A fixed port is free on the machine that wrote the test: 10100 was
+		// held by another repository's dev stack here, and `api + 1` by a
+		// process on a macOS runner, where a 404 counted as the app being up.
+		// `freePorts` (src/core/test-env.testing.ts) hands out ports nothing
+		// listens on. A port in a config that is only planned, never bound,
+		// is not this rule's business.
+		const allowed: Record<string, string> = {
+			"src/docker-compose/services/service.test.ts: config.port + 10":
+				"a fake allocator's offset, in a test that binds nothing",
+			"src/docker-compose/services/service.test.ts: config.secondaryPort + 10":
+				"the same fake allocator",
+			"src/core/process/port-drift.test.ts: port: 8021":
+				"a holder row for the pure drift decision; the apps it starts use freePorts",
+		};
+		const offenders = testFiles()
+			.flatMap((file) =>
+				hostDependentPorts(readFileSync(join(ROOT, file), "utf8")).map(
+					(found) => `${file}: ${found}`,
+				),
+			)
+			.filter((offender) => !(offender in allowed));
+
+		expect(offenders).toEqual([]);
+	});
+
+	it("catches a fixed or computed port however it is written", () => {
+		const found = (source: string) => hostDependentPorts(source);
+
+		expect(found("const [api] = freePorts(1);\nconst web = api + 1;")).toEqual([
+			"api + 1",
+		]);
+		expect(found("devCommand: serve(port + 1)")).toEqual(["port + 1"]);
+		expect(found("Bun.serve({\n\tport: 3000,\n\tfetch })")).toEqual([
+			"port: 3000",
+		]);
+		expect(found("`Bun.listen({hostname: h, port:10100, socket})`")).toEqual([
+			"port:10100",
+		]);
+		expect(found("server.listen(8080, () => {})")).toEqual([".listen(8080"]);
+		expect(
+			found("await startDevServers(resolveApps({ app: { port: 47001 } }))"),
+		).toEqual(["port: 47001"]);
+
+		expect(
+			found(
+				[
+					"const [api, web] = freePorts(2);",
+					"Bun.serve({ port: api, fetch });",
+					"Bun.listen({ hostname: h, port: 0, socket });",
+					"server.listen(port, '127.0.0.1');",
+					"const config = { apps: { api: { port: 3000 } } };",
+					"const total = reports + 1;",
+				].join("\n"),
+			),
+		).toEqual([]);
 	});
 
 	it("attaches every doc comment to a declaration", () => {
