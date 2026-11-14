@@ -1,5 +1,25 @@
 # Changelog
 
+## [16.0.0](https://github.com/HansKristoffer/buncargo/compare/v15.1.0...v16.0.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `buncargo check` stops at the first failing step (pass `--keep-going` for every failure), its last line is exactly `PASS` or `FAIL` and the step names, with the detail lines moved above it and `PASS, 1 test file not run` now `PASS`, and `check` and `typecheck` skip what passed on the same working tree in the last 30 minutes outside CI (`--no-reuse`, or `reuse: false` on a gate that reads more than the tree).
+* **cli:** Update projects to import runtime APIs from `buncargo/api`, bind services to `127.0.0.1` by default, and adopt the new config, integration, run registry and named-host contracts. Stop existing runs before upgrading; follow the migration guide.
+* **cli:** DockerUnavailableError now extends ContainerRuntimeUnavailableError, its runtime is "docker" and the Docker flavour moved to dockerRuntime. Custom ContainerRuntimeAdapter implementations must add availability(), and projectServiceStates and dockerProjectServiceStates throw when the runtime cannot answer instead of returning an empty list. ServiceRuntimeState requires state. isContainerUp counts paused, restarting, stopping and unknown containers as up. getEnvVar, env, status and url return localhost unless a run of the checkout serves the named URLs. docs/migration.md lists each change and what to do.
+
+### Features
+
+* **cli:** reuse a passed check so the pre-commit hook takes a second ([#146](https://github.com/HansKristoffer/buncargo/issues/146)) ([a15cf96](https://github.com/HansKristoffer/buncargo/commit/a15cf964f81d09b3fc8374749c302f653e71e90a))
+* **cli:** unify run, config and command contracts ([#145](https://github.com/HansKristoffer/buncargo/issues/145)) ([425b23d](https://github.com/HansKristoffer/buncargo/commit/425b23d31fa24c35a5e3b2a052e7082009adb312))
+
+
+### Bug Fixes
+
+* **cli:** fix bugs in buncargo's implicit state machines ([#144](https://github.com/HansKristoffer/buncargo/issues/144)) ([3fbff7d](https://github.com/HansKristoffer/buncargo/commit/3fbff7d659b62078e8bcff2459c22be9fe341c93))
+* **deps:** depend on hanzio ^3.4.0 so projects share one copy ([#142](https://github.com/HansKristoffer/buncargo/issues/142)) ([2687b28](https://github.com/HansKristoffer/buncargo/commit/2687b28002b113c5e4a1883c253931dc90d484d8))
+
 ## [15.1.0](https://github.com/HansKristoffer/buncargo/compare/v15.0.0...v15.1.0) (2026-11-03)
 
 
