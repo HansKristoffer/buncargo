@@ -5,7 +5,6 @@ import { join } from "node:path";
 import type { DevEnvVarsApi } from "./env-vars";
 import {
 	resolveBunSeedSpecifier,
-	runSeedCommand,
 	runSeedIfNeeded,
 	type SeedContext,
 } from "./seeding";
@@ -139,8 +138,8 @@ describe("runSeedIfNeeded", () => {
 	});
 });
 
-describe("runSeedCommand", () => {
-	it("exits after a Bun seed module that leaves open handles", async () => {
+describe("a Bun seed script", () => {
+	it("exits after a module that leaves open handles", async () => {
 		const root = join(tmpdir(), `buncargo-seed-${Date.now()}`);
 		mkdirSync(root, { recursive: true });
 		const seedPath = join(root, "seed.ts");
@@ -150,13 +149,13 @@ describe("runSeedCommand", () => {
 		);
 
 		try {
-			const result = await runSeedCommand({
-				command: "bun run ./seed.ts",
+			const { ctx, envVars } = stubSeedContext({
 				root,
-				envVars: {},
-				verbose: false,
+				command: "bun run ./seed.ts",
 			});
-			expect(result.exitCode).toBe(0);
+			const outcome = await runSeedIfNeeded(ctx, envVars, { verbose: false });
+
+			expect(outcome.status).toBe("succeeded");
 			expect(await Bun.file(join(root, "ok.txt")).text()).toBe("ok");
 		} finally {
 			rmSync(root, { recursive: true, force: true });

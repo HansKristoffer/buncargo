@@ -152,6 +152,7 @@ describe("createRunClaimApi", () => {
 		expect(await holdOf(claim.sessionId)).toEqual({ kind: "checkout" });
 		await claim.retireRun({ containersDown: true });
 	});
+
 	it("takes over the hold of a stack another run left in its hold, unless it asked for a hold itself", async () => {
 		// A detached run released with three minutes; a one-second library
 		// `start()` reused its containers, and its "keep forever" entry, the

@@ -27,23 +27,25 @@ export function assertAppWorkingDirectories(
 	production = false,
 ): void {
 	for (const [name, app] of Object.entries(apps)) {
-		if (
-			typeof (production
-				? (app.prodCommand ?? app.devCommand)
-				: app.devCommand) !== "string"
-		)
-			continue;
+		// An app without a command to run has no cwd to check.
+		const command = production
+			? (app.prodCommand ?? app.devCommand)
+			: app.devCommand;
+		if (typeof command !== "string") continue;
+
 		const cwd = resolve(root, app.cwd ?? ".");
 		let directory = false;
 		try {
 			directory = statSync(cwd).isDirectory();
 		} catch {
-			/* Report the field below. */
+			// A missing path is reported below, with the field that names it.
 		}
-		if (!directory)
+
+		if (!directory) {
 			throw new Error(
 				`apps.${name}.cwd is not an accessible directory: ${cwd}`,
 			);
+		}
 	}
 }
 
@@ -58,12 +60,13 @@ export function createServerHookRunner(
 	return async (phase, signal) => {
 		const hook =
 			ctx.config.hooks?.[phase === "before" ? "beforeServers" : "afterServers"];
-		if (hook)
-			await withDeadline(
-				(hookSignal) => hook(envVars.getHookContext(hookSignal)),
-				600_000,
-				signal,
-			);
+		if (!hook) return;
+
+		await withDeadline(
+			(hookSignal) => hook(envVars.getHookContext(hookSignal)),
+			600_000,
+			signal,
+		);
 	};
 }
 
@@ -123,6 +126,7 @@ export function createServersApi(
 			watchdog: false,
 			seed: { kind: "none" },
 		};
+
 		const claimed = await appPipeline.claimApps(prepared, {
 			signal: options.signal,
 		});
@@ -145,6 +149,8 @@ export function createServersApi(
 			onlyApps,
 			expandRequired = true,
 		} = options;
+
+		// Without `expandRequired`, wait for exactly the named apps, not the apps they need.
 		const appsToWait =
 			onlyApps && !expandRequired
 				? Object.fromEntries(
@@ -154,6 +160,7 @@ export function createServersApi(
 						}),
 					)
 				: resolveSelectedApps(apps, onlyApps).apps;
+
 		await waitForDevServers(appsToWait, ports, {
 			productionBuild,
 			signal: options.signal,
