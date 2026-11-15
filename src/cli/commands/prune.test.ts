@@ -171,7 +171,7 @@ describe("buncargo prune --project", () => {
 		expect(removals()).toEqual([]);
 	});
 
-	it("decides each stack again at removal: a container that started since the listing keeps it (round 1 F3)", async () => {
+	it("decides each stack again at removal: a container that started since the listing keeps it", async () => {
 		listing({
 			containers: [`c1\tpp-app-ci\texited\t${main}`],
 			containersNext: [`c1\tpp-app-ci\trunning\t${main}`],
@@ -185,7 +185,7 @@ describe("buncargo prune --project", () => {
 		expect(removals()).toEqual([]);
 	});
 
-	it("keeps the rest of a stack when Docker refuses one of its containers (round 1 F3)", async () => {
+	it("keeps the rest of a stack when Docker refuses one of its containers", async () => {
 		listing({
 			containers: [
 				`c1\tpp-app-ci\texited\t${main}`,

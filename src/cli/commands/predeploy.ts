@@ -45,6 +45,7 @@ export function predeployEnvironment(
 		.map((name) => env[name])
 		.find((value) => value !== undefined && value !== "");
 	const environment = named ?? "dev";
+
 	return {
 		environment,
 		production: (config.production ?? DEFAULT_PRODUCTION).includes(environment),
@@ -66,22 +67,29 @@ function planPredeploySeed(
 	| { kind: "seed"; command: string; cwd?: string }
 	| { kind: "skip"; reason: string } {
 	const { environment } = deploy;
+
 	// The dev seeder may create known accounts; a deploy runs it only on purpose.
-	if (config.seed === undefined)
+	if (config.seed === undefined) {
 		return {
 			kind: "skip",
 			reason:
 				"predeploy.seed is not set: not seeding. Set it to a command, or to true for the dev seed.command.",
 		};
+	}
+
 	const fromDev = config.seed === true;
 	const command = config.seed === true ? devSeed?.command : config.seed;
-	if (!command)
+	if (!command) {
 		throw new CliError(
 			"predeploy.seed is true, but the config has no seed.command to run.",
 			["Set seed.command, or give predeploy.seed the command itself."],
 		);
-	if (deploy.production)
+	}
+
+	if (deploy.production) {
 		return { kind: "skip", reason: "production: not seeding." };
+	}
+
 	if (!deploy.named) {
 		const variables = (config.environmentVars ?? DEFAULT_ENVIRONMENT_VARS).join(
 			" or ",
@@ -93,11 +101,13 @@ function planPredeploySeed(
 	}
 	const excluded =
 		config.seedIn !== undefined && !config.seedIn.includes(environment);
-	if (excluded)
+	if (excluded) {
 		return {
 			kind: "skip",
 			reason: `"${environment}" is not in predeploy.seedIn: not seeding.`,
 		};
+	}
+
 	return { kind: "seed", command, cwd: fromDev ? devSeed?.cwd : undefined };
 }
 
@@ -134,8 +144,10 @@ function readPredeployInputs(
 		{ prisma, migrations, seed },
 		createShapeChecks(errors),
 	);
-	if (errors.length > 0)
+	if (errors.length > 0) {
 		throw new CliError(errors[0] ?? "Invalid dev config.", errors.slice(1));
+	}
+
 	// Validated above; `predeploy` by the loader.
 	return { predeploy, prisma, migrations, seed } as PredeployInputs;
 }
@@ -159,6 +171,7 @@ async function runShell(command: string, cwd: string) {
 		stderr: "pipe",
 		env: childProcessEnv(),
 	});
+
 	const tee = async (
 		stream: ReadableStream<Uint8Array>,
 		sink: NodeJS.WriteStream,
@@ -178,6 +191,7 @@ async function runShell(command: string, cwd: string) {
 		tee(child.stderr, process.stderr),
 		child.exited,
 	]);
+
 	return { exitCode, output: stdout + stderr };
 }
 
@@ -202,18 +216,21 @@ export async function runPredeploy(
 	const deploy = predeployEnvironment(config, io.env);
 	const { environment, production } = deploy;
 	const seed = planPredeploySeed(config, inputs.seed, deploy);
+
 	const exec = async (command: string, cwd = ".") => {
 		const result = await io.run(command, join(root, cwd));
 		if (result.exitCode === 0) return;
 		const message = `predeploy: \`${command}\` exited ${result.exitCode}.`;
 		throw new CliError(message, ["Its output is above."]);
 	};
+
 	const ctx: PredeployContext = {
 		root,
 		environment,
 		production,
 		exec: (command, options) => exec(command, options?.cwd),
 	};
+
 	let step: Omit<PredeployFailure, "message"> = { step: "beforeMigrate" };
 
 	try {
@@ -228,15 +245,18 @@ export async function runPredeploy(
 				throw failed.error;
 			}
 		}
+
 		step = { step: "afterMigrate" };
 		await config.afterMigrate?.(ctx);
 
 		step = { step: "seed" };
-		if (seed.kind === "skip") io.log(seed.reason);
-		else {
+		if (seed.kind === "skip") {
+			io.log(seed.reason);
+		} else {
 			io.log(`seeding ${environment} (${seed.command})`);
 			await exec(seed.command, seed.cwd);
 		}
+
 		step = { step: "afterSeed" };
 		await config.afterSeed?.(ctx);
 		io.log("done.");
@@ -278,24 +298,29 @@ async function migrate(
 	const retry =
 		config.retry === false ? undefined : { ...DEFAULT_RETRY, ...config.retry };
 	io.log(`migrating: ${migration.name} (${migration.command})`);
+
 	for (let attempt = 1; ; attempt++) {
 		const result = await io.run(
 			migration.command,
 			join(root, migration.cwd ?? "."),
 		);
 		if (result.exitCode === 0) return undefined;
+
 		const slotsExhausted =
 			retry !== undefined && result.output.includes(retry.match);
 		if (!retry || !slotsExhausted || attempt >= retry.attempts) {
 			const message = `predeploy: migration ${migration.name} exited ${result.exitCode}.`;
 			const failedPrisma = failedPrismaMigration(result.output);
-			const hints = slotsExhausted
-				? [
-						"The database stayed out of connection slots: raise predeploy.retry.attempts or lower the running services' pool sizes.",
-					]
-				: failedPrisma
-					? resolveHints(failedPrisma, migration.cwd)
-					: ["Its output is above; fix the migration and deploy again."];
+
+			let hints = ["Its output is above; fix the migration and deploy again."];
+			if (slotsExhausted) {
+				hints = [
+					"The database stayed out of connection slots: raise predeploy.retry.attempts or lower the running services' pool sizes.",
+				];
+			} else if (failedPrisma) {
+				hints = resolveHints(failedPrisma, migration.cwd);
+			}
+
 			return {
 				error: new CliError(message, hints),
 				failedPrismaMigration: failedPrisma,
@@ -342,13 +367,17 @@ export const predeployCommand = defineCommand({
 async function predeploy(): Promise<number> {
 	const root = findMonorepoRoot();
 	const settings = await loadPredeployConfig(root);
-	if (settings.errors.length > 0)
+	if (settings.errors.length > 0) {
 		throw new CliError(settings.errors[0] ?? "Invalid predeploy config.", [
 			...settings.errors.slice(1),
 		]);
+	}
+
 	// Unlike `typecheck`, a deploy must not migrate with half a config.
-	if (settings.warning || !settings.config)
+	if (settings.warning || !settings.config) {
 		throw new CliError(settings.warning ?? "No dev.config.ts found.");
+	}
+
 	await runPredeploy(root, readPredeployInputs(settings.config));
 	return 0;
 }
