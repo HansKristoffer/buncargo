@@ -12,13 +12,19 @@ export function copyToClipboard(
 	// Looked up on the current PATH: `Bun.which` and spawn by bare name both
 	// use the PATH this process started with.
 	const which = (name: string) => Bun.which(name, { PATH: process.env.PATH });
-	const [name, ...args] =
-		process.platform === "darwin"
-			? ["pbcopy"]
-			: which("wl-copy")
-				? ["wl-copy"]
-				: ["xclip", "-selection", "clipboard"];
-	const tool = name ? which(name) : null;
+
+	let command: string[];
+	if (process.platform === "darwin") {
+		command = ["pbcopy"];
+	} else if (which("wl-copy")) {
+		command = ["wl-copy"];
+	} else {
+		command = ["xclip", "-selection", "clipboard"];
+	}
+
+	const [name, ...args] = command;
+	const tool = which(name);
+
 	if (tool && !process.env.SSH_CONNECTION) {
 		try {
 			// Bounded: this runs inside the dev process, and a hung tool would
@@ -34,8 +40,9 @@ export function copyToClipboard(
 			// Fall through to the terminal.
 		}
 	}
-	writeToTerminal(
-		`\u001b]52;c;${Buffer.from(text, "utf8").toString("base64")}\u0007`,
-	);
+
+	// OSC 52: ESC ] 52 ; c ; <base64 text> BEL.
+	const encoded = Buffer.from(text, "utf8").toString("base64");
+	writeToTerminal(`\u001b]52;c;${encoded}\u0007`);
 	return "terminal";
 }

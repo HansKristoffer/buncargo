@@ -17,22 +17,20 @@ import { buncargoPackage, findBuncargoPackage } from "../core/version";
 import { CliError } from "./errors";
 import { lockfileHash, readInstallStamp } from "./install-stamp";
 
-/**
- * Run the project's own buncargo, never whichever one is on `PATH`.
- *
- * `bunx buncargo` in a checkout without `node_modules/.bin` falls through to a
- * global install. An old one fails on new commands ("Unknown command: files")
- * or, worse, runs `dev` and silently skips what the project's version does.
- * So the CLI looks for the project's install first, the way module resolution
- * would, and hands over to it when the versions differ.
- *
- * Before that, a checkout whose `node_modules` is missing or older than its
- * `bun.lock` installs itself (`checkout-install.ts`): a fresh worktree or a
- * branch switch used to stop every command on "Run `bun install`".
- *
- * It reads a few files and forks nothing; a matching version and an installed
- * checkout cost nothing more.
- */
+// Run the project's own buncargo, never whichever one is on `PATH`.
+//
+// `bunx buncargo` in a checkout without `node_modules/.bin` falls through to a
+// global install. An old one fails on new commands ("Unknown command: files")
+// or, worse, runs `dev` and silently skips what the project's version does.
+// So the CLI looks for the project's install first, the way module resolution
+// would, and hands over to it when the versions differ.
+//
+// Before that, a checkout whose `node_modules` is missing or older than its
+// `bun.lock` installs itself (`checkout-install.ts`): a fresh worktree or a
+// branch switch used to stop every command on "Run `bun install`".
+//
+// It reads a few files and forks nothing; a matching version and an installed
+// checkout cost nothing more.
 
 export type VersionGuard =
 	| { kind: "run" }
@@ -64,8 +62,10 @@ function listsBuncargo(pkg: PackageJson): boolean {
 
 function binEntry(pkg: PackageJson): string | undefined {
 	if (typeof pkg.bin === "string") return pkg.bin;
-	const bin = pkg.bin as Record<string, unknown> | undefined;
-	return typeof bin?.buncargo === "string" ? bin.buncargo : undefined;
+	if (isRecord(pkg.bin) && typeof pkg.bin.buncargo === "string") {
+		return pkg.bin.buncargo;
+	}
+	return undefined;
 }
 
 /** A checkout whose dependencies `bun install` has to bring up to date first. */
@@ -96,22 +96,24 @@ function statOrUndefined(path: string): Stats | undefined {
 export function installNeed(dir: string): InstallNeed | undefined {
 	const lock = statOrUndefined(join(dir, "bun.lock"));
 	if (!lock) return undefined;
+
 	const modules = statOrUndefined(join(dir, "node_modules"));
-	if (!modules)
+	if (!modules) {
 		return { dir, missing: true, reason: "node_modules is missing" };
+	}
 
 	const stamp = readInstallStamp(dir);
 	const stale =
 		stamp === undefined
 			? lock.mtimeMs > modules.mtimeMs
 			: stamp !== lockfileHash(dir);
-	return stale
-		? {
-				dir,
-				missing: false,
-				reason: "bun.lock changed since node_modules was installed",
-			}
-		: undefined;
+	if (!stale) return undefined;
+
+	return {
+		dir,
+		missing: false,
+		reason: "bun.lock changed since node_modules was installed",
+	};
 }
 
 /**
@@ -139,9 +141,8 @@ const PROJECT_COMMANDS = new Set([
 export function refreshesStaleInstall(args: readonly string[]): boolean {
 	const [command = ""] = args;
 	const asksForHelp = args.includes("--help") || args.includes("-h");
-	return (
-		PROJECT_COMMANDS.has(command) && !asksForHelp && !args.includes("--down")
-	);
+	const tearsDown = args.includes("--down");
+	return PROJECT_COMMANDS.has(command) && !asksForHelp && !tearsDown;
 }
 
 /**
@@ -157,14 +158,20 @@ export function decideInstall(
 	args: readonly string[],
 ): InstallNeed | undefined {
 	let declared = false;
+
 	for (let dir = cwd; ; dir = dirname(dir)) {
 		const project = readPackageJson(join(dir, "package.json"));
-		if (project && project.name !== "buncargo" && listsBuncargo(project))
+
+		// buncargo's own repository lists itself; that is not a project using it.
+		if (project && project.name !== "buncargo" && listsBuncargo(project)) {
 			declared = true;
+		}
+
 		if (project && existsSync(join(dir, "bun.lock"))) {
 			const need = declared ? installNeed(dir) : undefined;
 			return need?.missing || refreshesStaleInstall(args) ? need : undefined;
 		}
+
 		if (existsSync(join(dir, ".git")) || dirname(dir) === dir) return undefined;
 	}
 }
@@ -179,34 +186,40 @@ export function decideVersionGuard(
 	running: { version: string; root: string },
 ): VersionGuard {
 	let declared: string | undefined;
+
 	for (let dir = cwd; ; dir = dirname(dir)) {
 		const installed = join(dir, "node_modules", "buncargo");
 		const pkg = readPackageJson(join(installed, "package.json"));
+
 		if (pkg) {
-			if (
+			const isRunningCopy =
 				pkg.version === running.version ||
-				realpathSync(installed) === realpathSync(running.root)
-			)
-				return { kind: "run" };
+				realpathSync(installed) === realpathSync(running.root);
+			if (isRunningCopy) return { kind: "run" };
+
 			const bin = binEntry(pkg);
 			const entry = bin ? join(installed, bin) : undefined;
-			if (!entry || !existsSync(entry))
+			if (!entry || !existsSync(entry)) {
 				return {
 					kind: "not-installed",
 					packageJson: join(installed, "package.json"),
 					reason: `its CLI (${bin ?? "bin"}) is missing`,
 				};
+			}
+
 			return { kind: "reexec", entry, version: String(pkg.version) };
 		}
 
 		const projectPackage = join(dir, "package.json");
 		const project = readPackageJson(projectPackage);
-		if (project && project.name !== "buncargo" && listsBuncargo(project))
+		if (project && project.name !== "buncargo" && listsBuncargo(project)) {
 			declared ??= projectPackage;
+		}
 
 		// A project's dependencies live inside its repository.
 		if (existsSync(join(dir, ".git")) || dirname(dir) === dir) break;
 	}
+
 	return declared
 		? { kind: "not-installed", packageJson: declared, reason: "not installed" }
 		: { kind: "run" };
@@ -224,6 +237,7 @@ export function decideVersionGuard(
  */
 export async function guardVersion(fromSource: boolean): Promise<void> {
 	const handedOver = reexecedFrom();
+
 	// Not inherited by the apps and tools this run starts.
 	delete process.env[REEXEC_ENV];
 	if (handedOver || fromSource) return;
@@ -235,13 +249,16 @@ export async function guardVersion(fromSource: boolean): Promise<void> {
 	const install = isInstallingCheckout()
 		? undefined
 		: decideInstall(process.cwd(), process.argv.slice(2));
+
 	if (install) {
 		(await import("./checkout-install")).installCheckout(install);
+
 		// The install may have replaced the very package this process runs
 		// from; its remaining modules load lazily, so start over on the new one.
 		const onDisk = findBuncargoPackage(root)?.version;
-		if (onDisk && onDisk !== own.version)
+		if (onDisk && onDisk !== own.version) {
 			handOver(process.argv[1], onDisk, own.version);
+		}
 	}
 
 	const decision = decideVersionGuard(process.cwd(), {
@@ -253,10 +270,10 @@ export async function guardVersion(fromSource: boolean): Promise<void> {
 		run: () => {},
 		"not-installed": (notInstalled) => {
 			const where = relative(process.cwd(), notInstalled.packageJson);
-			throw new CliError(
-				`This project's buncargo (${where}) is ${notInstalled.reason}, so buncargo ${own.version} from ${root} will not run in its place.`,
-				["Run `bun install`, then run the command again."],
-			);
+			const message = `This project's buncargo (${where}) is ${notInstalled.reason}, so buncargo ${own.version} from ${root} will not run in its place.`;
+			throw new CliError(message, [
+				"Run `bun install`, then run the command again.",
+			]);
 		},
 		reexec: (reexec) => handOver(reexec.entry, reexec.version, own.version),
 	});
@@ -266,6 +283,7 @@ export async function guardVersion(fromSource: boolean): Promise<void> {
 function handOver(entry: string, version: string, from: string): never {
 	// Straight to fd 2: execve drops whatever Bun still has buffered.
 	writeSync(2, `buncargo ${from} → this project's buncargo ${version}\n`);
+
 	process.execve?.(
 		process.execPath,
 		[process.execPath, entry, ...process.argv.slice(2)],

@@ -10,13 +10,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CI_ENV_VARS } from "../core/runtime-flags";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
+import { freePorts } from "../core/test-env.testing";
 import { standInForWatchdog } from "../core/watchdog.testing";
 import type { SecretsCheckJson } from "./json-documents";
 
-/**
- * An expired Infisical session, end to end through the real CLI: the run stops
- * with the login to run instead of waiting on the CLI's login flow.
- */
+// An expired Infisical session, end to end through the real CLI: the run stops
+// with the login to run instead of waiting on the CLI's login flow.
 
 const BIN = join(import.meta.dir, "bin.ts");
 const cleanups: (() => void)[] = [];
@@ -31,6 +30,7 @@ async function project(login: "prompt" | "hang" | undefined) {
 	infisical.projects.p1 = { secrets: { API_KEY: "never-printed" } };
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-session-")));
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	const [apiPort] = freePorts(1);
 
 	writeFileSync(
 		join(root, "package.json"),
@@ -43,7 +43,7 @@ async function project(login: "prompt" | "hang" | undefined) {
 			services: {},
 			secrets: { projectId: "p1", siteUrl: infisical.siteUrl },
 			apps: {
-				api: { port: 39_871, devCommand: "sleep 30", secrets: {} },
+				api: { port: apiPort, devCommand: "sleep 30", secrets: {} },
 			},
 			tasks: { hello: { command: "true" } },
 			options: { worktreeIsolation: false, hosts: false },
