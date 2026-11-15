@@ -388,8 +388,8 @@ enum RunRegistry {
     /// The `runs.json` schema this build decodes.
     ///
     /// `scripts/package.sh` stamps the same number into `Info.plist` as
-    /// `BuncargoRegistryVersion` — read from `fixtures/runs.v2.json`, which is
-    /// also what `--status` decodes in CI, so a bump that misses one of the
+    /// `BuncargoRegistryVersion`, read from `fixtures/runs.v2.json`, which is
+    /// also what `--status` decodes in CI. A bump that misses one of the
     /// three fails the build rather than shipping.
     static let supportedVersion = 2
 
@@ -400,7 +400,7 @@ enum RunRegistry {
     /// `~/.buncargo`, resolved the way the CLI resolves it.
     ///
     /// `HOME` first, because `homeDirectoryForCurrentUser` reads the user
-    /// record and ignores the environment — so a harness pointing `HOME` at a
+    /// record and ignores the environment, so a harness pointing `HOME` at a
     /// fixture directory would silently be handed the real registry instead.
     /// That is exactly what `--status` in CI is for.
     static var stateDirectory: URL {

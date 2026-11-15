@@ -25,6 +25,7 @@ enum ConnectionCommand {
             } else {
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
                 process.arguments = ["buncargo", "connect"] + arguments + ["--json"]
+                // A Finder-launched app gets launchd's minimal PATH, which has no bun or Homebrew.
                 var env = ProcessInfo.processInfo.environment
                 let home = RunRegistry.stateDirectory.deletingLastPathComponent().path
                 env["PATH"] = "\(home)/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
