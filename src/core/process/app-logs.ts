@@ -30,6 +30,7 @@ const KEPT_RUNS = 10;
 const OWNER_FILE = "owner.pid";
 /** Past this a file rotates to `<app>.log.1`, replacing the previous one. */
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
+/** How long a write waits for company before the buffer goes to disk. */
 const FLUSH_MS = 200;
 
 export function logsRoot(root: string): string {
@@ -40,6 +41,7 @@ export function logsRoot(root: string): string {
 export function listRunLogDirs(root: string): string[] {
 	const dir = logsRoot(root);
 	if (!existsSync(dir)) return [];
+
 	return readdirSync(dir, { withFileTypes: true })
 		.filter((entry) => entry.isDirectory())
 		.map((entry) => join(dir, entry.name))
@@ -81,9 +83,11 @@ export class AppLogs {
 		this.dir = join(logsRoot(root), runDirName(sessionId, now));
 		mkdirSync(this.dir, { recursive: true });
 		writeFileSync(join(this.dir, OWNER_FILE), String(process.pid));
+
 		// A live run's directory stays: its next flush would fail silently.
-		for (const old of listRunLogDirs(root).slice(0, -KEPT_RUNS))
+		for (const old of listRunLogDirs(root).slice(0, -KEPT_RUNS)) {
 			if (!ownerAlive(old)) rmSync(old, { recursive: true, force: true });
+		}
 	}
 
 	file(app: string): string {
@@ -95,6 +99,7 @@ export class AppLogs {
 		const lines = this.pending.get(app) ?? [];
 		lines.push(`${time.toISOString()} ${text}\n`);
 		this.pending.set(app, lines);
+
 		this.timer ??= setTimeout(() => this.flush(), FLUSH_MS);
 		this.timer.unref?.();
 	}
@@ -102,22 +107,27 @@ export class AppLogs {
 	flush(): void {
 		clearTimeout(this.timer);
 		this.timer = undefined;
+
 		for (const [app, lines] of this.pending) {
 			const file = this.file(app);
 			const text = lines.join("");
+
 			try {
 				const size =
 					this.sizes.get(app) ?? (existsSync(file) ? statSync(file).size : 0);
+
 				if (size + text.length > MAX_FILE_BYTES && size > 0) {
 					renameSync(file, `${file}.1`);
 					this.sizes.set(app, 0);
 				}
+
 				appendFileSync(file, text);
 				this.sizes.set(app, (this.sizes.get(app) ?? 0) + text.length);
 			} catch {
 				// A log that cannot be written is lost output, never a failed run.
 			}
 		}
+
 		this.pending.clear();
 	}
 }

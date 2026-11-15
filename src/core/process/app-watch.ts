@@ -24,6 +24,7 @@ export function isIgnoredChange(
 	ignore: readonly string[] = [],
 ): boolean {
 	const normalized = path.split("\\").join("/");
+
 	return [...DEFAULT_IGNORE, ...ignore].some(
 		(pattern) =>
 			new Bun.Glob(pattern).match(normalized) ||
@@ -54,6 +55,7 @@ export function watchApp(input: {
 		changed = undefined;
 		if (!signal.aborted) input.onChange(reason);
 	}, config.debounceMs ?? DEFAULT_DEBOUNCE_MS);
+
 	const schedule = (path: string) => {
 		if (signal.aborted || isIgnoredChange(path, config.ignore)) return;
 		changed ??= path;
@@ -68,16 +70,19 @@ export function watchApp(input: {
 			);
 			continue;
 		}
+
 		const watcher = watch(target, { recursive: true }, (_event, filename) => {
 			schedule(
 				relative(dir, filename ? join(target, String(filename)) : target),
 			);
 		});
+
 		watcher.on("error", (error) => {
 			console.warn(
 				formatWarn(`${input.name}: watching ${path} failed: ${error.message}`),
 			);
 		});
+
 		watchers.push(watcher);
 	}
 

@@ -111,8 +111,8 @@ export function initialLife(app: {
  *
  * `null` is a process killed by a signal outright. The two codes are
  * `128 + SIGINT` and `128 + SIGTERM`, which is what a shell wrapper reports
- * when the signal reached it rather than the server it spawned — `bun run dev`
- * does exactly that. Without them a Ctrl-C, or a `buncargo stop`, ends a clean
+ * when the signal reached it rather than the server it spawned, as `bun run dev`
+ * does. Without them a Ctrl-C, or a `buncargo stop`, ends a clean
  * shutdown with "App exited with code 143" and a failed run.
  */
 function isDeliberateExit(
@@ -139,6 +139,7 @@ export function appExitState(
 	app: { worker: boolean; optional: boolean },
 ): "stopped" | "failed" {
 	if (code === 0 && app.worker && !app.optional) return "failed";
+
 	return isDeliberateExit(code, signal) ? "stopped" : "failed";
 }
 
@@ -161,6 +162,7 @@ function exitVerdict(
 		life.phase !== "ready" &&
 		life.standing !== "optional";
 	if (neverCameUp) return "failed";
+
 	return appExitState(exit.code, exit.signal, {
 		worker: life.worker,
 		optional: spared(life.standing),
@@ -181,6 +183,7 @@ export function transition(life: AppLife, event: AppEvent): AppLife {
 		ready: () => {
 			// Only an app coming up becomes ready; an exited one stays as it ended.
 			if (life.phase !== "starting" && life.phase !== "reused") return life;
+
 			const standing = life.standing === "optional" ? "optional" : "essential";
 			return { ...life, phase: "ready", standing, end: undefined };
 		},
@@ -194,17 +197,20 @@ export function transition(life: AppLife, event: AppEvent): AppLife {
 			// Already down (stopped for never coming up): the reason stays.
 			if (life.phase === "down" && life.end)
 				return { ...life, end: { ...life.end, exit } };
+
 			const verdict = exitVerdict(life, exit, runEnding);
 			const end = { verdict, detail: describeExit(exit), exit };
 			return { ...life, phase: "down", end };
 		},
 		failed: ({ failure, park }) => {
 			const parked = park && life.standing !== "optional";
+
 			// Neither stopped nor restartable from here: it keeps running.
 			const detail =
 				life.phase === "reused"
 					? `${failure.message}; served by a process this run did not start, which is left running`
 					: failure.message;
+
 			return {
 				...life,
 				phase: "down",
@@ -223,6 +229,7 @@ function comingUp(
 		next.probation && life.standing === "essential"
 			? "probation"
 			: life.standing;
+
 	return {
 		...life,
 		phase: next.phase,
@@ -241,7 +248,9 @@ export function afterExit(
 	// Spared, or on probation, where its wave decides.
 	if (spared(before.standing) || before.standing === "probation")
 		return "continues";
+
 	if (after.end?.verdict === "failed") return "fails";
+
 	// Quitting the app that owns the terminal ends the run.
 	if (before.attached) return "interrupts";
 	return "continues";
@@ -260,6 +269,7 @@ export function runVerdict(
 ):
 	{ ends: false } | { ends: true; app: string; dependents: readonly string[] } {
 	const names = [...lives.keys()];
+
 	const failed = names.filter((name) => {
 		const life = lives.get(name);
 		return (
@@ -268,16 +278,20 @@ export function runVerdict(
 			life.standing !== "optional"
 		);
 	});
+
 	for (const app of failed) {
 		const dependents = names.filter((name) => startAfter(name)?.includes(app));
 		if (dependents.length > 0) return { ends: true, app, dependents };
 	}
+
 	const [first] = failed;
+
 	// Nothing left running is a failed run, not one quietly waiting on
 	// restarts nobody will ask for.
 	const nothingLeft = names.every((name) => lives.get(name)?.phase === "down");
 	if (first !== undefined && nothingLeft)
 		return { ends: true, app: first, dependents: [] };
+
 	return { ends: false };
 }
 

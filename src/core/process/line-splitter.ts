@@ -20,6 +20,7 @@ export function createLineSplitter(handlers: {
 }): LineSplitter {
 	const decoder = new TextDecoder();
 	let buffer = "";
+
 	const drain = () => {
 		let newline = buffer.indexOf("\n");
 		while (newline !== -1) {
@@ -27,11 +28,13 @@ export function createLineSplitter(handlers: {
 			buffer = buffer.slice(newline + 1);
 			newline = buffer.indexOf("\n");
 		}
+
 		while (buffer.length > MAX_LINE_CHARS) {
 			handlers.onLine(buffer.slice(0, MAX_LINE_CHARS));
 			buffer = buffer.slice(MAX_LINE_CHARS);
 		}
 	};
+
 	return {
 		push(chunk) {
 			const text =
@@ -39,6 +42,7 @@ export function createLineSplitter(handlers: {
 					? chunk
 					: decoder.decode(chunk, { stream: true });
 			if (!text) return;
+
 			handlers.onText?.(text);
 			buffer += text;
 			drain();
@@ -46,6 +50,7 @@ export function createLineSplitter(handlers: {
 		end() {
 			buffer += decoder.decode();
 			drain();
+
 			if (buffer) handlers.onLine(buffer);
 			buffer = "";
 		},

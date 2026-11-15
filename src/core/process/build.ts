@@ -15,9 +15,11 @@ export async function buildApps(
 	} = {},
 ): Promise<void> {
 	const { verbose = true } = options;
+
 	for (const [name, config] of Object.entries(apps)) {
 		options.signal?.throwIfAborted();
 		if (!config.buildCommand) continue;
+
 		if (verbose) console.log(`🔨 Building ${name}...`);
 		await execAsync(config.buildCommand, root, envVarsByApp[name] ?? {}, {
 			cwd: config.cwd,
@@ -27,5 +29,6 @@ export async function buildApps(
 			unsetEnv: options.unsetEnv,
 		});
 	}
+
 	if (verbose) console.log("✓ Build complete");
 }

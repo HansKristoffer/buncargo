@@ -15,12 +15,14 @@ export class DetachedApp extends EventEmitter {
 	exitCode: number | null = null;
 	signalCode: NodeJS.Signals | null = null;
 	private timer?: ReturnType<typeof setInterval>;
+
 	constructor(
 		readonly pid: number,
 		readonly identity: string,
 	) {
 		super();
 	}
+
 	watch(): void {
 		this.timer = setInterval(() => {
 			if (isProcessAlive(this.pid)) return;
@@ -29,11 +31,16 @@ export class DetachedApp extends EventEmitter {
 			this.emit("exit", 0, null);
 		}, 1000);
 	}
+
 	dispose(): void {
 		clearInterval(this.timer);
 	}
 }
 
+/**
+ * The server a launcher detached from its process group, found by the port it
+ * listens on. Undefined when nothing outside `group` (and not this process) owns it.
+ */
 export async function findDetachedApp(
 	port: number,
 	group: number,
@@ -45,6 +52,7 @@ export async function findDetachedApp(
 	});
 	const owner = snapshot.owner(port);
 	if (owner?.kind !== "process") return;
+
 	const result = await execAsync(
 		["ps", "-o", "pid=,pgid=", "-p", owner.pids.join(",")],
 		process.cwd(),
@@ -54,8 +62,10 @@ export async function findDetachedApp(
 	for (const line of result.stdout.trim().split("\n")) {
 		const [pid, pgid] = line.trim().split(/\s+/).map(Number);
 		if (!pid || !pgid || pgid === group || pid === process.pid) continue;
+
 		const identity = await readProcessIdentityAsync(pid);
-		if (identity)
+		if (identity) {
 			return { child: new DetachedApp(pid, identity), command: owner.command };
+		}
 	}
 }
