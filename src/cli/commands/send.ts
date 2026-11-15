@@ -27,8 +27,9 @@ async function sendKeys(input: {
 	enter: boolean;
 }): Promise<number> {
 	const { root, session, name, words, enter } = input;
-	if (words.length === 0 && !enter)
+	if (words.length === 0 && !enter) {
 		throw argumentsError(["Give the keys to send."], "send");
+	}
 
 	const run = (await findRunsByRoot(root)).find(
 		(entry) =>
@@ -40,6 +41,7 @@ async function sendKeys(input: {
 		log.hint("`buncargo runs` shows what is active.");
 		return SEND_EXIT.notFound;
 	}
+
 	const status = run.apps.find((app) => app.name === name)?.status;
 	if (status === "stopped" || status === "failed") {
 		log.error(`Cannot send to ${name}: it is not running (${status}).`);
@@ -47,23 +49,23 @@ async function sendKeys(input: {
 		return SEND_EXIT.refused;
 	}
 
-	const id = requestSend(
-		run.root,
-		run.sessionId,
-		name,
-		`${words.join(" ")}${enter ? "\r" : ""}`,
-	);
+	const text = `${words.join(" ")}${enter ? "\r" : ""}`;
+	const id = requestSend(run.root, run.sessionId, name, text);
 	const reply = await awaitSendReply(
 		run.root,
 		run.sessionId,
 		id,
 		REPLY_TIMEOUT_MS,
 	);
-	if (!reply)
+
+	if (!reply) {
+		const waitedSeconds = Math.round(REPLY_TIMEOUT_MS / 1000);
 		throw new CliError(
-			`The run (pid ${run.pid}) did not answer within ${Math.round(REPLY_TIMEOUT_MS / 1000)}s; the keys may still arrive.`,
+			`The run (pid ${run.pid}) did not answer within ${waitedSeconds}s; the keys may still arrive.`,
 			[`Check what ${name} did: buncargo logs ${name} -f`],
 		);
+	}
+
 	if (!reply.delivered) {
 		log.error(`Cannot send to ${name}: ${reply.reason}.`);
 		return SEND_EXIT.refused;

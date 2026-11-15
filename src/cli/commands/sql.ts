@@ -121,10 +121,12 @@ export function scratchCommand(
 	name: string,
 	action: "create" | "drop",
 ): string[] {
-	if (!SCRATCH_NAME.test(name))
+	if (!SCRATCH_NAME.test(name)) {
 		throw new CliError(
 			`Scratch database names are lowercase letters, digits and _, starting with a letter: got "${name}".`,
 		);
+	}
+
 	const database = `scratch_${name}`;
 	return [
 		"env",
@@ -201,10 +203,12 @@ export function sqlClientCommand(
 	},
 ): SqlClientInvocation {
 	const { input, json = false, clientArgs = [] } = options;
-	if (json && input === undefined)
+	if (json && input === undefined) {
 		throw new CliError(
 			"--json needs SQL: pass --command, -- -f <file>, or pipe it on stdin.",
 		);
+	}
+
 	const script = input?.kind === "script" ? input : undefined;
 
 	return typedSwitch(
@@ -226,15 +230,16 @@ export function sqlClientCommand(
 					"-d",
 					options.database ?? database,
 				];
-				if (input === undefined)
+				if (input === undefined) {
 					return { command: [...psql, ...clientArgs], jsonWrapped: false };
+				}
 
 				const plan =
 					json && input.text !== undefined
 						? planJsonQuery(input.text)
 						: undefined;
 				const stopOnError = ["-v", "ON_ERROR_STOP=1"];
-				if (plan?.wrap)
+				if (plan?.wrap) {
 					return {
 						command: [
 							...psql,
@@ -247,6 +252,7 @@ export function sqlClientCommand(
 						],
 						jsonWrapped: true,
 					};
+				}
 
 				const plainReason = plan?.wrap === false ? plan.reason : undefined;
 				// `-f -` rather than a bare stdin: psql then names the line of
@@ -341,8 +347,9 @@ const PSQL_OWN_WORK = new Set("clV?");
 export function psqlHasOwnInput(clientArgs: readonly string[]): boolean {
 	return clientArgs.some((arg) => {
 		const long = ["--command", "--list", "--help", "--version"];
-		if (arg.startsWith("--"))
+		if (arg.startsWith("--")) {
 			return long.some((name) => arg === name || arg.startsWith(`${name}=`));
+		}
 		if (!arg.startsWith("-")) return false;
 		for (const letter of arg.slice(1)) {
 			if (PSQL_OWN_WORK.has(letter)) return true;
@@ -402,10 +409,12 @@ export function notRunningError(
 	const hints = [
 		"Start the containers (it returns once they are up; no --detach): buncargo dev --up-only",
 	];
-	if (preset === "postgres")
+	if (preset === "postgres") {
 		hints.push(
 			`Or start only ${service} with a fresh database: buncargo sql --create-scratch=<name>`,
 		);
+	}
+
 	return new CliError(`${service} is not running for ${projectName}.`, hints);
 }
 
@@ -429,24 +438,29 @@ function sqlRequest({
 	const createScratch = values["create-scratch"];
 	const dropScratch = values["drop-scratch"];
 	const { db, url } = values;
-	const problems: string[] = [];
 	const scratch = createScratch ?? dropScratch;
-	if (createScratch !== undefined && dropScratch !== undefined)
+	const runsSomething =
+		query !== undefined || dropScratch !== undefined || passthrough.length > 0;
+
+	const problems: string[] = [];
+	if (createScratch !== undefined && dropScratch !== undefined) {
 		problems.push("Choose either --create-scratch or --drop-scratch.");
-	if (scratch !== undefined && (query !== undefined || db !== undefined))
+	}
+	if (scratch !== undefined && (query !== undefined || db !== undefined)) {
 		problems.push(
 			"--command and --db cannot be combined with a scratch database.",
 		);
-	if (scratch !== undefined && passthrough.length > 0)
+	}
+	if (scratch !== undefined && passthrough.length > 0) {
 		problems.push(
 			"Arguments after -- cannot be combined with a scratch database.",
 		);
-	const runsSomething =
-		query !== undefined || dropScratch !== undefined || passthrough.length > 0;
-	if (url && runsSomething)
+	}
+	if (url && runsSomething) {
 		problems.push(
 			"--url prints a URL and runs nothing: drop --command, --drop-scratch and arguments after --.",
 		);
+	}
 	if (problems.length > 0) throw argumentsError(problems, "sql");
 
 	return {
@@ -521,13 +535,16 @@ async function resolveInput(
 	const { files, rest } = psql
 		? extractScriptFiles(request.clientArgs)
 		: { files: [], rest: request.clientArgs };
-	if (request.query !== undefined && files.length > 0)
+
+	if (request.query !== undefined && files.length > 0) {
 		throw argumentsError(
 			["Pass SQL one way: --command or -f, not both."],
 			"sql",
 		);
-	if (request.query !== undefined)
+	}
+	if (request.query !== undefined) {
 		return { input: { kind: "query", text: request.query }, clientArgs: rest };
+	}
 
 	const decode = (bytes: Uint8Array) =>
 		request.json ? new TextDecoder().decode(bytes) : undefined;
@@ -545,8 +562,12 @@ async function resolveInput(
 
 	const ownInput = psql ? psqlHasOwnInput(rest) : rest.length > 0;
 	if (ownInput || deps.stdinIsTerminal()) return { clientArgs: rest };
-	if (!(psql && request.json))
+
+	// Only `--json` on psql reads the script, to decide whether to wrap it.
+	if (!(psql && request.json)) {
 		return { input: { kind: "script" }, clientArgs: rest };
+	}
+
 	const bytes = await deps.readStdin();
 	return {
 		input: { kind: "script", bytes, text: decode(bytes) },
@@ -583,21 +604,24 @@ async function sql(request: SqlRequest, deps: SqlDeps): Promise<number> {
 		request.service,
 		postgresOnly ? ["postgres"] : DEFAULT_PRESETS,
 	);
-	if (postgresOnly && target.preset !== "postgres")
+	if (postgresOnly && target.preset !== "postgres") {
 		throw new CliError(
 			`Scratch databases, --db and --url are Postgres only, and ${target.name} is ${target.preset}.`,
 			["Name a Postgres service: buncargo sql <service> …"],
 		);
+	}
+
 	const portOf = (current: AnyDevEnvironment) =>
 		(current.ports as Record<string, number | undefined>)[target.name];
 
 	if (request.url && createScratch === undefined) {
 		const credentials = postgresCredentials(target.service);
 		const port = portOf(env);
-		if (port === undefined)
+		if (port === undefined) {
 			throw new CliError(`${target.name} has no port in ${env.projectName}.`, [
 				"Give the service a port in dev.config.ts, as service.postgres() does.",
 			]);
+		}
 		deps.print(databaseUrl(credentials, port, db ?? credentials.database));
 		return 0;
 	}
@@ -622,10 +646,11 @@ async function sql(request: SqlRequest, deps: SqlDeps): Promise<number> {
 					),
 					jsonWrapped: false,
 				};
-	if (invocation.plainReason)
+	if (invocation.plainReason) {
 		deps.warn(
 			`--json prints the rows of one SELECT or WITH query; this SQL ${invocation.plainReason}, so it ran as plain SQL.`,
 		);
+	}
 
 	const execRequest = {
 		serviceName: target.name,
@@ -640,7 +665,9 @@ async function sql(request: SqlRequest, deps: SqlDeps): Promise<number> {
 		await deps.startService(env, target.name);
 		argv = await deps.execArgv(env, execRequest);
 	}
-	if (!argv) throw notRunningError(target.name, env.projectName, target.preset);
+	if (!argv) {
+		throw notRunningError(target.name, env.projectName, target.preset);
+	}
 
 	// A scratch database answers with its URL alone on stdout, so it can be
 	// captured: `DATABASE_URL=$(buncargo sql --create-scratch=x) bun test`.
@@ -652,11 +679,13 @@ async function sql(request: SqlRequest, deps: SqlDeps): Promise<number> {
 			? (text) => deps.warn(unwrapJsonErrors(text).trimEnd())
 			: undefined,
 	});
+
 	const port = portOf(env);
-	if (code === 0 && createScratch !== undefined && port !== undefined)
+	if (code === 0 && createScratch !== undefined && port !== undefined) {
 		deps.print(
 			scratchUrl(postgresCredentials(target.service), port, createScratch),
 		);
+	}
 	return code;
 }
 

@@ -16,14 +16,6 @@ import * as log from "../log";
 import { configSecretScopes } from "../secrets-scopes";
 
 /**
- * `buncargo secrets ls`: which keys a scope provides and where each value
- * comes from. `buncargo secrets check`: whether every scope the config uses is
- * readable, for an agent to run before tests. Neither prints a value, and
- * there is deliberately no command that does: secret values, production
- * credentials among them, stay out of an agent's context.
- */
-
-/**
  * `secrets check`'s exit codes, one meaning each. 1 is any failure to run the
  * command itself (arguments, dev.config.ts).
  */
@@ -40,12 +32,16 @@ async function listSecrets(
 	environment: string | undefined,
 ): Promise<number> {
 	const env = await loadDevEnv();
+
 	if (app !== undefined && !env.apps[app]) {
 		const names = Object.keys(env.apps);
-		throw new CliError(
-			`Unknown app "${app}". ${names.length > 0 ? `Apps in dev.config.ts: ${names.join(", ")}.` : "dev.config.ts has no apps."}`,
-		);
+		const known =
+			names.length > 0
+				? `Apps in dev.config.ts: ${names.join(", ")}.`
+				: "dev.config.ts has no apps.";
+		throw new CliError(`Unknown app "${app}". ${known}`);
 	}
+
 	const config = app === undefined ? env.secrets : env.apps[app]?.secrets;
 	const scope = config
 		? resolveScope(
@@ -53,6 +49,7 @@ async function listSecrets(
 				env.secrets,
 			)
 		: undefined;
+
 	if (!scope) {
 		throw app === undefined
 			? new CliError(
@@ -76,11 +73,13 @@ async function listSecrets(
 	const required = config ? (config.required ?? []) : [];
 	const keys = [...new Set([...Object.keys(values), ...required])].sort();
 	const width = Math.max(0, ...keys.map((key) => key.length));
+
 	log.line(`${app ?? "config"}: ${describeScope(scope)}`);
-	for (const key of keys)
-		log.line(
-			`  ${key.padEnd(width)}  ${secretSource(key, values, computed, effective)}`,
-		);
+	for (const key of keys) {
+		const source = secretSource(key, values, computed, effective);
+		log.line(`  ${key.padEnd(width)}  ${source}`);
+	}
+
 	// The same check `dev` refuses to start on.
 	const missing = missingKeys(required, effective);
 	if (missing.length === 0) return 0;
@@ -130,6 +129,13 @@ const checkCommand = defineCommand({
 	run: ({ values }) => checkSecrets(values.json),
 });
 
+/**
+ * `buncargo secrets ls`: which keys a scope provides and where each value
+ * comes from. `buncargo secrets check`: whether every scope the config uses is
+ * readable, for an agent to run before tests. Neither prints a value, and
+ * there is deliberately no command that does: secret values, production
+ * credentials among them, stay out of an agent's context.
+ */
 export const secretsCommand = defineGroup({
 	spec: {
 		name: "secrets",
@@ -205,6 +211,7 @@ async function checkSecrets(json: boolean): Promise<number> {
 	const loginChecks = checks.filter((check) => check.login);
 	const logins = [...new Set(loginChecks.flatMap((check) => check.fix ?? []))];
 	const unreadable = checks.some((check) => check.error !== undefined);
+
 	let code: number = SECRETS_CHECK_EXIT.ok;
 	if (unreadable) code = SECRETS_CHECK_EXIT.unreadable;
 	// A login may fix the rest, so it is the one thing to do first.
@@ -219,18 +226,13 @@ async function checkSecrets(json: boolean): Promise<number> {
 			...(error === undefined ? {} : { error }),
 			...(fix === undefined ? {} : { fix }),
 		}));
-		log.line(
-			JSON.stringify(
-				{
-					ok: code === SECRETS_CHECK_EXIT.ok,
-					exitCode: code,
-					logins,
-					scopes,
-				} satisfies SecretsCheckJson,
-				null,
-				2,
-			),
-		);
+		const document = {
+			ok: code === SECRETS_CHECK_EXIT.ok,
+			exitCode: code,
+			logins,
+			scopes,
+		} satisfies SecretsCheckJson;
+		log.line(JSON.stringify(document, null, 2));
 		return code;
 	}
 
@@ -238,16 +240,18 @@ async function checkSecrets(json: boolean): Promise<number> {
 		log.line("dev.config.ts uses no Infisical scope; nothing to check.");
 		return code;
 	}
+
 	for (const check of checks) {
 		const who = check.usedBy.join(", ");
 		if (check.error === undefined) {
-			const keys = `${check.keys} key${check.keys === 1 ? "" : "s"}`;
-			log.success(`${who}: ${describeScope(check.scope)} (${keys})`);
+			const keyCount = `${check.keys} key${check.keys === 1 ? "" : "s"}`;
+			log.success(`${who}: ${describeScope(check.scope)} (${keyCount})`);
 			continue;
 		}
 		log.error(`${who}: ${describeScope(check.scope)}: ${check.error}`);
 		if (check.fix && !check.login) log.hint(`Fix: ${check.fix}`);
 	}
+
 	for (const login of logins) log.hint(`Log in, then run this again: ${login}`);
 	return code;
 }

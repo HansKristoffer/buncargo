@@ -134,6 +134,7 @@ function scanSql(text: string): ScannedSql {
 		}
 		i++;
 	}
+
 	if (!unsure) endStatement(text.length);
 	return { statements, unsure };
 }
@@ -163,20 +164,24 @@ const ROWS_ALIAS = "_buncargo_rows";
  */
 export function planJsonQuery(text: string): JsonQueryPlan {
 	const scanned = scanSql(text);
-	if (scanned.unsure)
+	if (scanned.unsure) {
 		return {
 			wrap: false,
 			reason: "has a psql meta-command or an unclosed quote or comment",
 		};
+	}
+
 	const [statement, ...rest] = scanned.statements;
 	if (!statement) return { wrap: false, reason: "has no statement" };
-	if (rest.length > 0)
+	if (rest.length > 0) {
 		return { wrap: false, reason: "has more than one statement" };
+	}
 
 	const [first] = statement.words;
 	const rowsOnly = !statement.words.some((word) => UNWRAPPABLE_WORDS.has(word));
-	if ((first !== "select" && first !== "with") || !rowsOnly)
+	if ((first !== "select" && first !== "with") || !rowsOnly) {
 		return { wrap: false, reason: "is not a SELECT or WITH, or changes data" };
+	}
 
 	const body = statement.text.trimEnd();
 	return {
@@ -213,9 +218,11 @@ export function unwrapJsonErrors(stderr: string): string {
 		const shrink = String(wrapped).length - own.length;
 		lines[index] =
 			`LINE ${own}:${(lines[index] as string).slice(match[0].length)}`;
+
 		const caret = lines[index + 1];
-		if (shrink > 0 && caret?.startsWith(" ".repeat(shrink)))
+		if (shrink > 0 && caret?.startsWith(" ".repeat(shrink))) {
 			lines[index + 1] = caret.slice(shrink);
+		}
 	}
 	return lines.join("\n");
 }

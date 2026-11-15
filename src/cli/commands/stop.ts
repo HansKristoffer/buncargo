@@ -50,18 +50,6 @@ import { argumentsError } from "../errors";
 import * as log from "../log";
 
 /**
- * `buncargo stop` — stop one app, one service, or a whole run.
- *
- * The menu bar app's kill buttons are this command; it never signals processes
- * or talks to Docker itself. Everything comes from the run registry, so this
- * loads no config and is safe to run from anywhere.
- *
- * Stopping one dev server does not end the run. A signalled exit reaches the
- * child supervisor with a null exit code, which is the one case it does not
- * treat as failure, so the other apps and the containers keep going.
- */
-
-/**
  * 0 stopped, or nothing was running · 1 it could not be stopped (a teardown
  * failed, the runtime did not answer), or bad arguments · 2 a named app or
  * service matched nothing · 3 refused: left running on purpose, needing a
@@ -120,6 +108,17 @@ const STOP_SPEC = {
 	],
 } as const;
 
+/**
+ * `buncargo stop`: stop one app, one service, or a whole run.
+ *
+ * The menu bar app's kill buttons are this command; it never signals processes
+ * or talks to Docker itself. Everything comes from the run registry, so this
+ * loads no config and is safe to run from anywhere.
+ *
+ * Stopping one dev server does not end the run. A signalled exit reaches the
+ * child supervisor with a null exit code, which is the one case it does not
+ * treat as failure, so the other apps and the containers keep going.
+ */
 export const stopCommand = defineCommand({
 	spec: STOP_SPEC,
 	exits: {
@@ -137,11 +136,13 @@ async function stop({
 	values,
 	positionals: names,
 }: Parsed<typeof STOP_SPEC>): Promise<number> {
-	if (names.length > 0 && values.all)
+	if (names.length > 0 && values.all) {
 		throw argumentsError(
 			["--all stops everything; do not also name targets."],
 			"stop",
 		);
+	}
+
 	// Agents and project docs say `buncargo stop` meaning "stop my run":
 	// that is what a bare stop does. A run in another terminal still asks
 	// (or, without a terminal, refuses and names --force), as --all does.
@@ -150,11 +151,13 @@ async function stop({
 		force: values.force,
 		names,
 	};
+
 	const root = values.root ?? findMonorepoRoot();
 	const selected = (run: RunEntry) =>
 		!values.run || run.sessionId === values.run;
 	const checkout = await findCheckoutRuns(root);
 	const runs = checkout.live.filter(selected);
+
 	// A finished run's apps are gone, so only its services are targets.
 	const held = checkout.held
 		.filter(selected)
@@ -166,6 +169,7 @@ async function stop({
 					(record) => record.root === root,
 				)
 			: undefined;
+
 	if (runs.length === 0 && held.length === 0) {
 		// Stopping a run that is not there leaves nothing to do; a named target
 		// that matches nothing is a mistake worth an exit code.
@@ -181,6 +185,7 @@ async function stop({
 		} else log.hint("Run `buncargo runs` to see what is active.");
 		return STOP_EXIT.notFound;
 	}
+
 	if (stoppedByWatchdog) log.info(describeRunStop(stoppedByWatchdog));
 
 	if (parsed.all) {
@@ -208,6 +213,8 @@ async function stop({
 
 	let exitCode: number = STOP_EXIT.ok;
 	for (const name of parsed.names) {
+		// The run whose app of that name is up, else any run that knows the name;
+		// failing both, the first run, so `stopTarget` reports the unknown name.
 		const run =
 			runs.find((entry) =>
 				entry.apps.some(
@@ -225,9 +232,11 @@ async function stop({
 			runs[0] ??
 			held[0];
 		if (!run) continue;
+
 		const code = await stopTarget(run, name, parsed.force);
 		if (code !== STOP_EXIT.ok) exitCode = code;
 	}
+
 	return exitCode;
 }
 
@@ -239,20 +248,20 @@ export async function stopTarget(
 	const app = run.apps.find((entry) => entry.name === name);
 	if (app) {
 		const result = await stopApp(app, force);
-		if (result === STOP_EXIT.ok)
+		if (result === STOP_EXIT.ok) {
 			await patchRun(run.sessionId, {
 				apps: [{ name: app.name, status: "stopped" }],
 			});
+		}
 		return result;
 	}
 
 	const service = run.services.find((entry) => entry.name === name);
 	if (service) return stopService(run, service);
 
+	const known = [...run.apps, ...run.services].map((entry) => entry.name);
 	log.error(`"${name}" is not an app or service of this run.`);
-	log.hint(
-		`Known: ${[...run.apps, ...run.services].map((entry) => entry.name).join(", ") || "(none)"}`,
-	);
+	log.hint(`Known: ${known.join(", ") || "(none)"}`);
 	return STOP_EXIT.notFound;
 }
 
@@ -372,8 +381,8 @@ async function stopReusedApp(
  * Stop a service's container.
  *
  * `stop`, never `kill`: a `restart:` policy honours the first and can undo the
- * second. Nothing in buncargo brings a stopped container back — the watchdog
- * only ever tears down — so the service stays down until the next `dev`.
+ * second. Nothing in buncargo brings a stopped container back (the watchdog
+ * only ever tears down), so the service stays down until the next `dev`.
  */
 export async function stopService(
 	run: RunEntry,
@@ -405,6 +414,7 @@ async function stopServiceUnlocked(
 		log.hint("Stop the whole run with `buncargo stop --all`.");
 		return STOP_EXIT.refused;
 	}
+
 	const runtimes = [
 		getContainerRuntimeAdapter(service.container.runtime, {
 			binary: service.container.binary,
@@ -466,8 +476,8 @@ async function stopServiceUnlocked(
  * Stop everything this run owns.
  *
  * Signals the `buncargo dev` process rather than its children, so the run
- * performs its own teardown — releasing host routes, withdrawing its registry
- * entry, stopping tunnels — instead of being dismantled from outside. The
+ * performs its own teardown (releasing host routes, withdrawing its registry
+ * entry, stopping tunnels) instead of being dismantled from outside. The
  * containers are removed here because that run releases them to the
  * watchdog's idle hold rather than stopping them itself, and "stop the run"
  * from the menu bar means now.
@@ -504,6 +514,7 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 			run.processIdentity,
 			runStopGraceMs(run),
 		));
+
 	if (stopped === "refused") return STOP_EXIT.refused;
 	if (!stopped) {
 		// Ended between the read and the signal: what it left in the hold is
@@ -518,6 +529,7 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		log.hint("Run `buncargo runs` to see what is active.");
 		return STOP_EXIT.refused;
 	}
+
 	return withProjectLifecycleLock(run.projectName, run.root, async () => {
 		// A second session in this checkout keeps the containers, as it does
 		// for a library `stop()`.
@@ -544,8 +556,13 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		// Its entry as it is now: released on its way out, or gone.
 		const ended =
 			held.find((other) => other.sessionId === run.sessionId) ?? run;
-		if (!(await tearDown(run.root, run.projectName, [ended, ...sharing])))
-			return STOP_EXIT.failed;
+
+		const tornDown = await tearDown(run.root, run.projectName, [
+			ended,
+			...sharing,
+		]);
+		if (!tornDown) return STOP_EXIT.failed;
+
 		log.done(`Stopped ${run.projectName}`);
 		return STOP_EXIT.ok;
 	});
@@ -610,8 +627,9 @@ async function tearDown(
 			await runtime.down({ root, projectName, verbose: false });
 			removed.push(runtime.name);
 		}
-		for (const run of runs)
+		for (const run of runs) {
 			await runStackDowns(run, (stack) => void removed.push(stack.name));
+		}
 	} catch (error) {
 		log.error(
 			`Could not remove ${projectName}'s containers: ${getErrorMessage(error)}`,
@@ -634,7 +652,9 @@ async function tearDown(
 			})),
 		);
 	}
+
 	await retireRuns(runs);
+
 	// The claims belong to whichever stack used them. Nothing removed (an
 	// app-only run), or an entry of the project still holding containers,
 	// means that stack is still standing, and so is its claim.
@@ -645,6 +665,7 @@ async function tearDown(
 		(run) => run.projectName === projectName,
 	);
 	if (standing) return true;
+
 	await withdrawStoppedRoutes(root, runs[0]?.pid);
 	// The run on record whose claims these are: the one that started last.
 	const owner = runs.reduce((newest, run) =>

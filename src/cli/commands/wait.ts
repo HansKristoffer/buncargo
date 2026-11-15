@@ -42,8 +42,9 @@ export function waitVerdict(input: {
 	interrupted: WaitSignal | undefined;
 	pastDeadline: boolean;
 }): WaitVerdict {
-	if (input.interrupted !== undefined)
+	if (input.interrupted !== undefined) {
 		return { kind: "interrupted", code: SIGNAL_EXIT[input.interrupted] };
+	}
 	if (isUp(input.app)) return { kind: "healthy" };
 	if (isDown(input.app)) return { kind: "down" };
 	if (input.pastDeadline) return { kind: "timed-out" };
@@ -52,10 +53,12 @@ export function waitVerdict(input: {
 
 async function findApp(root: string, name: string) {
 	const runs = await findRunsByRoot(root).catch(() => []);
+
 	// The newest run owns the app when a takeover left two entries behind.
-	for (const run of runs.sort((a, b) =>
+	const newestFirst = runs.sort((a, b) =>
 		b.startedAt.localeCompare(a.startedAt),
-	)) {
+	);
+	for (const run of newestFirst) {
 		const app = run.apps.find((entry) => entry.name === name);
 		if (app) return { run, app };
 	}
@@ -81,6 +84,7 @@ async function waitFor(
 		timeoutSeconds === 0
 			? Number.POSITIVE_INFINITY
 			: Date.now() + timeoutSeconds * 1000;
+
 	// The first signal; it also cuts the sleep between polls short.
 	let interrupted: WaitSignal | undefined;
 	const stopped = new AbortController();
@@ -92,6 +96,7 @@ async function waitFor(
 		process.on(signal, listener);
 		return { signal, listener };
 	});
+	// A signal aborts the sleep, which rejects: the loop then reads `interrupted`.
 	const pause = (ms: number) =>
 		promiseTimeout(ms, { signal: stopped.signal }).catch(() => {});
 

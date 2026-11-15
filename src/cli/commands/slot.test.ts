@@ -7,8 +7,9 @@ const cli = resolve(import.meta.dir, "../bin.ts");
 const homes: string[] = [];
 
 afterEach(() => {
-	for (const home of homes.splice(0))
+	for (const home of homes.splice(0)) {
 		rmSync(home, { recursive: true, force: true });
+	}
 });
 
 /** The CLI in a scratch home, outside CI, so it takes a real slot. */
@@ -26,8 +27,9 @@ function runSlot(args: string[], env: Record<string, string> = {}) {
 		"GITLAB_CI",
 		"CIRCLECI",
 		"JENKINS_URL",
-	])
+	]) {
 		delete childEnv[name];
+	}
 	const result = Bun.spawnSync([process.execPath, cli, "slot", ...args], {
 		cwd: tmpdir(),
 		env: childEnv,
