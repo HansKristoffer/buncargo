@@ -19,7 +19,7 @@ export function isRetryableQuickTunnelError(message: string): boolean {
 		message.includes("429") ||
 		message.includes("Too Many Requests") ||
 		message.includes('status_code="429') ||
-		// Plain-text "error" or HTML error pages — see cloudflare/cloudflared#972
+		// Plain-text "error" or HTML error pages, see cloudflare/cloudflared#972
 		message.includes("failed to unmarshal quick Tunnel") ||
 		message.includes("failed to unmarshall quick Tunnel") ||
 		message.includes("Error unmarshaling QuickTunnel") ||
@@ -96,12 +96,8 @@ export async function startQuickTunnel(
 
 	const tunnel = await startCloudflaredTunnelWithRetry(url, opts.signal);
 
-	const cleanup = async () => {
-		await tunnel.close();
-	};
-
 	return {
-		getURL: async () => await tunnel.url,
-		close: cleanup,
+		getURL: () => tunnel.url,
+		close: () => tunnel.close(),
 	};
 }

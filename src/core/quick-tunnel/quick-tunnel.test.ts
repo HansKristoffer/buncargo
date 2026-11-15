@@ -78,7 +78,7 @@ async function startLocalServerAndTunnel(): Promise<{
 
 describe("startQuickTunnel (real cloudflared)", () => {
 	it.skipIf(!runCloudflaredSmoke)(
-		"returns a public https URL (smoke — no request through tunnel)",
+		"returns a public https URL (smoke, no request through tunnel)",
 		async () => {
 			let server: ReturnType<typeof Bun.serve> | undefined;
 			try {
