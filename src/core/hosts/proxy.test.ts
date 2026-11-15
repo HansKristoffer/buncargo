@@ -43,6 +43,39 @@ async function findClosedPort(): Promise<number> {
 	return port;
 }
 
+/** Starts a proxy on an ephemeral port that routes one hostname to `port`. */
+function startProxyTo(hostname: string, port: number | undefined) {
+	const routes = new Map([[hostname, port]]);
+	return startLocalProxy({
+		lookup: (requested) => routes.get(requested),
+		routes: () => ({
+			hostnames: [...routes.keys()],
+			lastReloadAt: Date.now(),
+		}),
+		tls: TEST_TLS,
+		httpsPort: 0,
+		hostname: "127.0.0.1",
+	});
+}
+
+/** The next frame the socket receives, or a rejection after two seconds. */
+function nextMessage(socket: WebSocket): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(
+			() => reject(new Error("timed out waiting for websocket")),
+			2000,
+		);
+		socket.addEventListener("message", (event) => {
+			clearTimeout(timer);
+			resolve(String(event.data));
+		});
+		socket.addEventListener("error", () => {
+			clearTimeout(timer);
+			reject(new Error("websocket error"));
+		});
+	});
+}
+
 describe("hostnameFromHostHeader", () => {
 	it("strips a port", () => {
 		expect(hostnameFromHostHeader("api.serpier.localhost:443")).toBe(
@@ -91,17 +124,7 @@ describe("proxy fetch", () => {
 		});
 		servers.push(upstream);
 
-		const routes = new Map([["api.serpier.localhost", upstream.port]]);
-		const proxy = await startLocalProxy({
-			lookup: (hostname) => routes.get(hostname),
-			routes: () => ({
-				hostnames: [...routes.keys()],
-				lastReloadAt: Date.now(),
-			}),
-			tls: TEST_TLS,
-			httpsPort: 0,
-			hostname: "127.0.0.1",
-		});
+		const proxy = await startProxyTo("api.serpier.localhost", upstream.port);
 		servers.push(proxy);
 
 		const response = await fetch(`https://127.0.0.1:${proxy.httpsPort}/hello`, {
@@ -311,37 +334,14 @@ describe("proxy fetch", () => {
 		});
 		servers.push(upstream);
 
-		const routes = new Map([["api.serpier.localhost", upstream.port]]);
-		const proxy = await startLocalProxy({
-			lookup: (hostname) => routes.get(hostname),
-			routes: () => ({
-				hostnames: [...routes.keys()],
-				lastReloadAt: Date.now(),
-			}),
-			tls: TEST_TLS,
-			httpsPort: 0,
-			hostname: "127.0.0.1",
-		});
+		const proxy = await startProxyTo("api.serpier.localhost", upstream.port);
 		servers.push(proxy);
 
 		const socket = new WebSocket(`wss://127.0.0.1:${proxy.httpsPort}/ws`, {
 			...ACCEPT_TEST_TLS,
 			headers: { host: "api.serpier.localhost" },
 		} as never);
-		const first = await new Promise<string>((resolve, reject) => {
-			const timer = setTimeout(
-				() => reject(new Error("timed out waiting for websocket")),
-				2000,
-			);
-			socket.addEventListener("message", (event) => {
-				clearTimeout(timer);
-				resolve(String(event.data));
-			});
-			socket.addEventListener("error", () => {
-				clearTimeout(timer);
-				reject(new Error("websocket error"));
-			});
-		});
+		const first = await nextMessage(socket);
 		expect(first).toBe("hello");
 		socket.close();
 	});
@@ -374,17 +374,7 @@ describe("proxy fetch", () => {
 		});
 		servers.push(upstream);
 
-		const routes = new Map([["api.serpier.localhost", upstream.port]]);
-		const proxy = await startLocalProxy({
-			lookup: (hostname) => routes.get(hostname),
-			routes: () => ({
-				hostnames: [...routes.keys()],
-				lastReloadAt: Date.now(),
-			}),
-			tls: TEST_TLS,
-			httpsPort: 0,
-			hostname: "127.0.0.1",
-		});
+		const proxy = await startProxyTo("api.serpier.localhost", upstream.port);
 		servers.push(proxy);
 
 		const socket = new WebSocket(`wss://127.0.0.1:${proxy.httpsPort}/`, {
@@ -392,20 +382,7 @@ describe("proxy fetch", () => {
 			headers: { host: "api.serpier.localhost" },
 			protocols: ["vite-hmr"],
 		} as never);
-		await new Promise<void>((resolve, reject) => {
-			const timer = setTimeout(
-				() => reject(new Error("timed out waiting for websocket")),
-				2000,
-			);
-			socket.addEventListener("message", () => {
-				clearTimeout(timer);
-				resolve();
-			});
-			socket.addEventListener("error", () => {
-				clearTimeout(timer);
-				reject(new Error("websocket error"));
-			});
-		});
+		await nextMessage(socket);
 		expect(upstreamProtocols).toEqual(["vite-hmr"]);
 		expect(socket.protocol).toBe("vite-hmr");
 		socket.close();
@@ -445,17 +422,10 @@ describe("proxy fetch", () => {
 		});
 		servers.push(upstream);
 
-		const routes = new Map([["mailpit.serpier.localhost", upstream.port]]);
-		const proxy = await startLocalProxy({
-			lookup: (hostname) => routes.get(hostname),
-			routes: () => ({
-				hostnames: [...routes.keys()],
-				lastReloadAt: Date.now(),
-			}),
-			tls: TEST_TLS,
-			httpsPort: 0,
-			hostname: "127.0.0.1",
-		});
+		const proxy = await startProxyTo(
+			"mailpit.serpier.localhost",
+			upstream.port,
+		);
 		servers.push(proxy);
 
 		const url = `https://127.0.0.1:${proxy.httpsPort}/`;
@@ -493,17 +463,7 @@ describe("proxy fetch", () => {
 		});
 		servers.push(upstream);
 
-		const routes = new Map([["api.serpier.localhost", upstream.port]]);
-		const proxy = await startLocalProxy({
-			lookup: (hostname) => routes.get(hostname),
-			routes: () => ({
-				hostnames: [...routes.keys()],
-				lastReloadAt: Date.now(),
-			}),
-			tls: TEST_TLS,
-			httpsPort: 0,
-			hostname: "127.0.0.1",
-		});
+		const proxy = await startProxyTo("api.serpier.localhost", upstream.port);
 		servers.push(proxy);
 
 		const response = await fetch(`https://127.0.0.1:${proxy.httpsPort}/`, {
@@ -531,17 +491,7 @@ describe("proxy fetch", () => {
 			});
 			servers.push(upstream);
 
-			const routes = new Map([["web.serpier.localhost", upstream.port]]);
-			const proxy = await startLocalProxy({
-				lookup: (hostname) => routes.get(hostname),
-				routes: () => ({
-					hostnames: [...routes.keys()],
-					lastReloadAt: Date.now(),
-				}),
-				tls: TEST_TLS,
-				httpsPort: 0,
-				hostname: "127.0.0.1",
-			});
+			const proxy = await startProxyTo("web.serpier.localhost", upstream.port);
 			servers.push(proxy);
 
 			const response = await fetch(`https://127.0.0.1:${proxy.httpsPort}/`, {
@@ -574,37 +524,14 @@ describe("proxy fetch", () => {
 			});
 			servers.push(upstream);
 
-			const routes = new Map([["web.serpier.localhost", upstream.port]]);
-			const proxy = await startLocalProxy({
-				lookup: (hostname) => routes.get(hostname),
-				routes: () => ({
-					hostnames: [...routes.keys()],
-					lastReloadAt: Date.now(),
-				}),
-				tls: TEST_TLS,
-				httpsPort: 0,
-				hostname: "127.0.0.1",
-			});
+			const proxy = await startProxyTo("web.serpier.localhost", upstream.port);
 			servers.push(proxy);
 
 			const socket = new WebSocket(`wss://127.0.0.1:${proxy.httpsPort}/ws`, {
 				...ACCEPT_TEST_TLS,
 				headers: { host: "web.serpier.localhost" },
 			} as never);
-			const first = await new Promise<string>((resolve, reject) => {
-				const timer = setTimeout(
-					() => reject(new Error("timed out waiting for websocket")),
-					2000,
-				);
-				socket.addEventListener("message", (event) => {
-					clearTimeout(timer);
-					resolve(String(event.data));
-				});
-				socket.addEventListener("error", () => {
-					clearTimeout(timer);
-					reject(new Error("websocket error"));
-				});
-			});
+			const first = await nextMessage(socket);
 			expect(first).toBe("hello from ipv6");
 			socket.close();
 		},
@@ -655,33 +582,13 @@ describe("proxy fetch", () => {
 		});
 		servers.push(upstream);
 
-		const routes = new Map([["api.serpier.localhost", upstream.port]]);
-		const proxy = await startLocalProxy({
-			lookup: (hostname) => routes.get(hostname),
-			routes: () => ({
-				hostnames: [...routes.keys()],
-				lastReloadAt: Date.now(),
-			}),
-			tls: TEST_TLS,
-			httpsPort: 0,
-			hostname: "127.0.0.1",
-		});
+		const proxy = await startProxyTo("api.serpier.localhost", upstream.port);
 
 		const client = new WebSocket(`wss://127.0.0.1:${proxy.httpsPort}/`, {
 			...ACCEPT_TEST_TLS,
 			headers: { host: "api.serpier.localhost" },
 		} as never);
-		await new Promise<void>((resolve, reject) => {
-			const timer = setTimeout(() => reject(new Error("timed out")), 2000);
-			client.addEventListener("message", () => {
-				clearTimeout(timer);
-				resolve();
-			});
-			client.addEventListener("error", () => {
-				clearTimeout(timer);
-				reject(new Error("websocket error"));
-			});
-		});
+		await nextMessage(client);
 
 		proxy.stop();
 		// 1001 (going away) is the close frame; a bare reset reports otherwise.

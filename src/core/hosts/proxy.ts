@@ -43,6 +43,13 @@ const LOOP_MESSAGE =
 
 export type ProxyRouteLookup = (hostname: string) => number | undefined;
 
+function textResponse(status: number, body: string): Response {
+	return new Response(body, {
+		status,
+		headers: { "content-type": "text/plain; charset=utf-8" },
+	});
+}
+
 /**
  * Connection-scoped headers that describe the hop we terminated, not the
  * request. Forwarding them upstream (RFC 9110 7.6.1) makes the dev server
@@ -76,11 +83,13 @@ function requestedSubprotocol(request: Request): string | undefined {
 
 export function hostnameFromHostHeader(host: string | null): string {
 	if (!host) return "";
+
 	const trimmed = host.trim().toLowerCase();
 	if (trimmed.startsWith("[")) {
 		const end = trimmed.indexOf("]");
 		return end === -1 ? trimmed : trimmed.slice(1, end);
 	}
+
 	const colon = trimmed.lastIndexOf(":");
 	if (colon > 0 && /^\d+$/.test(trimmed.slice(colon + 1))) {
 		return trimmed.slice(0, colon);
@@ -93,6 +102,9 @@ export function closestHostname(
 	known: string[],
 ): string | undefined {
 	if (known.includes(hostname)) return hostname;
+
+	// A known name that is a parent or child domain of the request. The longer
+	// parent wins: `a.b.localhost` is closer to `b.localhost` than to `localhost`.
 	let best: string | undefined;
 	let bestScore = 0;
 	for (const candidate of known) {
@@ -146,14 +158,17 @@ export function createProxyFetch(input: {
 
 	return async (request, server) => {
 		const url = new URL(request.url);
+
 		if (url.pathname === HEALTH_PATH) {
 			// A reload that failed still answers: the body says what is served.
 			if (refresh && url.searchParams.has(HEALTH_REFRESH_PARAM)) {
 				await refresh().catch(() => {});
 			}
+
 			const view = routes();
 			reloadAgeMs(view);
 			const { hostnames } = view;
+
 			return Response.json({
 				ok: true,
 				protocol: HOSTS_PROTOCOL,
@@ -172,26 +187,20 @@ export function createProxyFetch(input: {
 		const hops =
 			Number.parseInt(request.headers.get(HOPS_HEADER) ?? "0", 10) || 0;
 		if (hops >= MAX_PROXY_HOPS) {
-			return new Response(LOOP_MESSAGE, {
-				status: 508,
-				headers: { "content-type": "text/plain; charset=utf-8" },
-			});
+			return textResponse(508, LOOP_MESSAGE);
 		}
 
 		const port = lookup(hostname);
 		if (port === undefined) {
 			const hint = closestHostname(hostname, view.hostnames);
-			const stale =
-				staleAfterMs !== undefined && ageMs > staleAfterMs
-					? `The route map has not refreshed in ${Math.round(ageMs / 1000)}s, so this may be stale. Run \`buncargo hosts install\`.\n`
-					: "";
+			const isStale = staleAfterMs !== undefined && ageMs > staleAfterMs;
+			const stale = isStale
+				? `The route map has not refreshed in ${Math.round(ageMs / 1000)}s, so this may be stale. Run \`buncargo hosts install\`.\n`
+				: "";
 			const message = hint
 				? `No route for ${hostname}. Closest registered hostname: ${hint}\n${stale}`
 				: `No route for ${hostname || "(missing Host)"}\n${stale}`;
-			return new Response(message, {
-				status: 404,
-				headers: { "content-type": "text/plain; charset=utf-8" },
-			});
+			return textResponse(404, message);
 		}
 
 		if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
@@ -207,15 +216,14 @@ export function createProxyFetch(input: {
 					? { headers: { "sec-websocket-protocol": protocol } }
 					: {}),
 			});
+			// After a successful upgrade Bun expects no response at all.
 			if (ok) {
 				return undefined as unknown as Response;
 			}
+
 			// Falling through would forward the upgrade over `fetch`, which
 			// cannot complete a handshake and leaves the upstream mid-switch.
-			return new Response("Malformed WebSocket upgrade request\n", {
-				status: 400,
-				headers: { "content-type": "text/plain; charset=utf-8" },
-			});
+			return textResponse(400, "Malformed WebSocket upgrade request\n");
 		}
 
 		const headers = new Headers(request.headers);
@@ -223,6 +231,7 @@ export function createProxyFetch(input: {
 		headers.set(HOPS_HEADER, String(hops + 1));
 		headers.set("x-forwarded-proto", "https");
 		headers.set("x-forwarded-host", hostname);
+
 		const forwardedFor = request.headers.get("x-forwarded-for");
 		headers.set(
 			"x-forwarded-for",
@@ -232,16 +241,14 @@ export function createProxyFetch(input: {
 
 		const family = await upstream.resolve(port);
 		if (!family) {
-			return new Response(
+			return textResponse(
+				502,
 				`Upstream ${hostname} (${port}) is not reachable on ${describeUpstreamFamilies()}\n`,
-				{
-					status: 502,
-					headers: { "content-type": "text/plain; charset=utf-8" },
-				},
 			);
 		}
 
 		const target = `http://${family.authority}:${port}${url.pathname}${url.search}`;
+
 		try {
 			// Bun's fetch decodes gzip/br/deflate and leaves Content-Encoding
 			// on the Response (oven-sh/bun#5668). Returning that from Bun.serve
@@ -263,12 +270,9 @@ export function createProxyFetch(input: {
 			// Re-probe next time: the family we remembered just stopped serving.
 			upstream.forget(port);
 			const message = getErrorMessage(error);
-			return new Response(
+			return textResponse(
+				502,
 				`Upstream ${hostname} (${port}) is not reachable: ${message}\n`,
-				{
-					status: 502,
-					headers: { "content-type": "text/plain; charset=utf-8" },
-				},
 			);
 		}
 	};
@@ -291,7 +295,7 @@ interface ProxyWs {
 	close: (code?: number, reason?: string) => void;
 }
 
-export interface ProxyWebsocketHandlers {
+interface ProxyWebsocketHandlers {
 	open: (ws: ProxyWs) => void;
 	message: (ws: ProxyWs, message: string | Buffer<ArrayBuffer>) => void;
 	close: (ws: ProxyWs) => void;
@@ -320,6 +324,7 @@ export function createWebsocketHandlers(
 		);
 		ws.data.socket = socket;
 		upstreams.add(socket);
+
 		let opened = false;
 		socket.addEventListener("open", () => {
 			opened = true;
@@ -328,6 +333,7 @@ export function createWebsocketHandlers(
 			for (const frame of ws.data.pending) socket.send(frame);
 			ws.data.pending.length = 0;
 		});
+
 		socket.addEventListener("message", (event) => {
 			ws.send(
 				typeof event.data === "string"
@@ -335,10 +341,12 @@ export function createWebsocketHandlers(
 					: Buffer.from(event.data as ArrayBuffer),
 			);
 		});
+
 		socket.addEventListener("close", () => {
 			upstreams.delete(socket);
 			ws.close();
 		});
+
 		socket.addEventListener("error", () => {
 			upstreams.delete(socket);
 			// Re-probe next time, as the HTTP path does: an app that restarted
@@ -379,6 +387,7 @@ export function createWebsocketHandlers(
 		close(ws) {
 			ws.data.closed = true;
 			ws.data.pending.length = 0;
+
 			const socket = ws.data.socket;
 			if (!socket) return;
 			upstreams.delete(socket);
@@ -438,6 +447,7 @@ function serveOnEach(
 ): BunServer[] {
 	const first = Bun.serve({ ...options, hostname: hostnames[0] } as never);
 	const servers = [first];
+
 	for (const hostname of hostnames.slice(1)) {
 		try {
 			servers.push(
@@ -447,6 +457,7 @@ function serveOnEach(
 			// no such family on this machine, or something else holds it
 		}
 	}
+
 	return servers;
 }
 
@@ -473,6 +484,7 @@ export async function startLocalProxy(options: {
 			"Named-hosts certificate or key is empty. Run `buncargo hosts install`.",
 		);
 	}
+
 	// One resolver for both paths so an HMR upgrade reuses the family the first
 	// HTTP request already probed.
 	const upstream = createUpstreamResolver();
@@ -518,6 +530,7 @@ export async function startLocalProxy(options: {
 
 	let httpServers: BunServer[] = [];
 	let redirectError: string | undefined;
+
 	if (options.httpPort !== undefined) {
 		try {
 			httpServers = serveOnEach(hostnames, {
@@ -595,6 +608,7 @@ export type ProxyHealth =
 
 function parseProxyHealth(value: unknown): ProxyHealth | undefined {
 	if (!isProxyHealthBody(value)) return undefined;
+
 	const body = value as {
 		protocol?: unknown;
 		routes?: unknown;
@@ -611,6 +625,7 @@ function parseProxyHealth(value: unknown): ProxyHealth | undefined {
 	) {
 		return { outdated: true };
 	}
+
 	return {
 		protocol: body.protocol,
 		routeCount: typeof body.routes === "number" ? body.routes : 0,
@@ -636,6 +651,7 @@ export async function readProxyHealth(
 ): Promise<ProxyHealth | undefined> {
 	const query = options.refresh ? `?${HEALTH_REFRESH_PARAM}` : "";
 	const url = `https://${loopbackAuthority(hostname, port)}${HEALTH_PATH}${query}`;
+
 	try {
 		const response = await fetch(url, {
 			signal: AbortSignal.timeout(options.timeoutMs ?? HEALTH_TIMEOUT_MS),

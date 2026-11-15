@@ -14,7 +14,7 @@ export function describePortSquatter(
 	const haystack = `${command} ${name}`;
 
 	if (haystack.includes("portless")) {
-		return `Portless is serving :${port} — run \`portless proxy stop\`, or keep using Portless and set hosts: false.`;
+		return `Portless is serving :${port}. Run \`portless proxy stop\`, or keep using Portless and set hosts: false.`;
 	}
 	if (haystack.includes("caddy")) {
 		return `Caddy is serving :${port}. Stop it or set hosts: false.`;

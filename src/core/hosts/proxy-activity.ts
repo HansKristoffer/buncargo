@@ -46,6 +46,7 @@ interface ProxyActivityDocument {
 
 function validate(value: unknown): ProxyActivityDocument | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
+
 	const document = value as { roots?: unknown; updatedAt?: unknown };
 	const updatedAt =
 		typeof document.updatedAt === "string"
@@ -54,11 +55,14 @@ function validate(value: unknown): ProxyActivityDocument | undefined {
 	if (Number.isNaN(updatedAt)) return undefined;
 	if (typeof document.roots !== "object" || document.roots === null)
 		return undefined;
+
+	// An entry with an unreadable time is dropped, not the whole file.
 	const roots = new Map<string, number>();
 	for (const [root, at] of Object.entries(document.roots)) {
 		const time = typeof at === "string" ? Date.parse(at) : Number.NaN;
 		if (!Number.isNaN(time)) roots.set(root, time);
 	}
+
 	return { updatedAt, roots };
 }
 
@@ -87,9 +91,11 @@ export async function writeProxyActivity(
 		const merged = new Map(readDocument()?.roots ?? []);
 		for (const [root, at] of seen)
 			merged.set(root, Math.max(at, merged.get(root) ?? 0));
+
 		const roots: Record<string, string> = {};
 		for (const [root, at] of merged)
 			if (now - at < FORGET_AFTER_MS) roots[root] = new Date(at).toISOString();
+
 		await writeJsonDocument(
 			path,
 			{ version: 1, updatedAt: new Date(now).toISOString(), roots },
@@ -127,14 +133,18 @@ export function createProxyActivityRecorder(deps: {
 		const changed = dirty && sinceWrite >= PROXY_ACTIVITY_WRITE_MS;
 		const beat = sinceWrite >= PROXY_ACTIVITY_HEARTBEAT_MS;
 		if (!changed && !beat) return;
+
 		lastAttempt = now;
 		const batch = new Map(seen);
+
 		try {
 			await deps.write(batch, now);
 		} catch {
 			// Kept for the next flush; a request time a minute late is harmless.
 			return;
 		}
+
+		// A request noted while the write ran has a newer time and stays.
 		lastWrite = now;
 		for (const [root, at] of batch)
 			if (seen.get(root) === at) seen.delete(root);

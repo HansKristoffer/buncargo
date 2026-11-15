@@ -5,7 +5,7 @@
  * loopback only, and Vite's default `localhost` bind does exactly that, so a
  * named URL pointing at a Vite app never resolved while a Bun app on `*:port`
  * worked. The family is probed once per port and remembered, because the
- * alternative - retrying the forward itself - cannot replay a consumed body.
+ * alternative, retrying the forward itself, cannot replay a consumed body.
  */
 
 import { isTcpPortOpen } from "../network";
@@ -43,15 +43,13 @@ export interface UpstreamResolver {
 }
 
 export function createUpstreamResolver(
-	options: {
-		probe?: (port: number, host: string) => Promise<boolean>;
-		timeoutMs?: number;
-	} = {},
+	options: { probe?: (port: number, host: string) => Promise<boolean> } = {},
 ): UpstreamResolver {
-	const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
 	const probe =
 		options.probe ??
-		((port: number, host: string) => isTcpPortOpen(port, host, timeoutMs));
+		((port: number, host: string) =>
+			isTcpPortOpen(port, host, PROBE_TIMEOUT_MS));
+
 	const known = new Map<number, UpstreamFamily>();
 	// Concurrent first requests for one port would otherwise each probe.
 	const inFlight = new Map<number, Promise<UpstreamFamily | undefined>>();
@@ -65,6 +63,7 @@ export function createUpstreamResolver(
 				return family;
 			}
 		}
+
 		return undefined;
 	}
 
@@ -80,6 +79,7 @@ export function createUpstreamResolver(
 				inFlight.delete(port);
 			});
 			inFlight.set(port, attempt);
+
 			return attempt;
 		},
 		forget(port) {

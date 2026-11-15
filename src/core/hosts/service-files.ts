@@ -65,6 +65,7 @@ export function buildLaunchdPlist(input: DaemonServiceInput): string {
 				`    <key>${escapeXml(key)}</key>\n    ${xmlString(value)}`,
 		)
 		.join("\n");
+
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -123,6 +124,7 @@ export function buildSystemdUnit(input: DaemonServiceInput): string {
 		.map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`)
 		.join("\n");
 	const exec = [input.program, ...input.args].map(systemdQuote).join(" ");
+
 	return `[Unit]
 Description=buncargo named-hosts proxy
 After=network.target
