@@ -1,9 +1,5 @@
 import type { EnvValues } from "./config";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Service Configuration
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * Health check function signature for custom health checks.
  */
@@ -31,10 +27,6 @@ export interface UrlBuilderContext {
  * URL builder function receives port info and returns the connection URL.
  */
 export type UrlBuilderFn = (ctx: UrlBuilderContext) => string;
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Docker Compose Configuration
-// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * Recursive YAML-safe value used for Docker Compose objects.
@@ -143,8 +135,9 @@ export interface DockerComposeVolumeRaw {
 /**
  * The generated compose model: every service resolved, before serialization.
  *
- * Both backends consume this - Docker via the YAML rendered from it, Apple by
- * walking it directly - so it is the one description of a project's stack.
+ * Both backends consume this, Docker through the YAML rendered from it and
+ * Apple by walking it directly, so it is the one description of a project's
+ * stack.
  */
 export type ComposeDocument = {
 	name?: string;
@@ -212,8 +205,8 @@ export interface BuncargoContainer {
  * `project` comes from Compose's own label. Buncargo deliberately adds no
  * labels of its own here: Compose compares a volume's configuration against
  * the file and prompts "exists but doesn't match configuration in compose
- * file. Recreate (data will be lost)?" — which hangs a non-interactive run and
- * offers to destroy a database. Whatever prune knows about a volume, it has to
+ * file. Recreate (data will be lost)?". That prompt hangs a non-interactive
+ * run and offers to destroy a database. Whatever prune knows about a volume, it has to
  * learn without touching the volume's definition.
  */
 export interface BuncargoVolume {
@@ -318,10 +311,8 @@ export interface ServiceConfigBase<
 	/** Docker Compose service name (defaults to the key name) */
 	serviceName?: string;
 
-	// ─────────────────────────────────────────────────────────────────────────
-	// Built-in URL template options (alternative to urlTemplate)
-	// When these are set, a built-in URL template is used based on the service name
-	// ─────────────────────────────────────────────────────────────────────────
+	// Built-in URL template options, an alternative to `urlTemplate`: when set,
+	// a built-in template is chosen by the service's name.
 
 	/** Database name (for postgres, mysql, clickhouse). Enables built-in URL template. */
 	database?: string;

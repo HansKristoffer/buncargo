@@ -3,14 +3,7 @@ import type { EnvValues, OverlayEnvVarNames } from "./config";
 import type { BuiltInServiceEnvVarMap, ServiceConfig } from "./service";
 import type { ConcreteStringKeys } from "./type-utils";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Computed Types (Type-Level Utilities)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Computed ports object - maps service/app names to their port numbers.
- */
-// Helper to extract services that have secondaryPort defined
+/** `<service>Secondary` ports, for the services that declare a `secondaryPort`. */
 type ServicesWithSecondaryPort<
 	TServices extends Record<string, ServiceConfig>,
 > = {
@@ -36,7 +29,7 @@ type ForServerApp<TApp, TValue> = [TApp] extends [never]
 		: TValue;
 
 /**
- * Ports for every service and app.
+ * Ports for every service and app, by name.
  *
  * The app mapping is deliberately not filtered through
  * {@link ConcreteStringKeys}: while `TApps` is still being inferred, the

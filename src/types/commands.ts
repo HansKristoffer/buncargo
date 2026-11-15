@@ -1,9 +1,5 @@
 import type { AnyDevEnvironment } from "./environment";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Checks, Tasks and Profiles
-// ═══════════════════════════════════════════════════════════════════════════
-
 /** What a {@link SetupCheck} is handed. */
 export interface CheckContext {
 	/** Monorepo root; resolve relative paths against this. */

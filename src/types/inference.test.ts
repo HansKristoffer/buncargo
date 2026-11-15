@@ -18,10 +18,6 @@ import type {
 	TypedAppDefinitions,
 } from ".";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Type-level guardrails
-// ═══════════════════════════════════════════════════════════════════════════
-//
 // `bun test` runs this file but does not typecheck it: only `bun run typecheck`
 // (`bun check`) evaluates the assertions below, and `lint` runs both. The
 // point is that a type silently widening back to `string` or `EnvValues` fails
@@ -36,10 +32,6 @@ type Equal<A, B> =
 	(<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
 		? true
 		: false;
-
-// ───────────────────────────────────────────────────────────────────────────
-// A config exercising every inference path at once
-// ───────────────────────────────────────────────────────────────────────────
 
 const config = defineDevConfig({
 	projectPrefix: "guardrails",
@@ -85,10 +77,6 @@ function _probeFactoryInference() {
 	return inferred;
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// Service and app keys survive the factory
-// ───────────────────────────────────────────────────────────────────────────
-
 type _AppKeys = Expect<Equal<keyof Env["apps"], "web" | "api">>;
 type _ServiceKeys = Expect<
 	Equal<keyof Env["services"], "postgres" | "mailpit">
@@ -99,10 +87,6 @@ type _PortKeys = Expect<
 		"postgres" | "mailpit" | "mailpitSecondary" | "web" | "api"
 	>
 >;
-
-// ───────────────────────────────────────────────────────────────────────────
-// The `env` overlay reaches the built surface
-// ───────────────────────────────────────────────────────────────────────────
 
 // A built environment is stringified for child processes, so every value is a
 // string no matter what the overlay declared.
@@ -147,10 +131,6 @@ function _probeGetEnvVar() {
 	return [vitePort, dbUrl, token, workspace, getEnvVar(config, "NOPE")];
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// The shared surface is closed
-// ───────────────────────────────────────────────────────────────────────────
-
 type _RejectsUnknownName = Expect<
 	Equal<"NOPE" extends keyof SharedEnv ? true : false, false>
 >;
@@ -182,19 +162,11 @@ type _PortsAreClosed = Expect<
 	>
 >;
 
-// ───────────────────────────────────────────────────────────────────────────
-// `buildAppEnvVars` adds the app's own keys plus the injected PORT / HOST
-// ───────────────────────────────────────────────────────────────────────────
-
 type _AppEnvHasDerived = Expect<Equal<WebEnv["WEB_DERIVED"], string>>;
 type _AppEnvHasStatic = Expect<Equal<WebEnv["WEB_STATIC"], string>>;
 type _AppEnvHasPort = Expect<Equal<WebEnv["PORT"], string>>;
 type _AppEnvHasHost = Expect<Equal<WebEnv["HOST"], string>>;
 type _AppEnvKeepsShared = Expect<Equal<WebEnv["VITE_PORT"], string>>;
-
-// ───────────────────────────────────────────────────────────────────────────
-// Concrete configs stay assignable to the widened aliases
-// ───────────────────────────────────────────────────────────────────────────
 
 const noAppsConfig = defineDevConfig({
 	projectPrefix: "guardrails",
@@ -212,7 +184,7 @@ type _NoAppsConfigIsAny = Expect<
 type _TypedEnvironmentIsAny = Expect<
 	Equal<Env extends AnyDevEnvironment ? true : false, true>
 >;
-// Phase 3: `prisma.service` and `prisma.urlEnvVar` are keyed on the config.
+// `prisma.service` and `prisma.urlEnvVar` are keyed on the config.
 type _PrismaServiceIsKeyed = Expect<
 	Equal<
 		NonNullable<
@@ -237,10 +209,6 @@ type _AppsWiden = Expect<
 		true
 	>
 >;
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Compile-time rejections
-// ═══════════════════════════════════════════════════════════════════════════
 
 describe("config inference guardrails", () => {
 	it("rejects an unknown app in onlyApps", () => {
