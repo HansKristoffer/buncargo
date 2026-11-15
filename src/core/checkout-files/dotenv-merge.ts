@@ -27,6 +27,7 @@ const QUOTES = new Set(['"', "'", "`"]);
 function entries(text: string, label: string): Entry[] {
 	const lines = text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
 	const result: Entry[] = [];
+
 	for (let index = 0; index < lines.length; index++) {
 		const line = lines[index] ?? "";
 		const content = line.replace(/\r?\n$/, "");
@@ -60,6 +61,9 @@ function entries(text: string, label: string): Entry[] {
 		throw new DotenvMergeError(
 			`${label} sets ${duplicate} more than once; remove one and merge again.`,
 		);
+
+	// Node's parser is the reference: a file it reads differently from this
+	// one is refused instead of merged by a reader that disagrees.
 	const parsed = Object.keys(parseEnv(text)).sort();
 	if (parsed.join("\n") !== [...keys].sort().join("\n"))
 		throw new DotenvMergeError(
@@ -100,6 +104,7 @@ export function mergeDotenv(
 
 	const fromStore = new Set<string>();
 	const conflicts: string[] = [];
+
 	for (const key of new Set([...mine.keys(), ...theirs.keys()])) {
 		const local = mine.get(key);
 		const stored = theirs.get(key);
@@ -113,6 +118,7 @@ export function mergeDotenv(
 		if (side === "store") fromStore.add(key);
 		else if (side !== "checkout") conflicts.push(key);
 	}
+
 	if (conflicts.length > 0) return { conflicts: conflicts.sort() };
 
 	// The checkout's lines, with the store's for every key taken from it.
