@@ -72,10 +72,13 @@ async function claimSomething(): Promise<void> {
 async function stopWatchdog(): Promise<void> {
 	const pid = await getWatchdogPidAsync();
 	if (pid) process.kill(pid, "SIGTERM");
-	for (let i = 0; i < 200 && (await getWatchdogPidAsync()); i++)
+
+	for (let i = 0; i < 200 && (await getWatchdogPidAsync()); i++) {
 		await Bun.sleep(10);
-	for (let i = 0; pid && i < 200 && isProcessAlive(pid); i++)
+	}
+	for (let i = 0; pid && i < 200 && isProcessAlive(pid); i++) {
 		await Bun.sleep(10);
+	}
 }
 
 /** The parent pids of `pid`, nearest first, up to init. */
@@ -283,8 +286,9 @@ await withFileLock(lockFile, async () => {
 	);
 	const deadline = Date.now() + 10_000;
 	while (!existsSync(ready)) {
-		if (stub.exitCode !== null || Date.now() > deadline)
+		if (stub.exitCode !== null || Date.now() > deadline) {
 			throw new Error("The stub runner did not start");
+		}
 		await Bun.sleep(10);
 	}
 	return stub;

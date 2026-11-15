@@ -6,19 +6,21 @@ import { once } from "hanzio";
 /**
  * Compare two dotted release versions.
  *
- * Numeric per segment, so `0.10.0` beats `0.9.0` — which a string compare gets
- * backwards, and which is the only comparison this needs to get right. Anything
+ * Numeric per segment, so `0.10.0` beats `0.9.0`, which a string compare gets
+ * backwards and which is the only comparison this needs to get right. Anything
  * unparseable sorts as 0, so a garbled version never claims to be newer.
  */
 export function compareVersions(left: string, right: string): number {
 	const leftParts = left.split(".");
 	const rightParts = right.split(".");
 	const length = Math.max(leftParts.length, rightParts.length);
+
 	for (let index = 0; index < length; index += 1) {
 		const a = Number.parseInt(leftParts[index] ?? "0", 10) || 0;
 		const b = Number.parseInt(rightParts[index] ?? "0", 10) || 0;
 		if (a !== b) return a < b ? -1 : 1;
 	}
+
 	return 0;
 }
 
@@ -62,11 +64,13 @@ export function findBuncargoPackage(
 			const pkg = JSON.parse(
 				readFileSync(join(dir, "package.json"), "utf8"),
 			) as { name?: unknown; version?: unknown };
-			if (pkg.name === "buncargo" && typeof pkg.version === "string")
+			if (pkg.name === "buncargo" && typeof pkg.version === "string") {
 				return { dir, version: pkg.version };
+			}
 		} catch {
 			// No package.json at this level: keep walking.
 		}
+
 		const parent = dirname(dir);
 		if (parent === dir) return undefined;
 		dir = parent;

@@ -9,10 +9,10 @@ import { getErrorMessage } from "hanzio";
  *
  * Two directories, deliberately named the same:
  *
- * - `~/.buncargo/` is machine-wide — the hosts route registry, the run
+ * - `~/.buncargo/` is machine-wide: the hosts route registry, the run
  *   registry, the daemon config and the downloaded tools. Every checkout on
  *   the machine shares it, so entries carry an owner and are pruned.
- * - `<root>/.buncargo/` is per-checkout — the port lockfile, the tunnel
+ * - `<root>/.buncargo/` is per-checkout: the port lockfile, the tunnel
  *   registry, typecheck timings. It is `.gitignore`d and disposable.
  *
  * Both used to be joined by hand at each call site, which is how the same
@@ -97,7 +97,7 @@ function runHomeLookup(command: string): string | undefined {
  *
  * Every call forks, and forking repeatedly out of a multithreaded runtime can
  * deadlock the child before it reaches `exec`, so this must stay off any hot
- * path — see {@link resolveUserHome}.
+ * path, see {@link resolveUserHome}.
  */
 function lookupUserHome(user: string): string | undefined {
 	const cached = homeLookupCache.get(user);
@@ -136,7 +136,7 @@ export function resolveUserHome(
 }
 
 /**
- * `~/.buncargo` — machine-wide state shared by every checkout.
+ * `~/.buncargo`, machine-wide state shared by every checkout.
  *
  * Relocated by pointing `HOME` somewhere else, which is how the tests keep off
  * the developer's real registry. Deliberately not a dedicated override: a
@@ -155,7 +155,7 @@ export function stateFilePath(
 	return join(getStateDir(home), filename);
 }
 
-/** `<root>/.buncargo` — per-checkout state, gitignored and disposable. */
+/** `<root>/.buncargo`, per-checkout state, gitignored and disposable. */
 export function getProjectStateDir(root: string): string {
 	return join(root, STATE_DIRNAME);
 }
@@ -185,9 +185,8 @@ export function chownToInvokingUser(
 	env: NodeJS.ProcessEnv = process.env,
 ): void {
 	const uid = Number.parseInt(env.SUDO_UID ?? "", 10);
-	if (!Number.isInteger(uid) || process.getuid?.() !== 0) {
-		return;
-	}
+	if (!Number.isInteger(uid) || process.getuid?.() !== 0) return;
+
 	const gid = Number.parseInt(env.SUDO_GID ?? "", 10);
 	try {
 		chownSync(path, uid, Number.isInteger(gid) ? gid : uid);
@@ -196,6 +195,7 @@ export function chownToInvokingUser(
 		const key = `${path}:${message}`;
 		if (reportedChownFailures.has(key)) return;
 		reportedChownFailures.add(key);
+
 		try {
 			writeSync(
 				2,

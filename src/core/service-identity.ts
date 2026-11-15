@@ -22,7 +22,7 @@ export interface ServiceIdentity {
 	preset: DockerPresetName | undefined;
 	/** Worth opening in a browser: gets an `↗` in the UI and a named host. */
 	http: boolean;
-	/** Openable in TablePlus — currently the SQL presets. */
+	/** Openable in TablePlus (currently the SQL presets). */
 	database: boolean;
 	/** TablePlus deeplink, only when {@link database}. */
 	tablePlusUrl?: string;
@@ -37,7 +37,7 @@ export type Credentials = ServiceCredentials;
 /**
  * TablePlus connection URL.
  *
- * Do not set `schema` with `name` — that pair is the table-filter deeplink.
+ * Do not set `schema` with `name`: that pair is the table-filter deeplink.
  */
 export function tablePlusUrl(input: {
 	user: string;
@@ -45,9 +45,9 @@ export function tablePlusUrl(input: {
 	port: number;
 	database: string;
 	name: string;
-	scheme?: string;
+	scheme: string;
 }): string {
-	const url = new URL(`${input.scheme ?? "postgresql"}://127.0.0.1`);
+	const url = new URL(`${input.scheme}://127.0.0.1`);
 	url.port = String(input.port);
 	url.username = input.user;
 	url.password = input.password;

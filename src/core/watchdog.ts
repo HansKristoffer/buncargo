@@ -45,8 +45,9 @@ const WATCHDOG_LOG_MAX_BYTES = 1024 * 1024;
  */
 function capWatchdogLog(logFile: string): void {
 	try {
-		if (statSync(logFile).size > WATCHDOG_LOG_MAX_BYTES)
+		if (statSync(logFile).size > WATCHDOG_LOG_MAX_BYTES) {
 			renameSync(logFile, `${logFile}.1`);
+		}
 	} catch {
 		// No log yet: the runner creates it.
 	}
@@ -130,13 +131,16 @@ async function retireOutdatedWatchdog(
 	owner: WatchdogOwner,
 	signal: "SIGTERM" | "SIGKILL",
 ): Promise<boolean> {
-	if (owner.pid === process.pid || owner.processIdentity === undefined)
+	if (owner.pid === process.pid || owner.processIdentity === undefined) {
 		return false;
-	if (
-		(await checkProcessIdentityAsync(owner.pid, owner.processIdentity)) !==
-		"match"
-	)
-		return false;
+	}
+
+	const identity = await checkProcessIdentityAsync(
+		owner.pid,
+		owner.processIdentity,
+	);
+	if (identity !== "match") return false;
+
 	try {
 		process.kill(owner.pid, signal);
 		return true;
@@ -187,6 +191,7 @@ export function resolveWatchdogRunnerPath(): string {
 		join(moduleDir, "core", "watchdog-runner.js"),
 		join(moduleDir, "core", "watchdog-runner.ts"),
 	];
+
 	let dir = moduleDir;
 	for (let i = 0; i < 6; i++) {
 		candidates.push(join(dir, "dist/core/watchdog-runner.js"));
@@ -195,9 +200,11 @@ export function resolveWatchdogRunnerPath(): string {
 		if (parent === dir) break;
 		dir = parent;
 	}
+
 	for (const candidate of candidates) {
 		if (existsSync(candidate)) return candidate;
 	}
+
 	throw new Error(
 		"Watchdog runner not found. Rebuild buncargo so dist/core/watchdog-runner.js is emitted.",
 	);
@@ -209,8 +216,8 @@ export function resolveWatchdogRunnerPath(): string {
  * Spawned through a throwaway intermediate that exits immediately, so the
  * runner is reparented to launchd before this function returns. `detached`
  * alone was not enough: it gives the runner its own session, but leaves it a
- * *child* of this process, and `pkill -P` — which is how an agent harness
- * tears a `buncargo dev` down — enumerates children by parent pid and killed
+ * *child* of this process, and `pkill -P`, which is how an agent harness
+ * tears a `buncargo dev` down, enumerates children by parent pid and killed
  * the watchdog along with the run it was there to outlive. That is the
  * failure this whole sweep was built for, so the watchdog must not share it.
  *
@@ -223,6 +230,7 @@ export async function ensureWatchdog(
 ): Promise<void> {
 	const { verbose = true } = options;
 	const own = buncargoVersion();
+
 	const running = await readWatchdogOwnerAsync();
 	if (running && !isOutdatedWatchdog(running, own)) return;
 

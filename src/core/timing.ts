@@ -6,7 +6,7 @@ import { formatSection } from "./style";
  *
  * Off unless asked for. The point is that startup cost is paid on every run, in
  * every worktree, many times a day, so a regression in it has to be visible
- * without reaching for a profiler — and reportable by whoever (or whatever) is
+ * without reaching for a profiler, and reportable by whoever (or whatever) is
  * running the command.
  */
 
@@ -49,10 +49,12 @@ export function createPhaseTimer(
 	const log = deps.log ?? ((message: string) => console.log(message));
 	const startedAt = deps.startedAt ?? now();
 	let reported = false;
+
 	const counters: Record<string, number> = {};
 	const stopObserving = observeStartupMetrics((name, amount) => {
 		counters[name] = (counters[name] ?? 0) + amount;
 	});
+
 	const recorded: Array<{ name: string; durationMs: number }> = [];
 
 	function record(name: string, durationMs: number): void {
@@ -90,6 +92,7 @@ export function createPhaseTimer(
 			if (reported) return;
 			reported = true;
 			stopObserving();
+
 			const total = now() - startedAt;
 			if (deps.json) {
 				log(
@@ -102,12 +105,14 @@ export function createPhaseTimer(
 				);
 				return;
 			}
+
 			const width = recorded.reduce(
 				(widest, phase) => Math.max(widest, phase.name.length),
 				5,
 			);
 			log("");
 			log(formatSection("Startup"));
+
 			for (const phase of recorded) {
 				log(
 					`  ${phase.name.padEnd(width)}  ${String(phase.durationMs).padStart(6)}ms`,
@@ -116,8 +121,10 @@ export function createPhaseTimer(
 			log(
 				`  ${"total".padEnd(width)}  ${String(Math.round(total)).padStart(6)}ms`,
 			);
-			for (const [name, amount] of Object.entries(counters))
+
+			for (const [name, amount] of Object.entries(counters)) {
 				log(`  ${name}: ${Math.round(amount)}`);
+			}
 			log("");
 		},
 	};

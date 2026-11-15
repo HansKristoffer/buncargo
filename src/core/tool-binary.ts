@@ -26,8 +26,8 @@ export interface ToolBinaryResolution {
  * Download target for a tool, under `~/.buncargo/bin`.
  *
  * Beside the certificates and the registry rather than in `tmpdir()`: macOS
- * clears `$TMPDIR`, and a cache that disappears takes named hosts down with it
- * — a run that has to widen the certificate for a new worktree hostname finds
+ * clears `$TMPDIR`, and a cache that disappears takes named hosts down with it.
+ * A run that has to widen the certificate for a new worktree hostname finds
  * no `mkcert` and falls back to `localhost:port`.
  */
 export function toolCachePath(fileName: string): string {
@@ -56,11 +56,7 @@ export function resolveToolBinary(options: {
 		}
 	}
 
-	if (existsSync(cachePath)) {
-		return { path: cachePath, source: "cache", exists: true };
-	}
-
-	return { path: cachePath, source: "cache", exists: false };
+	return { path: cachePath, source: "cache", exists: existsSync(cachePath) };
 }
 
 function isExecutableFile(path: string): boolean {
@@ -96,14 +92,16 @@ export function lookupOnPath(
 		const candidate = join(directory, command);
 		if (isExecutableFile(candidate)) return candidate;
 	}
+
 	return undefined;
 }
 
 /** Stat-based receipt check keeps tool verification off ordinary warm startup. */
 export function toolBinaryFingerprint(path: string): string {
 	const stat = statSync(path);
-	if (!stat.isFile() || stat.size === 0 || (stat.mode & 0o111) === 0)
-		return "invalid";
+	const isExecutable = (stat.mode & 0o111) !== 0;
+	if (!stat.isFile() || stat.size === 0 || !isExecutable) return "invalid";
+
 	return `${process.platform}:${process.arch}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
 }
 

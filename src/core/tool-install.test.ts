@@ -23,8 +23,9 @@ function directory() {
 	return path;
 }
 afterEach(() => {
-	for (const path of directories.splice(0))
+	for (const path of directories.splice(0)) {
 		rmSync(path, { recursive: true, force: true });
+	}
 });
 const executable = "#!/bin/sh\necho 'fixture version 1.2.3'\n";
 const sha256 = (payload: string | Uint8Array) =>
@@ -78,6 +79,7 @@ describe("downloadToolAsset", () => {
 			}),
 		).rejects.toThrow("redirect limit");
 	});
+
 	it("rejects HTTPS redirects to plaintext HTTP", async () => {
 		await expect(
 			downloadToolAsset(
@@ -93,6 +95,7 @@ describe("downloadToolAsset", () => {
 			),
 		).rejects.toThrow("requires HTTPS");
 	});
+
 	it("removes truncated downloads", async () => {
 		const to = join(directory(), "download");
 		await expect(
@@ -103,6 +106,7 @@ describe("downloadToolAsset", () => {
 		).rejects.toThrow("truncated");
 		expect(existsSync(to)).toBe(false);
 	});
+
 	it("bounds a response body that never ends", async () => {
 		const to = join(directory(), "download");
 		let cancelled = false;
@@ -127,6 +131,7 @@ describe("downloadToolAsset", () => {
 		expect(existsSync(to)).toBe(false);
 		expect(cancelled).toBe(true);
 	});
+
 	it("aborts an interrupted download and removes its staging file", async () => {
 		const controller = new AbortController();
 		const to = join(directory(), "download");
@@ -138,6 +143,7 @@ describe("downloadToolAsset", () => {
 		await expect(downloading).rejects.toThrow("cancelled");
 		expect(existsSync(to)).toBe(false);
 	});
+
 	it("rejects oversized and checksum-mismatched responses", async () => {
 		const to = join(directory(), "download");
 		await expect(
@@ -173,6 +179,7 @@ describe("installTool", () => {
 		await installTool(options);
 		expect(downloads).toBe(1);
 	});
+
 	it("keeps an existing executable intact when its replacement fails", async () => {
 		const to = join(directory(), "fixture");
 		writeFileSync(to, "#!/bin/sh\necho 'fixture version 0.1.0'\n");
@@ -188,6 +195,7 @@ describe("installTool", () => {
 		).rejects.toThrow("HTTP 500");
 		expect(readFileSync(to, "utf8")).toBe(before);
 	});
+
 	it("replaces corrupt cache only after verifying a complete executable", async () => {
 		const to = join(directory(), "fixture");
 		const options = installOptions(to, async () => new Response(executable));
@@ -198,6 +206,7 @@ describe("installTool", () => {
 		expect(isInstalledTool(to)).toBe(true);
 		expect(readFileSync(to, "utf8")).toBe(executable);
 	});
+
 	it("keeps only the last replaced executable beside the tool", async () => {
 		const dir = directory();
 		const to = join(dir, "fixture");
@@ -215,6 +224,7 @@ describe("installTool", () => {
 			"<html>two</html>",
 		);
 	});
+
 	it("extracts one named archive entry in a private directory with shell-sensitive paths", async () => {
 		const root = directory();
 		const source = join(root, "fixture");
@@ -232,6 +242,7 @@ describe("installTool", () => {
 			readdirSync(root).filter((name) => name.startsWith(".installed")),
 		).toEqual([]);
 	});
+
 	it("extracts nested bottle binaries without retaining archive directories", async () => {
 		const root = directory();
 		mkdirSync(join(root, "bottle/1.2.3/bin"), { recursive: true });
@@ -247,6 +258,7 @@ describe("installTool", () => {
 		expect(isInstalledTool(to)).toBe(true);
 		expect(readFileSync(to, "utf8")).toBe(executable);
 	});
+
 	it("rejects archive member traversal and absolute paths", async () => {
 		for (const archiveEntry of [
 			"../fixture",
@@ -269,6 +281,7 @@ describe("installTool", () => {
 			expect(existsSync(to)).toBe(false);
 		}
 	});
+
 	it("refuses a download whose digest does not match and never runs it", async () => {
 		const dir = directory();
 		const to = join(dir, "fixture");
@@ -283,6 +296,7 @@ describe("installTool", () => {
 		expect(existsSync(ran)).toBe(false);
 		expect(existsSync(to)).toBe(false);
 	});
+
 	const published = {
 		repository: "example/tool",
 		version: "v9",
@@ -302,6 +316,7 @@ describe("installTool", () => {
 		await installTool({ ...installOptions(to, fetcher), sha256: published });
 		expect(isInstalledTool(to)).toBe(true);
 	});
+
 	for (const [label, release] of [
 		[
 			"publishes no digest",
