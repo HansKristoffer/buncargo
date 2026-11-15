@@ -98,11 +98,11 @@ export function readGitBranch(root: string): string | undefined {
 	try {
 		const gitPath = join(root, ".git");
 		if (!existsSync(gitPath)) return undefined;
-		const stat = statSync(gitPath).isFile()
+		const gitFileText = statSync(gitPath).isFile()
 			? readFileSync(gitPath, "utf-8")
 			: "";
-		const gitDir = stat.startsWith("gitdir:")
-			? resolve(dirname(gitPath), stat.slice("gitdir:".length).trim())
+		const gitDir = gitFileText.startsWith("gitdir:")
+			? resolve(dirname(gitPath), gitFileText.slice("gitdir:".length).trim())
 			: gitPath;
 		const head = readFileSync(join(gitDir, "HEAD"), "utf-8").trim();
 		const match = head.match(/^ref:\s*refs\/heads\/(.+)$/);
@@ -139,6 +139,7 @@ function integrationFields(
 	port: number | undefined,
 ): Pick<RunAppEntry, "integrations"> {
 	const integrations: Record<string, Record<string, unknown>> = {};
+
 	for (const integration of env.integrations ?? []) {
 		const fields = integration.describeApp?.({
 			name,
@@ -149,6 +150,7 @@ function integrationFields(
 		});
 		if (fields) integrations[integration.name] = fields;
 	}
+
 	return Object.keys(integrations).length > 0 ? { integrations } : {};
 }
 
@@ -158,16 +160,30 @@ function integrationFields(
  * are not served there, and BuncargoBar opens a hostname-less one on loopback).
  */
 function namedHostnames(hosts: RunSource["hosts"]): Map<string, string> {
-	if (hosts?.mode === "tailscale")
+	if (hosts?.mode === "tailscale") {
 		return new Map(
 			Object.entries(hosts.tailscaleUrls).map(([name, url]) => [
 				name,
 				new URL(url).hostname,
 			]),
 		);
+	}
+
 	return new Map(
 		(hosts?.plan ?? []).map((entry) => [entry.name, entry.hostname]),
 	);
+}
+
+// `RunSource` types the maps as `object` (see its doc); they are keyed by app
+// and service name.
+function endpointMaps(env: RunSource) {
+	return {
+		ports: env.ports as Record<string, number>,
+		urls: env.urls as Record<string, string>,
+		loopbackUrls: env.loopbackUrls as Record<string, string>,
+		publicUrls: env.publicUrls as Record<string, string>,
+		hostnameFor: namedHostnames(env.hosts),
+	};
 }
 
 function appEntries(
@@ -178,17 +194,15 @@ function appEntries(
 		attached?: string;
 	},
 ): RunAppEntry[] {
-	const ports = env.ports as Record<string, number>;
-	const urls = env.urls as Record<string, string>;
-	const loopbackUrls = env.loopbackUrls as Record<string, string>;
-	const publicUrls = env.publicUrls as Record<string, string>;
-	const hostnameFor = namedHostnames(env.hosts);
+	const { ports, urls, loopbackUrls, publicUrls, hostnameFor } =
+		endpointMaps(env);
 
 	return Object.entries(input.apps).flatMap(([name, app]) => {
 		const port = ports[name];
 		// The registry records only a worker's kind; an app with a port is a server.
 		const kind = app.port === undefined ? ("worker" as const) : undefined;
 		if (port === undefined && kind === undefined) return [];
+
 		const loopbackUrl =
 			port === undefined
 				? undefined
@@ -227,11 +241,8 @@ function serviceEntries(
 	status: RunServiceStatus,
 	serviceNames?: readonly string[],
 ): RunServiceEntry[] {
-	const ports = env.ports as Record<string, number>;
-	const urls = env.urls as Record<string, string>;
-	const loopbackUrls = env.loopbackUrls as Record<string, string>;
-	const publicUrls = env.publicUrls as Record<string, string>;
-	const hostnameFor = namedHostnames(env.hosts);
+	const { ports, urls, loopbackUrls, publicUrls, hostnameFor } =
+		endpointMaps(env);
 
 	return Object.entries(env.services)
 		.filter(([name]) => !serviceNames || serviceNames.includes(name))
@@ -306,6 +317,7 @@ export interface PublishRunInput {
 function detachedFields(): Pick<RunEntry, "detached" | "idleLimitMs"> {
 	const mode = detachedRunMode();
 	if (mode === undefined) return {};
+
 	const limited = mode === "idle-limit" && hostsMode() !== "tailscale";
 	return {
 		detached: true,
@@ -338,6 +350,7 @@ async function writeRun(
 	input: PublishRunInput,
 ): Promise<RunEntry> {
 	const reused = new Set(input.reusedNames ?? []);
+
 	// The environment claimed under this session before starting containers,
 	// so this publishes over that claim rather than beside it.
 	const entry: RunEntry = {
@@ -374,6 +387,7 @@ async function writeRun(
 	};
 
 	await describeRun(entry);
+
 	return entry;
 }
 
@@ -387,11 +401,25 @@ interface PendingPatch {
 	identify: boolean;
 	resolve(): void;
 }
+
 interface PatchQueue {
 	pending: PendingPatch[];
 	running: Promise<void>;
 }
+
 const pendingPatches = new Map<string, PatchQueue>();
+
+/** Fill in the birth identity of each app pid in the batch's `identify` patches, in one read. */
+async function attachIdentities(batch: readonly PendingPatch[]): Promise<void> {
+	const identifying = batch.filter((item) => item.identify);
+	const apps = identifying.flatMap((item) => item.patch.apps ?? []);
+	const pids = apps.flatMap((app) => (app.pid === undefined ? [] : [app.pid]));
+	const identities = await readProcessIdentitiesAsync(pids);
+
+	for (const app of apps) {
+		if (app.pid !== undefined) app.processIdentity = identities.get(app.pid);
+	}
+}
 
 /** Coalesce one turn's spawn/status events; later batches stay ordered. */
 function enqueue(
@@ -411,20 +439,7 @@ function enqueue(
 				while (current.pending.length > 0) {
 					const batch = current.pending.splice(0);
 					try {
-						const identities = await readProcessIdentitiesAsync(
-							batch.flatMap((item) =>
-								item.identify
-									? (item.patch.apps?.flatMap((app) =>
-											app.pid === undefined ? [] : [app.pid],
-										) ?? [])
-									: [],
-							),
-						);
-						for (const item of batch)
-							if (item.identify)
-								for (const app of item.patch.apps ?? [])
-									if (app.pid !== undefined)
-										app.processIdentity = identities.get(app.pid);
+						await attachIdentities(batch);
 						await patchRunBatch(
 							sessionId,
 							batch.map((item) => item.patch),
@@ -500,8 +515,8 @@ export async function markServices(
  * Record a spawned app's pid together with its birth identity.
  *
  * `stop` refuses to signal an app whose entry has no identity, since a bare
- * pid may by then belong to something else. The spawner used to record the
- * pid alone, so the menu bar's Stop refused every app it was asked to stop.
+ * pid may by then belong to something else. A pid recorded alone would make
+ * the menu bar's Stop refuse the app.
  */
 export async function recordAppSpawn(
 	run: RunSession,
@@ -535,8 +550,10 @@ export function appRowEvents(
 	return {
 		onAppPhase: (name, life, previous) => {
 			// A new pid: spawned, or a server its launcher detached.
-			if (life.pid !== undefined && life.pid !== previous.pid)
+			if (life.pid !== undefined && life.pid !== previous.pid) {
 				void recordAppSpawn(run, name, life.pid, life.attached);
+			}
+
 			if (life.phase === previous.phase && life.end === previous.end) return;
 			typedSwitch(life.phase, {
 				starting: () => {},
@@ -574,8 +591,10 @@ export async function recordAppUrls(
 			name
 		];
 		if (!publicUrl) return [];
+
 		return [{ name, publicUrl, openUrl: environmentOpenUrl(env, name) }];
 	});
+
 	if (apps.length > 0) await patchCurrentRun(env, { apps });
 }
 
