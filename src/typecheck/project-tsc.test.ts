@@ -14,8 +14,9 @@ import { resolveProjectTsc } from "./project-tsc";
 const created: string[] = [];
 
 afterEach(() => {
-	for (const dir of created.splice(0))
+	for (const dir of created.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 /** A checkout outside this repository, so no ancestor has a TypeScript. */

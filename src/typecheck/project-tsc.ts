@@ -6,7 +6,7 @@ import { workspacePatterns } from "./workspaces";
 /**
  * Prefer the project's own `tsc`. `bunx tsc` with no local TypeScript downloads
  * whatever is latest on npm (today, 7.x) and that compiler rejects `process`
- * unless `types` names `node` — which is how a perfectly valid `dev.config.ts`
+ * unless `types` names `node`, which is how a perfectly valid `dev.config.ts`
  * failed the first time this check ran in a monorepo that only installs
  * TypeScript inside workspaces.
  */
