@@ -146,6 +146,7 @@ describe("portOwnersOf a Docker listing", () => {
 			name: "bliss-redis-1",
 			composeProject: "bliss",
 			root: "/work/bliss",
+			runtime: "docker",
 		});
 		expect(owners.get(8080)?.root).toBeUndefined();
 	});
