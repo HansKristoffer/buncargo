@@ -121,9 +121,11 @@ const TLD = /^(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/i;
  */
 export function looksLikeCompleteUrl(value: string): boolean {
 	const raw = value.trim();
+
 	// `scheme://authority`, up to the first `/`, `?` or `#`.
 	const authority = /^https?:\/\/([^/?#]*)/i.exec(raw)?.[1];
 	if (authority === undefined || /[.:-]$/.test(authority)) return false;
+
 	let url: URL;
 	try {
 		url = new URL(raw);
@@ -134,17 +136,18 @@ export function looksLikeCompleteUrl(value: string): boolean {
 
 	const host = url.hostname.toLowerCase();
 	if (host === "localhost" || host.startsWith("[")) return true;
+
 	// Read from the raw text: `new URL("http://127.0.0")` fills in the rest.
 	const rawHost = authority.replace(/^.*@/, "").replace(/:\d*$/, "");
 	if (/^[\d.]+$/.test(rawHost)) return IPV4.test(rawHost);
 
 	const labels = host.split(".");
-	if (
-		labels.length < 2 ||
-		labels.some((label) => !label || label.endsWith("-"))
-	)
-		return false;
+	const hasEmptyOrCutLabel = labels.some(
+		(label) => !label || label.endsWith("-"),
+	);
+	if (labels.length < 2 || hasEmptyOrCutLabel) return false;
 	if (!TLD.test(labels.at(-1) ?? "")) return false;
+
 	for (const suffix of TUNNEL_SUFFIXES) {
 		if (host.endsWith(`.${suffix}`)) continue;
 		// Ends part-way through the suffix: `.trycloudflare`, `.trycloudflare.co`.
@@ -170,36 +173,44 @@ export function looksLikeCompleteUrl(value: string): boolean {
  */
 export function joinWrappedUrls(text: string): string {
 	const joined: string[] = [];
+
 	for (const line of text.split("\n")) {
 		const previous = joined.at(-1);
-		const url =
-			previous === undefined ? undefined : TRAILING_URL.exec(previous);
-		const content = line.replace(ROW_PADDING, "");
-		const token = URL_CONTINUATION.exec(content)?.[0];
-		const head =
-			previous === undefined ? undefined : TRAILING_TOKEN.exec(previous);
-		if (
-			previous !== undefined &&
-			head?.[1] &&
-			token &&
-			!head[1].includes("://") &&
-			/^https?:\/\/./i.test(head[1] + token)
-		) {
-			joined[joined.length - 1] =
-				previous.slice(0, head.index + head[1].length) + content;
+		if (previous === undefined) {
+			joined.push(line);
 			continue;
 		}
-		if (previous !== undefined && url?.[1] && token && !token.includes("://")) {
-			const wholeRow = token === content.trimEnd();
-			const incomplete = !looksLikeCompleteUrl(url[1]);
-			if (incomplete || (wholeRow && !PROSE_WORD.test(token))) {
-				joined[joined.length - 1] =
-					previous.slice(0, url.index + url[1].length) + content;
+
+		const content = line.replace(ROW_PADDING, "");
+		const token = URL_CONTINUATION.exec(content)?.[0];
+		const lastToken = TRAILING_TOKEN.exec(previous);
+		const trailingUrl = TRAILING_URL.exec(previous);
+
+		// The scheme itself was split across rows: `htt`, then `ps://…`.
+		const splitScheme =
+			lastToken?.[1] &&
+			token &&
+			!lastToken[1].includes("://") &&
+			/^https?:\/\/./i.test(lastToken[1] + token);
+		if (splitScheme) {
+			const keep = lastToken.index + lastToken[1].length;
+			joined[joined.length - 1] = previous.slice(0, keep) + content;
+			continue;
+		}
+
+		if (trailingUrl?.[1] && token && !token.includes("://")) {
+			const isWholeRow = token === content.trimEnd();
+			const isIncomplete = !looksLikeCompleteUrl(trailingUrl[1]);
+			if (isIncomplete || (isWholeRow && !PROSE_WORD.test(token))) {
+				const keep = trailingUrl.index + trailingUrl[1].length;
+				joined[joined.length - 1] = previous.slice(0, keep) + content;
 				continue;
 			}
 		}
+
 		joined.push(line);
 	}
+
 	return joined.join("\n");
 }
 
@@ -227,20 +238,24 @@ function lastMatch(capture: CaptureConfig, text: string): Match | undefined {
 	if (!flags.includes("d")) flags += "d";
 	const global = new RegExp(capture.pattern.source, flags);
 	let found: Match | undefined;
+
 	for (const match of text.matchAll(global)) {
 		const group = match[1] === undefined ? 0 : 1;
 		const value = match[group] ?? match[0];
 		const end = match.indices?.[group]?.[1] ?? match.index + match[0].length;
-		if (
+
+		const isCutOffUrl =
 			capture.as !== "event" &&
 			/^https?:\/\//i.test(value.trim()) &&
-			!looksLikeCompleteUrl(value)
-		) {
+			!looksLikeCompleteUrl(value);
+		if (isCutOffUrl) {
 			if (capture.as === "publicUrl") continue;
 			if (/^[ \t|]*\n?$/.test(text.slice(end))) continue;
 		}
+
 		found = { value, end, matchEnd: match.index + match[0].length };
 	}
+
 	return found;
 }
 

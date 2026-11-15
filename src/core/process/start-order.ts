@@ -34,7 +34,8 @@ export function planSpawnOrder<TApp extends OrderedApp>(
 			: [],
 	);
 	// Anything that starts after a late app is late too, transitively.
-	for (let changed = late.size > 0; changed;) {
+	let changed = late.size > 0;
+	while (changed) {
 		changed = false;
 		for (const [name, app] of Object.entries(apps)) {
 			if (late.has(name)) continue;
@@ -49,6 +50,7 @@ export function planSpawnOrder<TApp extends OrderedApp>(
 		Object.fromEntries(
 			Object.entries(apps).filter(([name]) => late.has(name) === inLate),
 		);
+
 	return {
 		beforeTunnels: layers(pick(false)),
 		afterTunnels: layers(pick(true)),
@@ -66,14 +68,17 @@ function layers<TApp extends OrderedApp>(
 		const ready = [...remaining].filter(([, app]) =>
 			(app.startAfter ?? []).every((dependency) => !remaining.has(dependency)),
 		);
+
 		if (ready.length === 0) {
 			// Validation rejects cycles; reaching here means a caller skipped it.
 			throw new Error(
 				`Circular startAfter dependency among: ${[...remaining.keys()].join(", ")}`,
 			);
 		}
+
 		for (const [name] of ready) remaining.delete(name);
 		result.push(Object.fromEntries(ready));
 	}
+
 	return result;
 }
