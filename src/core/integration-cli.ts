@@ -48,6 +48,7 @@ export function cliTool(options: {
 }): CliTool {
 	const { name, versionArgs, tested } = options;
 	const env = options.env ?? childProcessEnv;
+
 	const find = (dirs: readonly string[]) => {
 		for (const dir of dirs) {
 			const local = join(dir, "node_modules", ".bin", name);
@@ -55,6 +56,7 @@ export function cliTool(options: {
 		}
 		return lookupOnPath(name, env());
 	};
+
 	return {
 		resolve: (dirs) => find(dirs) ?? name,
 		installed: (dirs) => find(dirs) !== undefined,
@@ -67,6 +69,7 @@ export function cliTool(options: {
 					env: env(),
 					timeout: VERSION_TIMEOUT_MS,
 				});
+
 				if (result.exitCode !== 0) return undefined;
 				return parseVersion(result.stdout.toString());
 			} catch {
@@ -87,6 +90,7 @@ export function publicEnvCopies(
 	prefix: string | readonly string[] | undefined,
 ): Record<string, string> {
 	const prefixes = typeof prefix === "string" ? [prefix] : (prefix ?? []);
+
 	return Object.fromEntries(
 		prefixes.flatMap((each) =>
 			Object.entries(values).flatMap(([name, value]) =>

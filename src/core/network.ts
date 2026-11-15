@@ -13,10 +13,6 @@ import {
 	scheduleLog,
 } from "./style";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Local IP Detection
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * Gets the local IP address of the machine for mobile device connectivity.
  * Prefers IPv4 addresses on non-internal interfaces, unless `BUNCARGO_LOCAL_IP`
@@ -25,6 +21,7 @@ import {
 export function getLocalIp(): string {
 	const override = localIpOverride();
 	if (override) return override;
+
 	const interfaces = networkInterfaces();
 
 	for (const name of Object.keys(interfaces)) {
@@ -32,7 +29,6 @@ export function getLocalIp(): string {
 		if (!nets) continue;
 
 		for (const net of nets) {
-			// Skip internal (loopback) addresses
 			if (net.family === "IPv4" && !net.internal) {
 				return net.address;
 			}
@@ -41,10 +37,6 @@ export function getLocalIp(): string {
 
 	return "127.0.0.1";
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// HTTP Health Checks
-// ═══════════════════════════════════════════════════════════════════════════
 
 export interface WaitForServerOptions {
 	/** Timeout in milliseconds */
@@ -74,11 +66,13 @@ export async function waitForServer(
 		strict = false,
 	} = options;
 	const deadline = performance.now() + timeout;
+
 	let attempts = 0;
 	while (remainingTime(deadline) > 0) {
 		signal?.throwIfAborted();
 		if (attempts > 0) recordStartupMetric("healthRetries");
 		attempts++;
+
 		try {
 			const ready = await withDeadline(
 				async (probeSignal) => {
@@ -90,21 +84,26 @@ export async function waitForServer(
 				Math.min(5000, remainingTime(deadline)),
 				signal,
 			);
+
 			if (ready) {
-				if (verbose && attempts >= 5)
+				if (verbose && attempts >= 5) {
 					console.log(
 						formatDone(`${formatUrl(url)} ready after ${attempts} attempts`),
 					);
+				}
 				return;
 			}
 		} catch {
+			// A refused or timed-out probe is retried until the deadline; a cancelled wait is not.
 			signal?.throwIfAborted();
 		}
+
 		const retryDelay =
 			interval ??
 			exponentialBackoff(attempts, { baseMs: 20, maxMs: 200, jitter: false });
 		await abortableSleep(Math.min(retryDelay, remainingTime(deadline)), signal);
 	}
+
 	signal?.throwIfAborted();
 	throw new Error(
 		`Server at ${url} did not respond within ${timeout}ms after ${attempts} attempts`,
@@ -128,10 +127,12 @@ export async function waitForDevServers(
 	const { verbose = true } = options;
 	const controller = new AbortController();
 	const cancel = () => controller.abort(options.signal?.reason);
+
 	if (options.signal?.aborted) cancel();
 	else options.signal?.addEventListener("abort", cancel, { once: true });
 
 	let showedWait = false;
+
 	const cancelWait = verbose
 		? scheduleLog(SLOW_STEP_MS, () => {
 				showedWait = true;
@@ -150,6 +151,7 @@ export async function waitForDevServers(
 			(app.devCommand !== false ||
 				(options.productionBuild === true && app.prodCommand !== undefined));
 		if (!waitsOnPort || app.port === undefined) continue;
+
 		const url = `http://localhost:${ports[name]}${readiness.path}`;
 
 		promises.push(
@@ -172,13 +174,10 @@ export async function waitForDevServers(
 		cancelWait();
 	}
 
-	if (showedWait && options.logReady !== false)
+	if (showedWait && options.logReady !== false) {
 		console.log(formatDone("All servers ready"));
+	}
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Port Availability
-// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * Probe whether something is accepting TCP connections on `port`.
@@ -195,6 +194,7 @@ export function isTcpPortOpen(
 ): Promise<boolean> {
 	return new Promise((resolve) => {
 		if (signal?.aborted) return resolve(false);
+
 		const socket = net.connect({ port, host });
 		const finish = (open: boolean) => {
 			signal?.removeEventListener("abort", onAbort);
@@ -203,6 +203,7 @@ export function isTcpPortOpen(
 			resolve(open);
 		};
 		const onAbort = () => finish(false);
+
 		signal?.addEventListener("abort", onAbort, { once: true });
 		socket.setTimeout(timeoutMs);
 		socket.once("connect", () => finish(true));

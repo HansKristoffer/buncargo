@@ -14,8 +14,9 @@ function tempDir(): string {
 	return dir;
 }
 afterEach(() => {
-	for (const dir of dirs.splice(0))
+	for (const dir of dirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 function executable(path: string, script: string): string {

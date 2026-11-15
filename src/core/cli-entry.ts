@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
  * has to name buncargo's own CLI. It used to be `process.argv[1]`, which is
  * only that when buncargo *is* the process: under a script that calls
  * `dev.start()` or wraps `runCli`, `argv[1]` is the user's script, and Stop
- * ran it again — starting a second environment — instead of stopping one.
+ * ran it again, starting a second environment instead of stopping one.
  */
 export interface CliInvocation {
 	program: string;
@@ -26,22 +26,26 @@ export interface CliInvocation {
  */
 export function findCliEntry(fromDir: string): string | undefined {
 	let dir = fromDir;
+
 	for (let depth = 0; depth < 8; depth++) {
 		const parent = dirname(dir);
 		const flavor = basename(dir);
-		if (
+
+		const isPackageRoot =
 			(flavor === "src" || flavor === "dist") &&
-			existsSync(join(parent, "package.json"))
-		) {
+			existsSync(join(parent, "package.json"));
+		if (isPackageRoot) {
 			const entry =
 				flavor === "src"
 					? join(parent, "src", "cli", "bin.ts")
 					: join(parent, "dist", "cli", "bin.js");
 			if (existsSync(entry)) return entry;
 		}
+
 		if (parent === dir) break;
 		dir = parent;
 	}
+
 	return undefined;
 }
 

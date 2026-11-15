@@ -52,18 +52,24 @@ export function findStrayLoopbackUrls(input: {
 	const block = new Set(Object.values(input.ports));
 	const seen = new Set<string>();
 	const stray: StrayLoopbackUrl[] = [];
-	for (const { source, values } of input.sources)
+
+	for (const { source, values } of input.sources) {
 		for (const [key, url] of Object.entries(values)) {
 			if (seen.has(key)) continue;
 			seen.add(key);
+
 			const port = loopbackUrlPort(url);
 			if (port === undefined || block.has(port)) continue;
+
+			// Ports of one service in two checkouts differ by whole offset steps.
 			const meant = Object.entries(input.ports).find(
 				([, own]) => (port - own) % PORT_OFFSET_STEP === 0,
 			);
 			const listening = input.isListening(port);
+
 			// A listener on an unrelated port is a service on purpose.
 			if (listening && !meant) continue;
+
 			const fixed = meant && {
 				name: meant[0],
 				port: meant[1],
@@ -78,14 +84,19 @@ export function findStrayLoopbackUrls(input: {
 				...(fixed ? { meant: fixed } : {}),
 			});
 		}
+	}
+
 	return stray;
 }
 
 /** One line: the variable, where it came from, why it is stray, and the fix. */
 export function describeStrayLoopbackUrl(stray: StrayLoopbackUrl): string {
 	const where = `${stray.key} (${stray.source}) uses :${stray.port}`;
-	if (!stray.meant)
+
+	if (!stray.meant) {
 		return `${where}, not this checkout's and with nothing listening: \`buncargo env set ${stray.key}=<url>\``;
+	}
+
 	const { name, port, url } = stray.meant;
 	const whose = stray.listening
 		? `another checkout's running ${name}`

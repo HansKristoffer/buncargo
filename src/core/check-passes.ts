@@ -73,8 +73,10 @@ function pathContent(path: string): string | undefined {
 	if (stats.isSymbolicLink()) return `link:${readlinkSync(path)}`;
 	// A submodule or a nested repository: git names it, not what is inside.
 	if (!stats.isFile()) return undefined;
-	if (stats.size > HASHED_FILE_MAX_BYTES)
+	if (stats.size > HASHED_FILE_MAX_BYTES) {
 		return `big:${stats.size}:${stats.mtimeMs}`;
+	}
+
 	return Bun.hash(readFileSync(path)).toString(36);
 }
 
@@ -86,10 +88,10 @@ function pathContent(path: string): string | undefined {
  * commit yet, a changed submodule): nothing is reused then.
  */
 export function treeFingerprint(root: string): string | undefined {
-	const [top, headTree] =
-		git(root, ["rev-parse", "--show-toplevel", "HEAD^{tree}"])?.split("\n") ??
-		[];
+	const revisions = git(root, ["rev-parse", "--show-toplevel", "HEAD^{tree}"]);
+	const [top, headTree] = revisions?.split("\n") ?? [];
 	if (!top || !headTree) return undefined;
+
 	const status = git(top, [
 		"status",
 		"--porcelain=v1",
@@ -99,22 +101,29 @@ export function treeFingerprint(root: string): string | undefined {
 	]);
 	if (status === undefined) return undefined;
 
-	const hasher = new Bun.CryptoHasher("sha256");
-	hasher.update(headTree);
 	// Each entry is `XY <path>`; the two status letters are how far the change
 	// is staged, which the files on disk do not depend on.
-	// buncargo's own state is not the project's: a checkout that does not
-	// ignore `.buncargo/` would otherwise change its tree by recording a pass.
-	const paths = status
+	const changedPaths = status
 		.split("\0")
 		.filter(Boolean)
-		.map((entry) => entry.slice(3))
-		.filter((path) => !path.split("/").includes(STATE_DIRNAME));
-	for (const path of [...new Set(paths)].sort()) {
+		.map((entry) => entry.slice(3));
+
+	// buncargo's own state is not the project's: a checkout that does not
+	// ignore `.buncargo/` would otherwise change its tree by recording a pass.
+	const projectPaths = changedPaths.filter(
+		(path) => !path.split("/").includes(STATE_DIRNAME),
+	);
+
+	const hasher = new Bun.CryptoHasher("sha256");
+	hasher.update(headTree);
+
+	for (const path of [...new Set(projectPaths)].sort()) {
 		const content = pathContent(join(top, path));
 		if (content === undefined) return undefined;
+
 		hasher.update(`\0${path}\0${content}`);
 	}
+
 	return hasher.digest("hex");
 }
 
@@ -157,9 +166,12 @@ export async function recordPasses(
 	const path = projectStateFilePath(root, PASSES_FILE);
 	await withFileLock(path, async () => {
 		const passes: Record<string, RecordedPass> = {};
-		for (const [key, recorded] of Object.entries(await readPasses(root)))
+
+		for (const [key, recorded] of Object.entries(await readPasses(root))) {
 			if (pass.at - recorded.at < PASS_REUSE_MS) passes[key] = recorded;
+		}
 		for (const key of keys) passes[key] = pass;
+
 		await writeJsonDocument(path, { version: PASSES_VERSION, passes });
 	});
 }
