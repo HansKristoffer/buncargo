@@ -11,12 +11,14 @@ export interface StartupContract {
 	/** The most processes one warm sample forks, per platform. */
 	subprocesses: { linux: number; darwin: number };
 }
+
 /** Reported against, never failed on. */
 export interface StartupBudget {
 	warmP95Ms: number;
 	coldP95Ms: number;
 	cleanupP95Ms?: number;
 }
+
 export interface StartupFixture {
 	scenario: string;
 	parallel: number;
@@ -33,12 +35,14 @@ const beforeApps = [
 	"secrets session",
 	"hosts",
 ] as const;
+
 const toReady = [
 	"app ports",
 	"entry to first app spawn",
 	"tunnels",
 	"app readiness",
 ] as const;
+
 const appsOnly = [...beforeApps, "dotenv", ...toReady];
 const withServices = [
 	...beforeApps,
@@ -169,6 +173,7 @@ export const startupFixtures: StartupFixture[] = [
 interface StartupSample {
 	cli: { phases: ReadonlyArray<{ name: string }> };
 }
+
 export interface StartupResult {
 	scenario: string;
 	parallel: number;
@@ -182,6 +187,7 @@ export interface StartupResult {
 	values: StartupSample[];
 	cold: StartupSample[];
 }
+
 export function fixtureKey(
 	input: Pick<
 		StartupResult,
@@ -205,24 +211,31 @@ export function contractViolations(
 		platform === "linux" || platform === "darwin"
 			? contract.subprocesses[platform]
 			: undefined;
-	if (ceiling === undefined)
+	if (ceiling === undefined) {
 		violations.push(`no subprocess ceiling for ${platform}`);
-	else if (!Number.isInteger(result.subprocesses) || result.subprocesses < 0)
+	} else if (
+		!Number.isInteger(result.subprocesses) ||
+		result.subprocesses < 0
+	) {
 		violations.push("subprocesses is missing or invalid");
-	else if (result.subprocesses > ceiling)
+	} else if (result.subprocesses > ceiling) {
 		violations.push(`subprocesses: ${result.subprocesses} exceeds ${ceiling}`);
+	}
 
 	const expected = sortedNames(contract.phases);
 	const samples = [...result.values, ...result.cold];
 	if (samples.length === 0) violations.push("no samples were reported");
+
 	const seen = new Set(
 		samples.map((sample) =>
 			sortedNames(sample.cli.phases.map((phase) => phase.name)),
 		),
 	);
-	for (const phases of seen)
-		if (phases !== expected)
+	for (const phases of seen) {
+		if (phases !== expected) {
 			violations.push(`phases: [${phases}], expected [${expected}]`);
+		}
+	}
 
 	return violations;
 }
@@ -241,9 +254,12 @@ export function timingWarnings(
 					["warm p95", result.entryToCliReadyMs?.p95, budget.warmP95Ms],
 					["cold p95", result.coldEntryToCliReadyMs?.p95, budget.coldP95Ms],
 				] as const);
+
 	return metrics.flatMap(([name, value, limit]) => {
-		if (value === undefined || !Number.isFinite(value) || value < 0)
+		if (value === undefined || !Number.isFinite(value) || value < 0) {
 			return [`${name} is missing or invalid`];
+		}
+
 		return value > limit ? [`${name}: ${value} exceeds ${limit}`] : [];
 	});
 }
@@ -267,15 +283,19 @@ export function baselineWarnings(
 		],
 		["cleanup p95", result.cleanupMs?.p95, baseline.cleanupMs?.p95],
 	] as const;
+
 	return pairs.flatMap(([name, value, previous]) => {
 		if (value === undefined && previous === undefined) return [];
+
 		if (
 			value === undefined ||
 			previous === undefined ||
 			!Number.isFinite(previous) ||
 			previous < 0
-		)
+		) {
 			return [`${name} cannot be compared with the baseline`];
+		}
+
 		const limit =
 			previous + Math.max(50, (previous * maxRegressionPercent) / 100);
 		return value > limit

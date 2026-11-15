@@ -9,6 +9,7 @@ function fixture({
 	assets = [],
 } = {}) {
 	const calls = [];
+
 	return {
 		calls,
 		args: {
@@ -55,6 +56,7 @@ test("a full retry recovers both existing releases without release_created outpu
 		bar_version: "2.0.0",
 	});
 });
+
 test("an ordinary push does not republish the versions in its manifest", async () => {
 	const f = fixture({ sha: "older-release" });
 	f.args.fetch = () => {
@@ -66,6 +68,7 @@ test("an ordinary push does not republish the versions in its manifest", async (
 		bar_released: false,
 	});
 });
+
 test("bar-only release does not deploy the Worker or publish npm", async () => {
 	expect(await releaseTargets(fixture({ cli: false }).args)).toMatchObject({
 		cli_released: false,
@@ -73,6 +76,7 @@ test("bar-only release does not deploy the Worker or publish npm", async () => {
 		bar_released: true,
 	});
 });
+
 test("CLI-only release does not build the bar", async () => {
 	expect(await releaseTargets(fixture({ bar: false }).args)).toMatchObject({
 		cli_released: true,
@@ -80,6 +84,7 @@ test("CLI-only release does not build the bar", async () => {
 		bar_released: false,
 	});
 });
+
 test("retry skips npm and completed bar assets that already shipped", async () => {
 	const f = fixture({
 		npm: true,
@@ -94,22 +99,26 @@ test("retry skips npm and completed bar assets that already shipped", async () =
 		bar_released: false,
 	});
 });
+
 test("a partial bar upload is retried", async () => {
 	const f = fixture({
 		assets: [{ name: "BuncargoBar-2.0.0.zip", state: "uploaded" }],
 	});
 	expect((await releaseTargets(f.args)).bar_released).toBe(true);
 });
+
 test("GitHub and npm failures fail closed instead of guessing publication state", async () => {
 	const f = fixture();
 	f.args.github.rest.repos.getReleaseByTag = async () => {
 		throw Object.assign(new Error("GitHub unavailable"), { status: 503 });
 	};
 	await expect(releaseTargets(f.args)).rejects.toThrow("GitHub unavailable");
+
 	const g = fixture();
 	g.args.fetch = async () => new Response("", { status: 503 });
 	await expect(releaseTargets(g.args)).rejects.toThrow("HTTP 503");
 });
+
 test("no release and invalid manifest versions cannot trigger publication", async () => {
 	expect(
 		await releaseTargets(fixture({ cli: false, bar: false }).args),
@@ -118,6 +127,7 @@ test("no release and invalid manifest versions cannot trigger publication", asyn
 		publish_npm: false,
 		bar_released: false,
 	});
+
 	const f = fixture();
 	f.args.versions["."] = "../other";
 	await expect(releaseTargets(f.args)).rejects.toThrow(

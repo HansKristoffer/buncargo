@@ -100,8 +100,10 @@ it("covers this repository's workflow", () => {
 		"test",
 		"startup",
 	]);
-	for (const name of Object.keys(OPT_IN_JOBS))
+	for (const name of Object.keys(OPT_IN_JOBS)) {
 		expect(jobs.map((job) => job.name)).toContain(name);
+	}
+
 	// No command is left out for an expression this script cannot evaluate.
 	const unrunnable = jobs.flatMap((job) =>
 		job.skipped.filter((step) => !step.includes("@")),

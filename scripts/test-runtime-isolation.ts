@@ -43,6 +43,7 @@ function withEnv<A extends unknown[]>(args: A): A {
 	const options = first as SpawnOptions;
 	return [{ ...options, env: options.env ?? process.env }] as never;
 }
+
 const realSpawn = Bun.spawn;
 const realSpawnSync = Bun.spawnSync;
 Bun.spawn = ((...args: Parameters<typeof Bun.spawn>) =>
@@ -62,6 +63,7 @@ if (!REAL_MACHINE_SUITES.some((name) => process.env[name])) {
 	const realHome = process.env.HOME;
 	const home = mkdtempSync(join(tmpdir(), "buncargo-test-home-"));
 	process.env.HOME = home;
+
 	afterAll(async () => {
 		await stopWatchdog();
 		// Bun writes its transpiler cache under HOME as it exits, after this.
@@ -93,6 +95,7 @@ if (
 		writeFileSync(path, `#!/bin/sh\n${say}exit 1\n`, { mode: 0o700 });
 		chmodSync(path, 0o700);
 	}
+
 	process.env.PATH = `${directory}${delimiter}${process.env.PATH ?? ""}`;
 	// A global `afterAll`: Bun runs no `exit` handler of a test preload.
 	afterAll(() => rmSync(directory, { recursive: true, force: true }));
