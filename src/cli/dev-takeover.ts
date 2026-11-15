@@ -6,9 +6,9 @@ import { typedSwitch } from "hanzio";
  *
  * One value read at every point that acts on it: the explicit takeover, the
  * unhealthy-app takeover, the "already running" prompt and the exclusive
- * leases. Each used to read `--takeover` alone, so an app taken over by a `y`
- * was asked about again at its lease, or refused there with no terminal after
- * the other run's server was already stopped.
+ * leases. Reading `--takeover` alone at each would ask again at the lease
+ * about an app a `y` already took over, or refuse there with no terminal after
+ * the other run's server was stopped.
  */
 export type TakeoverDecision =
 	| { kind: "none" }

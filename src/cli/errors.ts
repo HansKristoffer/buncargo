@@ -1,5 +1,6 @@
 import { getErrorMessage } from "hanzio";
 import { InfisicalLoginError, SecretsError } from "../core/secrets/errors";
+
 /**
  * A user-facing CLI failure: printed as `❌ message` plus optional hint lines,
  * then exit 1. Throw this instead of calling `process.exit` mid-flow so the

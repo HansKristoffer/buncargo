@@ -39,8 +39,10 @@ export function commandSecretScopes(
 	app: string | undefined,
 ): InfisicalScope[] {
 	let config = env.secrets;
-	if (app !== undefined)
+	if (app !== undefined) {
 		config = Object.hasOwn(env.apps, app) ? env.apps[app].secrets : undefined;
+	}
+
 	const scope = config ? resolveScope(config, env.secrets) : undefined;
 	return scope ? [scope] : [];
 }

@@ -15,6 +15,7 @@ it.each([
 	async (failSeed, color) => {
 		const fixture = await parallelSeedFixture({ beforeApps: false, failSeed });
 		await standInForWatchdog(fixture.root);
+
 		const child = Bun.spawn(
 			[
 				process.execPath,
@@ -38,6 +39,7 @@ it.each([
 				stderr: "pipe",
 			},
 		);
+
 		let output = "";
 		const reading = (async () => {
 			const reader = child.stdout.getReader();
@@ -48,6 +50,7 @@ it.each([
 			}
 		})();
 		const errors = new Response(child.stderr).text();
+
 		try {
 			const deadline = Date.now() + 10000;
 			if (failSeed) {
@@ -66,8 +69,9 @@ it.each([
 				while (
 					!output.includes('"type":"buncargo.startup"') &&
 					Date.now() < deadline
-				)
+				) {
 					await Bun.sleep(20);
+				}
 				expect(output).toContain('"type":"buncargo.startup"');
 				expect(
 					await Bun.file(join(fixture.root, "seed-finished")).exists(),
@@ -118,6 +122,7 @@ async function seedLog(root: string, deadline: number): Promise<string> {
 		const [dir] = listRunLogDirs(root);
 		const file = dir ? Bun.file(join(dir, "seed.log")) : undefined;
 		if (file && (await file.exists())) text = await file.text();
+
 		if (text) return text;
 		await Bun.sleep(20);
 	}
