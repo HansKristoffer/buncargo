@@ -49,8 +49,8 @@ import { chownToInvokingUser, stateFilePath } from "./state-paths";
  *
  * So a run publishes itself here: identity, every app and service with its URL
  * and state, and the interpreter that started it. Written on start, patched as
- * apps come up, removed on teardown. Readers — `runs`, `stop`, the menu bar app
- * — need no config, no Docker and no git.
+ * apps come up, removed on teardown. Readers (`runs`, `stop`, the menu bar app)
+ * need no config, no Docker and no git.
  *
  * The file mirrors the hosts route registry deliberately: same list-registry
  * primitive, same atomic temp-and-rename, same `withFileLock` around every
@@ -236,7 +236,7 @@ const isRunEntry = object({
 	/**
 	 * The process that owns this run.
 	 *
-	 * Its death retires the entry — unless the run owns containers, which
+	 * Its death retires the entry, unless the run owns containers, which
 	 * outlive it by design: then the entry survives, invisible to every
 	 * "live runs" reader, until the sweep has torn the containers down.
 	 * Never zeroed on release: the menu bar asks `kill(pid, 0)`, and pid 0
@@ -265,7 +265,7 @@ const isRunEntry = object({
 	 * How to invoke this same buncargo again.
 	 *
 	 * A reader stopping one app must run the build that started it, not
-	 * whatever `buncargo` resolves to in its own environment — in a worktree
+	 * whatever `buncargo` resolves to in its own environment. In a worktree
 	 * those are routinely different versions.
 	 */
 	cli: object({ program: isString, script: optional(isString) }),
@@ -482,7 +482,7 @@ function prunedForPublish(runs: readonly RunEntry[]): RunEntry[] {
  *
  * The one place an entry is constructed. The library claims with it before
  * the first container exists, and the CLI publishes the same shape enriched
- * with apps and hosts, so the two cannot drift on identity — or on how the
+ * with apps and hosts, so the two cannot drift on identity or on how the
  * menu bar calls back into buncargo, which is where they once did.
  */
 export function buildRunEntry(input: {
@@ -670,8 +670,11 @@ function describedApp(
 		app.tunnelUrl === undefined && previous.tunnelUrl !== undefined
 			? { tunnelUrl: previous.tunnelUrl }
 			: {};
-	if (app.status === "reused" || previous.status === "reused")
+
+	if (app.status === "reused" || previous.status === "reused") {
 		return { ...app, ...tunnel };
+	}
+
 	const keepsPublicUrl =
 		app.publicUrl === undefined && previous.publicUrl !== undefined;
 	return {
@@ -732,8 +735,10 @@ async function publish(run: RunEntry, kind: RunPublishKind): Promise<void> {
 		const next = prunedForPublish(runs);
 		const index = next.findIndex((entry) => entry.sessionId === run.sessionId);
 		const merged = mergePublishedRun(next[index], run, kind);
+
 		if (index === -1) next.push(merged);
 		else next[index] = merged;
+
 		return next;
 	});
 }
@@ -752,15 +757,20 @@ export async function releaseRun(sessionId: string): Promise<void> {
 		const index = runs.findIndex((entry) => entry.sessionId === sessionId);
 		const current = runs[index];
 		if (!current || current.lifecycle.state === "released") return undefined;
+
 		const next = [...runs];
 		const now = new Date().toISOString();
-		if (current.services.length === 0) next.splice(index, 1);
-		else
+
+		if (current.services.length === 0) {
+			next.splice(index, 1);
+		} else {
 			next[index] = {
 				...current,
 				lifecycle: { state: "released", at: now },
 				updatedAt: now,
 			};
+		}
+
 		return next;
 	});
 }
@@ -860,9 +870,12 @@ export function recordedContainerRuntimes(
 	run: Pick<RunEntry, "services">,
 ): ContainerRuntimeRef[] {
 	const byKey = new Map<string, ContainerRuntimeRef>();
-	for (const { container } of run.services)
-		if (container && !byKey.has(runtimeKey(container)))
+	for (const { container } of run.services) {
+		if (container && !byKey.has(runtimeKey(container))) {
 			byKey.set(runtimeKey(container), container);
+		}
+	}
+
 	return [...byKey.values()];
 }
 
@@ -890,7 +903,7 @@ export function heldOnlyOn(
  * Drop a session's entry after its explicit teardown, with the project's
  * finished entries that hold nothing afterwards ({@link heldOnlyOn}).
  *
- * A live session in the same checkout keeps its entry — it is still
+ * A live session in the same checkout keeps its entry, because it is still
  * somebody's run, whatever just happened to the containers.
  */
 export async function retireProjectRuns(target: {
@@ -931,12 +944,14 @@ export async function clearRunStacks(
 	await updateRuns(getRunsPath(), (runs) => {
 		let changed = false;
 		const next = runs.map((entry) => {
-			if (entry.stacks === undefined || !unchangedSince(entries, entry))
-				return entry;
+			const isStillRead = unchangedSince(entries, entry);
+			if (entry.stacks === undefined || !isStillRead) return entry;
+
 			changed = true;
 			const { stacks: _stacks, ...rest } = entry;
 			return rest;
 		});
+
 		return changed ? next : undefined;
 	});
 }
@@ -1096,13 +1111,16 @@ function mergeServices(
 ): RunServiceEntry[] {
 	return current.map((service) => {
 		let row = service;
-		for (const update of updates)
-			if (update.name === service.name)
-				row = {
-					...row,
-					...update,
-					status: nextServiceStatus(row.status, update.status),
-				};
+
+		for (const update of updates) {
+			if (update.name !== service.name) continue;
+			row = {
+				...row,
+				...update,
+				status: nextServiceStatus(row.status, update.status),
+			};
+		}
+
 		return row;
 	});
 }
@@ -1216,7 +1234,7 @@ export async function readLiveRuns(): Promise<RunEntry[]> {
  *
  * The only reader that wants the released ones: they are what says a stack
  * may still be reused, and for how much longer. Strict, so a registry that
- * cannot be read throws rather than reading as empty — to the sweep, an empty
+ * cannot be read throws rather than reading as empty: to the sweep, an empty
  * registry would make every stack on the machine look unowned.
  */
 export async function readAllRuns(): Promise<RunEntry[]> {

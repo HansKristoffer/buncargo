@@ -24,6 +24,7 @@ function createDirectoryServer(readRuns: typeof readLiveRuns): Server {
 			response.writeHead(404).end();
 			return;
 		}
+
 		try {
 			// The same document as runs.json, live entries only: the reader
 			// cannot check a pid on another machine.
@@ -68,10 +69,11 @@ export function serveTailnetDirectory(options: {
 		current.on("error", (error) => {
 			// Another user's watchdog on a shared server already holds the port.
 			// Logged once per address, retried when the address changes.
-			if (failedOn !== next)
+			if (failedOn !== next) {
 				options.log(
 					`Tailnet directory unavailable on ${next}: ${error.message}`,
 				);
+			}
 			failedOn = next;
 		});
 		current.listen(port, next, () => {
@@ -82,6 +84,7 @@ export function serveTailnetDirectory(options: {
 	};
 
 	reconcile();
+
 	const timer = setInterval(reconcile, options.intervalMs);
 	return () => {
 		clearInterval(timer);

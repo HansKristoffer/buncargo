@@ -44,26 +44,31 @@ export async function downloadToolAsset(
 ): Promise<void> {
 	const timeoutMs = options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS;
 	const maxBytes = options.maxBytes ?? MAX_DOWNLOAD_BYTES;
+
 	const controller = new AbortController();
 	const onAbort = () => controller.abort(options.signal?.reason);
 	options.signal?.addEventListener("abort", onAbort, { once: true });
 	if (options.signal?.aborted) onAbort();
-	const timer = setTimeout(
-		() =>
-			controller.abort(
-				new Error(`Tool download timed out after ${timeoutMs}ms`),
-			),
-		timeoutMs,
-	);
+
+	const timer = setTimeout(() => {
+		const timeout = new Error(`Tool download timed out after ${timeoutMs}ms`);
+		controller.abort(timeout);
+	}, timeoutMs);
 	const { signal } = controller;
+
 	let response: Response | undefined;
 	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 	let created = false;
+
 	try {
 		let current = new URL(url);
+
+		// Redirects are followed by hand so each hop is checked for HTTPS.
 		for (let redirects = 0; ; redirects++) {
-			if (current.protocol !== "https:")
+			if (current.protocol !== "https:") {
 				throw new Error(`Tool download requires HTTPS: ${current.origin}`);
+			}
+
 			response = await aborted(
 				(options.fetch ?? fetch)(current.href, {
 					redirect: "manual",
@@ -73,53 +78,71 @@ export async function downloadToolAsset(
 				signal,
 			);
 			if (![301, 302, 303, 307, 308].includes(response.status)) break;
+
 			await response.body?.cancel();
 			const location = response.headers.get("location");
-			if (!location || redirects >= (options.maxRedirects ?? 5))
+			const outOfRedirects = redirects >= (options.maxRedirects ?? 5);
+			if (!location || outOfRedirects) {
 				throw new Error(
 					"Tool download exceeded its redirect limit or omitted the redirect location",
 				);
+			}
 			current = new URL(location, current);
 		}
-		if (!response.ok)
+
+		if (!response.ok) {
 			throw new Error(
 				`Tool download failed with HTTP ${response.status}: ${current.origin}${current.pathname}`,
 			);
-		if (!response.body)
+		}
+		if (!response.body) {
 			throw new Error("Tool download returned an empty response");
+		}
+
 		const lengthHeader = response.headers.get("content-length");
 		const expected = lengthHeader === null ? undefined : Number(lengthHeader);
-		if (
-			expected !== undefined &&
-			(!Number.isSafeInteger(expected) || expected < 1 || expected > maxBytes)
-		)
+		const lengthIsValid =
+			expected === undefined ||
+			(Number.isSafeInteger(expected) && expected >= 1 && expected <= maxBytes);
+		if (!lengthIsValid) {
 			throw new Error(
 				"Tool download has an invalid or excessive content length",
 			);
+		}
+
 		const handle = await open(to, "wx", 0o600);
 		created = true;
 		reader = response.body.getReader();
 		let size = 0;
 		const hash = createHash("sha256");
+
 		try {
 			for (;;) {
 				const chunk = await aborted(reader.read(), signal);
 				if (chunk.done) break;
+
 				size += chunk.value.byteLength;
-				if (size > maxBytes)
+				if (size > maxBytes) {
 					throw new Error("Tool download exceeded its size limit");
+				}
 				hash.update(chunk.value);
 				await handle.writeFile(chunk.value);
 			}
-			if (size === 0 || (expected !== undefined && size !== expected))
+
+			const truncated = expected !== undefined && size !== expected;
+			if (size === 0 || truncated) {
 				throw new Error("Tool download was empty or truncated");
-			if (
+			}
+
+			const checksumMismatch =
 				options.sha256 &&
-				hash.digest("hex").toLowerCase() !== options.sha256.toLowerCase()
-			)
+				hash.digest("hex").toLowerCase() !== options.sha256.toLowerCase();
+			if (checksumMismatch) {
 				throw new Error(
 					"Tool download checksum did not match the release asset",
 				);
+			}
+
 			signal.throwIfAborted();
 		} finally {
 			await handle.close();
@@ -142,16 +165,19 @@ async function verifyBinary(
 	signal?: AbortSignal,
 ): Promise<void> {
 	const stat = await lstat(path);
-	if (!stat.isFile() || stat.size === 0)
+	if (!stat.isFile() || stat.size === 0) {
 		throw new Error("Downloaded tool is not a regular executable file");
+	}
+
 	const { stdout, stderr } = await runFile(path, args, {
 		timeout: 5000,
 		signal,
 		killSignal: "SIGKILL",
 		maxBuffer: 1024 * 1024,
 	});
-	if (!expected.test(`${stdout}\n${stderr}`))
+	if (!expected.test(`${stdout}\n${stderr}`)) {
 		throw new Error("Downloaded tool did not report the expected version");
+	}
 }
 
 /**
@@ -190,6 +216,7 @@ async function publishedDigest(
 			? "latest"
 			: `tags/${encodeURIComponent(asset.version)}`;
 	const path = join(directory, "release.json");
+
 	let digest: unknown;
 	try {
 		await downloadToolAsset(
@@ -207,12 +234,55 @@ async function publishedDigest(
 		signal?.throwIfAborted();
 		// A rate limit or an outage reads as no digest: the install fails closed below.
 	}
-	if (typeof digest === "string" && /^sha256:[a-f0-9]{64}$/i.test(digest))
+
+	if (typeof digest === "string" && /^sha256:[a-f0-9]{64}$/i.test(digest)) {
 		return digest.slice(7);
+	}
+
 	const { settings } = asset;
 	throw new Error(
 		`${settings.version}=${asset.version} has no pinned sha256, and none for ${asset.name} could be read from its GitHub release, so buncargo will not download it. Unset ${settings.version} to use the pinned version, or set ${settings.path} to a binary you installed.`,
 	);
+}
+
+/**
+ * Extract one entry of a downloaded archive into `staging` and return the
+ * extracted file.
+ *
+ * Bottles nest the binary. Its parents are stripped so extraction writes one
+ * basename into staging, never an archive-controlled directory tree.
+ */
+async function extractArchiveEntry(
+	archive: string,
+	entry: string,
+	staging: string,
+	signal?: AbortSignal,
+): Promise<string> {
+	const parts = entry.split("/");
+	const hasUnsafePart = parts.some(
+		(part) => !part || part === "." || part === ".." || part.includes("\\"),
+	);
+	if (hasUnsafePart) {
+		throw new Error(
+			"Tool archive entry must be a relative path without traversal",
+		);
+	}
+
+	await runFile(
+		"tar",
+		[
+			"-xzf",
+			archive,
+			"-C",
+			staging,
+			`--strip-components=${parts.length - 1}`,
+			"--",
+			entry,
+		],
+		{ timeout: 30_000, signal, killSignal: "SIGKILL" },
+	);
+
+	return join(staging, basename(entry));
 }
 
 /** Stage, verify and atomically publish one version/platform's executable. */
@@ -222,15 +292,19 @@ export async function installTool(
 	options.signal?.throwIfAborted();
 	const { to } = options;
 	if (isInstalledTool(to, options.expectedVersion.source)) return to;
+
 	return withFileLock(
 		`${to}.install`,
 		async () => {
+			// Another process may have finished the install while this one waited for the lock.
 			if (isInstalledTool(to, options.expectedVersion.source)) return to;
+
 			await mkdir(dirname(to), { recursive: true });
 			chownToInvokingUser(dirname(to));
 			const staging = await mkdtemp(
 				join(dirname(to), `.${basename(to)}.install-`),
 			);
+
 			try {
 				const asset = join(staging, "download");
 				const digest =
@@ -248,37 +322,18 @@ export async function installTool(
 					timeoutMs: options.timeoutMs,
 					signal: options.signal,
 				});
-				let executable = asset;
-				if (options.archiveEntry) {
-					const parts = options.archiveEntry.split("/");
-					if (
-						parts.some(
-							(part) =>
-								!part || part === "." || part === ".." || part.includes("\\"),
-						)
-					)
-						throw new Error(
-							"Tool archive entry must be a relative path without traversal",
-						);
-					// Bottles nest the binary. Strip its parents so extraction still writes
-					// one basename into staging, never an archive-controlled directory tree.
-					await runFile(
-						"tar",
-						[
-							"-xzf",
+
+				const executable = options.archiveEntry
+					? await extractArchiveEntry(
 							asset,
-							"-C",
-							staging,
-							`--strip-components=${parts.length - 1}`,
-							"--",
 							options.archiveEntry,
-						],
-						{ timeout: 30_000, signal: options.signal, killSignal: "SIGKILL" },
-					);
-					executable = join(staging, basename(options.archiveEntry));
-				}
-				if (!(await lstat(executable)).isFile())
+							staging,
+							options.signal,
+						)
+					: asset;
+				if (!(await lstat(executable)).isFile()) {
 					throw new Error("Tool archive did not contain a regular executable");
+				}
 				await chmod(executable, 0o755);
 				await verifyBinary(
 					executable,
@@ -288,6 +343,7 @@ export async function installTool(
 				);
 				chownToInvokingUser(executable);
 				options.signal?.throwIfAborted();
+
 				if (existsSync(to)) {
 					// Only the copy being replaced now is kept to look at: one per
 					// replacement piled up beside the tool forever.
@@ -297,6 +353,7 @@ export async function installTool(
 					await chmod(quarantine, 0o600);
 					chownToInvokingUser(quarantine);
 				}
+
 				await rename(executable, to);
 				await writeReceipt(to, options.expectedVersion.source);
 				return to;

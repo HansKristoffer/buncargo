@@ -43,8 +43,8 @@ export interface WatchdogLoopDeps {
  * Distinct from the runner's own lock, and it has to be: the runner holds
  * that one for its whole life, so a spawner cannot keep it across the spawn
  * without deadlocking the process it just started. Without this second file
- * two callers each spawn a runner, and the loser — which exits silently on
- * the lock it cannot get — can instead start *after* the winner has been
+ * two callers each spawn a runner, and the loser, which exits silently on
+ * the lock it cannot get, can instead start *after* the winner has been
  * stopped, and quietly become the watchdog nobody asked for.
  *
  * Here rather than in `watchdog.ts`, a public subpath, because the runner
@@ -101,11 +101,13 @@ export function exitUnlessClaimed(deps: WatchdogExitDeps): Promise<boolean> {
 		deps
 			.withSpawnLock(async () => {
 				deps.removePidFile();
+
 				const claimed = await deps.hasLiveRuns().catch(() => true);
 				if (claimed) {
 					deps.restorePidFile();
 					return;
 				}
+
 				resolve(true);
 				// Held until the process exits.
 				await new Promise<never>(() => {});
@@ -158,6 +160,7 @@ export function describeSwept(stack: SweptStack): string {
 export function watchesNothing(result: SweepResult): boolean {
 	if (result.liveRuns > 0 || result.pendingStacks > 0) return false;
 	if (result.containers === 0) return true;
+
 	return result.remaining.every(
 		(group) => foreignStackOf(result, group) !== undefined,
 	);
@@ -169,9 +172,9 @@ export function watchesNothing(result: SweepResult): boolean {
  * Separate from the runner, which starts a process as a side effect of being
  * imported, so the loop can be tested on its own.
  *
- * A pass that throws is logged and retried, never fatal. The usual causes — a
+ * A pass that throws is logged and retried, never fatal. The usual causes (a
  * registry caught mid-write, a lock another process holds a moment too long,
- * a daemon restarting — clear up by themselves, and a watchdog that exited on
+ * a daemon restarting) clear up by themselves, and a watchdog that exited on
  * them left nothing sweeping until the next buncargo command.
  *
  * A failure is logged when it first appears and again only if it changes, so
@@ -190,17 +193,20 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 			deps.log(`${outlived}; exiting`);
 			return;
 		}
+
 		try {
 			const runs = await deps.stopRuns();
 			for (const line of runs.stopped) deps.log(line);
-			for (const failure of runs.failures)
+			for (const failure of runs.failures) {
 				if (!reportedStopFailures.has(failure)) deps.log(failure);
+			}
 			reportedStopFailures = new Set(runs.failures);
 
 			const serve = await deps.sweepServeEntries();
 			for (const line of serve.removed) deps.log(line);
-			for (const failure of serve.failures)
+			for (const failure of serve.failures) {
 				if (!reportedServeFailures.has(failure)) deps.log(failure);
+			}
 			reportedServeFailures = new Set(serve.failures);
 
 			const result = await deps.sweep();
@@ -211,8 +217,9 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 			for (const failure of result.failed) {
 				const key = `${failure.projectName}\t${failure.root}`;
 				failures.set(key, failure.error);
-				if (reportedFailures.get(key) !== failure.error)
+				if (reportedFailures.get(key) !== failure.error) {
 					deps.log(`Could not remove ${failure.projectName}: ${failure.error}`);
+				}
 			}
 			reportedFailures = failures;
 
@@ -225,10 +232,12 @@ export async function runWatchdogLoop(deps: WatchdogLoopDeps): Promise<void> {
 			}
 		} catch (error) {
 			const message = getErrorMessage(error);
-			if (message !== reportedPassError)
+			if (message !== reportedPassError) {
 				deps.log(`Sweep failed, retrying next pass: ${message}`);
+			}
 			reportedPassError = message;
 		}
+
 		await deps.sleep(deps.intervalMs);
 	}
 }

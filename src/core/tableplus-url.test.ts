@@ -9,6 +9,7 @@ describe("tablePlusUrl", () => {
 			port: 13233,
 			database: "playground",
 			name: "buncargo-playground-playground-postgres",
+			scheme: "postgresql",
 		});
 		expect(url).toBe(
 			"postgresql://postgres:postgres@127.0.0.1:13233/playground?env=development&name=buncargo-playground-playground-postgres&tLSMode=0",
@@ -23,6 +24,7 @@ describe("tablePlusUrl", () => {
 			port: 5432,
 			database: "app db",
 			name: "My DB",
+			scheme: "postgresql",
 		});
 		expect(url).toBe(
 			"postgresql://u%40ser:p%40ss%3Aword@127.0.0.1:5432/app%20db?env=development&name=My%20DB&tLSMode=0",

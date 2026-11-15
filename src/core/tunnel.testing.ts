@@ -61,6 +61,7 @@ exec sleep 600
 		const file = join(dir, `pid-${port}`);
 		return existsSync(file) ? Number(readFileSync(file, "utf8")) : undefined;
 	};
+
 	return {
 		opened: () =>
 			existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [],

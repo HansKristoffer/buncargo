@@ -7,7 +7,7 @@ import { CI_ENV_VARS } from "./runtime-flags";
 /**
  * Run `body` with every CI signal cleared, then put the environment back.
  *
- * For tests that assert behaviour buncargo deliberately turns off in CI —
+ * For tests that assert behaviour buncargo deliberately turns off in CI:
  * named hosts, Docker auto-start. They have to look like a developer's
  * machine, and the interesting assertion is the one CI would otherwise skip.
  *
@@ -25,12 +25,14 @@ export function withoutCiEnv<T>(body: () => T): T {
 		saved.set(name, process.env[name]);
 		delete process.env[name];
 	}
+
 	const restore = () => {
 		for (const [name, value] of saved) {
 			if (value === undefined) delete process.env[name];
 			else process.env[name] = value;
 		}
 	};
+
 	let result: T;
 	try {
 		result = body();
@@ -41,6 +43,7 @@ export function withoutCiEnv<T>(body: () => T): T {
 	// An async body reads the environment after its first await, so the
 	// signals stay cleared until it settles.
 	if (result instanceof Promise) return result.finally(restore) as T;
+
 	restore();
 	return result;
 }

@@ -47,15 +47,11 @@ function readBinaryOverride(
 	return override;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CI
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * Every environment variable that can mean "this is CI".
  *
  * Exported so a test that needs to look like a developer's machine can clear
- * all of them. Clearing `CI` alone is not enough — GitHub Actions also sets
+ * all of them. Clearing `CI` alone is not enough: GitHub Actions also sets
  * `GITHUB_ACTIONS`, so a test that only deleted `CI` passed locally and failed
  * on the very provider it was running on.
  */
@@ -99,10 +95,6 @@ export function barOfferOptedOut(
 	return env.BUNCARGO_BAR === "0";
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Ports
-// ═══════════════════════════════════════════════════════════════════════════
-
 /** `BUNCARGO_PORT_OFFSET` - hard port offset that skips hashing and probing. */
 export function portOffsetOverride(
 	env: NodeJS.ProcessEnv = process.env,
@@ -117,10 +109,6 @@ export function portOffsetOverride(
 	}
 	return offset;
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Diagnostics
-// ═══════════════════════════════════════════════════════════════════════════
 
 /** `BUNCARGO_TIMING=1` - print a per-phase breakdown of `dev` startup. */
 export function isTimingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -175,10 +163,6 @@ export function isInstallingCheckout(
 	return env[INSTALLING_ENV] === "1";
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Container runtime
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * `BUNCARGO_CONTAINER_RUNTIME` - pick the backend that runs the services.
  *
@@ -197,10 +181,6 @@ export function containerBinaryOverride(
 ): string | undefined {
 	return readBinaryOverride(env, "BUNCARGO_CONTAINER_BINARY");
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Named hosts
-// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * How named hosts are served on this machine, from `BUNCARGO_HOSTS`.
@@ -308,10 +288,6 @@ export function mkcertVersion(env: NodeJS.ProcessEnv = process.env): string {
 	return readTrimmed(env, "BUNCARGO_MKCERT_VERSION") ?? "v1.4.4";
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Secrets
-// ═══════════════════════════════════════════════════════════════════════════
-
 /** `BUNCARGO_INFISICAL_PATH` - use this infisical binary instead of the PATH lookup. */
 export function infisicalPathOverride(
 	env: NodeJS.ProcessEnv = process.env,
@@ -359,11 +335,11 @@ export function infisicalUniversalAuthFile(
 	env: NodeJS.ProcessEnv,
 	home: string,
 ): string | undefined {
-	if (
+	const hasIdentityInEnv =
 		readTrimmed(env, "INFISICAL_CLIENT_ID") ||
-		readTrimmed(env, "INFISICAL_CLIENT_SECRET")
-	)
-		return undefined;
+		readTrimmed(env, "INFISICAL_CLIENT_SECRET");
+	if (hasIdentityInEnv) return undefined;
+
 	return (
 		readTrimmed(env, "INFISICAL_UNIVERSAL_AUTH_FILE") ??
 		join(home, ".infisical", "universal-auth.json")
@@ -376,10 +352,6 @@ export function secretsEnvironment(
 ): string | undefined {
 	return readTrimmed(env, "SECRETS_ENV");
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Public tunnels
-// ═══════════════════════════════════════════════════════════════════════════
 
 /** `BUNCARGO_CLOUDFLARED_PATH` - use this cloudflared binary instead of the cache. */
 export function cloudflaredPathOverride(
@@ -422,10 +394,6 @@ export function quickTunnelUrlTimeoutMs(
 ): number {
 	return readInt(env, "BUNCARGO_QUICK_TUNNEL_TIMEOUT_MS", 30_000);
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Typecheck
-// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * `BUNCARGO_TYPECHECK_CONCURRENCY` - override the default typecheck pool size.
@@ -476,48 +444,60 @@ export function connectTokens(env: NodeJS.ProcessEnv = process.env): string[] {
 				.filter(Boolean),
 		),
 	];
-	if (
-		tokens.length > 16 ||
-		tokens.some((t) => !/^bc_share_[a-f0-9]{64}$/.test(t))
-	)
+
+	const hasMalformedToken = tokens.some(
+		(t) => !/^bc_share_[a-f0-9]{64}$/.test(t),
+	);
+	if (tokens.length > 16 || hasMalformedToken) {
 		throw new Error(
 			"BUNCARGO_CONNECT_TOKENS must contain up to 16 comma-separated connection tokens.",
 		);
+	}
+
 	return tokens;
 }
+
 export function connectName(
 	env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
 	const name = env.BUNCARGO_CONNECT_NAME?.trim();
-	if (
-		name &&
-		(name.length > 80 ||
-			[...name].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127))
-	)
+	if (!name) return undefined;
+
+	const hasControlCharacter = [...name].some(
+		(c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127,
+	);
+	if (name.length > 80 || hasControlCharacter) {
 		throw new Error(
 			"BUNCARGO_CONNECT_NAME must be at most 80 characters without control characters.",
 		);
-	return name || undefined;
+	}
+
+	return name;
 }
+
 export function connectOrigin(env: NodeJS.ProcessEnv = process.env): string {
 	const url = new URL(env.BUNCARGO_CONNECT_URL ?? CONNECT_ORIGIN);
-	if (
-		(url.protocol !== "https:" &&
-			!(
-				url.protocol === "http:" &&
-				["localhost", "127.0.0.1"].includes(url.hostname)
-			)) ||
-		url.username ||
-		url.password ||
-		url.search ||
-		url.hash ||
-		url.pathname !== "/"
-	)
+
+	const isLoopbackHttp =
+		url.protocol === "http:" &&
+		["localhost", "127.0.0.1"].includes(url.hostname);
+	const isAllowedProtocol = url.protocol === "https:" || isLoopbackHttp;
+	const isBareOrigin =
+		!url.username &&
+		!url.password &&
+		!url.search &&
+		!url.hash &&
+		url.pathname === "/";
+	if (!isAllowedProtocol || !isBareOrigin) {
 		throw new Error("BUNCARGO_CONNECT_URL must be an HTTPS origin.");
+	}
+
 	return url.origin;
 }
+
 /** Named here so `child-env.ts` can withhold it without reading `BUNCARGO_*` itself. */
 export const CONNECT_TOKENS_ENV = "BUNCARGO_CONNECT_TOKENS";
+
 export function frpTestsEnabled(env: NodeJS.ProcessEnv = process.env) {
 	return env.BUNCARGO_TEST_FRP === "1";
 }

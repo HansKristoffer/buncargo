@@ -43,7 +43,9 @@ export async function stopWatchdog(): Promise<void> {
 		// It exited between the check and the signal.
 		return;
 	}
+
 	const deadline = Date.now() + 5000;
-	while (isProcessAlive(owner.pid) && Date.now() < deadline)
+	while (isProcessAlive(owner.pid) && Date.now() < deadline) {
 		await Bun.sleep(20);
+	}
 }

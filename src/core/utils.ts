@@ -80,6 +80,7 @@ export function getEnvVar<
 	const hosts = namedHostsRuntime(applied.options?.hosts, view.hostPlan, live);
 	const served = live?.hostnames ? new Set(live.hostnames) : undefined;
 	const urls = asComputedUrls(namedUrls(view.plainUrls, hosts, served));
+
 	const envVars = sharedEnv(
 		{ ...view, config: applied, portOffset: view.portPlan.offset, urls },
 		{ publicUrls: {}, captured: readLiveCapturesSync(root), hosts },
@@ -125,10 +126,13 @@ function checkoutViewFor(config: AnyConfig, root: string) {
 	// app (Shopify's frontend) before anything is computed.
 	const applied = applyIntegrations(config, { root });
 	const view = resolveCheckoutView(resolveConfig(applied), root);
+
 	// Read before this checkout's first run, with every block claimed: the
 	// value points at another checkout's block. Said, not thrown, as for `env`.
-	if (view.portPlan.provenance === "unallocated")
+	if (view.portPlan.provenance === "unallocated") {
 		console.warn(unallocatedPortsMessage(root));
+	}
+
 	const entry = { key, applied, view };
 	views.set(config, entry);
 	return entry;

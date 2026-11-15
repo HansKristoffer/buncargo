@@ -85,8 +85,9 @@ function log(message: string): void {
 function cleanup(): void {
 	try {
 		const owner = JSON.parse(readFileSync(pidFile, "utf8"));
-		if (owner.ownerId === ownerId && owner.pid === process.pid)
+		if (owner.ownerId === ownerId && owner.pid === process.pid) {
 			unlinkSync(pidFile);
+		}
 	} catch {
 		/* Missing or replaced: not ours to remove. */
 	}
@@ -106,8 +107,10 @@ const parent = watchdogParent();
 
 function outlived(): string | undefined {
 	if (checkoutDeleted(getStateDir())) return "The state directory is gone";
-	if (parent && !matchesProcessIdentity(parent.pid, parent.identity))
+
+	if (parent && !matchesProcessIdentity(parent.pid, parent.identity)) {
 		return `Process ${parent.pid}, which BUNCARGO_WATCHDOG_PARENT names, has ended`;
+	}
 	return undefined;
 }
 
@@ -152,6 +155,7 @@ withFileLock(
 		};
 		writeJsonDocumentSync(pidFile, owner);
 		log(`Started from ${process.argv[1] ?? "an unknown path"}`);
+
 		const stopDirectory = tailnetDirectoryEnabled()
 			? serveTailnetDirectory({ log, intervalMs: WATCHDOG_POLL_INTERVAL_MS })
 			: () => {};
