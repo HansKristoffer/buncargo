@@ -12,7 +12,11 @@ import {
 } from "../runtime-flags";
 import { recordStartupMetric } from "../startup-metrics";
 import { resolveUserHome, stateFilePath } from "../state-paths";
-import { InfisicalLoginError, SecretsError } from "./errors";
+import {
+	InfisicalLoginError,
+	infisicalLoginCommand,
+	SecretsError,
+} from "./errors";
 import { isRefusedToken, LOAD_TIMEOUT_MS, request, tokenFrom } from "./http";
 import type { InfisicalScope } from "./scope";
 import { SharedRequestCache } from "./shared-request";
@@ -427,7 +431,7 @@ async function scopedSessionToken(
 	if (data?.isMfaEnabled) {
 		throw new SecretsError(
 			"Infisical requires MFA for this organization.",
-			`infisical login --domain=${scope.siteUrl} (and pick the organization)`,
+			`${infisicalLoginCommand(scope.siteUrl)} (and pick the organization)`,
 		);
 	}
 	const scoped = tokenFrom(data, "token", "select-organization");
