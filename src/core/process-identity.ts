@@ -9,7 +9,7 @@ import { recordStartupMetric } from "./startup-metrics";
 /**
  * Marks an identity written in the current, environment-independent format.
  *
- * Identities are recorded by one process and checked by another — a dev run
+ * Identities are recorded by one process and checked by another: a dev run
  * and the watchdog, a run and the menu bar's `stop`, a worker's owner and the
  * next run in the checkout. On macOS the birth time comes from `ps`, whose
  * output follows the caller's locale and time zone, so two processes read the
@@ -36,6 +36,7 @@ function linuxBirth(pid: number): string | undefined {
 		bootId ??= readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
 		return `${bootId}:${start}`;
 	} catch {
+		// The pid exited, or `/proc` is unreadable: cannot inspect.
 		return undefined;
 	}
 }
@@ -83,8 +84,18 @@ function psBirths(pids: readonly number[]): Map<number, string> {
 	return new Map();
 }
 
+// Pid 0 and 1 are never a run's process, and `ps` refuses the whole batch when
+// one of its pids is not a pid at all.
+function isInspectablePid(pid: number): boolean {
+	return Number.isInteger(pid) && pid > 1;
+}
+
+function isLivePid(pid: number): boolean {
+	return isInspectablePid(pid) && isProcessAlive(pid);
+}
+
 function wantedPids(pids: readonly number[]): number[] {
-	return [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 1);
+	return [...new Set(pids)].filter(isInspectablePid);
 }
 
 function encodeBirths(births: Map<number, string>): Map<number, string> {
@@ -146,15 +157,18 @@ export function createProcessIdentityCache(deps: {
 	return (pids) => {
 		const identities = new Map<number, string>();
 		const unseen: number[] = [];
+
 		for (const pid of wantedPids(pids)) {
 			if (!deps.isAlive(pid)) {
 				known.delete(pid);
 				continue;
 			}
+
 			const identity = known.get(pid);
 			if (identity === undefined) unseen.push(pid);
 			else identities.set(pid, identity);
 		}
+
 		if (unseen.length === 0) return identities;
 
 		for (const [pid, identity] of deps.read(unseen)) {
@@ -228,7 +242,8 @@ export async function readProcessIdentitiesAsync(
 ): Promise<Map<number, string>> {
 	signal?.throwIfAborted();
 	const wanted = wantedPids(pids);
-	if (!wanted.length) return new Map();
+	if (wanted.length === 0) return new Map();
+
 	const births =
 		process.platform === "linux"
 			? new Map(
@@ -277,14 +292,14 @@ export async function readCurrentProcessIdentityAsync(
 /**
  * Whether `pid` is still the process that was recorded, strictly.
  *
- * For deciding to act on a pid — signalling it, or treating it as the one
- * owner of something. "Cannot tell" has to mean "no" here.
+ * For deciding to act on a pid, such as signalling it or treating it as the
+ * one owner of something. "Cannot tell" has to mean "no" here.
  */
 export function matchesProcessIdentity(
 	pid: number,
 	identity?: string,
 ): boolean {
-	if (!Number.isInteger(pid) || pid <= 1 || !isProcessAlive(pid)) return false;
+	if (!isLivePid(pid)) return false;
 	if (identity === undefined) return true;
 	return readProcessIdentity(pid) === identity;
 }
@@ -304,6 +319,18 @@ export async function matchesProcessIdentityAsync(
  */
 export type ProcessIdentityCheck = "match" | "mismatch" | "unreadable";
 
+function compareIdentity(
+	pid: number,
+	expected: string,
+	actual: string | undefined,
+): ProcessIdentityCheck {
+	if (actual === expected) return "match";
+	if (actual !== undefined) return "mismatch";
+
+	// Linux reads nothing for a pid that exited during the read.
+	return isProcessAlive(pid) ? "unreadable" : "mismatch";
+}
+
 /** {@link matchesProcessIdentityAsync}, telling "cannot tell" apart from "no". */
 export async function checkProcessIdentityAsync(
 	pid: number,
@@ -311,15 +338,11 @@ export async function checkProcessIdentityAsync(
 	signal?: AbortSignal,
 ): Promise<ProcessIdentityCheck> {
 	signal?.throwIfAborted();
-	if (!Number.isInteger(pid) || pid <= 1 || !isProcessAlive(pid))
-		return "mismatch";
+	if (!isLivePid(pid)) return "mismatch";
 	if (identity === undefined) return "match";
+
 	const actual = await readProcessIdentityAsync(pid, signal);
-	if (actual === identity) return "match";
-	// Linux reads nothing for a pid that exited during the read.
-	if (actual === undefined)
-		return isProcessAlive(pid) ? "unreadable" : "mismatch";
-	return "mismatch";
+	return compareIdentity(pid, identity, actual);
 }
 
 /**
@@ -332,34 +355,26 @@ export async function checkProcessIdentitiesAsync(
 	signal?: AbortSignal,
 ): Promise<ProcessIdentityCheck[]> {
 	signal?.throwIfAborted();
-	const alive = (pid: number) =>
-		Number.isInteger(pid) && pid > 1 && isProcessAlive(pid);
 	const asked = entries.filter(
-		(entry) => entry.identity !== undefined && alive(entry.pid),
+		(entry) => entry.identity !== undefined && isLivePid(entry.pid),
 	);
 	const actual = await readProcessIdentitiesAsync(
 		asked.map((entry) => entry.pid),
 		signal,
 	);
+
 	return entries.map(({ pid, identity }): ProcessIdentityCheck => {
-		if (!alive(pid)) return "mismatch";
+		if (!isLivePid(pid)) return "mismatch";
 		if (identity === undefined) return "match";
-		const read = actual.get(pid);
-		if (read === identity) return "match";
-		// Linux reads nothing for a pid that exited during the read.
-		if (read === undefined)
-			return isProcessAlive(pid) ? "unreadable" : "mismatch";
-		return "mismatch";
+
+		return compareIdentity(pid, identity, actual.get(pid));
 	});
 }
 
 type IdentityEntry = { pid: number; processIdentity?: string };
+
 function livePids(entries: readonly IdentityEntry[]): Set<number> {
-	return new Set(
-		entries
-			.map((entry) => entry.pid)
-			.filter((pid) => Number.isInteger(pid) && pid > 1 && isProcessAlive(pid)),
-	);
+	return new Set(entries.map((entry) => entry.pid).filter(isLivePid));
 }
 
 function identityMatcher(

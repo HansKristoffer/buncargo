@@ -18,10 +18,11 @@ const ROOT = join(import.meta.dir, "..");
 
 function git(args: string[], cwd = ROOT): string {
 	const result = Bun.spawnSync(["git", ...args], { cwd, stderr: "pipe" });
-	if (result.exitCode !== 0)
-		throw new Error(
-			`git ${args.join(" ")}: ${result.stderr.toString().trim()}`,
-		);
+	if (result.exitCode !== 0) {
+		const message = `git ${args.join(" ")}: ${result.stderr.toString().trim()}`;
+		throw new Error(message);
+	}
+
 	return result.stdout.toString().trim();
 }
 

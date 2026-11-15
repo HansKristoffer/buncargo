@@ -71,9 +71,9 @@ export function formatClickableUrl(url: string): string {
 	return formatHyperlink(url, pc.cyan(url));
 }
 
-/** Log only if the step is still running after `delayMs` (reload stays quiet). */
 export const SLOW_STEP_MS = 800;
 
+/** Log only if the step is still running after `delayMs` (reload stays quiet). */
 export function scheduleLog(delayMs: number, write: () => void): () => void {
 	const timer = setTimeout(write, delayMs);
 	timer.unref?.();
@@ -93,13 +93,13 @@ export function prefixWidth(names: string[]): number {
 	return names.reduce((max, name) => Math.max(max, name.length), 0);
 }
 
-/**
- * One live log line, matching the environment banner: green arrow, colored name.
- */
 export function isBlankLogLine(line: string): boolean {
 	return line.trim().length === 0;
 }
 
+/**
+ * One live log line, matching the environment banner: green arrow, colored name.
+ */
 export function formatPrefixedLine(
 	name: string,
 	line: string,

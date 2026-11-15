@@ -7,15 +7,16 @@ import type {
 	ServiceConfig,
 } from "../types";
 
+type SharedEnvBuilder = EnvVarsBuilder<
+	Record<string, ServiceConfig>,
+	Record<string, AppConfig>
+>;
+
 /**
  * Compose two shared env builders into one: both run, and the override's keys
  * win. Replacing instead of composing would silently drop the base config's
  * whole shared env surface.
  */
-type SharedEnvBuilder = EnvVarsBuilder<
-	Record<string, ServiceConfig>,
-	Record<string, AppConfig>
->;
 function mergeEnvBuilders(
 	base: SharedEnvBuilder | undefined,
 	override: SharedEnvBuilder | undefined,

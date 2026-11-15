@@ -10,10 +10,6 @@ import { getErrorMessage, promiseTimeout } from "hanzio";
 import { connectProcessEnv } from "../child-env";
 import { lookupOnPath } from "../tool-binary";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// The tailscale CLI
-// ═══════════════════════════════════════════════════════════════════════════
-
 export interface TailscaleCommandResult {
 	exitCode: number;
 	stdout: string;
@@ -32,6 +28,7 @@ const COMMAND_TIMEOUT_MS = 10_000;
 function resolveTailscaleBinary(): string | undefined {
 	const onPath = lookupOnPath("tailscale");
 	if (onPath) return onPath;
+
 	return process.platform === "darwin" && existsSync(MAC_APP_CLI)
 		? MAC_APP_CLI
 		: undefined;
@@ -40,10 +37,12 @@ function resolveTailscaleBinary(): string | undefined {
 /** The real `tailscale`, one process per call. */
 export const tailscaleCli: TailscaleCli = async (args) => {
 	const binary = resolveTailscaleBinary();
-	if (!binary)
+	if (!binary) {
 		throw new Error(
 			"the tailscale CLI is not installed (not on PATH). Install Tailscale, or unset BUNCARGO_HOSTS=tailscale.",
 		);
+	}
+
 	const child = Bun.spawn([binary, ...args], {
 		stdin: "ignore",
 		stdout: "pipe",
@@ -51,11 +50,13 @@ export const tailscaleCli: TailscaleCli = async (args) => {
 		env: connectProcessEnv(),
 		timeout: COMMAND_TIMEOUT_MS,
 	});
+
 	const [stdout, stderr, exitCode] = await Promise.all([
 		new Response(child.stdout).text(),
 		new Response(child.stderr).text(),
 		child.exited,
 	]);
+
 	return { exitCode, stdout, stderr };
 };
 
@@ -65,6 +66,7 @@ export function failureLine(result: TailscaleCommandResult): string {
 		.split("\n")
 		.map((text) => text.trim())
 		.find((text) => text.length > 0);
+
 	return line ?? `exit code ${result.exitCode}`;
 }
 
@@ -78,10 +80,6 @@ export async function runCli(
 		return { exitCode: 127, stdout: "", stderr: getErrorMessage(error) };
 	}
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// This machine on the tailnet
-// ═══════════════════════════════════════════════════════════════════════════
 
 export type TailscaleSelf =
 	| {
@@ -109,11 +107,13 @@ interface TailscaleStatusJson {
 export function describeTailscaleStatus(
 	result: TailscaleCommandResult,
 ): TailscaleSelf {
-	if (result.exitCode !== 0)
+	if (result.exitCode !== 0) {
 		return {
 			ok: false,
 			reason: `Tailscale is not reachable (${failureLine(result)}). Start it and run \`tailscale up\`.`,
 		};
+	}
+
 	let status: TailscaleStatusJson;
 	try {
 		status = JSON.parse(result.stdout) as TailscaleStatusJson;
@@ -123,41 +123,50 @@ export function describeTailscaleStatus(
 			reason: "`tailscale status --json` printed something that is not JSON.",
 		};
 	}
-	if (status.BackendState !== "Running")
+
+	if (status.BackendState !== "Running") {
 		return {
 			ok: false,
 			reason: `Tailscale is not connected (state ${String(status.BackendState ?? "unknown")}). Run \`tailscale up\`.`,
 		};
+	}
+
 	const dnsName =
 		typeof status.Self?.DNSName === "string"
 			? status.Self.DNSName.replace(/\.$/, "")
 			: "";
-	if (!dnsName)
+	if (!dnsName) {
 		return {
 			ok: false,
 			reason:
 				"This machine has no MagicDNS name. Turn on MagicDNS in the Tailscale admin console (DNS).",
 		};
+	}
+
 	const certDomains = Array.isArray(status.CertDomains)
 		? status.CertDomains
 		: [];
-	if (!certDomains.includes(dnsName))
+	if (!certDomains.includes(dnsName)) {
 		return {
 			ok: false,
 			reason: `Tailscale has no HTTPS certificate for ${dnsName}. Turn on HTTPS Certificates in the Tailscale admin console (DNS).`,
 		};
+	}
+
 	const ips = Array.isArray(status.Self?.TailscaleIPs)
 		? status.Self.TailscaleIPs
 		: [];
 	const address = ips.find(
 		(ip): ip is string => typeof ip === "string" && ip.includes("."),
 	);
-	if (!address)
+	if (!address) {
 		return {
 			ok: false,
 			reason:
 				"Tailscale reports no IPv4 address for this machine. Run `tailscale up`.",
 		};
+	}
+
 	return { ok: true, hostname: dnsName, address };
 }
 
@@ -168,10 +177,6 @@ export async function readTailscaleSelf(
 		await runCli(cli, ["status", "--json", "--peers=false"]),
 	);
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// The live serve config
-// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * What Tailscale Serve does on one port: proxy `/` of `hostname` to `target`,
@@ -190,7 +195,7 @@ interface ServeConfigJson {
 	Foreground?: Record<string, ServeConfigJson>;
 }
 
-/** Every port `config` holds, as `"other"`. */
+/** Every port `config` holds, of either kind. */
 function portsOf(config: ServeConfigJson): number[] {
 	const webPorts = Object.keys(config.Web ?? {}).map((hostPort) =>
 		Number(hostPort.slice(hostPort.lastIndexOf(":") + 1)),
@@ -204,8 +209,10 @@ function proxiedRoot(web: {
 }): string | undefined {
 	const handlers = Object.entries(web.Handlers ?? {});
 	const [only] = handlers;
-	if (handlers.length !== 1 || only === undefined || only[0] !== "/")
+	if (handlers.length !== 1 || only === undefined || only[0] !== "/") {
 		return undefined;
+	}
+
 	const proxy = only[1].Proxy;
 	return typeof proxy === "string" ? proxy : undefined;
 }
@@ -217,9 +224,12 @@ export function parseServeConfig(stdout: string): ServeConfig | undefined {
 	} catch {
 		return undefined;
 	}
+
 	const ports = new Map<number, ServedPort>();
-	for (const port of Object.keys(json.TCP ?? {}))
+	for (const port of Object.keys(json.TCP ?? {})) {
 		ports.set(Number(port), "other");
+	}
+
 	for (const [hostPort, web] of Object.entries(json.Web ?? {})) {
 		const colon = hostPort.lastIndexOf(":");
 		const target = proxiedRoot(web);
@@ -229,9 +239,12 @@ export function parseServeConfig(stdout: string): ServeConfig | undefined {
 				: { hostname: hostPort.slice(0, colon), target };
 		ports.set(Number(hostPort.slice(colon + 1)), served);
 	}
+
 	// A foreground session is someone's terminal: never buncargo's.
-	for (const session of Object.values(json.Foreground ?? {}))
+	for (const session of Object.values(json.Foreground ?? {})) {
 		for (const port of portsOf(session)) ports.set(port, "other");
+	}
+
 	return ports;
 }
 
@@ -239,10 +252,12 @@ export async function readServeConfig(
 	cli: TailscaleCli,
 ): Promise<{ config: ServeConfig } | { reason: string }> {
 	const result = await runCli(cli, ["serve", "status", "--json"]);
-	if (result.exitCode !== 0)
+	if (result.exitCode !== 0) {
 		return {
 			reason: `could not read the Tailscale Serve config (${failureLine(result)}). Check \`tailscale serve status\` and \`buncargo doctor\``,
 		};
+	}
+
 	const config = parseServeConfig(result.stdout);
 	return config
 		? { config }
@@ -278,6 +293,7 @@ export async function runServeChange(
 		await promiseTimeout(50 * attempt);
 		result = await runCli(cli, args);
 	}
+
 	return result;
 }
 
@@ -298,11 +314,14 @@ export function describeServePermission(
 	user: { name: string; uid: number },
 ): { ok: boolean; message: string } | undefined {
 	if (!result) return undefined;
-	if (user.uid === 0)
+
+	if (user.uid === 0) {
 		return {
 			ok: true,
 			message: "Running as root, which may change Tailscale Serve",
 		};
+	}
+
 	let operator: unknown;
 	try {
 		operator = (JSON.parse(result.stdout) as { OperatorUser?: unknown })
@@ -310,11 +329,14 @@ export function describeServePermission(
 	} catch {
 		operator = undefined;
 	}
-	if (result.exitCode !== 0 || operator === undefined)
+
+	if (result.exitCode !== 0 || operator === undefined) {
 		return {
 			ok: true,
 			message: `warning: could not read Tailscale's operator (${failureLine(result)}); \`tailscale serve\` needs root or \`sudo tailscale set --operator=${user.name}\``,
 		};
+	}
+
 	return operator === user.name
 		? {
 				ok: true,

@@ -3,16 +3,6 @@ import type { RuntimeContainer } from "../container-runtime/types";
 import { SERVICE_HASH_LABEL } from "../docker-compose/interpolate";
 import { type DockerRunResult, runDocker, runDockerAsync } from "./binary";
 
-/**
- * Docker's one container listing: every container, buncargo's or not, with
- * the state, the status line, the published ports and the labels buncargo
- * reads. Service states, port owners, the inventory and a service's state are
- * all projections of it (`container-runtime/containers.ts`).
- *
- * `--all` with the state, so whether a container holds its ports is decided by
- * `isContainerLive` like everywhere else rather than by `docker ps`'s default
- * filter: a paused or restarting container keeps, or takes back, its ports.
- */
 const LABELS = [
 	"com.docker.compose.project",
 	"com.docker.compose.oneoff",
@@ -23,6 +13,16 @@ const LABELS = [
 	SERVICE_HASH_LABEL,
 ] as const;
 
+/**
+ * Docker's one container listing: every container, buncargo's or not, with
+ * the state, the status line, the published ports and the labels buncargo
+ * reads. Service states, port owners, the inventory and a service's state are
+ * all projections of it (`container-runtime/containers.ts`).
+ *
+ * `--all` with the state, so whether a container holds its ports is decided by
+ * `isContainerLive` like everywhere else rather than by `docker ps`'s default
+ * filter: a paused or restarting container keeps, or takes back, its ports.
+ */
 export const DOCKER_LIST_ARGS = [
 	"ps",
 	"--all",
@@ -75,8 +75,9 @@ export function parseDockerPublishedPorts(portsField: string): number[] {
 	for (const match of portsField.matchAll(/:(\d{1,5})(?:-(\d{1,5}))?->/g)) {
 		const first = Number.parseInt(match[1] ?? "", 10);
 		const last = match[2] === undefined ? first : Number.parseInt(match[2], 10);
-		for (let port = first; port <= last; port++)
+		for (let port = first; port <= last; port++) {
 			if (port > 0 && !ports.includes(port)) ports.push(port);
+		}
 	}
 	return ports;
 }
@@ -103,18 +104,18 @@ function parseDockerTargetPorts(portsField: string): Record<number, number> {
 }
 
 /** One line of {@link DOCKER_LIST_ARGS} output, or undefined for one without an id. */
-export function parseDockerContainer(
-	line: string,
-): RuntimeContainer | undefined {
+function parseDockerContainer(line: string): RuntimeContainer | undefined {
 	const [id, name, state = "", status = "", portsText = "", ...labels] = line
 		.replace(/\r$/, "")
 		.split("\t");
 	if (!id) return undefined;
+
 	const [composeProject, oneOff, project, root, worktree, service, hash] =
 		labels;
 	const healthy = parseDockerHealth(status);
 	const exitCode = parseDockerExitCode(status);
 	const targetPorts = parseDockerTargetPorts(portsText);
+
 	return {
 		id,
 		name: name || id,
@@ -142,10 +143,12 @@ export function parseDockerContainer(
 function containersFrom(result: DockerRunResult): RuntimeContainer[] {
 	// A daemon that cannot answer throws: "no containers" is something the
 	// watch and the sweep act on, and "could not ask" must not read as it.
-	if (!result.ok)
+	if (!result.ok) {
 		throw new Error(
 			result.stderr.trim() || `docker ps exited ${result.exitCode}`,
 		);
+	}
+
 	return result.stdout.split("\n").flatMap((line) => {
 		const container = parseDockerContainer(line);
 		return container ? [container] : [];

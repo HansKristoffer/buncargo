@@ -17,6 +17,7 @@ import { type AppleContainerCli, runAppleAsync } from "./cli";
 function parseAppleVolumeNames(stdout: string): string[] {
 	const trimmed = stdout.trim();
 	if (!trimmed) return [];
+
 	const parsed = safeJsonParse(trimmed);
 	if (parsed.ok) {
 		const names = toArray(parsed.data).flatMap((entry) => {
@@ -27,6 +28,7 @@ function parseAppleVolumeNames(stdout: string): string[] {
 		});
 		if (names.length > 0) return names;
 	}
+
 	// Not JSON, or JSON with no names: fall through to the table form.
 	return trimmed
 		.split("\n")
@@ -39,10 +41,12 @@ export async function listAppleVolumes(
 	cli: AppleContainerCli,
 ): Promise<BuncargoVolume[]> {
 	const result = await runAppleAsync(cli, ["volume", "ls", "--format", "json"]);
-	if (!result.ok)
+	if (!result.ok) {
 		throw new Error(
 			result.stderr.trim() || `container volume ls exited ${result.exitCode}`,
 		);
+	}
+
 	return parseAppleVolumeNames(result.stdout).map((name) => ({
 		name,
 		runtime: "apple" as const,
@@ -56,11 +60,12 @@ export async function removeAppleVolumes(
 	const failures: { name: string; error: string }[] = [];
 	for (const name of names) {
 		const result = await runAppleAsync(cli, ["volume", "delete", name]);
-		if (!result.ok)
+		if (!result.ok) {
 			failures.push({
 				name,
 				error: result.stderr.trim() || `container volume delete ${name} failed`,
 			});
+		}
 	}
 	return failures;
 }

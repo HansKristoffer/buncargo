@@ -1,19 +1,8 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
-import { isRecord, must } from "hanzio";
+import { isRecord, must, toArray } from "hanzio";
 import type { ComposeDocument } from "../docker-compose";
-import type { DockerComposeNode, DockerComposeServiceRaw } from "../types";
-
-/**
- * Translate the generated compose model into Apple `container` invocations.
- *
- * Apple's CLI has no compose equivalent, so this is where a compose service
- * becomes one `container run`. Everything here is pure: the caller executes the
- * argv arrays, which keeps the whole translation unit-testable without a
- * container runtime present.
- */
-
 // Compose's substitution rules and the service fingerprint live with the
 // compose model, not with one backend: `docker compose` interpolates the file
 // itself and this backend has to reproduce it, so a second copy here is a
@@ -25,6 +14,17 @@ import {
 	SERVICE_HASH_LABEL,
 	serviceFingerprint,
 } from "../docker-compose/interpolate";
+import type { DockerComposeNode, DockerComposeServiceRaw } from "../types";
+
+/**
+ * Translate the generated compose model into Apple `container` invocations.
+ *
+ * Apple's CLI has no compose equivalent, so this is where a compose service
+ * becomes one `container run`. Everything here is pure: the caller executes the
+ * argv arrays, which keeps the whole translation unit-testable without a
+ * container runtime present.
+ */
+
 export const PROJECT_LABEL = "buncargo.project";
 export const SERVICE_LABEL = "buncargo.service";
 
@@ -121,6 +121,7 @@ export function containerNameFor(
 ): string {
 	const name = sanitizeContainerName(`${projectName}-${serviceName}`);
 	if (name.length <= MAX_CONTAINER_NAME_LENGTH) return name;
+
 	const hash = createHash("sha256").update(name).digest("hex").slice(0, 8);
 	return `${name.slice(0, MAX_CONTAINER_NAME_LENGTH - hash.length - 1)}-${hash}`;
 }
@@ -135,13 +136,7 @@ export function volumeNameFor(projectName: string, volume: string): string {
 	return sanitizeContainerName(`${projectName}-${volume}`);
 }
 
-/**
- * Every form compose substitutes, matched in one pass.
- *
- * One pass rather than one per form is what makes `$$` an escape: it is
- * consumed here, so the `$` it produces can never be re-read as the start of a
- * reference by a later pass.
- */
+/** Whether a short-form volume source is a host path rather than a named volume. */
 function isPathSource(source: string): boolean {
 	return (
 		source.startsWith("/") ||
@@ -161,6 +156,7 @@ function resolvePathSource(source: string, root: string): string {
 	if (source === "~" || source.startsWith("~/")) {
 		return resolve(homedir(), source.slice(1).replace(/^\//, ""));
 	}
+
 	return isAbsolute(source) ? source : resolve(root, source);
 }
 
@@ -174,12 +170,14 @@ function asRecord(
 	value: DockerComposeNode | undefined,
 ): Record<string, string> {
 	if (!isRecord(value)) return {};
+
 	const record: Record<string, string> = {};
 	for (const [key, entry] of Object.entries(value)) {
 		if (entry === undefined || entry === null) continue;
 		if (typeof entry === "object") continue;
 		record[key] = String(entry);
 	}
+
 	return record;
 }
 
@@ -202,8 +200,11 @@ export function splitCommandLine(value: string): string[] {
 
 		if (quote === "'") {
 			// Single quotes are literal: even a backslash carries no meaning.
-			if (char === "'") quote = undefined;
-			else current += char;
+			if (char === "'") {
+				quote = undefined;
+			} else {
+				current += char;
+			}
 			continue;
 		}
 
@@ -226,8 +227,11 @@ export function splitCommandLine(value: string): string[] {
 		}
 
 		if (quote === '"') {
-			if (char === '"') quote = undefined;
-			else current += char;
+			if (char === '"') {
+				quote = undefined;
+			} else {
+				current += char;
+			}
 			continue;
 		}
 
@@ -252,6 +256,7 @@ export function splitCommandLine(value: string): string[] {
 	}
 
 	if (started || current) words.push(current);
+
 	return words;
 }
 
@@ -259,15 +264,14 @@ export function splitCommandLine(value: string): string[] {
  * Compose's two `command` / `entrypoint` forms as one argv.
  *
  * The list form is already argv. The string form is a command line, which
- * compose splits into words - passing it through as a single argument would
+ * compose splits into words. Passing it through as a single argument would
  * hand the image one long argument it cannot parse. The typesense preset
  * writes the string form, so this is the difference between it starting and
  * printing its usage.
  */
 function commandWords(value: DockerComposeNode | undefined): string[] {
-	if (typeof value === "string") {
-		return splitCommandLine(value);
-	}
+	if (typeof value === "string") return splitCommandLine(value);
+
 	return asStringArray(value);
 }
 
@@ -283,7 +287,9 @@ function field(node: DockerComposeNode, key: string): string | undefined {
 function hostPortOf(spec: string): number | undefined {
 	const parts = (spec.split("/")[0] ?? "").split(":");
 	if (parts.length < 2) return undefined;
+
 	const port = Number.parseInt(parts.at(-2) ?? "", 10);
+
 	return Number.isFinite(port) ? port : undefined;
 }
 
@@ -297,12 +303,16 @@ function mountArgs(
 	const separator = volume.indexOf(":");
 	// An anonymous volume: Apple creates it implicitly from the target.
 	if (separator === -1) return { args: ["--volume", volume] };
+
 	const source = volume.slice(0, separator);
 	const rest = volume.slice(separator + 1);
-	if (isPathSource(source))
+
+	if (isPathSource(source)) {
 		return {
 			args: ["--volume", `${resolvePathSource(source, context.root)}:${rest}`],
 		};
+	}
+
 	const namedVolume = volumeNameFor(context.projectName, source);
 	return { args: ["--volume", `${namedVolume}:${rest}`], namedVolume };
 }
@@ -317,6 +327,7 @@ function memoryArg(value: DockerComposeNode): string {
 	const text = String(value).trim();
 	const match = text.match(/^(\d+(?:\.\d+)?)\s*([kmgtp]?)b?$/i);
 	if (!match) return text;
+
 	const [, amount = "", unit = ""] = match;
 	if (unit) return `${amount}${unit.toUpperCase()}`;
 	return `${Math.ceil(Number(amount) / 1024 / 1024)}M`;
@@ -327,6 +338,7 @@ function ulimitArgs(value: DockerComposeNode | undefined): string[] {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		return args;
 	}
+
 	for (const [name, limit] of Object.entries(value)) {
 		if (typeof limit === "number") {
 			args.push("--ulimit", `${name}=${limit}`);
@@ -339,6 +351,7 @@ function ulimitArgs(value: DockerComposeNode | undefined): string[] {
 			}
 		}
 	}
+
 	return args;
 }
 
@@ -360,7 +373,9 @@ export function orderServices(
 	function visit(name: string): void {
 		const current = state.get(name);
 		if (current === "done" || current === "visiting") return;
+
 		state.set(name, "visiting");
+
 		const dependsOn = services[name]?.depends_on;
 		const dependencies = Array.isArray(dependsOn)
 			? dependsOn.map(String)
@@ -370,11 +385,13 @@ export function orderServices(
 		for (const dependency of dependencies) {
 			if (services[dependency]) visit(dependency);
 		}
+
 		state.set(name, "done");
 		ordered.push(name);
 	}
 
 	for (const name of names) visit(name);
+
 	return ordered;
 }
 
@@ -394,6 +411,7 @@ function buildServicePlan(
 		const message = `Service "${serviceName}" uses ${JSON.stringify(uninterpolable)}, which Apple container cannot interpolate: it understands \${VAR}, \${VAR:-default}, \${VAR-default}, \${VAR:?error} and $$. Rewrite the value, or set docker.runtime: "docker".`;
 		throw new Error(message);
 	}
+
 	const service = interpolateNode(raw, env) as DockerComposeServiceRaw;
 	const image = service.image;
 	if (!image) {
@@ -439,13 +457,7 @@ function buildServicePlan(
 
 	// Compose reads env files relative to the compose file's directory; the
 	// generated file lives in the root's state, so the root is the user's anchor.
-	const envFiles = (
-		Array.isArray(service.env_file)
-			? service.env_file
-			: service.env_file === undefined
-				? []
-				: [service.env_file]
-	).flatMap((entry) => {
+	const envFiles = toArray(service.env_file).flatMap((entry) => {
 		const path =
 			typeof entry === "object" ? field(entry, "path") : String(entry);
 		return path ? [path] : [];
@@ -474,14 +486,19 @@ function buildServicePlan(
 	if (service.read_only === true) args.push("--read-only");
 	if (service.init === true) args.push("--init");
 	if (service.platform) args.push("--platform", String(service.platform));
-	if (service.mem_limit !== undefined)
+	if (service.mem_limit !== undefined) {
 		args.push("--memory", memoryArg(service.mem_limit));
+	}
+
 	// Apple allocates whole CPUs; compose allows fractions.
-	if (service.cpus !== undefined)
+	if (service.cpus !== undefined) {
 		args.push("--cpus", String(Math.max(1, Math.ceil(Number(service.cpus)))));
+	}
+
 	for (const cap of asStringArray(service.cap_add)) args.push("--cap-add", cap);
-	for (const cap of asStringArray(service.cap_drop))
+	for (const cap of asStringArray(service.cap_drop)) {
 		args.push("--cap-drop", cap);
+	}
 
 	// Apple's `--entrypoint` takes one command, so compose's list form splits:
 	// the head is the executable, the tail is prepended to the container's

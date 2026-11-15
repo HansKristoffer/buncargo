@@ -74,13 +74,16 @@ export function decideSignal(
 			const echo =
 				signal === previous.last && now - previous.at < SIGNAL_ECHO_MS;
 			if (echo) return { action: "ignore" };
+
 			const firstWhileStopping = !previous.warned && stopping.length > 0;
-			if (firstWhileStopping)
+			if (firstWhileStopping) {
 				return {
 					action: "warn",
 					apps: stopping,
 					next: { ...previous, last: signal, at: now, warned: true },
 				};
+			}
+
 			return { action: "force-exit", code: SIGNAL_EXIT[previous.signal] };
 		},
 	});
@@ -111,6 +114,7 @@ export function listenForInterrupts(options: {
 }): RunInterrupts {
 	const controller = new AbortController();
 	let state: InterruptState = { kind: "running" };
+
 	const receive = (signal: RunSignal) => {
 		const decision = decideSignal(
 			state,
@@ -131,6 +135,7 @@ export function listenForInterrupts(options: {
 			"force-exit": ({ code }) => options.forceExit(code),
 		});
 	};
+
 	const listeners = (Object.keys(SIGNAL_EXIT) as RunSignal[]).map((signal) => {
 		const listener = () => receive(signal);
 		process.on(signal, listener);
@@ -145,8 +150,9 @@ export function listenForInterrupts(options: {
 			if (state.kind === "running") receive("SIGINT");
 		},
 		dispose: () => {
-			for (const { signal, listener } of listeners)
+			for (const { signal, listener } of listeners) {
 				process.off(signal, listener);
+			}
 		},
 	};
 }

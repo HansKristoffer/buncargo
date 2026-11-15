@@ -58,8 +58,9 @@ describe("selectChangedWorkspaces", () => {
 			"package.json",
 			"tsconfig.base.json",
 			"dev.config.ts",
-		])
+		]) {
 			expect(select([file])).toEqual({ kind: "all" });
+		}
 	});
 
 	it("checks nothing for root files that shape no program", () => {
@@ -88,8 +89,9 @@ describe("selectChangedWorkspaces", () => {
 describe("changedFilesSince", () => {
 	const repos: string[] = [];
 	afterEach(() => {
-		for (const dir of repos.splice(0))
+		for (const dir of repos.splice(0)) {
 			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	function git(cwd: string, ...args: string[]) {

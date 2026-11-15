@@ -1,7 +1,7 @@
 # CLI
 
-`src/cli/bin.ts` is the executable; `runCli` is published through `buncargo/api`. `run-cli.ts` is the
-dev flow; `dev-flags.ts` (the dev command's spec and the rules between its flags), `dev-hosts.ts`
+`src/cli/bin.ts` is the executable; `runCli` is published through `buncargo/api`. `run-cli.ts` is the dev
+flow; `dev-flags.ts` (the dev command's spec and the rules between its flags), `dev-hosts.ts`
 and `dev-tunnels.ts` hold the pieces it orchestrates.
 
 ## Commands, flags and errors
@@ -20,8 +20,8 @@ and `dev-tunnels.ts` hold the pieces it orchestrates.
   over. A missing `node_modules` installs for every command (none of the project's buncargo runs
   without it); a stale one only for the commands that run the project's code
   (`refreshesStaleInstall`). `stop`, `status` and BuncargoBar's buttons must neither reinstall
-  under a running run nor fail on a broken lockfile. "Installed from" is `install-stamp.ts`'s hash of `bun.lock`: Bun
-  1.4 writes nothing into `node_modules` on a no-op install, so no file of its own can say, and
+  under a running run nor fail on a broken lockfile. "Installed from" is `install-stamp.ts`'s hash
+  of `bun.lock`: Bun 1.4 writes nothing into `node_modules` on a no-op install, so no file of its own can say, and
   `git checkout` rewrites the lockfile's time without its content. A checkout with no stamp
   falls back to `node_modules` being newer than `bun.lock`, so one installed by hand is left
   alone. The install's stdout goes to stderr (a `--json` command's stdout stays one document),
@@ -29,7 +29,6 @@ and `dev-tunnels.ts` hold the pieces it orchestrates.
   with `BUNCARGO_INSTALLING=1`, so a buncargo in a postinstall script does not start another.
   The guard never installs from source or after a hand-over. An install that replaces the
   package this process runs from re-executes it, since the rest of its modules load lazily.
-
 - Every command module exports one `defineCommand({ spec, exits, json?, run })` (`command-spec.ts`),
   or a `defineGroup` of them for subcommands (`files`, `ports`, `hosts`, …). The spec is the only
   description of what the command accepts: `parseArgs(spec, argv)` reads it (over `node:util`
@@ -99,17 +98,15 @@ and `dev-tunnels.ts` hold the pieces it orchestrates.
   `.buncargo/logs/detached-<pid>.log`, one per run, with `detached.log` a link to the newest: a
   second `dev --detach` in the checkout starts while the first still writes its log, and a shared
   log rotated aside was renamed over by the third. A run's log and report are pruned once it is
-  dead and they are a minute old, keeping the newest ended run's log.
-  The parent waits on the run registry entry whose `pid` is the
-  child's until every app has settled; an empty `apps` list is the claim, not "done", unless the
+  dead and they are a minute old, keeping the newest ended run's log. The parent waits on the run
+  registry entry whose `pid` is the child's until every app has settled; an empty `apps` list is the claim, not "done", unless the
   selection has no app to spawn. Whether it has one is the child's to say, in its report
   (`expectApps`): the parent never loads the config, which cost a second environment build on
-  every `dev --detach`. A config error reaches the parent as the child's exit. A child that exits 0 had nothing to keep running (every app
-  reused) and is a success, as it is for attached `dev`; its exit is checked before the entry,
+  every `dev --detach`. A config error reaches the parent as the child's exit. A child that exits 0 had nothing to keep
+  running (every app reused) and is a success, as it is for attached `dev`; its exit is checked before the entry,
   which can outlive it. The run hands the parent its failures in
   `.buncargo/logs/detached-report-<pid>.json`, one per run for the same reason
-  (`run-failure.ts`: the cause, the step's last lines, the
-  setup warnings, what to run next), and the parent prints them last. Parsing the log for the
+  (`run-failure.ts`: the cause, the step's last lines, the setup warnings, what to run next), and the parent prints them last. Parsing the log for the
   cause failed: agents read `dev | tail`, and the tail was a warning of kilobytes. An app that
   crashed while it started reads `failed` from its exit before it is parked and reported, so the
   parent gives a settled run's down apps `REPORT_GRACE_MS` for their reports before printing.
@@ -138,10 +135,11 @@ and `dev-tunnels.ts` hold the pieces it orchestrates.
   (`sh -c '<cmd> "$@"'`), so nothing is re-parsed. Tasks are published into the run entry for
   BuncargoBar's run button, which calls `buncargo run` *unscoped*: `--root`/`--run` name a run, and
   a task only needs the checkout (the working directory).
-- `commands/ci.ts` runs on `env.withSuffix("ci-<id>", { data: "tmpfs", ports: "assigned" })`, starts services with
+- `commands/ci.ts` runs on
+  `env.withSuffix("ci-<id>", { data: "tmpfs", ports: "assigned" })`, starts services with
   `withServices` (`after: { stop: { removeVolumes: true } }`), forces the seed (a CI database is
-  never warm) and runs the command; `--schema=push` is the preparation's `schema: "push"`. The suffix is not optional: on the shared project that teardown
-  deletes a developer's dev database. The id is per run because two runs on one `-ci` project took
+  never warm) and runs the command; `--schema=push` is the preparation's `schema: "push"`. The suffix is not optional: on the
+  shared project that teardown deletes a developer's dev database. The id is per run because two runs on one `-ci` project took
   each other's stack down mid-test (lasauna), and tmpfs because a killed run's volume was nobody's to
   remove. A suffixed environment writes its own compose file, or it would overwrite the dev
   run's; `ci` deletes its file after the teardown. Its services publish on Docker-assigned ports
@@ -185,8 +183,8 @@ and `dev-tunnels.ts` hold the pieces it orchestrates.
   client runs in the container, so psql's `-- -f file` is read on the host and fed to its stdin
   as bytes. Piped stdin goes to psql unread (`-f -`, so a dump of any size or encoding passes
   through as it did); `sql` reads it only for `--json`, which has to see the SQL to decide whether
-  to wrap it. Grouped psql options that do their own work (`-lqt`, `-tAc`) leave stdin alone. `--json` for Postgres wraps the query in
-  `json_agg` only when `sql-statements.ts` reads it, outside strings, quoted identifiers and
+  to wrap it. Grouped psql options that do their own work (`-lqt`, `-tAc`) leave stdin alone. `--json` for
+  Postgres wraps the query in `json_agg` only when `sql-statements.ts` reads it, outside strings, quoted identifiers and
   comments, as one `SELECT`/`WITH` that writes nothing; anything else, or anything it cannot read
   with certainty, runs plain with a note. Wrapped, an `UPDATE` or a second statement was a syntax
   error quoting the wrapper. The user's text sits on lines of its own inside the wrapper (a
@@ -216,8 +214,7 @@ also `check docs`. Deferred tests (`check.testDeferred`) are a pass with a count
 a non-zero default fails every check in every repo with database tests. They used to run with no
 database, every test skipped, and `check` printed `PASS`.
 
-Steps run one at a time with their output buffered: the
-point is one line per step and the tail of the failure, not a live log. A run stops at its first
+Steps run one at a time with their output buffered: the point is one line per step and the tail of the failure, not a live log. A run stops at its first
 failing step unless `--keep-going`: agents read the output when the process ends, so a formatting
 failure known at once was read after a 24 s typecheck. The verdict is the exit code alone and is
 the last line by itself, exactly `PASS` or `FAIL: <step names>`, with each failure's rerun command
@@ -258,8 +255,8 @@ without `requiredServices` filtering, since a deploy has no local services to se
 closed: an environment no variable names is not seeded, because the default seed is the dev
 run's, which in one project created a super admin with a known password on a deploy that set
 neither variable. It is not in the auto-install commands: a deploy image's install layer comes
-from a cache older than its `bun.lock`. Unlike `typecheck`, a config that
-fails to import is an error here: migrating with half a config is worse than failing the deploy.
+from a cache older than its `bun.lock`. Unlike `typecheck`, a config that fails to import is an
+error here: migrating with half a config is worse than failing the deploy.
 `loader/config-settings.ts` is the one loader for these config-only commands.
 
 ## Typecheck

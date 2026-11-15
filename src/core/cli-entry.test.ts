@@ -6,8 +6,9 @@ import { buncargoCli, findCliEntry } from "./cli-entry";
 
 const roots: string[] = [];
 afterEach(() => {
-	for (const root of roots.splice(0))
+	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 /** A package directory with a `package.json` and the given files. */

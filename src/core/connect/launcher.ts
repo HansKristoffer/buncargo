@@ -21,6 +21,9 @@ import {
  */
 const ENSURE_ATTEMPTS = 3;
 
+/** How long a freshly started coordinator has to connect to the relay and report ready. */
+const STARTUP_TIMEOUT_MS = 180000;
+
 interface LaunchedCoordinator {
 	owner: CoordinatorState;
 	adopted: boolean;
@@ -42,6 +45,7 @@ export async function ensureCoordinatorWith(
 ): Promise<void> {
 	for (let attempt = 1; ; attempt++) {
 		const { owner, adopted } = await launch();
+
 		try {
 			await awaitCoordinator(owner, adopted, signal);
 			return;
@@ -71,6 +75,7 @@ async function launchCoordinator(
 				}
 				return { owner: existing, adopted: true };
 			}
+
 			if (existing) {
 				// It found nothing to share and is exiting; it never reads this run's intent. Its replacement needs its lifetime lock.
 				await withFileLock(
@@ -79,6 +84,7 @@ async function launchCoordinator(
 					{ timeoutMs: 3000, signal },
 				);
 			}
+
 			const [command, ...args] = inOwnUserScope(
 				[process.execPath, bundle],
 				"buncargo sharing coordinator",
@@ -88,11 +94,13 @@ async function launchCoordinator(
 				stdio: "ignore",
 				env: connectProcessEnv(),
 			});
+
 			await new Promise<void>((resolve, reject) => {
 				child.once("spawn", resolve);
 				child.once("error", reject);
 			});
 			child.unref();
+
 			// Hold the launch lock until the child has published its birth identity. Concurrent worktrees adopt it.
 			for (let i = 0; i < 100; i++) {
 				const state = await readCoordinatorState(false);
@@ -127,7 +135,9 @@ export async function awaitCoordinator(
 	adopted: boolean,
 	signal?: AbortSignal,
 ): Promise<void> {
-	const deadline = Date.now() + (adopted ? WEDGED_GRACE_MS : 180000);
+	const deadline =
+		Date.now() + (adopted ? WEDGED_GRACE_MS : STARTUP_TIMEOUT_MS);
+
 	while (Date.now() < deadline) {
 		signal?.throwIfAborted();
 		const state = await readCoordinatorState(false);
@@ -150,6 +160,7 @@ export async function awaitCoordinator(
 		}
 		await abortableSleep(250, signal);
 	}
+
 	if (!adopted)
 		throw new Error(
 			"Connection startup timed out. Check relay connectivity and run buncargo connect status.",

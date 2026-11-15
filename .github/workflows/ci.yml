@@ -32,7 +32,7 @@ jobs:
             }
 
   # Its own job so a formatting slip fails in a minute as one check, not as
-  # four test cells after the slow parts have run.
+  # test cells after the slow parts have run.
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10

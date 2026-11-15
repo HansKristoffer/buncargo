@@ -64,17 +64,20 @@ export function readManifest(dir: string): StoreRead {
 			return { kind: "absent" };
 		throw error;
 	}
+
 	let value: { version?: unknown; files?: unknown };
 	try {
 		value = JSON.parse(text);
 	} catch {
 		return { kind: "unusable", reason: "manifest.json does not parse" };
 	}
+
 	if (value?.version !== STORE_VERSION)
 		return {
 			kind: "unusable",
 			reason: `manifest.json has version ${JSON.stringify(value?.version)}, this buncargo reads ${STORE_VERSION}`,
 		};
+
 	// Entries this version cannot read are skipped, not fatal: they may belong
 	// to a newer checkout's config.
 	const files: Record<string, ManifestEntry> = {};
@@ -94,6 +97,7 @@ export function readManifest(dir: string): StoreRead {
 				continue;
 			files[path] = { sha256: hash, updatedAt, machine: machine === true };
 		}
+
 	return { kind: "ok", manifest: { version: STORE_VERSION, files } };
 }
 
@@ -172,6 +176,7 @@ export function writeStoreEntries(
 	now = new Date(),
 ): Manifest {
 	const files = { ...manifest?.files };
+
 	for (const write of writes) {
 		// Always rewritten: an entry whose data file was lost or torn would
 		// otherwise stay unreadable forever.
@@ -186,6 +191,7 @@ export function writeStoreEntries(
 			machine: write.machine,
 		};
 	}
+
 	const next: Manifest = { version: STORE_VERSION, files };
 	writeFileAtomic(
 		join(dir, "manifest.json"),
@@ -246,6 +252,7 @@ export async function withStoreLock<T>(
 	const lockDir = join(dir, ".lock");
 	const deadline = Date.now() + timeoutMs;
 	const host = hostname();
+
 	for (;;) {
 		try {
 			mkdirSync(lockDir, { mode: 0o700 });
@@ -276,6 +283,7 @@ export async function withStoreLock<T>(
 		}
 		await promiseTimeout(20);
 	}
+
 	const owner: LockOwner = {
 		pid: process.pid,
 		host,

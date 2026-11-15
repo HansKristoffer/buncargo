@@ -15,7 +15,6 @@ import { resolveServices } from "../config/resolve";
 import {
 	buildEnvFileUpdates,
 	isReplaceableEnvValue,
-	resolveEnvFileOptions,
 	rewriteEnvValues,
 	syncEnvFile,
 } from "./env-file";
@@ -127,26 +126,6 @@ describe("rewriteEnvValues", () => {
 	});
 });
 
-describe("resolveEnvFileOptions", () => {
-	it("is off unless asked for", () => {
-		expect(resolveEnvFileOptions(undefined)).toBeUndefined();
-		expect(resolveEnvFileOptions(false)).toBeUndefined();
-	});
-
-	it("defaults true to .env", () => {
-		expect(resolveEnvFileOptions(true)?.path).toBe(".env");
-	});
-
-	it("keeps an explicit path and template", () => {
-		expect(
-			resolveEnvFileOptions({
-				path: "apps/api/.env",
-				createFrom: ".env.example",
-			}),
-		).toEqual({ path: "apps/api/.env", createFrom: ".env.example" });
-	});
-});
-
 describe("buildEnvFileUpdates", () => {
 	const services = resolveServices({
 		postgres: { port: 5432, database: "app" },
@@ -243,6 +222,9 @@ describe("syncEnvFile", () => {
 	it("does nothing when not configured", async () => {
 		expect(
 			await syncEnvFile({ ...base, root, envFile: undefined }),
+		).toBeUndefined();
+		expect(
+			await syncEnvFile({ ...base, root, envFile: false }),
 		).toBeUndefined();
 	});
 

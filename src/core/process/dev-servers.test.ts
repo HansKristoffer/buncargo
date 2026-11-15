@@ -88,7 +88,7 @@ describe("startDevServers", () => {
 
 /**
  * The injection used to live in `startAppServers`, which `buncargo dev` does
- * not call — it spawns through `startDevServers` itself, so the whole feature
+ * not call: it spawns through `startDevServers` itself, so the whole feature
  * was dead code for the CLI. Asserting it at this function is the point: it is
  * the one both spawn paths share.
  */

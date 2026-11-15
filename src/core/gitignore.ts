@@ -6,13 +6,17 @@ import { join } from "node:path";
  * check and fix for the files buncargo and its integrations write.
  */
 
+function trimSlashes(path: string): string {
+	return path.replace(/^\/+|\/+$/g, "");
+}
+
 /** Whether `.gitignore` names a path, the way a person would write it. */
 export function gitignoreCovers(root: string, path: string): boolean {
 	try {
-		const bare = path.replace(/^\/+|\/+$/g, "");
+		const bare = trimSlashes(path);
 		return readFileSync(join(root, ".gitignore"), "utf8")
 			.split("\n")
-			.map((line) => line.trim().replace(/^\/+|\/+$/g, ""))
+			.map((line) => trimSlashes(line.trim()))
 			.some((line) => line === bare || line === `${bare}/**`);
 	} catch {
 		return false;
@@ -39,6 +43,7 @@ export function appendToGitignore(
 	lines: readonly string[],
 ): void {
 	const path = join(root, ".gitignore");
+
 	const current = existsSync(path) ? readFileSync(path, "utf8") : "";
 	const prefix = current && !current.endsWith("\n") ? "\n" : "";
 	writeFileSync(path, `${current}${prefix}${lines.join("\n")}\n`);

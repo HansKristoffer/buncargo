@@ -31,11 +31,17 @@ const sessions = option("sessions", 200);
 const concurrency = option("concurrency", 4);
 const maxHeapGrowthMiB = option("max-heap-growth-mib", 24);
 const maxRssGrowthMiB = option("max-rss-growth-mib", 96);
-for (const value of [sessions, concurrency, maxHeapGrowthMiB, maxRssGrowthMiB])
+for (const value of [
+	sessions,
+	concurrency,
+	maxHeapGrowthMiB,
+	maxRssGrowthMiB,
+]) {
 	assert(
 		Number.isInteger(value) && value > 0,
 		"Stress options must be positive integers",
 	);
+}
 
 const root = mkdtempSync(join(tmpdir(), "buncargo session stress "));
 const active = new Set<AnyDevEnvironment>();
@@ -43,6 +49,7 @@ const sessionIds = new Set<string>();
 const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 const listeners = () => signals.map((signal) => process.listenerCount(signal));
 const baselineListeners = listeners();
+
 const interrupted = new AbortController();
 const onInt = () => interrupted.abort(new Error("Stress run interrupted"));
 process.once("SIGINT", onInt);
@@ -58,22 +65,27 @@ function descriptors(): number | undefined {
 		return undefined;
 	}
 }
+
 function memory() {
 	Bun.gc(true);
 	const { heapUsed, rss } = process.memoryUsage();
 	return { heapUsed, rss, descriptors: descriptors() };
 }
+
 async function unusedPort(): Promise<number> {
 	const server = createServer();
 	await new Promise<void>((resolve, reject) => {
 		server.once("error", reject);
 		server.listen(0, "127.0.0.1", resolve);
 	});
+
 	const address = server.address();
 	assert(address && typeof address !== "string");
+
 	await new Promise<void>((resolve) => server.close(() => resolve()));
 	return address.port;
 }
+
 /**
  * No deadline of its own: on a loaded runner an app can take seconds to start,
  * and the caller's timeout (the test's, the CI job's) bounds a real hang.
@@ -89,10 +101,12 @@ interface Fixture {
 	root: string;
 	pids(): number[];
 }
+
 async function prepare(index: number): Promise<Fixture> {
 	const checkout = join(root, `project-${index}`);
 	mkdirSync(checkout);
 	const log = join(checkout, "pids");
+
 	writeFileSync(join(checkout, "package.json"), "{}");
 	writeFileSync(
 		join(checkout, "app.ts"),
@@ -103,6 +117,7 @@ async function prepare(index: number): Promise<Fixture> {
 		else setInterval(()=>{},1000);
 	`,
 	);
+
 	const command = `${shellQuote(process.execPath)} ${shellQuote(join(checkout, "app.ts"))}`;
 	writeFileSync(
 		join(checkout, "dev.config.ts"),
@@ -115,6 +130,7 @@ async function prepare(index: number): Promise<Fixture> {
 		}, options:{verbose:false,worktreeIsolation:false}
 	};`,
 	);
+
 	return {
 		root: checkout,
 		pids: () =>
@@ -130,13 +146,16 @@ async function prepare(index: number): Promise<Fixture> {
 
 async function cycle(fixture: Fixture, index: number): Promise<void> {
 	interrupted.signal.throwIfAborted();
+
 	const env = await loadDevEnv({ cwd: fixture.root, fresh: true });
 	assert(!sessionIds.has(env.sessionId), "Fresh sessions shared an identity");
 	sessionIds.add(env.sessionId);
 	active.add(env);
+
 	const caller = new AbortController();
 	const cancel = () => caller.abort(interrupted.signal.reason);
 	interrupted.signal.addEventListener("abort", cancel, { once: true });
+
 	try {
 		if (index % 5 === 0) {
 			const before = fixture.pids().length;
@@ -151,6 +170,7 @@ async function cycle(fixture: Fixture, index: number): Promise<void> {
 					() => undefined,
 					(error) => error,
 				);
+
 			await waitFor(() => fixture.pids().length > before);
 			await env.stop({ verbose: false });
 			assert.match((await pending)?.message ?? "", /Startup cancelled by stop/);
@@ -163,6 +183,7 @@ async function cycle(fixture: Fixture, index: number): Promise<void> {
 				// A watchdog would invoke the stub runtimes and outlive the run.
 				watchdog: false,
 			};
+
 			const pids =
 				index % 2 ? await env.start(options) : await env.startServers(options);
 			assert(
@@ -170,21 +191,28 @@ async function cycle(fixture: Fixture, index: number): Promise<void> {
 				"Session did not own both apps",
 			);
 			assert.equal((await fetch(env.urls.web)).status, 200);
+
 			if (index % 3 === 0) caller.abort(new Error("Cancel ready session"));
 			await env.stop({ verbose: false });
-			for (const pid of Object.values(pids))
+
+			for (const pid of Object.values(pids)) {
 				assert(
 					pid === undefined || !isProcessAlive(pid),
 					`Owned group ${pid} survived stop`,
 				);
+			}
 		}
-		for (const pid of fixture.pids())
+
+		for (const pid of fixture.pids()) {
 			assert(!isProcessAlive(pid), `App ${pid} leaked across sessions`);
+		}
 		assert.equal(
 			getEventListeners(caller.signal, "abort").length,
 			0,
 			"Caller cancellation listener leaked",
 		);
+
+		// A lock the session left behind would fail at once, with no wait allowed.
 		await withFileLock(
 			join(fixture.root, ".buncargo/workers.json"),
 			async () => {},
@@ -203,6 +231,7 @@ try {
 	const binaries = join(root, "bin");
 	mkdirSync(home);
 	mkdirSync(binaries);
+
 	for (const name of ["docker", "container"]) {
 		const binary = join(binaries, name);
 		writeFileSync(
@@ -211,22 +240,27 @@ try {
 		);
 		chmodSync(binary, 0o700);
 	}
+
 	process.env.HOME = home;
 	process.env.PATH = binaries + delimiter + process.env.PATH;
 	process.env.DOCKER_HOST = "unix:///buncargo-stress-no-daemon.sock";
 	process.env.BUNCARGO_PORT_OFFSET = "0";
 	delete process.env.BUNCARGO_CONNECT_TOKENS;
+
 	const fixtures = await Promise.all(
 		Array.from({ length: concurrency }, (_, index) => prepare(index)),
 	);
+
 	// Warm the loader, FFI locks and process machinery before measuring retained memory.
 	await Promise.all(
 		fixtures.map((fixture, index) => cycle(fixture, index + 1)),
 	);
 	await Bun.sleep(0);
+
 	const baseline = memory();
 	const samples = [baseline];
 	let completed = 0;
+
 	while (completed < sessions) {
 		const batch = fixtures.slice(
 			0,
@@ -235,9 +269,11 @@ try {
 		const outcomes = await Promise.allSettled(
 			batch.map((fixture, index) => cycle(fixture, completed + index)),
 		);
-		for (const outcome of outcomes)
+		for (const outcome of outcomes) {
 			if (outcome.status === "rejected") throw outcome.reason;
+		}
 		completed += batch.length;
+
 		assert.deepEqual(
 			listeners(),
 			expectedListeners,
@@ -252,8 +288,10 @@ try {
 			0,
 			"An app-only session left a container claim",
 		);
+
 		if (completed % 20 === 0 || completed === sessions) samples.push(memory());
 	}
+
 	clearDevEnvCache();
 	const final = memory();
 	const heapGrowthMiB =
@@ -270,6 +308,7 @@ try {
 			final.rss - baseline.rss,
 		) /
 		1024 ** 2;
+
 	assert(
 		heapGrowthMiB <= maxHeapGrowthMiB,
 		`Retained heap grew by ${heapGrowthMiB.toFixed(1)} MiB`,
@@ -278,11 +317,13 @@ try {
 		rssGrowthMiB <= maxRssGrowthMiB,
 		`RSS grew by ${rssGrowthMiB.toFixed(1)} MiB`,
 	);
-	if (baseline.descriptors !== undefined && final.descriptors !== undefined)
+	if (baseline.descriptors !== undefined && final.descriptors !== undefined) {
 		assert(
 			final.descriptors <= baseline.descriptors + 4,
 			"Open file descriptors leaked",
 		);
+	}
+
 	console.log(
 		JSON.stringify({
 			sessions,
@@ -301,6 +342,7 @@ try {
 		[...active].map((env) => env.stop({ verbose: false })),
 	);
 	clearDevEnvCache();
+
 	process.off("SIGINT", onInt);
 	process.off("SIGTERM", onInt);
 	assert.deepEqual(listeners(), baselineListeners);

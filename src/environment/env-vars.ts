@@ -99,12 +99,12 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 		appName: string,
 		production = false,
 	): Record<string, string> {
-		const sharedEnv: Record<string, string> = buildEnvVars(production);
+		const shared = buildEnvVars(production);
 		const appConfig = apps[appName];
+
 		// A resolved app's builder takes `never`: it was written for its own config's keys.
 		const appEnvBuilder = appConfig?.envVars as
 			EnvVarsBuilder<AnyServices, AnyApps> | undefined;
-
 		const appPort = ports[appName];
 		// Integrations sit beneath everything the app's config sets itself,
 		// `staticEnv` and `envVars` alike: the user's values win.
@@ -125,7 +125,7 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 		}
 
 		const processEnv: Record<string, string> = {
-			...sharedEnv,
+			...shared,
 			ASTRO_DEV_BACKGROUND: "1",
 			ASTRO_PREVIEW_BACKGROUND: "1",
 			...integrationEnv,
@@ -151,6 +151,7 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 		if (namedHost) {
 			processEnv.BUNCARGO_APP_HOSTNAME = namedHost.hostname;
 		}
+
 		// Last writer wins: an app's own `envVars` may override PORT/HOST.
 		Object.assign(
 			processEnv,
@@ -164,6 +165,7 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 					)
 				: {},
 		);
+
 		// Above the app's own `envVars` too: an override is the checkout's last word.
 		applyEnvOverrides(processEnv, ctx.envOverrides, ctx.inputEnv.declared);
 		return processEnv;
@@ -194,12 +196,15 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 		} = {},
 	): Promise<Record<string, string>> {
 		if (explicit === false) return {};
+
 		const scope =
 			explicit ??
 			(options.app === undefined ? config.secrets : apps[options.app]?.secrets);
 		if (!scope) return {};
+
 		const resolved = resolveScope(scope, config.secrets);
 		if (!resolved) return {};
+
 		try {
 			const values = await loadScopeSecrets(resolved, {
 				signal: options.signal,
@@ -207,6 +212,7 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 			});
 			const computed = options.computed ?? {};
 			warnShadowedSecrets(ctx.root, ctx.envOverrides, Object.keys(values));
+
 			return Object.fromEntries(
 				Object.entries(values).filter(([key]) => computed[key] === undefined),
 			);
@@ -229,8 +235,10 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 	): Promise<ExecResult> {
 		// Its ports would be another checkout's: a command would reach that
 		// checkout's database.
-		if (ctx.portOffsetProvenance === "unallocated")
+		if (ctx.portOffsetProvenance === "unallocated") {
 			throw new Error(unallocatedPortsMessage(ctx.root));
+		}
+
 		return execTeardown(cmd, options, production);
 	}
 
@@ -252,12 +260,14 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 			options?.app === undefined
 				? buildEnvVars(production)
 				: buildAppEnvVars(options.app, production);
+
 		// Beneath the computed env and anything passed explicitly, like an app's.
 		const secrets = await resolveSecrets(options?.secrets, {
 			app: options?.app,
 			signal: options?.signal,
 			computed,
 		});
+
 		return execAsync(cmd, ctx.root, computed, {
 			...options,
 			env: { ...secrets, ...options?.env },
@@ -287,6 +297,7 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 				selectedServices: [...selection.requiredServiceKeys],
 			};
 		}
+
 		return scopedHookContext(signal);
 	}
 

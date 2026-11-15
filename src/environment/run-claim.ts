@@ -36,9 +36,8 @@ import { stacksForServices } from "./stacks";
  * finished and leaves it there, which is what the idle hold is measured from.
  *
  * The library claims too, not just the CLI. A `dev.start()` from a script
- * owns containers exactly as a `buncargo dev` does, and used to be invisible
- * to everything that reads this registry. The apps it spawns are claimed the
- * same way: their leases, and rows in the entry that `ls`, `stop` and
+ * owns containers exactly as a `buncargo dev` does. The apps it spawns are
+ * claimed the same way: their leases, and rows in the entry that `ls`, `stop` and
  * BuncargoBar read, published as `buncargo dev` publishes them.
  */
 export interface DevRunClaimApi {
@@ -130,8 +129,8 @@ export interface ClaimOptions {
  * How long a run's containers outlive it, or `undefined` to keep them for as
  * long as the checkout exists.
  *
- * An explicit request wins. Otherwise only a caller that brings a default —
- * the CLI, with its three minutes — gets a hold, and `options.autoShutdown`
+ * An explicit request wins. Otherwise only a caller that brings a default
+ * (the CLI, with its three minutes) gets a hold, and `options.autoShutdown`
  * overrides that default. A library `start()` brings none, so it keeps: a
  * script that brings a database up and ends is indistinguishable, to the
  * sweep, from one that crashed, and any hold would tear its containers down
@@ -222,6 +221,7 @@ export function createRunClaimApi(
 			options.idleTimeoutMs !== undefined ||
 			options.defaultIdleTimeoutMs !== undefined;
 		if (!namesHold) return lastHold ?? holdToInherit(await loadRuns(), ctx);
+
 		const ms = resolveClaimHold(options, ctx.config.options?.autoShutdown);
 		return ms === undefined
 			? CHECKOUT_HOLD
@@ -279,14 +279,18 @@ export function createRunClaimApi(
 				// `starting` first, so a service `buncargo stop` stopped meanwhile
 				// can read `ready` again (the registry never lets `ready` undo
 				// `stopped` on its own).
-				if (reportedReady.size > 0)
+				if (reportedReady.size > 0) {
 					void markServices(session, [...reportedReady], "starting");
+				}
 				reportedReady.clear();
 				return;
 			}
+
 			if (!ctx.hasSelectedServices) return;
+
 			const hold = await claimHold(options);
 			lastHold = hold;
+
 			const stacks = stackEntries();
 			const at = Date.now();
 			await publishRun({
@@ -335,6 +339,7 @@ export function createRunClaimApi(
 
 		servicesReady(serviceKeys) {
 			for (const key of serviceKeys) reportedReady.add(key);
+
 			void markServices(session, serviceKeys, "ready");
 		},
 
@@ -355,16 +360,20 @@ export function createRunClaimApi(
 				{ held: heldLeases, policy: options.policy, signal: options.signal },
 			);
 			for (const key of leases.acquired) heldLeases.add(key);
+
 			const added = Object.keys(leases.apps).filter(
 				(name) => !(name in listedApps),
 			);
 			newlyClaimed.set(leases.apps, { leases: leases.acquired, apps: added });
+
 			const claimedApps = { apps: leases.apps, skipped: leases.skipped };
 			Object.assign(listedApps, leases.apps);
 			const listed = { ...listedApps, ...reused };
+
 			// An entry would describe nothing: no app and no service.
-			if (Object.keys(listed).length === 0 && options.serviceNames.length === 0)
-				return claimedApps;
+			const describesNothing =
+				Object.keys(listed).length === 0 && options.serviceNames.length === 0;
+			if (describesNothing) return claimedApps;
 
 			// Over the claim, if there is one: its services, as `dev` lists them.
 			// The describe keeps each listed row's process and state.
@@ -385,8 +394,10 @@ export function createRunClaimApi(
 			const taken = newlyClaimed.get(apps);
 			if (!taken) return;
 			newlyClaimed.delete(apps);
+
 			for (const key of taken.leases) heldLeases.delete(key);
 			for (const name of taken.apps) delete listedApps[name];
+
 			await Promise.all([
 				releaseLeases(sessionId, { keys: taken.leases }),
 				taken.apps.length > 0 ? withdrawAppOnlyEntry() : undefined,
@@ -396,8 +407,10 @@ export function createRunClaimApi(
 		async releaseApps() {
 			const listed = listsApps();
 			for (const name of Object.keys(listedApps)) delete listedApps[name];
+
 			const leases = heldLeases.size > 0;
 			heldLeases.clear();
+
 			await Promise.all([
 				leases ? releaseLeases(sessionId) : undefined,
 				listed ? withdrawAppOnlyEntry() : undefined,

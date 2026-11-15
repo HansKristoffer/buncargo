@@ -18,7 +18,7 @@ describe("selectProfileApps", () => {
 		expect(selectProfileApps(env, "full")).toEqual(["shopify", "forecast"]);
 	});
 
-	// Without a default profile a bare `dev` runs every app, as before.
+	// Without a default profile a bare `dev` runs every app.
 	it("selects everything without profiles", () => {
 		expect(selectProfileApps({}, undefined)).toBeUndefined();
 		expect(

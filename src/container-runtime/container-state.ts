@@ -116,16 +116,21 @@ export type StartupVerdict =
 /**
  * Whether a starting service has failed, from what readiness has seen of it.
  * `restartsInARow` counts the observations up to this one, included, that
- * found it restarting with no other state between them. Matched positively: a state nobody has shown us keeps
- * polling rather than aborting a startup that would have worked.
+ * found it restarting with no other state between them. Matched positively:
+ * a state nobody has shown us keeps polling rather than aborting a startup
+ * that would have worked.
  */
 export function startupVerdict(
 	observation: ContainerObservation,
 	restartsInARow: number,
 ): StartupVerdict {
 	const state = parseContainerState(observation.state);
+
 	if (state === "stopped" || state === "stopping") return { kind: "stopped" };
-	if (state === "restarting" && restartsInARow >= CRASH_LOOP_RESTARTS)
+
+	if (state === "restarting" && restartsInARow >= CRASH_LOOP_RESTARTS) {
 		return { kind: "crash-loop" };
+	}
+
 	return { kind: "pending" };
 }

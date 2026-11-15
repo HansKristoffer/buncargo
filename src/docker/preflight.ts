@@ -157,6 +157,7 @@ export function dockerDaemonStateFrom(
 	return { state: "failed", detail };
 }
 
+/** One synchronous `docker version`: what the teardown and `availability()` read. */
 export function dockerDaemonState(binary?: string): DockerDaemonState {
 	// `info` also inspects CLI plugins, whose metadata can stall a healthy
 	// daemon's probe. `version` asks the server without that extra discovery.
@@ -181,10 +182,6 @@ export function dockerAvailability(
 		}),
 		failed: ({ detail }) => ({ state: "unreachable", detail }),
 	});
-}
-
-export function isDockerDaemonRunning(binary?: string): boolean {
-	return dockerDaemonState(binary).state === "up";
 }
 
 function socketPermissionError(runtime: DockerRuntime): DockerUnavailableError {
@@ -285,8 +282,9 @@ export function parseDockerDesktopPids(
 		if (!match) continue;
 		const [, pid, owner, command] = match;
 		const name = command.trim().split("/").at(-1) ?? "";
-		if (Number(owner) === uid && DOCKER_DESKTOP_PROCESSES.has(name))
+		if (Number(owner) === uid && DOCKER_DESKTOP_PROCESSES.has(name)) {
 			pids.push(Number(pid));
+		}
 	}
 	return pids;
 }
@@ -311,6 +309,7 @@ function readPs(args: string[]): string | undefined {
 function runningDockerDesktopPids(): number[] {
 	const uid = process.getuid?.();
 	if (process.platform !== "darwin" || uid === undefined) return [];
+
 	const output = readPs(["-axo", "pid=,uid=,comm="]);
 	return output === undefined ? [] : parseDockerDesktopPids(output, uid);
 }
@@ -383,12 +382,16 @@ async function forceRestartDockerDesktop(
 			}
 		}
 	};
+
 	signalAll("SIGTERM");
 	const deadline = performance.now() + 10_000;
-	while (pids.some(isProcessAlive) && remainingTime(deadline) > 0)
+	while (pids.some(isProcessAlive) && remainingTime(deadline) > 0) {
 		await abortableSleep(250, signal);
+	}
+
 	signalAll("SIGKILL");
 	await abortableSleep(1000, signal);
+
 	// `open` returns before the app is up; the caller waits for the daemon.
 	await execAsync(
 		["open", "-a", "Docker"],
@@ -419,6 +422,11 @@ export interface EnsureDockerRunningOptions {
 	forceRestartUnresponsive?: boolean;
 }
 
+/**
+ * Wait for Docker's daemon, starting its runtime first when that is allowed.
+ * Returns once `docker version` answers; throws a `DockerUnavailableError`
+ * that says what to do otherwise.
+ */
 export async function ensureDockerRunning(
 	options: EnsureDockerRunningOptions = {},
 ): Promise<void> {
@@ -438,12 +446,15 @@ export async function ensureDockerRunning(
 			timeoutMs: Math.min(5000, remainingTime(deadline)),
 		});
 	const daemonRunning = async () => (await probe()).ok;
+
 	const first = await probe();
 	if (first.ok) return;
+
 	// No binary to run: starting a runtime or polling cannot change that, and
 	// a Mac with OrbStack installed but its `docker` off PATH would otherwise
 	// open OrbStack and wait out the whole deadline.
 	if (first.status === "notFound") throw dockerBinaryMissingError(binary);
+
 	const context = await runDockerAsync(binary, ["context", "show"], {
 		signal,
 		timeoutMs: Math.min(5000, remainingTime(deadline)),
@@ -453,37 +464,45 @@ export async function ensureDockerRunning(
 		process.platform,
 		installedDockerRuntime(binary),
 	);
+
 	// A daemon that is up but refuses this user would otherwise read as "not
 	// running", and the wait below could never end differently.
-	if (dockerDaemonStateFrom(first).state === "denied")
+	if (dockerDaemonStateFrom(first).state === "denied") {
 		throw socketPermissionError(runtime);
+	}
+
 	// CI never starts Docker itself, but a runner's daemon is often still
 	// coming up when the job starts: keep asking until the deadline. Locally,
 	// `--no-docker-autostart` wants the answer now, not in 90 seconds, and so
 	// does a runtime nothing here can start (the Linux engine): no daemon is
 	// coming while we wait.
 	const waitOnly = !autoStart && ci;
+
 	// Docker Desktop's processes alive with no daemon answering: still
 	// starting, or hung. `open -a Docker` cannot help a hung one.
 	const desktopPids =
 		runtime === "docker-desktop" && !ci ? runningDockerDesktopPids() : [];
-	if (desktopPids.length > 0 && !autoStart)
+	if (desktopPids.length > 0 && !autoStart) {
 		throw unresponsiveDockerError(desktopPids);
+	}
+
 	const command = waitOnly
 		? undefined
 		: (runtimeStartCommand(runtime) ??
 			(options.startCommand ? ["sh", "-c", options.startCommand] : undefined));
-	if (!waitOnly && (!autoStart || command === undefined))
+	if (!waitOnly && (!autoStart || command === undefined)) {
 		throw new DockerUnavailableError(runtime, remediationFor(runtime));
-	if (verbose && !waitOnly)
-		console.log(
-			formatStep(
-				desktopPids.length > 0
-					? "🐳 Docker Desktop is running but not answering yet. Waiting..."
-					: `🐳 Docker is not running. Starting ${runtime}...`,
-			),
-		);
-	if (command && desktopPids.length === 0 && remainingTime(deadline) > 0)
+	}
+
+	if (verbose && !waitOnly) {
+		const startMessage =
+			desktopPids.length > 0
+				? "🐳 Docker Desktop is running but not answering yet. Waiting..."
+				: `🐳 Docker is not running. Starting ${runtime}...`;
+		console.log(formatStep(startMessage));
+	}
+
+	if (command && desktopPids.length === 0 && remainingTime(deadline) > 0) {
 		await execAsync(
 			command,
 			process.cwd(),
@@ -495,6 +514,7 @@ export async function ensureDockerRunning(
 				throwOnError: false,
 			},
 		);
+	}
 
 	const waitUntil = async (until: number) => {
 		const elapsed = startTimer();
@@ -504,13 +524,12 @@ export async function ensureDockerRunning(
 				if (verbose) console.log(formatDone("Docker is ready"));
 				return true;
 			}
+
 			await abortableSleep(Math.min(1000, remainingTime(until)), signal);
-			if (verbose)
-				console.log(
-					formatWait(
-						`Waiting for Docker... (${Math.round(elapsed() / 1000)}s)`,
-					),
-				);
+			if (verbose) {
+				const waited = Math.round(elapsed() / 1000);
+				console.log(formatWait(`Waiting for Docker... (${waited}s)`));
+			}
 		}
 		return false;
 	};
@@ -521,19 +540,25 @@ export async function ensureDockerRunning(
 
 	const stillRunning =
 		runtime === "docker-desktop" && !ci ? runningDockerDesktopPids() : [];
-	if (stillRunning.length === 0)
+	if (stillRunning.length === 0) {
 		throw new DockerUnavailableError(runtime, remediationFor(runtime));
-	if (!options.forceRestartUnresponsive)
+	}
+	if (!options.forceRestartUnresponsive) {
 		throw unresponsiveDockerError(stillRunning);
+	}
+
 	const uptimeMs = youngestUptimeMs(stillRunning);
-	if (uptimeMs === undefined || !isDockerDesktopHung(uptimeMs))
+	if (uptimeMs === undefined || !isDockerDesktopHung(uptimeMs)) {
 		throw new DockerUnavailableError(
 			"docker-desktop",
 			"Give it a minute, then run `buncargo doctor --fix` again.",
 			"Docker Desktop is still starting: it started too recently to be called hung.",
 		);
+	}
+
 	const upSeconds = Math.round(uptimeMs / 1000);
 	const warning = `Docker Desktop (pid ${stillRunning.join(", ")}) has run for ${upSeconds}s without answering. Force-restarting it stops every container on this machine, every checkout's; volumes are kept.`;
+
 	// Asked in a terminal; `doctor --fix` without one is the request itself.
 	const confirmed =
 		!isInteractive() ||
@@ -543,8 +568,10 @@ export async function ensureDockerRunning(
 			"  y to force-restart Docker Desktop  ·  Enter to leave it",
 		]));
 	if (!confirmed) throw unresponsiveDockerError(stillRunning);
+
 	if (verbose) console.log(formatStep(`🐳 ${warning} Restarting it...`));
 	await forceRestartDockerDesktop(stillRunning, signal);
+
 	if (await waitUntil(performance.now() + RESTART_TIMEOUT_MS)) return;
 	signal?.throwIfAborted();
 	throw new DockerUnavailableError(runtime, remediationFor(runtime));

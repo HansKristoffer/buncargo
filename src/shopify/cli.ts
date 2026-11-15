@@ -59,8 +59,10 @@ interface StoredIdentity {
 function identities(value: unknown, depth = 0): StoredIdentity[] {
 	if (!value || typeof value !== "object" || depth > 3) return [];
 	const record = value as Record<string, unknown>;
-	if (record.identity && typeof record.identity === "object")
+	if (record.identity && typeof record.identity === "object") {
 		return [record.identity as StoredIdentity];
+	}
+
 	return Object.values(record).flatMap((entry) => identities(entry, depth + 1));
 }
 
@@ -84,8 +86,10 @@ export function readShopifySession(
 			store.sessionStore.length <= 2 ||
 			typeof store.currentSessionId !== "string" ||
 			store.currentSessionId.length === 0
-		)
+		) {
 			return undefined;
+		}
+
 		// An unreadable store is still a session: the CLI decides.
 		const parsedStore = safeJsonParse(store.sessionStore);
 		const found = parsedStore.ok ? identities(parsedStore.data) : [];
@@ -96,6 +100,7 @@ export function readShopifySession(
 			typeof identity?.expiresAt === "string"
 				? new Date(identity.expiresAt)
 				: undefined;
+
 		return {
 			expiresAt:
 				expiresAt && !Number.isNaN(expiresAt.getTime()) ? expiresAt : undefined,
@@ -170,8 +175,10 @@ export function shopifyAppInfo(
 					: (options.timeoutMs ?? APP_INFO_TIMEOUT_MS),
 			},
 		);
+
 		if (result.exitedDueToTimeout) return { ok: false, timedOut: true };
 		if (result.exitCode !== 0) return { ok: false };
+
 		try {
 			return { ok: true, info: JSON.parse(result.stdout.toString()) };
 		} catch {
@@ -189,5 +196,6 @@ export function shopifyLogin(root: string): void {
 		stdio: ["inherit", "inherit", "inherit"],
 		env: shopifyCli.env(),
 	});
+
 	if (result.exitCode !== 0) throw new Error("`shopify auth login` failed");
 }

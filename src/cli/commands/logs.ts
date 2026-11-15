@@ -9,9 +9,15 @@ import { colorizeName } from "../../core/style";
 import { BASE_EXITS, defineCommand } from "../command-spec";
 import { CliError } from "../errors";
 
+const FOLLOW_POLL_MS = 300;
+
+/** How often `-f` asks the registry whether the run is still going. */
+const RUN_CHECK_MS = 1_000;
+
 function parseDuration(value: string): number | undefined {
 	const match = /^(\d+)(s|m|h)$/.exec(value.trim());
 	if (!match) return undefined;
+
 	const unit = { s: 1000, m: 60_000, h: 3_600_000 }[
 		match[2] as "s" | "m" | "h"
 	];
@@ -51,22 +57,27 @@ async function readLogs(input: {
 	const { root, app, sessionId, since, errorsOnly } = input;
 	const runs = await findRunsByRoot(root).catch((): RunEntry[] => []);
 	const dir = pickRunLogDir(listRunLogDirs(root), runs, { app, sessionId });
+
 	if (!dir) {
 		const none = sessionId
 			? `No logs of run ${sessionId} in ${root}: \`buncargo runs\` lists the live runs.`
 			: `No logs yet for ${root}: start \`buncargo dev\`.`;
 		throw new CliError(none);
 	}
+
 	const apps = readdirApps(dir);
-	if (app !== undefined && !apps.includes(app))
+	if (app !== undefined && !apps.includes(app)) {
 		throw new CliError(`No log for "${app}" in ${dir}.`, [
 			`Available: ${apps.join(", ") || "(none)"}`,
 		]);
+	}
+
 	const selected = app === undefined ? apps : [app];
 	const after =
 		since === undefined
 			? undefined
 			: new Date(Date.now() - (parseDuration(since) ?? 0)).toISOString();
+
 	// One filter per app: an error's structured block follows it in its own
 	// file, and the apps' lines are merged only after.
 	const errorFilters = new Map<string, (text: string) => boolean>();
@@ -78,9 +89,11 @@ async function readLogs(input: {
 		}
 		return filter(line.text);
 	};
+
 	const keep = (line: LogLine) =>
 		(!errorsOnly || isError(line)) &&
 		(after === undefined || line.time >= after);
+
 	const print = (line: LogLine) => {
 		const time = line.time.slice(11, 19);
 		console.log(
@@ -97,19 +110,23 @@ async function readLogs(input: {
 		lines.push(...readLines(file, name));
 		offsets.set(name, statSync(file).size);
 	}
-	for (const line of lines
+
+	const printable = lines
 		.filter(keep)
-		.sort((a, b) => a.time.localeCompare(b.time)))
-		print(line);
+		.sort((a, b) => a.time.localeCompare(b.time));
+	for (const line of printable) print(line);
 
 	if (!input.follow) return 0;
+
 	let checkedAt = Date.now();
 	for (;;) {
 		await promiseTimeout(FOLLOW_POLL_MS);
+
 		// Ends with the run, its last lines printed: read once more first.
 		const due = Date.now() - checkedAt >= RUN_CHECK_MS;
 		const ended = due && !(await runIsLive(root, dir));
 		if (due) checkedAt = Date.now();
+
 		for (const name of app === undefined ? readdirApps(dir) : selected) {
 			const file = join(dir, `${name}.log`);
 			if (!existsSync(file)) continue;
@@ -118,16 +135,14 @@ async function readLogs(input: {
 			// Rotated: the file starts over.
 			const from = size < offset ? 0 : offset;
 			if (size === from) continue;
+
 			for (const line of readLines(file, name, from).filter(keep)) print(line);
 			offsets.set(name, size);
 		}
+
 		if (ended) return 0;
 	}
 }
-
-const FOLLOW_POLL_MS = 300;
-/** How often `-f` asks the registry whether the run is still going. */
-const RUN_CHECK_MS = 1_000;
 
 async function runIsLive(root: string, dir: string): Promise<boolean> {
 	const runs = await findRunsByRoot(root).catch((): RunEntry[] => []);
@@ -148,7 +163,9 @@ function pickRunLogDir(
 ): string | undefined {
 	const newestOf = (sessionId: string) =>
 		dirs.findLast((dir) => isSessionLogDir(dir, sessionId));
+
 	if (want.sessionId !== undefined) return newestOf(want.sessionId);
+
 	const { app } = want;
 	if (app === undefined) return dirs.at(-1);
 

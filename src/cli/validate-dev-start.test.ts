@@ -2,15 +2,14 @@ import { expect, it } from "bun:test";
 import { resolveApps, resolveServices } from "../config/resolve";
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { type DevArgs, parseDevArgs } from "./dev-flags";
+import { CliError } from "./errors";
+import { assertConfiguredApps, validateDevStart } from "./validate-dev-start";
 
 function dev(argv: string[]): DevArgs {
 	const parsed = parseDevArgs(argv);
 	if (parsed.help) throw new Error("help");
 	return parsed;
 }
-
-import { CliError } from "./errors";
-import { assertConfiguredApps, validateDevStart } from "./validate-dev-start";
 
 const env = {
 	root: process.cwd(),

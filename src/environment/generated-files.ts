@@ -22,7 +22,9 @@ import type { DevEnvVarsApi } from "./env-vars";
  */
 export function writeIfChanged(path: string, content: string): boolean {
 	if (existsSync(path) && readFileSync(path, "utf8") === content) return false;
+
 	mkdirSync(dirname(path), { recursive: true });
+
 	const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
 	try {
 		writeFileSync(temp, content);
@@ -31,6 +33,7 @@ export function writeIfChanged(path: string, content: string): boolean {
 		rmSync(temp, { force: true });
 		throw error;
 	}
+
 	return true;
 }
 
@@ -71,7 +74,9 @@ export function renderGeneratedFiles(
 ): string[] {
 	const files = ctx.config.generatedFiles ?? [];
 	if (files.length === 0) return [];
+
 	const renderCtx = generatedFileContext(ctx, envVars);
+
 	return files.flatMap((file) => {
 		let content: string;
 		try {
@@ -81,8 +86,8 @@ export function renderGeneratedFiles(
 				`Rendering ${file.path} failed: ${getErrorMessage(error)}`,
 			);
 		}
-		return writeIfChanged(resolve(ctx.root, file.path), content)
-			? [file.path]
-			: [];
+
+		const changed = writeIfChanged(resolve(ctx.root, file.path), content);
+		return changed ? [file.path] : [];
 	});
 }

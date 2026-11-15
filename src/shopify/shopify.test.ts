@@ -36,8 +36,9 @@ const roots: string[] = [];
 const cwd = process.cwd();
 afterEach(() => {
 	process.chdir(cwd);
-	for (const root of roots.splice(0))
+	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 const TOML = `client_id = "0123456789abcdef0123456789abcdef"
@@ -452,6 +453,7 @@ describe("Shopify session", () => {
 				linked: true,
 				interactive: false,
 				sessionFile: join(root, "no-session.json"),
+				env: {},
 			}),
 		).toThrow(
 			"not logged in to the Shopify CLI. Run `buncargo shopify login`.",
@@ -469,6 +471,7 @@ describe("Shopify session", () => {
 				linked: true,
 				interactive: false,
 				sessionFile: join(garbled, "session.json"),
+				env: {},
 			}),
 		).toThrow("its expiry is unreadable");
 		// A Partners token is how CI authenticates: nothing to check or prompt.

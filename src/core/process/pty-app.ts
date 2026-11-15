@@ -24,7 +24,7 @@ const GATE = 'read -r _ <&3; exec 3<&- "$@"';
  * It looks to the supervisor like a `ChildProcess`: a pid that leads its own
  * process group (the pty makes it a session leader, so `kill(-pid)` reaches
  * everything it spawned), `exitCode`/`signalCode`, and an `exit` event with
- * Node's arguments — a signalled exit reports `(null, signal)`, not Bun's
+ * Node's arguments: a signalled exit reports `(null, signal)`, not Bun's
  * `128 + n`.
  */
 export class PtyApp extends EventEmitter {
@@ -45,6 +45,7 @@ export class PtyApp extends EventEmitter {
 	) {
 		super();
 		recordStartupMetric("subprocesses");
+
 		const command = GATED ? ["/bin/sh", "-c", GATE, "sh", ...argv] : argv;
 		this.proc = Bun.spawn(command, {
 			cwd: options.cwd,
@@ -71,8 +72,10 @@ export class PtyApp extends EventEmitter {
 		}
 
 		this.pid = this.proc.pid;
+
 		// Node's `spawn` event: Bun spawns synchronously, so it is already true.
 		queueMicrotask(() => this.emit("spawn"));
+
 		void this.proc.exited.then(() => {
 			const signal = this.proc.signalCode as NodeJS.Signals | null;
 			this.signalCode = signal;
@@ -82,14 +85,16 @@ export class PtyApp extends EventEmitter {
 		});
 	}
 
+	private get hasExited(): boolean {
+		return this.exitCode !== null || this.signalCode !== null;
+	}
+
 	write(data: string | Uint8Array): void {
-		if (this.exitCode === null && this.signalCode === null)
-			this.proc.terminal?.write(data);
+		if (!this.hasExited) this.proc.terminal?.write(data);
 	}
 
 	resize(cols: number, rows: number): void {
-		if (this.exitCode === null && this.signalCode === null)
-			this.proc.terminal?.resize(cols, rows);
+		if (!this.hasExited) this.proc.terminal?.resize(cols, rows);
 	}
 
 	unref(): void {

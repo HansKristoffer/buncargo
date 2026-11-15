@@ -43,7 +43,7 @@ import {
  * foreground command after a few minutes, then polled with `sleep` and `until
  * grep`. Here the run is re-executed in its own session (so neither the
  * harness's SIGTERM nor a closed terminal reaches it) and this process waits
- * on the run registry - the same record `wait`, `stop` and BuncargoBar read -
+ * on the run registry, the same record `wait`, `stop` and BuncargoBar read,
  * until every app has settled.
  */
 
@@ -72,6 +72,7 @@ function newestDetachedLogPath(root: string): string {
 function linkNewestDetachedLog(root: string, logPath: string): void {
 	const link = newestDetachedLogPath(root);
 	const staging = `${link}.${process.pid}.tmp`;
+
 	try {
 		rmSync(staging, { force: true });
 		symlinkSync(basename(logPath), staging);
@@ -143,6 +144,7 @@ export function pruneDetachedFiles(root: string, now: number): void {
 	} catch {
 		return;
 	}
+
 	const ended = names.flatMap((name) => {
 		const pid = runPid(name);
 		const candidate = pid !== undefined && !isProcessAlive(pid);
@@ -150,9 +152,11 @@ export function pruneDetachedFiles(root: string, now: number): void {
 		const modified = candidate ? modifiedAt(path) : undefined;
 		return modified === undefined ? [] : [{ name, path, modified }];
 	});
+
 	const previousLog = ended
 		.filter((file) => LOG_FILE.test(file.name))
 		.sort((a, b) => b.modified - a.modified)[0];
+
 	for (const file of ended) {
 		const recent = now - file.modified < DETACHED_FILE_GRACE_MS;
 		if (recent || file === previousLog) continue;
@@ -175,8 +179,10 @@ function validateReport(value: unknown): DetachedReport | undefined {
 		!Array.isArray(value.failures) ||
 		!Array.isArray(value.hostsWarnings) ||
 		!(value.expectApps === undefined || isBoolean(value.expectApps))
-	)
+	) {
 		return undefined;
+	}
+
 	// A malformed entry never rejected a report; it is left out of its list.
 	return {
 		setupHints: value.setupHints.filter(isString),
@@ -208,6 +214,7 @@ export function recordDetachedReport(
 		failures: [],
 		hostsWarnings: [],
 	};
+
 	try {
 		writeJsonDocumentSync(
 			detachedReportPath(root, process.pid),
@@ -232,6 +239,7 @@ export function detachedArgv(
 	const separator = args.indexOf("--");
 	const flagsEnd = separator === -1 ? args.length : separator;
 	const detachOnly = new Set(DETACH_ONLY_FLAGS);
+
 	return [
 		execPath,
 		...args.slice(0, flagsEnd).filter((arg) => !detachOnly.has(arg)),
@@ -246,10 +254,12 @@ export function detachedArgv(
  * "done".
  */
 export function settledRun(run: RunEntry, expectApps: boolean): boolean {
-	if (expectApps)
+	if (expectApps) {
 		return (
 			run.apps.length > 0 && run.apps.every((app) => app.status !== "starting")
 		);
+	}
+
 	return run.services.every((service) => service.status === "ready");
 }
 
@@ -332,6 +342,7 @@ export async function runDetached(input: {
 }): Promise<number> {
 	const outcome = await startAndWait(input);
 	const exitCode = OUTCOME_EXIT[outcome.outcome];
+
 	if (input.json) {
 		const { exited: _, output: __, ...result } = outcome;
 		log.line(
@@ -341,7 +352,10 @@ export async function runDetached(input: {
 				2,
 			),
 		);
-	} else printOutcome(outcome, input.timeoutMs);
+	} else {
+		printOutcome(outcome, input.timeoutMs);
+	}
+
 	return exitCode;
 }
 
@@ -353,8 +367,10 @@ async function startAndWait(input: {
 }): Promise<DetachedOutcome> {
 	const { root, timeoutMs } = input;
 	const argv = detachedArgv(input.argv);
+
 	mkdirSync(logsRoot(root), { recursive: true });
 	pruneDetachedFiles(root, Date.now());
+
 	// Named by this process until the run has a pid; the rename after the
 	// spawn leaves the run's descriptor writing the same file.
 	const startingPath = join(
@@ -362,6 +378,7 @@ async function startAndWait(input: {
 		`detached-starting-${process.pid}.log`,
 	);
 	const out = openSync(startingPath, "w");
+
 	let child: Bun.Subprocess;
 	try {
 		// Its own scope on Linux: the run outlives a restart of the service
@@ -382,6 +399,7 @@ async function startAndWait(input: {
 	} finally {
 		closeSync(out);
 	}
+
 	child.unref();
 	const logPath = detachedLogPath(root, child.pid);
 	renameSync(startingPath, logPath);
@@ -395,6 +413,7 @@ async function startAndWait(input: {
 	void child.exited.then((code) => {
 		exited = code;
 	});
+
 	const base = {
 		pid: child.pid,
 		log: logPath,
@@ -418,6 +437,7 @@ async function startAndWait(input: {
 				output: tail(logPath),
 			};
 		}
+
 		const run = (await findRunsByRoot(root).catch(() => [])).find(
 			(entry) => entry.pid === child.pid,
 		);
@@ -430,8 +450,10 @@ async function startAndWait(input: {
 		const down = (run?.apps ?? []).filter(
 			(app) => app.status === "failed" || app.status === "stopped",
 		);
+
 		if (settled) settledAt ??= Date.now();
 		else settledAt = undefined;
+
 		const awaitingReport =
 			settledAt !== undefined &&
 			unreportedApps(down, report).length > 0 &&
@@ -441,7 +463,8 @@ async function startAndWait(input: {
 			status: app.status,
 			url: app.openUrl ?? null,
 		}));
-		if (run && settled && !awaitingReport)
+
+		if (run && settled && !awaitingReport) {
 			return {
 				...base,
 				apps,
@@ -461,7 +484,9 @@ async function startAndWait(input: {
 						}),
 				),
 			};
-		if (Date.now() >= deadline)
+		}
+
+		if (Date.now() >= deadline) {
 			return {
 				...base,
 				apps,
@@ -469,6 +494,8 @@ async function startAndWait(input: {
 				hostsWarnings: report?.hostsWarnings ?? [],
 				failures: [],
 			};
+		}
+
 		await promiseTimeout(POLL_MS);
 	}
 }
@@ -481,12 +508,15 @@ function printFailure(failure: RunFailure): void {
 
 function printOutcome(outcome: DetachedOutcome, timeoutMs: number): void {
 	const { pid, log: logPath } = outcome;
+
 	if (outcome.exited !== undefined) {
 		if (outcome.output && !outcome.failures.length) log.line(outcome.output);
+
 		if (outcome.outcome === "finished") {
 			log.success("The run had nothing to keep running in the background.");
 			return;
 		}
+
 		const [failure] = outcome.failures;
 		if (!failure) {
 			log.errorNow(
@@ -495,12 +525,14 @@ function printOutcome(outcome: DetachedOutcome, timeoutMs: number): void {
 			);
 			return;
 		}
+
 		log.line(
 			`  The run exited with code ${outcome.exited} before its apps came up. Full output: ${logPath}`,
 		);
 		printFailure(failure);
 		return;
 	}
+
 	if (outcome.outcome === "timeout") {
 		log.error(
 			`Apps still starting after ${Math.round(timeoutMs / 1000)}s; the run keeps going (pid ${pid}).`,
@@ -508,23 +540,28 @@ function printOutcome(outcome: DetachedOutcome, timeoutMs: number): void {
 		log.hint(`Follow it: buncargo logs -f · output: ${logPath}`);
 		return;
 	}
-	for (const app of outcome.apps)
-		log.line(`  ${app.name}: ${app.status}${app.url ? `  ${app.url}` : ""}`);
+
+	for (const app of outcome.apps) {
+		const url = app.url ? `  ${app.url}` : "";
+		log.line(`  ${app.name}: ${app.status}${url}`);
+	}
 	log.line(`  pid ${pid} · output: ${logPath}`);
 	for (const warning of outcome.hostsWarnings) log.warn(warning);
+
 	if (outcome.outcome === "up") {
+		const idleLimit = outcome.idleLimitMs;
 		log.success(
-			outcome.idleLimitMs === null
+			idleLimit === null
 				? "Running in the background until you stop it with `buncargo stop`."
-				: `Running in the background; it stops after ${formatDuration(outcome.idleLimitMs)} with no request or buncargo command (\`dev --detach --keep\` keeps it). Stop it now with \`buncargo stop\`.`,
+				: `Running in the background; it stops after ${formatDuration(idleLimit)} with no request or buncargo command (\`dev --detach --keep\` keeps it). Stop it now with \`buncargo stop\`.`,
 		);
 		return;
 	}
+
 	const down = outcome.apps.filter(
 		(app) => app.status === "failed" || app.status === "stopped",
 	);
-	log.line(
-		`  ${down.map((app) => app.name).join(", ")} did not come up; the other apps keep running.`,
-	);
+	const downNames = down.map((app) => app.name).join(", ");
+	log.line(`  ${downNames} did not come up; the other apps keep running.`);
 	for (const failure of outcome.failures) printFailure(failure);
 }

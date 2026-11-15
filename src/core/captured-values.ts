@@ -10,12 +10,17 @@ function capturedWith(
 	key: "label" | "env",
 ): [string, string][] {
 	return Object.values(apps).flatMap((app) =>
-		Object.entries(app.captures ?? {}).flatMap(([name, capture]) => {
-			const target = capture[key];
-			const value = captured[name];
-			if (key === "label" && capture.secret) return [];
-			return target && value ? [[target, value] as [string, string]] : [];
-		}),
+		Object.entries(app.captures ?? {}).flatMap<[string, string]>(
+			([name, capture]) => {
+				const target = capture[key];
+				const value = captured[name];
+
+				// A secret is still captured for its `env` name, just never labelled.
+				if (key === "label" && capture.secret) return [];
+
+				return target && value ? [[target, value]] : [];
+			},
+		),
 	);
 }
 

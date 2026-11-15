@@ -16,11 +16,7 @@ import { offsetClaimsOf } from "../core/offset-claims";
 import { CI_ENV_VARS } from "../core/runtime-flags";
 import { useTempHome } from "../core/test-env.testing";
 import { service } from "../docker-compose/services";
-import { CONFIG_FILES, clearDevEnvCache, findConfigFile, loadDevEnv } from ".";
-
-// ═══════════════════════════════════════════════════════════════════════════
-// findConfigFile Tests
-// ═══════════════════════════════════════════════════════════════════════════
+import { clearDevEnvCache, findConfigFile, loadDevEnv } from ".";
 
 describe("findConfigFile", () => {
 	let testDir: string;
@@ -109,28 +105,6 @@ describe("findConfigFile", () => {
 		expect(result).toBe(tsConfigPath);
 	});
 });
-
-// ═══════════════════════════════════════════════════════════════════════════
-// CONFIG_FILES Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("CONFIG_FILES", () => {
-	it("contains expected config file names", () => {
-		expect(CONFIG_FILES).toContain("dev.config.ts");
-		expect(CONFIG_FILES).toContain("dev.config.js");
-	});
-
-	it("has .ts files before .js files for priority", () => {
-		const tsIndex = CONFIG_FILES.indexOf("dev.config.ts");
-		const jsIndex = CONFIG_FILES.indexOf("dev.config.js");
-
-		expect(tsIndex).toBeLessThan(jsIndex);
-	});
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// loadDevEnv Tests
-// ═══════════════════════════════════════════════════════════════════════════
 
 const typedConfig = defineDevConfig({
 	projectPrefix: "loader-typing",
@@ -265,6 +239,7 @@ describe("loadDevEnv", () => {
 			"Use defineDevConfig() and export as default",
 		);
 	});
+
 	it("caches each canonical project independently without changing cwd", async () => {
 		const previousCwd = process.cwd();
 		const second = join(testDir, "second");

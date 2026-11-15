@@ -13,7 +13,7 @@ asks for notification permission the first time; runs already up when the app
 launches stay quiet.
 
 It reads `~/.buncargo/runs.json`, which `buncargo dev` writes and keeps current.
-No Docker call, no config load, no git — the app is a reader, and every action
+No Docker call, no config load, no git. The app only reads, and every action
 that changes something shells out to `buncargo stop`.
 
 ## Install and update
@@ -27,7 +27,7 @@ bunx buncargo bar update
 not have it. Answering `n` there means it never asks again; `buncargo bar reset`
 undoes that.
 
-The CLI is the only updater — the app has no update checker of its own, so the
+The CLI is the only updater. The app has no update checker of its own, so the
 two can never race on the same bundle. After every `buncargo dev`, in the
 background:
 
@@ -47,7 +47,7 @@ When this Mac is on a Tailscale network, the menu also shows the runs on your ot
 
 Use the key menu to copy a connection token. Set `BUNCARGO_CONNECT_TOKENS` in the publishing environment, optionally set `BUNCARGO_CONNECT_NAME`, and run `buncargo dev`. See [connection setup](../docs/frp.md).
 
-Discovery refreshes every 10 seconds and when the menu opens. It groups runs by connection name and project, preserves branches/worktrees, and reuses the local environment and service row components. Browser actions open public HTTPS links directly. TCP actions ask the CLI to create a private loopback visitor; PostgreSQL and ClickHouse offer TablePlus. Disconnect closes only the local visitor. Revoke removes this receiver's grant, with existing streams closing within 45 seconds.
+Discovery refreshes every 10 seconds and when the menu opens. It groups runs by connection name and project, keeps branches and worktrees apart, and reuses the local environment and service row components. Browser actions open public HTTPS links directly. TCP actions ask the CLI to create a private loopback visitor; PostgreSQL and ClickHouse offer TablePlus. Disconnect closes only the local visitor. Revoke removes this receiver's grant, with existing streams closing within 45 seconds.
 
 The CLI and bar validate addresses independently. Remote metadata never selects an executable or supplies a local port to run a command against.
 
@@ -73,7 +73,7 @@ and saves its standalone discovery command.
 ```
 
 Prints one line per run and exits. If this says `no active runs` while
-`buncargo runs` shows some, the two are reading different registries — check
+`buncargo runs` shows some, the two are reading different registries. Check
 `HOME`.
 
 | Problem | Fix |
@@ -109,7 +109,7 @@ scripts/
 
 **A CLI release that bumps `REGISTRY_VERSION` must be preceded by a `bar-v*`
 release built from the same commit.** Otherwise every installed app is
-unreadable until the app release lands — the CLI refuses to install a release
+unreadable until the app release lands. The CLI refuses to install a release
 that still cannot decode its registry, so the failure is a clear message rather
 than a broken install, but the menus stay empty in the meantime.
 

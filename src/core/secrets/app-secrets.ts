@@ -82,7 +82,8 @@ function reportInjected(
 	env: NodeJS.ProcessEnv,
 ): void {
 	const names = keys.length > 0 ? [...keys].sort().join(", ") : "no keys";
-	const from = `${scope.projectId} ${scope.environment}${scope.path === "/" ? "" : scope.path}`;
+	const path = scope.path === "/" ? "" : scope.path;
+	const from = `${scope.projectId} ${scope.environment}${path}`;
 	const fromShell =
 		scope.environment !== "dev" &&
 		secretsEnvironment(env) === scope.environment;

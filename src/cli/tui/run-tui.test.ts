@@ -317,12 +317,10 @@ describe("RunTui mouse", () => {
 		});
 		try {
 			tui.start();
-			const input = (data: string) =>
-				(tui as unknown as { input(data: string): void }).input(data);
-			input("j");
-			input("\r");
-			input(`a${wheelUp}b`);
-			input(wheelUp);
+			type(tui, "j");
+			type(tui, "\r");
+			type(tui, `a${wheelUp}b`);
+			type(tui, wheelUp);
 			expect(forwarded).toEqual(["ab"]);
 		} finally {
 			tui.stop();
@@ -408,7 +406,8 @@ describe("RunTui selection", () => {
 	const drag = (col: number, row: number) => `\u001b[<32;${col};${row}M`;
 	const release = (col: number, row: number) => `\u001b[<0;${col};${row}m`;
 
-	it("copies a drag in the Overview as whole lines, and highlights it", async () => {
+	/** A TUI on a fake terminal whose copies are collected in `copied`. */
+	function selectionHarness() {
 		const copied: string[] = [];
 		const terminal = fakeTerminal();
 		const output = new RunOutput({ terminals: "pipe" });
@@ -424,6 +423,11 @@ describe("RunTui selection", () => {
 				return "clipboard";
 			},
 		});
+		return { copied, terminal, output, tui };
+	}
+
+	it("copies a drag in the Overview as whole lines, and highlights it", async () => {
+		const { copied, terminal, output, tui } = selectionHarness();
 		try {
 			tui.start();
 			output.line("api", "first line");
@@ -450,21 +454,7 @@ describe("RunTui selection", () => {
 	});
 
 	it("copies from an app's own terminal", async () => {
-		const copied: string[] = [];
-		const terminal = fakeTerminal();
-		const output = new RunOutput({ terminals: "pipe" });
-		const tui = new RunTui({
-			output,
-			apps: ["api"],
-			urlFor: () => undefined,
-			quit: () => {},
-			stdin: terminal.stdin,
-			stdout: terminal.stdout,
-			copy: (text) => {
-				copied.push(text);
-				return "clipboard";
-			},
-		});
+		const { copied, output, tui } = selectionHarness();
 		try {
 			tui.start();
 			const screen = output.screen("api");
@@ -480,21 +470,7 @@ describe("RunTui selection", () => {
 	});
 
 	it("copies lines the app wrapped itself as one line each", async () => {
-		const copied: string[] = [];
-		const terminal = fakeTerminal();
-		const output = new RunOutput({ terminals: "pipe" });
-		const tui = new RunTui({
-			output,
-			apps: ["api"],
-			urlFor: () => undefined,
-			quit: () => {},
-			stdin: terminal.stdin,
-			stdout: terminal.stdout,
-			copy: (text) => {
-				copied.push(text);
-				return "clipboard";
-			},
-		});
+		const { copied, terminal, output, tui } = selectionHarness();
 		try {
 			tui.start();
 			const screen = output.screen("api");
@@ -527,21 +503,7 @@ describe("RunTui selection", () => {
 	});
 
 	it("keeps the lines of an app the terminal had to wrap", async () => {
-		const copied: string[] = [];
-		const terminal = fakeTerminal();
-		const output = new RunOutput({ terminals: "pipe" });
-		const tui = new RunTui({
-			output,
-			apps: ["api"],
-			urlFor: () => undefined,
-			quit: () => {},
-			stdin: terminal.stdin,
-			stdout: terminal.stdout,
-			copy: (text) => {
-				copied.push(text);
-				return "clipboard";
-			},
-		});
+		const { copied, output, tui } = selectionHarness();
 		try {
 			tui.start();
 			const screen = output.screen("api");
@@ -560,21 +522,7 @@ describe("RunTui selection", () => {
 	});
 
 	it("ends a selection where the button is released", async () => {
-		const copied: string[] = [];
-		const terminal = fakeTerminal();
-		const output = new RunOutput({ terminals: "pipe" });
-		const tui = new RunTui({
-			output,
-			apps: ["api"],
-			urlFor: () => undefined,
-			quit: () => {},
-			stdin: terminal.stdin,
-			stdout: terminal.stdout,
-			copy: (text) => {
-				copied.push(text);
-				return "clipboard";
-			},
-		});
+		const { copied, terminal, output, tui } = selectionHarness();
 		try {
 			tui.start();
 			output.line("api", "only line");
@@ -597,21 +545,7 @@ describe("RunTui selection", () => {
 	});
 
 	it("copies the lines it selected after the Overview drops old ones", async () => {
-		const copied: string[] = [];
-		const terminal = fakeTerminal();
-		const output = new RunOutput({ terminals: "pipe" });
-		const tui = new RunTui({
-			output,
-			apps: ["api"],
-			urlFor: () => undefined,
-			quit: () => {},
-			stdin: terminal.stdin,
-			stdout: terminal.stdout,
-			copy: (text) => {
-				copied.push(text);
-				return "clipboard";
-			},
-		});
+		const { copied, output, tui } = selectionHarness();
 		try {
 			tui.start();
 			for (let i = 0; i < 10_000; i++) output.line("api", `line-${i}`);
@@ -626,21 +560,7 @@ describe("RunTui selection", () => {
 	});
 
 	it("copies the rows it selected after the app's scrollback trims", async () => {
-		const copied: string[] = [];
-		const terminal = fakeTerminal();
-		const output = new RunOutput({ terminals: "pipe" });
-		const tui = new RunTui({
-			output,
-			apps: ["api"],
-			urlFor: () => undefined,
-			quit: () => {},
-			stdin: terminal.stdin,
-			stdout: terminal.stdout,
-			copy: (text) => {
-				copied.push(text);
-				return "clipboard";
-			},
-		});
+		const { copied, output, tui } = selectionHarness();
 		const write = (text: string) =>
 			new Promise<void>((resolve) => screen.term.write(text, resolve));
 		const screen = output.screen("api");
@@ -671,21 +591,7 @@ describe("RunTui selection", () => {
 	});
 
 	it("treats a click without a drag as no selection", async () => {
-		const copied: string[] = [];
-		const terminal = fakeTerminal();
-		const output = new RunOutput({ terminals: "pipe" });
-		const tui = new RunTui({
-			output,
-			apps: ["api"],
-			urlFor: () => undefined,
-			quit: () => {},
-			stdin: terminal.stdin,
-			stdout: terminal.stdout,
-			copy: (text) => {
-				copied.push(text);
-				return "clipboard";
-			},
-		});
+		const { copied, output, tui } = selectionHarness();
 		try {
 			tui.start();
 			output.line("api", "only line");
@@ -697,22 +603,8 @@ describe("RunTui selection", () => {
 	});
 
 	it("ends a selection begun in interact mode when a key is typed", async () => {
-		const copied: string[] = [];
-		const terminal = fakeTerminal();
-		const output = new RunOutput({ terminals: "pipe" });
+		const { copied, output, tui } = selectionHarness();
 		const screen = output.screen("api");
-		const tui = new RunTui({
-			output,
-			apps: ["api"],
-			urlFor: () => undefined,
-			quit: () => {},
-			stdin: terminal.stdin,
-			stdout: terminal.stdout,
-			copy: (text) => {
-				copied.push(text);
-				return "clipboard";
-			},
-		});
 		try {
 			tui.start();
 			await new Promise<void>((resolve) =>

@@ -18,7 +18,7 @@ import type {
 	EnvValues,
 	HostsRuntime,
 } from "./config";
-import type { ExecOptions } from "./hooks";
+import type { ExecOptions, ExecResult } from "./hooks";
 import type { BuncargoIntegration } from "./integrations";
 import type {
 	ServicesStarted,
@@ -29,10 +29,6 @@ import type {
 import type { PrismaRunner, SeedOutcome, SeedRunOptions } from "./preparation";
 import type { ResolvedApps, ResolvedServices } from "./resolved";
 import type { ContainerRuntimeName, ServiceConfig } from "./service";
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Dev Environment Interface
-// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * Process IDs of the dev servers a start spawned, by app. An app it did not
@@ -97,10 +93,6 @@ export interface DevEnvironment<
 	TApps extends Record<string, AppConfig>,
 	TEnv extends EnvValues = EnvValues,
 > {
-	// ─────────────────────────────────────────────────────────────────────────
-	// Configuration Access
-	// ─────────────────────────────────────────────────────────────────────────
-
 	/** Docker project name (includes suffix if set) */
 	readonly projectName: string;
 	/** The configured `projectPrefix`, before the directory and worktree suffixes. */
@@ -140,13 +132,6 @@ export interface DevEnvironment<
 	readonly composeFile: string;
 	/** Which backend runs the containers: 'docker' or 'apple' */
 	readonly containerRuntime: ContainerRuntimeName;
-	/** Validate the selection and allocate for it before activating hosts; cancellable. */
-	prepareStartAsync(
-		onlyApps?: Extract<keyof TApps, string>[],
-		onlyServices?: readonly Extract<keyof TServices, string>[],
-		signal?: AbortSignal,
-	): Promise<void>;
-
 	/** Binary the runtime was resolved to, when overridden off `PATH` */
 	readonly containerRuntimeBinary?: string;
 	/** Named-hosts plan and whether the loopback proxy is serving it */
@@ -168,14 +153,16 @@ export interface DevEnvironment<
 	/** `profiles` from config, for `buncargo dev --profile`; may name integration apps. */
 	readonly profiles?: Readonly<Record<string, ProfileConfig>>;
 
-	// ─────────────────────────────────────────────────────────────────────────
-	// Container Management
-	// ─────────────────────────────────────────────────────────────────────────
-
 	/** Start the dev environment (containers + optional servers) */
 	start(
 		options?: StartOptions<TApps, TServices>,
 	): Promise<DevServerPids<TApps> | null>;
+	/** Validate the selection and allocate for it before activating hosts; cancellable. */
+	prepareStartAsync(
+		onlyApps?: Extract<keyof TApps, string>[],
+		onlyServices?: readonly Extract<keyof TServices, string>[],
+		signal?: AbortSignal,
+	): Promise<void>;
 	/**
 	 * Stop the dev environment: its apps, then its services. While another
 	 * live run of the project uses the services, they stay up for it and this
@@ -215,10 +202,6 @@ export interface DevEnvironment<
 	 */
 	runSeed(options?: SeedRunOptions): Promise<SeedOutcome>;
 
-	// ─────────────────────────────────────────────────────────────────────────
-	// Server Management
-	// ─────────────────────────────────────────────────────────────────────────
-
 	/** Start dev servers only (assumes containers are running) */
 	startServers(options?: {
 		signal?: AbortSignal;
@@ -242,10 +225,6 @@ export interface DevEnvironment<
 		/** Called as each app passes its health check, before the rest have. */
 		onAppReady?: (name: string) => void;
 	}): Promise<void>;
-
-	// ─────────────────────────────────────────────────────────────────────────
-	// Utilities
-	// ─────────────────────────────────────────────────────────────────────────
 
 	/**
 	 * The app this project is "about", optionally narrowed to a running set.
@@ -290,7 +269,7 @@ export interface DevEnvironment<
 	exec(
 		cmd: string | readonly string[],
 		options?: ExecOptions,
-	): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+	): Promise<ExecResult>;
 	/** Wait for an HTTP server to respond */
 	waitForServer(url: string, timeout?: number): Promise<void>;
 	/** Log environment info to console; pass `tunnels` to show public URLs next to services/apps */
@@ -307,10 +286,6 @@ export interface DevEnvironment<
 	openPublicTunnels(
 		options?: OpenPublicTunnelsOptions<TServices, TApps>,
 	): Promise<OpenPublicTunnelsResult<TServices, TApps>>;
-
-	// ─────────────────────────────────────────────────────────────────────────
-	// Run claim / watchdog
-	// ─────────────────────────────────────────────────────────────────────────
 
 	/** The session this environment publishes under, in `~/.buncargo/runs.json`. */
 	readonly sessionId: string;
@@ -331,16 +306,8 @@ export interface DevEnvironment<
 	/** Start the machine-wide watchdog unless it is already running. */
 	ensureWatchdog(): Promise<void>;
 
-	// ─────────────────────────────────────────────────────────────────────────
-	// Prisma Integration
-	// ─────────────────────────────────────────────────────────────────────────
-
 	/** Prisma runner (only available when prisma is configured) */
 	readonly prisma?: PrismaRunner;
-
-	// ─────────────────────────────────────────────────────────────────────────
-	// Advanced
-	// ─────────────────────────────────────────────────────────────────────────
 
 	/**
 	 * Create a new environment with a different suffix (for test isolation).

@@ -101,10 +101,12 @@ export async function startPublicTunnels(
 	const { signal } = options;
 	const staggerMs = exposeTunnelStaggerMs();
 	const tunnels: PublicTunnel[] = [];
+
 	try {
 		for (const [index, target] of targets.entries()) {
 			signal?.throwIfAborted();
 			if (index > 0 && staggerMs > 0) await abortableSleep(staggerMs, signal);
+
 			const localUrl = `http://localhost:${target.port}`;
 			// Resolves once cloudflared has printed the public URL.
 			const tunnel = await startQuickTunnel({ url: localUrl, signal });
@@ -116,6 +118,7 @@ export async function startPublicTunnels(
 				close: tunnel.close,
 			});
 		}
+
 		signal?.throwIfAborted();
 		return tunnels;
 	} catch (e) {

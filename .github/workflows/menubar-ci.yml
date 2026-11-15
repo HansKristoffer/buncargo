@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v5
 
       # Printed, not pinned: hard-coding an Xcode path breaks whenever the
-      # runner image renames one, and these three lines are what you actually
+      # runner image renames one, and these two lines are what you actually
       # need when a build starts failing after an image rotation.
       - name: Show toolchain
         run: |

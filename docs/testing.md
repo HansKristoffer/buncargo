@@ -1,14 +1,15 @@
 # Testing
 
 `bun run test` runs the hermetic suite with its files in parallel (`bun test --parallel`, about
-15 s); plain `bun test` runs the same suite one file after another. `bunfig.toml` preloads `scripts/test-runtime-isolation.ts`,
-which keeps unit tests off the developer's machine: failing `docker` and `container` stubs first on
-`PATH`, `DOCKER_HOST` pointed at nothing, a temporary `HOME` for the run, and
-`BUNCARGO_WATCHDOG_PARENT`, so every watchdog a test starts ends with the run. Tests are co-located with their module as `*.test.ts`; test helpers
-shared across files are `*.testing.ts` and excluded from the package. The preload also clears the
-shell's `BUNCARGO_*` flags (only `BUNCARGO_TEST_*` pass through), and a test takes every port it
-listens on or starts an app on from `freePorts` (`src/core/test-env.testing.ts`); the
-architecture test rejects a literal or `+ 1` port.
+15 s); plain `bun test` runs the same suite one file after another. `bunfig.toml` preloads
+`scripts/test-runtime-isolation.ts`, which keeps unit tests off the developer's machine: failing
+`docker` and `container` stubs first on `PATH`, `DOCKER_HOST` pointed at nothing, a temporary
+`HOME` for the run, and `BUNCARGO_WATCHDOG_PARENT`, so every watchdog a test starts ends with the
+run. Tests are co-located with their module as `*.test.ts`; test helpers shared across files are
+`*.testing.ts` and excluded from the package. The preload also clears the shell's `BUNCARGO_*`
+flags (only `BUNCARGO_TEST_*` pass through), and a test takes every port it listens on or starts an
+app on from `freePorts` (`src/core/test-env.testing.ts`); the architecture test rejects a literal
+or `+ 1` port.
 
 ## What CI runs
 

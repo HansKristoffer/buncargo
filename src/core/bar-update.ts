@@ -44,10 +44,6 @@ export interface BarCheckCache {
 	hintedVersion?: string;
 }
 
-function getBarCheckPath(home?: string): string {
-	return stateFilePath(BAR_CHECK_FILENAME, home);
-}
-
 const isBarRelease = object({
 	tag: isString,
 	version: isString,
@@ -55,7 +51,7 @@ const isBarRelease = object({
 	checksumUrl: optional(isString),
 });
 
-function isBarCheckCache(value: unknown): BarCheckCache | undefined {
+function parseBarCheckCache(value: unknown): BarCheckCache | undefined {
 	if (!isRecord(value)) return undefined;
 	if (value.version !== CACHE_VERSION) return undefined;
 	if (typeof value.checkedAt !== "string") return undefined;
@@ -71,14 +67,17 @@ function isBarCheckCache(value: unknown): BarCheckCache | undefined {
 }
 
 export function readBarCheckCache(): BarCheckCache | undefined {
-	return readJsonDocumentSync(getBarCheckPath(), isBarCheckCache);
+	return readJsonDocumentSync(
+		stateFilePath(BAR_CHECK_FILENAME),
+		parseBarCheckCache,
+	);
 }
 
 export function writeBarCheckCache(
 	cache: Omit<BarCheckCache, "version">,
 ): void {
 	writeJsonDocumentSync(
-		getBarCheckPath(),
+		stateFilePath(BAR_CHECK_FILENAME),
 		{ version: CACHE_VERSION, ...cache } satisfies BarCheckCache,
 		{ afterWrite: chownToInvokingUser },
 	);
@@ -94,7 +93,7 @@ export type BarUpdateDecision =
 
 export interface BarUpdateInput {
 	installed: InstalledBarInfo | undefined;
-	/** `REGISTRY_VERSION` from the run registry — what this CLI writes. */
+	/** `REGISTRY_VERSION` from the run registry, the version this CLI writes. */
 	cliRegistryVersion: number;
 	/** Newest published release, when one is known. */
 	latestVersion?: string;
@@ -110,6 +109,7 @@ export interface BarUpdateInput {
  */
 export function decideBarUpdate(input: BarUpdateInput): BarUpdateDecision {
 	const { installed, cliRegistryVersion, latestVersion, hintedVersion } = input;
+
 	// Not installed is the offer's business, not the updater's.
 	if (!installed) return { action: "none" };
 
@@ -141,9 +141,12 @@ export function isCacheFresh(
 	options: { required: boolean; now?: number },
 ): boolean {
 	if (!cache) return false;
+
 	const checkedAt = Date.parse(cache.checkedAt);
 	if (Number.isNaN(checkedAt)) return false;
+
 	const age = (options.now ?? Date.now()) - checkedAt;
+
 	// A clock that moved backwards makes every cache look fresh forever.
 	if (age < 0) return false;
 	return age < (options.required ? REQUIRED_TTL_MS : HINT_TTL_MS);

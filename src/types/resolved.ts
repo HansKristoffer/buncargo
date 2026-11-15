@@ -10,14 +10,10 @@ import type {
 	UrlBuilderFn,
 } from "./service";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Resolved Config
-//
 // What `resolveConfig` turns a validated config's services and apps into:
 // one variant per kind, every default filled. Everything that runs a config
 // reads these, so a default is decided once and a kind is a union member
 // rather than a combination of optional fields.
-// ═══════════════════════════════════════════════════════════════════════════
 
 /** How a resolved app shows it is ready. */
 type AppReadiness =

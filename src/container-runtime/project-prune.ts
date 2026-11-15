@@ -62,6 +62,7 @@ function namesOf(input: ProjectPruneInput, checkout: GitCheckout) {
 	});
 	const dev = [current.dev];
 	const ci = [current.ci];
+
 	if (checkout.worktree !== null && worktreeIsolation !== false) {
 		const suffix = worktreeProjectSuffix(checkout.worktree);
 		dev.push(getProjectName(projectPrefix, suffix, checkout.root));
@@ -73,11 +74,13 @@ function namesOf(input: ProjectPruneInput, checkout: GitCheckout) {
 			),
 		);
 	}
+
 	return { dev, ci };
 }
 
 export function planProjectPrune(input: ProjectPruneInput): ProjectPrunePlan {
 	const kept = new Set<string>();
+
 	// Each disposable name, and the checkouts whose name it is.
 	const disposable = new Map<string, Set<string>>();
 	const dispose = (name: string, root: string) =>
@@ -85,29 +88,37 @@ export function planProjectPrune(input: ProjectPruneInput): ProjectPrunePlan {
 			name,
 			(disposable.get(name) ?? new Set()).add(resolve(root)),
 		);
+
 	for (const checkout of input.checkouts) {
 		const names = namesOf(input, checkout);
 		for (const name of names.ci) dispose(name, checkout.root);
+
 		for (const name of names.dev) {
 			if (checkout.exists) kept.add(name);
 			else dispose(name, checkout.root);
 		}
 	}
 
+	// Why a disposable name is left alone anyway.
 	const why = new Map<string, string>();
 	for (const name of input.liveProjects) why.set(name, "a run is using it");
+
 	for (const container of input.resources.containers) {
 		// Compared as recorded, not resolved through links: a stack started
 		// from a symlink to a checkout is named after the link, so its name
 		// can read as that checkout's ci stack while being a dev stack.
 		const owners = disposable.get(container.project);
-		if (container.running)
+		const startedElsewhere =
+			!container.root || !owners?.has(resolve(container.root));
+
+		if (container.running) {
 			why.set(container.project, "a container is running (stop it first)");
-		else if (!container.root || !owners?.has(resolve(container.root)))
+		} else if (startedElsewhere) {
 			why.set(
 				container.project,
 				"a container was not started by buncargo from the checkout this name belongs to",
 			);
+		}
 	}
 
 	const plan: ProjectPrunePlan = { remove: [], kept: [] };
@@ -115,11 +126,13 @@ export function planProjectPrune(input: ProjectPruneInput): ProjectPrunePlan {
 	const stackOf = (project: string) => {
 		const owners = disposable.get(project);
 		if (!owners || kept.has(project) || why.has(project)) return undefined;
+
 		// Its containers' checkout when it has any (they all agree by now).
 		const root =
 			input.resources.containers.find((c) => c.project === project)?.root ??
 			[...owners][0] ??
 			"";
+
 		let stack = stacks.get(project);
 		if (!stack) {
 			stack = {
@@ -134,12 +147,16 @@ export function planProjectPrune(input: ProjectPruneInput): ProjectPrunePlan {
 		}
 		return stack;
 	};
-	for (const container of input.resources.containers)
+
+	for (const container of input.resources.containers) {
 		stackOf(container.project)?.containers.push(container.id);
-	for (const volume of input.resources.volumes)
+	}
+	for (const volume of input.resources.volumes) {
 		stackOf(volume.project)?.volumes.push(volume.name);
-	for (const network of input.resources.networks)
+	}
+	for (const network of input.resources.networks) {
 		stackOf(network.project)?.networks.push(network.name);
+	}
 
 	const present = new Set(
 		[
@@ -149,10 +166,13 @@ export function planProjectPrune(input: ProjectPruneInput): ProjectPrunePlan {
 		].map((resource) => resource.project),
 	);
 	for (const [project, reason] of why) {
-		if (disposable.has(project) && !kept.has(project) && present.has(project))
-			plan.kept.push({ projectName: project, reason });
+		const isReported =
+			disposable.has(project) && !kept.has(project) && present.has(project);
+		if (isReported) plan.kept.push({ projectName: project, reason });
 	}
+
 	plan.remove.sort((a, b) => a.projectName.localeCompare(b.projectName));
 	plan.kept.sort((a, b) => a.projectName.localeCompare(b.projectName));
+
 	return plan;
 }

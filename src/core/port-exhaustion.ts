@@ -197,6 +197,7 @@ export function describePortExhaustion(
 ): string {
 	const { root, range, blocked, claims } = input;
 	const { states } = outcome;
+
 	const keys = [...new Set(blocked.flatMap((block) => block.claimKeys))].sort(
 		(a, b) => lastUsedMs(a, claims[a]) - lastUsedMs(b, claims[b]),
 	);
@@ -207,18 +208,21 @@ export function describePortExhaustion(
 		const offset = String(claim.offset).padStart(5);
 		return `  ${offset}  ${offsetClaimHolder(key, claim)} (${label}last used ${formatClaimAge(key, claim, now)} ago)`;
 	});
-	const others = blocked.filter((block) => block.claimKeys.length === 0);
-	const [firstOther] = others;
-	const other = holderLines.length > 0 ? "other " : "";
-	const otherCount =
-		others.length === 1
-			? `1 ${other}block is`
-			: `${others.length} ${other}blocks are`;
-	const otherLine = firstOther
+
+	// Blocks with no claim on them are held by a process or out of range.
+	const unclaimed = blocked.filter((block) => block.claimKeys.length === 0);
+	const [firstUnclaimed] = unclaimed;
+	const qualifier = holderLines.length > 0 ? "other " : "";
+	const unclaimedCount =
+		unclaimed.length === 1
+			? `1 ${qualifier}block is`
+			: `${unclaimed.length} ${qualifier}blocks are`;
+	const unclaimedLine = firstUnclaimed
 		? [
-				`${otherCount} taken by processes or out of range, e.g. at ${firstOther.offset}: ${firstOther.problem}.`,
+				`${unclaimedCount} taken by processes or out of range, e.g. at ${firstUnclaimed.offset}: ${firstUnclaimed.problem}.`,
 			]
 		: [];
+
 	const reclaimed = typedSwitch(outcome.reclaim, {
 		"not-tried": () => "",
 		"none-idle": () =>
@@ -238,12 +242,13 @@ export function describePortExhaustion(
 			: [
 					`Or move this checkout above the range: \`buncargo ports pin ${input.pinnable}\`.`,
 				];
+
 	return [
 		`Could not allocate a free port block for ${root}: every offset from ${range.min} to ${range.max} (starting at ${range.hashed}) is taken.${reclaimed}`,
 		...(holderLines.length > 0
 			? ["Claims in the way, least recently used first:", ...holderLines]
 			: []),
-		...otherLine,
+		...unclaimedLine,
 		"Free one: stop a checkout you no longer need (`buncargo stop --all --root <path>`) and drop its claims (`buncargo ports release --root <path>`), or free the blocks of checkouts idle for a week (`buncargo ports release --idle=7d`)." +
 			selfReclaim,
 		...pin,

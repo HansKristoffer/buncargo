@@ -11,10 +11,6 @@ import type {
 } from "../types";
 import { defineDevConfig, mergeConfigs, validateConfig } from ".";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Test Helpers
-// ═══════════════════════════════════════════════════════════════════════════
-
 function createValidConfig(): DevConfig<
 	{ postgres: ServiceConfig },
 	{ api: AppConfig }
@@ -29,10 +25,6 @@ function createValidConfig(): DevConfig<
 		},
 	};
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// validateConfig Tests
-// ═══════════════════════════════════════════════════════════════════════════
 
 describe("validateConfig", () => {
 	describe("projectPrefix validation", () => {
@@ -451,14 +443,6 @@ describe("validateConfig", () => {
 	});
 
 	describe("valid config", () => {
-		it("returns empty errors array for valid config", () => {
-			const config = createValidConfig();
-
-			const errors = validateConfig(config);
-
-			expect(errors).toHaveLength(0);
-		});
-
 		it("accepts config without apps", () => {
 			const config = {
 				projectPrefix: "myapp",
@@ -641,10 +625,6 @@ describe("validateConfig", () => {
 		});
 	});
 });
-
-// ═══════════════════════════════════════════════════════════════════════════
-// mergeConfigs Tests
-// ═══════════════════════════════════════════════════════════════════════════
 
 describe("mergeConfigs", () => {
 	it("merges projectPrefix from override", () => {

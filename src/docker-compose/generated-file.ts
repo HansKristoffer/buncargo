@@ -27,11 +27,13 @@ export function getGeneratedComposePath(
 	const absolutePath = isAbsolute(generatedFile)
 		? generatedFile
 		: resolve(root, generatedFile);
+
 	const relativePath = relative(root, absolutePath);
 	const composeFileArg =
 		relativePath && !relativePath.startsWith("..")
 			? relativePath
 			: absolutePath;
+
 	return { absolutePath, composeFileArg };
 }
 
@@ -50,17 +52,22 @@ export function writeGeneratedComposeFile(
 	const yaml = composeToYaml(
 		model ?? buildComposeModel(services, docker, identity, runtime),
 	);
+
 	const existing = existsSync(absolutePath)
 		? readFileSync(absolutePath, "utf-8")
 		: undefined;
 	if (existing === yaml) return composeFileArg;
+
 	if (existing !== undefined && docker?.writeStrategy === "if-missing") {
-		throw new Error(
-			`Generated Compose file ${absolutePath} differs from the current config. Set docker.writeStrategy to "always" to regenerate it; move customizations into service.docker. An existing file cannot be reconciled against a different model.`,
-		);
+		const message = `Generated Compose file ${absolutePath} differs from the current config. Set docker.writeStrategy to "always" to regenerate it; move customizations into service.docker. An existing file cannot be reconciled against a different model.`;
+		throw new Error(message);
 	}
+
+	// Written to a unique temporary file and renamed, so a concurrent run
+	// never reads a half-written file.
 	mkdirSync(dirname(absolutePath), { recursive: true });
 	const temporary = `${absolutePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+
 	try {
 		writeFileSync(temporary, yaml, {
 			encoding: "utf-8",
@@ -72,7 +79,7 @@ export function writeGeneratedComposeFile(
 		try {
 			unlinkSync(temporary);
 		} catch {
-			/* Already published. */
+			// Already renamed into place, or never created: nothing to remove.
 		}
 	}
 

@@ -67,6 +67,8 @@ export function planPreparation(
 ): PreparationPlan {
 	const selected = input.requiredServiceKeys;
 	const anySelected = selected.length > 0;
+
+	// A step with no `requiredServices` runs whenever any service is selected.
 	const prepared = (prerequisites?: readonly string[]) =>
 		prerequisites
 			? prerequisites.every((name) => selected.includes(name))
@@ -75,6 +77,7 @@ export function planPreparation(
 	const prismaSelected =
 		config.prisma !== undefined &&
 		selected.includes(resolvePrismaConfig(config.prisma).service);
+
 	const push = options.schema === "push";
 	const migrations = migrationsFor(config)
 		.filter((migration) => prepared(migration.requiredServices))
@@ -92,6 +95,7 @@ export function planPreparation(
 		appCount > 0 &&
 		seedCanOverlap(config.seed, services, selected);
 
+	// Containers-only mode brings every selected service up at once.
 	const containersOnly = options.prepare === "containers";
 	const targets = selected.map((key) => [key, services[key]] as const);
 	const earlyServices = Object.fromEntries(

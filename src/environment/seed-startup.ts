@@ -5,6 +5,11 @@ type SeedSelection = {
 	requiredServices?: readonly string[];
 };
 
+/**
+ * Whether the seed runs beside the apps: it opted out of `beforeApps`, its
+ * services are selected, and no selected service waits for preparation to
+ * finish.
+ */
 export function seedCanOverlap(
 	seed: SeedSelection | undefined,
 	services: Record<string, ResolvedService>,

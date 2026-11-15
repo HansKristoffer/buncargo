@@ -62,6 +62,7 @@ async function translateComposeFailure(
 ): Promise<never> {
 	const message = result.stderr.trim();
 	if (isComposeMissingMessage(message)) throw new Error(COMPOSE_MISSING);
+
 	const allocated =
 		message.match(/Bind for .+:(\d+) failed: port is already allocated/i) ??
 		message.match(/address already in use/i);
@@ -99,7 +100,9 @@ export async function startContainers(
 		signal,
 		timeoutMs = 600000,
 	} = options;
+
 	if (verbose) console.log(formatStep("🐳 Starting Docker containers..."));
+
 	const result = await runDockerAsync(
 		binary,
 		[
@@ -119,6 +122,7 @@ export async function startContainers(
 		},
 	);
 	if (!result.ok) await translateComposeFailure(result, binary);
+
 	if (verbose) console.log(formatDone("Containers started"));
 }
 
@@ -139,8 +143,9 @@ function daemonStateFromTeardown(result: DockerRunResult): DockerDaemonState {
  * Stop and remove Docker Compose containers.
  *
  * Compose finds them by the project label, so the compose file only names
- * the volumes `removeVolumes` deletes, and the checkout only hosts that file. A stack whose worktree was deleted must still come down, which is
- * why neither is required here; `removeVolumes` without the file finds the
+ * the volumes `removeVolumes` deletes, and the checkout only hosts that file.
+ * A stack whose worktree was deleted must still come down, which is why
+ * neither is required here; `removeVolumes` without the file finds the
  * volumes by Compose's project label instead.
  */
 export async function stopContainers(
@@ -156,6 +161,7 @@ export async function stopContainers(
 		signal,
 		timeoutMs = 120000,
 	} = options;
+
 	if (verbose) console.log(formatStep("🛑 Stopping containers..."));
 
 	// `composeFile` is relative to the checkout, as compose reads it from
@@ -163,6 +169,7 @@ export async function stopContainers(
 	// that changed into a package kept every volume it meant to reset).
 	const composePath = composeFile ? resolve(root, composeFile) : undefined;
 	const file = composePath && existsSync(composePath) ? composeFile : undefined;
+
 	const result = await runDockerAsync(
 		binary,
 		[
@@ -184,25 +191,30 @@ export async function stopContainers(
 		// the watchdog performs; compose's own failure says the same thing.
 		// A verbose run streamed that failure to the terminal instead of
 		// capturing it, so only then is the probe worth its fork.
-		// Only a daemon that is really down has nothing running: one that
-		// refuses this user or does not answer may hold every container.
 		const captured = result.stderr.trim() !== "" || result.status !== "exit";
 		const daemon = captured
 			? daemonStateFromTeardown(result)
 			: dockerDaemonState(binary);
+
+		// Only a daemon that is really down has nothing running: one that
+		// refuses this user or does not answer may hold every container.
 		if (daemon.state !== "up" && daemon.state !== "down") {
 			const unavailable = dockerUnavailableError(daemon, binary).message;
 			const message = `Could not stop ${projectName}'s containers. ${unavailable}`;
 			throw new Error(message);
 		}
+
 		if (daemon.state === "down") {
 			// A reset that silently kept the volumes would not be one.
 			const keptVolumes = `Docker is not running, so the volumes of ${projectName} were not removed. Start Docker, then run again.`;
 			if (removeVolumes) throw new Error(keptVolumes);
-			if (verbose)
+
+			if (verbose) {
 				console.log(formatStep("ℹ Docker is not running. Nothing to stop."));
+			}
 			return;
 		}
+
 		await translateComposeFailure(result, binary);
 	}
 
@@ -221,19 +233,26 @@ export async function stopContainers(
 			],
 			{ signal, timeoutMs: 30_000 },
 		);
-		if (!listed.ok)
+		if (!listed.ok) {
+			const reason =
+				listed.stderr.trim() || `docker volume ls exited ${listed.exitCode}`;
 			throw new Error(
-				`Removed ${projectName}'s containers but could not list its volumes: ${listed.stderr.trim() || `docker volume ls exited ${listed.exitCode}`}`,
+				`Removed ${projectName}'s containers but could not list its volumes: ${reason}`,
 			);
+		}
+
 		const names = listed.stdout
 			.split("\n")
 			.map((line) => line.trim())
 			.filter(Boolean);
 		const kept = await removeDockerVolumes(names, binary);
-		if (kept.length > 0)
+		if (kept.length > 0) {
+			const keptList = kept.map(({ name, error }) => `${name} (${error})`);
 			throw new Error(
-				`Removed ${projectName}'s containers but kept these volumes: ${kept.map(({ name, error }) => `${name} (${error})`).join(", ")}`,
+				`Removed ${projectName}'s containers but kept these volumes: ${keptList.join(", ")}`,
 			);
+		}
 	}
+
 	if (verbose) console.log(formatDone("Containers stopped"));
 }

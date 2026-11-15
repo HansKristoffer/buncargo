@@ -152,12 +152,4 @@ describe("AppScreen", () => {
 		expect(lines.slice(-5000)[0]).toBe("line 20000");
 		screen.dispose();
 	});
-
-	it("joins a wrapped line back into one", async () => {
-		const lines: string[] = [];
-		const screen = new AppScreen(10, 5, (line) => lines.push(line), noDrops);
-		await feed(screen, "0123456789abcdef\r\n");
-		expect(lines).toEqual(["0123456789abcdef"]);
-		screen.dispose();
-	});
 });

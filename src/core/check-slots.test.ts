@@ -30,8 +30,9 @@ function slotHome(): { home: string; dir: string } {
 }
 
 afterEach(() => {
-	for (const dir of dirs.splice(0))
+	for (const dir of dirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 /** Time that passes as fast as a waiting check sleeps on it. */

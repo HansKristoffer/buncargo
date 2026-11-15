@@ -66,17 +66,19 @@ describe("listGitCheckouts", () => {
 				{ root: web(join(base, "renamed")), worktree: null, exists: false },
 				{ root: web(repo), worktree: null, exists: true },
 			]);
-			for (const checkout of listGitCheckouts(web(repo)))
-				if (checkout.exists)
-					expect(
-						checkoutProjectNames({ projectPrefix: "pp", root: checkout.root }),
-					).toEqual(
-						checkoutProjectNames({
-							projectPrefix: "pp",
-							root: checkout.root,
-							worktree: checkout.worktree,
-						}),
-					);
+			for (const checkout of listGitCheckouts(web(repo))) {
+				if (!checkout.exists) continue;
+
+				expect(
+					checkoutProjectNames({ projectPrefix: "pp", root: checkout.root }),
+				).toEqual(
+					checkoutProjectNames({
+						projectPrefix: "pp",
+						root: checkout.root,
+						worktree: checkout.worktree,
+					}),
+				);
+			}
 		} finally {
 			rmSync(base, { recursive: true, force: true });
 		}

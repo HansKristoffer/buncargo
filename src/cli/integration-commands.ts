@@ -10,15 +10,6 @@ import type {
 } from "../types";
 import { CliError } from "./errors";
 
-/**
- * `buncargo <integration> <command>`.
- *
- * The configured instance wins, because its options (which toml, which app)
- * are what the command should act on. The built-in integrations also answer
- * without a config, so `buncargo expo sim` works from the menu bar, which runs
- * commands that only read the run registry.
- */
-
 const BUILT_IN: Record<string, () => Promise<BuncargoIntegration>> = {
 	expo: async () => (await import("../expo")).expo(),
 	shopify: async () => (await import("../shopify")).shopify(),
@@ -67,7 +58,15 @@ export function integrationCommandRows(
 	}));
 }
 
-/** Returns the exit code, or `undefined` when no integration has this name. */
+/**
+ * Runs `buncargo <integration> <command>` and returns its exit code, or
+ * `undefined` when no integration has this name.
+ *
+ * The configured instance wins, because its options (which toml, which app)
+ * are what the command should act on. The built-in integrations also answer
+ * without a config, so `buncargo expo sim` works from the menu bar, which runs
+ * commands that only read the run registry.
+ */
 export async function runIntegrationCommand(
 	name: string,
 	args: string[],
@@ -79,17 +78,18 @@ export async function runIntegrationCommand(
 	const commands = integration.commands ?? {};
 	const command = commandName ? commands[commandName] : undefined;
 	if (!command) {
+		const message = commandName
+			? `Unknown ${name} command: ${commandName}`
+			: `buncargo ${name} needs a command.`;
 		const available = Object.keys(commands);
-		throw new CliError(
-			commandName
-				? `Unknown ${name} command: ${commandName}`
-				: `buncargo ${name} needs a command.`,
+		const hints =
 			available.length > 0
 				? integrationCommandRows(integration).map(
 						(row) => `buncargo ${row.command}  ${row.description}`,
 					)
-				: [`The ${name} integration has no commands.`],
-		);
+				: [`The ${name} integration has no commands.`];
+
+		throw new CliError(message, hints);
 	}
 
 	return command.run({

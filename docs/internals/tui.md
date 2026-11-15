@@ -15,8 +15,8 @@ Whoever creates an output closes it, and awaits `close()` before unsubscribing a
 last screen reaches the feed only once xterm has parsed it, so a view gone by then loses the app's
 last words.
 
-`src/cli/dev-output.ts` decides where a dev run's app output goes: the TUI (a terminal, unless `--no-tui`)
-or stream mode, never both, since two writers on one screen is the garbling the TUI exists to end.
+`src/cli/dev-output.ts` decides where a dev run's app output goes: the TUI (a terminal, unless
+`--no-tui`) or stream mode, never both, since two writers on one screen is the garbling the TUI exists to end.
 Both write the log files and answer `buncargo restart` (`restart-requests.ts`: a request file the
 run polls, not a signal; SIGUSR2 to a run from an older buncargo, which has no handler, would kill
 it). `view.start()` runs after every prompt and the banner; `view.stop()` runs before teardown so

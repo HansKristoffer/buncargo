@@ -94,7 +94,7 @@ jobs:
       - name: Package
         working-directory: menubar
         run: |
-          # ditto, not zip: it is the only extractor that preserves a bundle's
+          # ditto, not zip: it is the only archiver that preserves a bundle's
           # code signature, and --sequesterRsrc keeps resource forks out of the
           # payload instead of interleaved with it.
           ditto -c -k --sequesterRsrc --keepParent \

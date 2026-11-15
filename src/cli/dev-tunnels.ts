@@ -85,6 +85,7 @@ export function createTunnelCoordinator<
 	): ComputedPublicUrls<TServices, TApps> {
 		return urls as ComputedPublicUrls<TServices, TApps>;
 	}
+
 	/**
 	 * Mark the apps' public URLs that are tunnels on this run's entry: a run
 	 * that reuses one of these apps inherits only those.
@@ -100,6 +101,7 @@ export function createTunnelCoordinator<
 			})),
 		});
 	}
+
 	/** `env.setPublicUrls` replaces the map: keep what apps printed. */
 	function addPublicUrls(urls: Record<string, string>): void {
 		const current = env.publicUrls as Record<string, string>;
@@ -108,20 +110,24 @@ export function createTunnelCoordinator<
 
 	async function inheritReusedPublicUrls(appNames: string[]): Promise<void> {
 		if (appNames.length === 0) return;
+
 		const reused = reusablePublicUrls(
 			await findRunsByRoot(env.root),
 			appNames,
 			env.ports as Record<string, number>,
 		);
 		const names = reused.map((tunnel) => tunnel.name);
-		for (const tunnel of reused)
+		for (const tunnel of reused) {
 			inheritedPublicUrls[tunnel.name] = tunnel.publicUrl;
+		}
 		combinedTunnelLogs.push(...reused);
 		await recordTunnelUrls(reused);
+
 		if (reused.length > 0) {
 			const plural = reused.length > 1 ? "s" : "";
 			log.info(`ℹ Reusing public URL${plural} for: ${names.join(", ")}`);
 		}
+
 		const missing = appNames.filter((name) => !names.includes(name));
 		if (missing.length > 0) {
 			log.warn(`No reusable public URL found for: ${missing.join(", ")}`);
@@ -142,13 +148,15 @@ export function createTunnelCoordinator<
 			tunnelApi.resolveExposeTargets(env, exposeValue);
 
 		if (unknownNames.length > 0) {
+			const plural = unknownNames.length > 1 ? "s" : "";
 			throw new CliError(
-				`Unknown expose target${unknownNames.length > 1 ? "s" : ""}: ${unknownNames.join(", ")}`,
+				`Unknown expose target${plural}: ${unknownNames.join(", ")}`,
 			);
 		}
 		if (notEnabledNames.length > 0) {
+			const plural = notEnabledNames.length > 1 ? "s" : "";
 			throw new CliError(
-				`Target${notEnabledNames.length > 1 ? "s" : ""} missing expose: true: ${notEnabledNames.join(", ")}`,
+				`Target${plural} missing expose: true: ${notEnabledNames.join(", ")}`,
 				[
 					"Mark these in dev.config.ts with expose: true or remove them from --expose.",
 				],
@@ -164,13 +172,15 @@ export function createTunnelCoordinator<
 				)
 				.map((target) => target.name);
 			if (excluded.length > 0) {
+				const plural = excluded.length > 1 ? "s" : "";
 				throw new CliError(
-					`Expose target${excluded.length > 1 ? "s" : ""} not included in --apps: ${excluded.join(", ")}`,
+					`Expose target${plural} not included in --apps: ${excluded.join(", ")}`,
 					["Add these apps to --apps or remove them from --expose."],
 				);
 			}
 		}
 
+		// Services narrow to the selected ones, apps to the requested ones.
 		const selectedTargets = selectedServiceNames
 			? targets.filter(
 					(target) =>
@@ -184,6 +194,7 @@ export function createTunnelCoordinator<
 				)
 			: selectedTargets;
 
+		// Reused apps keep the public URL of the run serving them.
 		await inheritReusedPublicUrls(
 			scopedTargets
 				.filter(
@@ -265,6 +276,7 @@ export function createTunnelCoordinator<
 	async function stop(): Promise<void> {
 		openingController.abort(new Error("Tunnel startup stopped"));
 		await opening?.catch(() => {});
+
 		const current = env.publicUrls as Record<string, string>;
 		env.setPublicUrls(
 			asPublicUrls(
@@ -275,6 +287,7 @@ export function createTunnelCoordinator<
 			),
 		);
 		openedPublicUrls = {};
+
 		const tunnelsToStop = tunnels;
 		tunnels = [];
 		if (tunnelsToStop.length > 0) {

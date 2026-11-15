@@ -1,16 +1,6 @@
 import type { AppConfig, BuncargoIntegration, ExpoAppOptions } from "../types";
 import { describeExpoApp, isExpoApp } from "./app-identity";
 
-/**
- * `buncargo/expo`: Expo dev servers, one Metro port and one iOS simulator
- * device per checkout.
- *
- * ```ts
- * import { expo } from "buncargo/expo";
- * integrations: [expo({ apps: ["mobile"] })]
- * ```
- */
-
 export interface ExpoIntegrationOptions {
 	/**
 	 * The Expo apps, by key, optionally with per-app options. Default: every app
@@ -45,6 +35,15 @@ function resolveExpoApps(
 	);
 }
 
+/**
+ * `buncargo/expo`: Expo dev servers, one Metro port and one iOS simulator
+ * device per checkout.
+ *
+ * ```ts
+ * import { expo } from "buncargo/expo";
+ * integrations: [expo({ apps: ["mobile"] })]
+ * ```
+ */
 export function expo(options: ExpoIntegrationOptions = {}): ExpoIntegration {
 	let expoApps = new Map<string, ExpoAppOptions>();
 
@@ -53,16 +52,19 @@ export function expo(options: ExpoIntegrationOptions = {}): ExpoIntegration {
 
 		config(config) {
 			expoApps = resolveExpoApps(config.apps ?? {}, options.apps);
+
 			for (const name of expoApps.keys()) {
 				if (!config.apps?.[name]) {
 					throw new Error(`expo(): "${name}" is not a configured app`);
 				}
 			}
+
 			return config;
 		},
 
 		appEnv({ name, port, workspaceId }) {
 			if (!expoApps.has(name)) return undefined;
+
 			return {
 				EXPO_PUBLIC_BUNCARGO_WORKSPACE_ID: workspaceId,
 				// Expo CLI ignores PORT; without this every worktree's Metro asks

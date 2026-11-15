@@ -134,6 +134,7 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 		const apps = options.apps ?? prepared.apps;
 		options.signal?.throwIfAborted();
 		assertAppWorkingDirectories(apps, deps.root, prepared.productionBuild);
+
 		const claimed = await deps.claim.claimApps(apps, {
 			policy: options.leasePolicy ?? libraryLeasePolicy,
 			serviceNames: prepared.hasServices
@@ -143,6 +144,7 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 			attached: options.attached,
 			signal: options.signal,
 		});
+
 		return { prepared, apps: claimed.apps, skipped: claimed.skipped };
 	}
 
@@ -153,10 +155,12 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 		const { prepared, apps } = claimed;
 		const { productionBuild, onPhase } = prepared;
 		const { output } = options;
+
 		// A run's output (the CLI's stream or TUI, and its logs) is where the
 		// session says what it does: spawns, reuse, the seed's lines. It shows
 		// them whatever `verbose` says, which is about the terminal.
 		const verbose = output !== undefined || prepared.verbose;
+
 		const runSeed = (signal: AbortSignal) => {
 			const elapsed = startTimer();
 			return deps
@@ -186,8 +190,9 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 						deps.waitForHealth(app, productionBuild, signal),
 					recordCapture: deps.recordCapture,
 					afterWave: () => {
-						for (const path of deps.renderGeneratedFiles())
+						for (const path of deps.renderGeneratedFiles()) {
 							if (verbose) console.log(formatDone(`Updated ${path}`));
+						}
 					},
 					prepare: async (signal) => {
 						if (productionBuild) await buildForProduction(apps, signal);
@@ -216,13 +221,15 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 						// A run without containers is in the registry for its apps,
 						// and the watchdog is what lists live runs to BuncargoBar on
 						// the tailnet. Once they are up, so startup pays nothing.
-						if (!prepared.hasServices && prepared.watchdog)
+						if (!prepared.hasServices && prepared.watchdog) {
 							deps.ensureWatchdog();
+						}
 						await options.onReady?.(signal);
 					},
 				},
 			);
 			Object.assign(deps.ownedServerPids, pids);
+
 			return pids;
 		} catch (error) {
 			await deps.claim.abandonApps(apps);

@@ -248,28 +248,22 @@ describe("waitForService failure reporting", () => {
  * that would change a container changes it too.
  */
 describe("ensureServicesRunning reconcile", () => {
-	function reconcileHarness(
-		states: ServiceRuntimeState[] | ((hash: string) => ServiceRuntimeState[]),
-	) {
+	function reconcileHarness(states: ServiceRuntimeState[]) {
 		const ups: ContainerUpRequest[] = [];
-		let seenHash = "";
 		const runtime = fakeAppleRuntime({
 			up: async (request) => {
 				ups.push(request);
 			},
 			containers: async () =>
-				(typeof states === "function" ? states(seenHash) : states).map(
-					(state) =>
-						runtimeContainer({
-							state: state.state,
-							labels: {
-								project: "demo",
-								service: state.service,
-								...(state.serviceHash
-									? { serviceHash: state.serviceHash }
-									: {}),
-							},
-						}),
+				states.map((state) =>
+					runtimeContainer({
+						state: state.state,
+						labels: {
+							project: "demo",
+							service: state.service,
+							...(state.serviceHash ? { serviceHash: state.serviceHash } : {}),
+						},
+					}),
 				),
 		});
 
@@ -300,12 +294,7 @@ describe("ensureServicesRunning reconcile", () => {
 			return ups;
 		}
 
-		return {
-			run,
-			setSeenHash: (hash: string) => {
-				seenHash = hash;
-			},
-		};
+		return { run };
 	}
 
 	/** The hash a run produces, taken from the environment it passes to `up`. */
@@ -337,8 +326,8 @@ describe("ensureServicesRunning reconcile", () => {
 		expect(await harness.run()).toHaveLength(0);
 	});
 
-	// The whole reason `up` used to run unconditionally: an edited image or
-	// port has to take effect without a manual `--down`.
+	// Skipping `up` unconditionally would leave an edited image or port
+	// ineffective until a manual `--down`.
 	it("reconciles when the running stack was created from other config", async () => {
 		const harness = reconcileHarness([
 			{
@@ -403,7 +392,7 @@ describe("ensureServicesRunning reconcile", () => {
 
 /**
  * A `docker compose exec pg_isready` costs seconds, and it is the same probe
- * the generated compose healthcheck already runs — so a runtime reporting the
+ * the generated compose healthcheck already runs, so a runtime reporting the
  * container healthy has answered the question. The host-side probes cost
  * nothing and additionally prove the port is published, so they always run.
  */

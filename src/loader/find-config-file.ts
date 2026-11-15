@@ -9,6 +9,7 @@ export function findRootConfigFile(root: string): string | null {
 	return CONFIG_FILES.find((file) => existsSync(join(root, file))) ?? null;
 }
 
+/** The nearest config file at or above `startDir`, or null outside any checkout. */
 export function findConfigFile(startDir: string): string | null {
 	let currentDir = resolve(startDir);
 

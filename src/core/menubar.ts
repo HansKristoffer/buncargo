@@ -21,7 +21,7 @@ import { chownToInvokingUser, stateFilePath } from "./state-paths";
 import { downloadToolAsset, type ToolFetch } from "./tool-install";
 
 /**
- * BuncargoBar — the macOS menu bar app that reads the run registry.
+ * BuncargoBar, the macOS menu bar app that reads the run registry.
  *
  * The CLI notices that it is missing, offers it once, installs a prebuilt
  * release, and keeps it current. It is the *only* updater: the app itself
@@ -80,7 +80,7 @@ export function getBarManifestPath(): string {
 }
 
 /** The manifest built from the fields that checked out, never the raw value. */
-function isBarManifest(value: unknown): BarManifest | undefined {
+function parseBarManifest(value: unknown): BarManifest | undefined {
 	if (!isRecord(value) || value.version !== MANIFEST_VERSION) return undefined;
 	const { path, appVersion, installedAt, cli } = value;
 	if (
@@ -104,7 +104,7 @@ function isBarManifest(value: unknown): BarManifest | undefined {
 }
 
 export function readBarManifest(): BarManifest | undefined {
-	return readJsonDocumentSync(getBarManifestPath(), isBarManifest);
+	return readJsonDocumentSync(getBarManifestPath(), parseBarManifest);
 }
 
 function writeBarManifest(
@@ -130,6 +130,7 @@ export async function rememberBarCli(): Promise<void> {
 	await withFileLock(getBarManifestPath(), async () => {
 		const manifest = readBarManifest();
 		if (!manifest) return;
+
 		writeJsonDocumentSync(
 			getBarManifestPath(),
 			{
@@ -292,6 +293,7 @@ export async function fetchLatestBarRelease(
 		const tag = typeof release.tag_name === "string" ? release.tag_name : "";
 		if (!tag.startsWith(BAR_TAG_PREFIX)) continue;
 		if (release.draft === true || release.prerelease === true) continue;
+
 		const assets = Array.isArray(release.assets)
 			? (release.assets as GithubAsset[])
 			: [];
@@ -299,18 +301,18 @@ export async function fetchLatestBarRelease(
 			(asset) => typeof asset.name === "string" && asset.name.endsWith(".zip"),
 		);
 		if (!zip || typeof zip.browser_download_url !== "string") continue;
+
 		const checksum = assets.find(
 			(asset) =>
 				typeof asset.name === "string" && asset.name.endsWith(".zip.sha256"),
 		);
+		const checksumUrl = checksum?.browser_download_url;
+
 		return {
 			tag,
 			version: tag.slice(BAR_TAG_PREFIX.length),
 			zipUrl: zip.browser_download_url,
-			checksumUrl:
-				typeof checksum?.browser_download_url === "string"
-					? checksum.browser_download_url
-					: undefined,
+			checksumUrl: typeof checksumUrl === "string" ? checksumUrl : undefined,
 		};
 	}
 	return undefined;
@@ -329,20 +331,25 @@ export async function downloadBarRelease(
 	to: string,
 	options: { signal: AbortSignal; fetch?: ToolFetch },
 ): Promise<void> {
-	if (!release.checksumUrl)
+	if (!release.checksumUrl) {
 		throw new Error(
 			"The release has no checksum for the app; not installing it.",
 		);
+	}
+
 	const checksumPath = `${to}.sha256`;
 	await downloadToolAsset(release.checksumUrl, checksumPath, {
 		...options,
 		maxBytes: MAX_CHECKSUM_BYTES,
 		timeoutMs: RELEASE_FETCH_TIMEOUT_MS,
 	});
+
 	const sha256 = readFileSync(checksumPath, "utf8").trim().split(/\s+/)[0];
 	rmSync(checksumPath, { force: true });
-	if (!sha256 || !/^[a-f0-9]{64}$/i.test(sha256))
+	if (!sha256 || !/^[a-f0-9]{64}$/i.test(sha256)) {
 		throw new Error("The app's published checksum is not a sha256 digest.");
+	}
+
 	await downloadToolAsset(release.zipUrl, to, { ...options, sha256 });
 }
 
@@ -396,8 +403,8 @@ export interface BarInstallOptions {
  * resource forks.
  *
  * The lock is on the manifest, so two `buncargo dev`s starting together
- * serialise here instead of racing on one bundle — the whole reason the CLI is
- * the only updater.
+ * serialise here instead of racing on one bundle, which is the whole reason the
+ * CLI is the only updater.
  */
 export async function installBar(
 	options: BarInstallOptions,
@@ -512,6 +519,7 @@ export function replaceBundle(
 	// LaunchServices would register a half-copied bundle.
 	const staged = `${target}.incoming`;
 	const previous = `${target}.previous`;
+
 	rmSync(staged, { recursive: true, force: true });
 	const copied = copy(source, staged);
 	if (!copied.ok) {
@@ -520,8 +528,10 @@ export function replaceBundle(
 	}
 
 	rmSync(previous, { recursive: true, force: true });
+
 	const installed = existsSync(target);
 	if (installed) renameSync(target, previous);
+
 	try {
 		renameSync(staged, target);
 	} catch (error) {
@@ -530,6 +540,7 @@ export function replaceBundle(
 		rmSync(staged, { recursive: true, force: true });
 		throw error;
 	}
+
 	rmSync(previous, { recursive: true, force: true });
 }
 
@@ -583,6 +594,7 @@ export function isBarRunning(): boolean {
  */
 async function quitBar(): Promise<boolean> {
 	if (!isBarRunning()) return false;
+
 	run(`osascript -e 'quit app "${BAR_APP_NAME}"'`);
 
 	const deadline = Date.now() + QUIT_TIMEOUT_MS;
@@ -590,6 +602,7 @@ async function quitBar(): Promise<boolean> {
 		if (!isBarRunning()) return true;
 		await Bun.sleep(QUIT_POLL_MS);
 	}
+
 	run(`pkill -x ${BAR_APP_NAME}`);
 	return true;
 }
@@ -609,14 +622,15 @@ export async function uninstallBar(): Promise<boolean> {
  */
 export function removeInstalledBars(folders: BarFolders): boolean {
 	const manifest = readBarManifest();
-	const copies = [
-		...new Set([
-			...(manifest ? [manifest.path] : []),
-			...candidateBundlePaths(folders),
-		]),
-	].filter((path) => existsSync(path));
+	const knownPaths = [
+		...(manifest ? [manifest.path] : []),
+		...candidateBundlePaths(folders),
+	];
+	const copies = [...new Set(knownPaths)].filter((path) => existsSync(path));
+
 	for (const path of copies) rmSync(path, { recursive: true, force: true });
 	rmSync(getBarManifestPath(), { force: true });
+
 	return copies.length > 0;
 }
 

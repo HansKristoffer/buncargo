@@ -122,7 +122,9 @@ describe("portOwnersOf a Docker listing", () => {
 				ports: "0.0.0.0:8025->8025/tcp",
 			}),
 		);
-		expect([...portOwnersOf(containers).keys()]).toEqual([5432, 6379]);
+		expect([...portOwnersOf(containers, "docker").keys()]).toEqual([
+			5432, 6379,
+		]);
 	});
 
 	it("names the checkout buncargo labelled a container with, and no root for a stranger's", async () => {
@@ -137,12 +139,14 @@ describe("portOwnersOf a Docker listing", () => {
 				}),
 				dockerListLine({ id: "b2", ports: "0.0.0.0:8080->80/tcp" }),
 			),
+			"docker",
 		);
 		expect(owners.get(13379)).toEqual({
 			id: "a1",
 			name: "bliss-redis-1",
 			composeProject: "bliss",
 			root: "/work/bliss",
+			runtime: "docker",
 		});
 		expect(owners.get(8080)?.root).toBeUndefined();
 	});

@@ -40,6 +40,7 @@ export async function stopAllBuncargoEnvironments(
 		log.info("No container runtime is running. Nothing to stop.");
 		return;
 	}
+
 	const groups = groupBuncargoContainers(
 		await listBuncargoContainers(runtimes),
 	);
@@ -59,23 +60,31 @@ export async function stopAllBuncargoEnvironments(
 			`Could not read ${getRunsPath()}, so nothing was removed: ${reason}. Fix or move the file, then run again.`,
 		);
 	}
+
 	const claims = readAllOffsetClaims();
 	const ours = groups.filter((group) => isKnownStack(group, runs, claims));
 	const others = groups.filter((group) => !ours.includes(group));
 
-	if (ours.length > 0)
+	if (ours.length > 0) {
 		log.info(
 			`Removing ${ours.length} container stack${ours.length === 1 ? "" : "s"}...`,
 		);
+	}
+
 	const by = removalActor();
 	for (const group of ours) {
 		const runtime = runtimes.find((entry) => entry.name === group.runtime);
 		if (!runtime) continue;
+
 		await runtime.down({
 			root: group.root,
 			projectName: group.projectName,
 			verbose: false,
 		});
+
+		const owner = runs.find(
+			(run) => run.projectName === group.projectName && run.root === group.root,
+		);
 		await recordEvents([
 			{
 				kind: "containers",
@@ -84,12 +93,7 @@ export async function stopAllBuncargoEnvironments(
 				root: group.root,
 				runtime: group.runtime,
 				reason: "dev --down --all removed every stack of this user's",
-				owner: removalOwner(
-					runs.find(
-						(run) =>
-							run.projectName === group.projectName && run.root === group.root,
-					),
-				),
+				owner: removalOwner(owner),
 				by,
 			},
 		]);
@@ -100,12 +104,16 @@ export async function stopAllBuncargoEnvironments(
 		log.warn(
 			`Left ${others.length} stack${others.length === 1 ? "" : "s"} this user's buncargo did not start (another user's, or from state that was wiped). Remove one by hand only if it is really orphaned; its volumes stay:`,
 		);
-		for (const group of others)
+		for (const group of others) {
 			log.line(
 				`  ${group.projectName}  ${group.root || "(no checkout recorded)"}\n    ${manualDownCommand(group)}`,
 			);
+		}
 	}
-	if (ours.length > 0)
+
+	if (ours.length > 0) {
 		log.done("All of this user's buncargo environments removed");
-	else log.info("No buncargo containers of this user's.");
+	} else {
+		log.info("No buncargo containers of this user's.");
+	}
 }

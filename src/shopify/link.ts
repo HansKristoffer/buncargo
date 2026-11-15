@@ -37,7 +37,9 @@ export function setTopLevelKey(
 	const tail = firstTable < 0 ? "" : toml.slice(firstTable);
 	const line = `${key} = ${tomlString(value)}`;
 	const pattern = new RegExp(`^[ \\t]*${key}[ \\t]*=.*$`, "m");
+
 	if (pattern.test(head)) return `${head.replace(pattern, line)}${tail}`;
+
 	return `${line}\n${head}${tail}`;
 }
 
@@ -46,6 +48,7 @@ export function setDevStoreUrl(toml: string, value: string): string {
 	const line = `dev_store_url = ${tomlString(value)}`;
 	const build = /^[ \t]*\[build\][ \t]*(?:#.*)?$/m.exec(toml);
 	if (!build) return `${toml.replace(/\n*$/, "\n")}\n[build]\n${line}\n`;
+
 	const start = build.index + build[0].length;
 	const next = toml.slice(start).search(/^[ \t]*\[/m);
 	const end = next < 0 ? toml.length : start + next;
@@ -54,6 +57,7 @@ export function setDevStoreUrl(toml: string, value: string): string {
 	const updated = key.test(section)
 		? section.replace(key, line)
 		: `\n${line}${section}`;
+
 	return `${toml.slice(0, start)}${updated}${toml.slice(end)}`;
 }
 
@@ -85,27 +89,36 @@ export function mergeLinkedConfig(input: {
 }): string {
 	let toml = setTopLevelKey(input.template, "client_id", input.linked.clientId);
 	if (input.linked.name) toml = setTopLevelKey(toml, "name", input.linked.name);
+
 	const store = input.existing ? devStoreUrl(input.existing) : undefined;
 	if (store) toml = setDevStoreUrl(toml, store);
 
 	const expected = Bun.TOML.parse(input.template) as Record<string, unknown>;
 	expected.client_id = input.linked.clientId;
 	if (input.linked.name) expected.name = input.linked.name;
-	if (store)
+	if (store) {
 		expected.build = {
 			...(expected.build as Record<string, unknown> | undefined),
 			dev_store_url: store,
 		};
+	}
+
 	let actual: unknown;
 	try {
 		actual = Bun.TOML.parse(toml);
 	} catch {
 		actual = undefined;
 	}
-	if (!Bun.deepEquals(actual, expected))
+
+	if (!Bun.deepEquals(actual, expected)) {
+		const nameHint = input.linked.name
+			? ` and name = ${tomlString(input.linked.name)}`
+			: "";
 		throw new Error(
-			`could not edit the toml safely. Set client_id = ${tomlString(input.linked.clientId)}${input.linked.name ? ` and name = ${tomlString(input.linked.name)}` : ""} in it by hand.`,
+			`could not edit the toml safely. Set client_id = ${tomlString(input.linked.clientId)}${nameHint} in it by hand.`,
 		);
+	}
+
 	return toml;
 }
 
@@ -135,27 +148,34 @@ export function linkShopifyApp(
 				env: shopifyCli.env(),
 			},
 		);
-		if (result.exitCode !== 0 || !existsSync(scratch))
+
+		if (result.exitCode !== 0 || !existsSync(scratch)) {
 			throw new Error("`shopify app config link` did not link an app");
+		}
+
 		const linked = readFileSync(scratch, "utf8");
 		const clientId = topLevelValue(linked, "client_id");
 		if (!clientId) throw new Error("the linked config has no client_id");
 
 		const path = join(root, shopifyConfigFile(config));
 		const before = existsSync(path) ? readFileSync(path, "utf8") : undefined;
+
 		const templatePath = join(root, TEMPLATE);
 		const template = existsSync(templatePath)
 			? readFileSync(templatePath, "utf8")
 			: (before ?? linked);
+
 		const after = mergeLinkedConfig({
 			template,
 			linked: { clientId, name: topLevelValue(linked, "name") },
 			existing: before,
 		});
+
 		// Atomically: a half-written toml is worse than the old one.
 		const temporary = `${path}.${process.pid}.tmp`;
 		writeFileSync(temporary, after);
 		renameSync(temporary, path);
+
 		return { path, before, after };
 	} finally {
 		rmSync(scratch, { force: true });
@@ -168,6 +188,7 @@ export function describeChange(
 	before: string | undefined,
 ): string {
 	if (before === undefined) return `Created ${path}`;
+
 	const old = join(tmpdir(), `buncargo-link-${process.pid}.toml`);
 	writeFileSync(old, before);
 	try {

@@ -1,7 +1,3 @@
-// ═══════════════════════════════════════════════════════════════════════════
-// CLI Options
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * How the port offset was chosen. `unallocated`: a read of a checkout that has
  * no block yet found every block of the range claimed; the offset is the

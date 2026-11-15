@@ -8,8 +8,8 @@
  *
  * The file stays the repo's contract: this only ever rewrites the value of a key
  * that is already there, and only when that value looks like something buncargo
- * owns. A deliberate override - a cloned remote database, a shared staging
- * service - survives untouched.
+ * owns. A deliberate override, such as a cloned remote database or a shared
+ * staging service, survives untouched.
  */
 
 import { copyFile, readFile } from "node:fs/promises";
@@ -26,8 +26,8 @@ const ENV_LINE =
 /**
  * Whether buncargo may overwrite this value.
  *
- * True for unset, a bare port number, or an address already on loopback -
- * everything else is someone's deliberate choice.
+ * True for unset, a bare port number, or an address already on loopback.
+ * Everything else is someone's deliberate choice.
  */
 export function isReplaceableEnvValue(value: string): boolean {
 	const trimmed = value.trim().replace(/^["']|["']$/g, "");
@@ -110,20 +110,23 @@ export function buildEnvFileUpdates(input: {
 	for (const [key, value] of Object.entries(shared)) {
 		if (value !== undefined) updates[key] = String(value);
 	}
+
 	// Last, so a repo can correct a computed value rather than only add to it.
 	for (const [key, value] of Object.entries(
 		input.values?.(input.ports, input.loopbackUrls) ?? {},
 	)) {
 		if (value !== undefined) updates[key] = String(value);
 	}
+
 	return updates;
 }
 
 /** Normalize `boolean | EnvFileOptions` to the options, or undefined when off. */
-export function resolveEnvFileOptions(
+function resolveEnvFileOptions(
 	envFile: boolean | EnvFileOptions | undefined,
 ): (Required<Pick<EnvFileOptions, "path">> & EnvFileOptions) | undefined {
 	if (!envFile) return undefined;
+
 	const options = envFile === true ? {} : envFile;
 	return { ...options, path: options.path ?? ".env" };
 }
@@ -146,8 +149,8 @@ export interface EnvFileSyncResult {
 /**
  * Sync one dotenv in place.
  *
- * Writes through a temp file and a rename so a concurrent reader - a test
- * runner loading `.env` while this runs - never sees a truncated file. The
+ * Writes through a temp file and a rename so a concurrent reader, such as a
+ * test runner loading `.env` while this runs, never sees a truncated file. The
  * file keeps its mode. Only a missing file is absent; any other read error
  * throws, rather than passing for a dotenv the repo does not have.
  */
@@ -176,9 +179,11 @@ export async function syncEnvFile(input: {
 			// Never conjure a dotenv the repo did not ask for.
 			return { path, changed: [], created: false, absent: true };
 		}
+
 		const template = isAbsolute(options.createFrom)
 			? options.createFrom
 			: resolve(input.root, options.createFrom);
+
 		try {
 			await copyFile(template, path);
 			contents = await readFile(path, "utf-8");

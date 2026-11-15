@@ -28,6 +28,7 @@ export function installCheckout(need: InstallNeed): void {
 		() => {
 			// Another buncargo may have installed while this one waited.
 			if (!installNeed(need.dir)) return;
+
 			const hash = lockfileHash(need.dir);
 			const where = relative(process.cwd(), need.dir) || ".";
 			writeSync(
@@ -45,6 +46,7 @@ export function installCheckout(need: InstallNeed): void {
 					env: { ...connectProcessEnv(), [INSTALLING_ENV]: "1" },
 				},
 			);
+
 			if (result.exitCode !== 0) {
 				const failure = `${INSTALL_COMMAND} failed in ${need.dir} (exit ${result.exitCode}); its output is above.`;
 				throw new CliError(failure, [

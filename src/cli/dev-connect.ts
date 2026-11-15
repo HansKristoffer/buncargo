@@ -36,6 +36,7 @@ export async function keepCoordinator(input: {
 	const { signal } = input;
 	let ready = false;
 	let warned = false;
+
 	while (!signal.aborted) {
 		try {
 			await input.ensure(signal);
@@ -44,8 +45,9 @@ export async function keepCoordinator(input: {
 			warned = false;
 		} catch (error) {
 			if (signal.aborted) return;
-			if (!warned)
+			if (!warned) {
 				input.warn(getErrorMessage(error, "run buncargo connect status"));
+			}
 			warned = true;
 		}
 
@@ -60,9 +62,8 @@ export async function keepCoordinator(input: {
 /** Registration intent belongs to this invocation; the run registry owns target lifetime. */
 export function createDevConnect() {
 	const tokens = connectTokens();
-	if (!tokens.length) {
-		return;
-	}
+	if (!tokens.length) return;
+
 	const name = connectName() ?? hostname();
 	const origin = connectOrigin();
 	const controller = new AbortController();
@@ -70,23 +71,29 @@ export function createDevConnect() {
 	let path: string | undefined;
 	let task: Promise<void> | undefined;
 
+	const warnUnavailable = (reason: string) =>
+		log.warn(`Remote sharing unavailable: ${reason}`);
+
 	return {
 		plan(
 			apps: Record<string, ResolvedApp>,
 			names: readonly string[],
 			services: Record<string, ResolvedService>,
 		) {
-			count =
-				Object.values(apps).filter((a) => a.port !== undefined).length +
-				names.filter((n) => services[n]?.port !== undefined).length;
+			const appCount = Object.values(apps).filter(
+				(app) => app.port !== undefined,
+			).length;
+			const serviceCount = names.filter(
+				(serviceName) => services[serviceName]?.port !== undefined,
+			).length;
+			count = appCount + serviceCount;
 		},
 		get active() {
 			return count > 0;
 		},
 		start(sessionId: string) {
-			if (!count || task) {
-				return;
-			}
+			if (!count || task) return;
+
 			path = `${intentsPath()}/${sessionId}.json`;
 			task = writeJsonDocument(path, {
 				sessionId,
@@ -104,21 +111,20 @@ export function createDevConnect() {
 							log.info(
 								`Connecting ${count} targets for ${tokens.length} recipient(s)`,
 							),
-						warn: (reason) => log.warn(`Remote sharing unavailable: ${reason}`),
+						warn: warnUnavailable,
 					}),
 				)
 				.catch((error) => {
 					if (controller.signal.aborted) return;
-					const reason = getErrorMessage(error, "run buncargo connect status");
-					log.warn(`Remote sharing unavailable: ${reason}`);
+					warnUnavailable(
+						getErrorMessage(error, "run buncargo connect status"),
+					);
 				});
 		},
 		async stop() {
 			controller.abort();
 			await task;
-			if (path) {
-				await rm(path, { force: true });
-			}
+			if (path) await rm(path, { force: true });
 		},
 	};
 }

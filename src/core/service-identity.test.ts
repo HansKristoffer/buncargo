@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { resolveService } from "../config/resolve";
-import { describeService, tablePlusUrl } from "./service-identity";
+import { describeService } from "./service-identity";
 
 describe("describeService", () => {
 	it("recognises a preset service under any key", () => {
@@ -74,20 +74,5 @@ describe("describeService", () => {
 			port: undefined,
 		});
 		expect(identity.tablePlusUrl).toBeUndefined();
-	});
-});
-
-describe("tablePlusUrl", () => {
-	it("keeps the name and env query parameters TablePlus expects", () => {
-		const url = tablePlusUrl({
-			user: "postgres",
-			password: "postgres",
-			port: 7432,
-			database: "app",
-			name: "proj-postgres",
-		});
-		expect(url).toContain("env=development");
-		expect(url).toContain("name=proj-postgres");
-		expect(url).toContain("tLSMode=0");
 	});
 });

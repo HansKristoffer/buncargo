@@ -22,7 +22,7 @@ export function cloudflaredBinPath(version = cloudflaredVersion()): string {
 
 /**
  * Spawn/install target: optional `BUNCARGO_CLOUDFLARED_PATH` overrides the
- * bundled cache path. No `PATH` lookup — buncargo pins the release it downloads.
+ * bundled cache path. No `PATH` lookup: buncargo pins the release it downloads.
  */
 export function resolveCloudflared(): ToolBinaryResolution {
 	return resolveToolBinary({

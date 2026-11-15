@@ -45,14 +45,18 @@ export async function startServerSession(
 	options: ServerSessionOptions,
 ): Promise<Record<string, number>> {
 	options.signal?.throwIfAborted();
+
 	const seed = options.seed
 		? startSeedTask(options.seed, options.signal)
 		: undefined;
+
+	// A failing seed aborts this signal, which stops the secrets, `prepare` and the apps.
 	const signal = seed?.signal ?? options.signal ?? new AbortController().signal;
 	const joinSeed = async () => {
 		await seed?.ready;
 		if (seed) source.onSeedReady?.();
 	};
+
 	try {
 		// A missing required secret refuses before a production build or
 		// `beforeServers` runs; `startDevServers` checks again from the cache.
@@ -62,12 +66,14 @@ export async function startServerSession(
 			{ signal, onWait: (ms) => options.onPhase?.("secrets", ms) },
 		);
 		await source.prepare?.(signal);
+
 		if (Object.keys(apps).length === 0 && options.stayOpen) {
 			await joinSeed();
 			await options.onReady?.(signal);
-			await options.stayOpen?.(signal);
+			await options.stayOpen(signal);
 			return {};
 		}
+
 		await source.runHook("before", signal);
 		return await startDevServers(
 			apps,
@@ -98,6 +104,8 @@ export async function startServerSession(
 			},
 		);
 	} finally {
+		// A start that failed stops a seed still running and waits for it to
+		// end; a start that succeeded has joined the seed already.
 		seed?.cancel();
 		if (seed) await Promise.allSettled([seed.ready]);
 	}

@@ -35,10 +35,12 @@ function assertSelection(
 	source: string,
 ): ContainerRuntimeSelection {
 	if (!isContainerRuntimeSelection(value)) {
+		const choices = CONTAINER_RUNTIME_SELECTIONS.map((name) => `"${name}"`);
 		throw new Error(
-			`${source} "${value}" is invalid. Use ${CONTAINER_RUNTIME_SELECTIONS.map((name) => `"${name}"`).join(", ")}.`,
+			`${source} "${value}" is invalid. Use ${choices.join(", ")}.`,
 		);
 	}
+
 	return value;
 }
 
@@ -47,7 +49,7 @@ function assertSelection(
  *
  * Precedence is most-specific-first: an explicit `--runtime` beats the
  * environment, which beats the config, which defaults to Docker. The default
- * is deliberately not `"auto"` - silently moving an existing project onto a
+ * is deliberately not `"auto"`: silently moving an existing project onto a
  * different runtime because a binary happens to be installed would change
  * where its data lives.
  */
@@ -95,6 +97,7 @@ export function resolveContainerRuntimeBinary(
 	options: ResolveContainerRuntimeOptions = {},
 ): string | undefined {
 	if (resolveContainerRuntimeSelection(options) === "auto") return undefined;
+
 	return (
 		options.docker?.binary ??
 		containerBinaryOverride(options.env ?? process.env)

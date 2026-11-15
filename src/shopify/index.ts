@@ -22,7 +22,7 @@ import {
 	shopifyConfigName,
 } from "./app-config";
 import { isClientId, shopifyChecks } from "./checks";
-import { shopifyCli } from "./cli";
+import { shopifyCli, shopifySessionFile } from "./cli";
 import { shopifyCommands } from "./commands";
 import { ensureShopifyLogin } from "./login";
 import { renderShopifyWebToml, SHOPIFY_WEB_DIR } from "./web";
@@ -106,8 +106,9 @@ function touchTree(dir: string, when: Date): number {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
 		if (entry.name.startsWith(".")) continue;
 		const path = join(dir, entry.name);
-		if (entry.isDirectory()) touched += touchTree(path, when);
-		else {
+		if (entry.isDirectory()) {
+			touched += touchTree(path, when);
+		} else {
 			utimesSync(path, when, when);
 			touched++;
 		}
@@ -119,6 +120,7 @@ function touchTree(dir: string, when: Date): number {
 function nudgeThemeAssets(root: string): number {
 	const extensions = join(root, "extensions");
 	if (!existsSync(extensions)) return 0;
+
 	const now = new Date();
 	let touched = 0;
 	for (const name of readdirSync(extensions)) {
@@ -137,6 +139,7 @@ export function storeLinks(
 ): Record<string, string> {
 	const domain = store?.replace(/^https?:\/\//, "").replace(/\/$/, "");
 	if (!domain) return {};
+
 	const handle = domain.replace(/\.myshopify\.com$/, "");
 	return {
 		...(clientId
@@ -154,6 +157,7 @@ export function shopify(
 	const file = shopifyConfigFile(options.config);
 	const configName = shopifyConfigName(file);
 	const state = { config: configName };
+
 	// Read in `config()`, which runs in the process `describe` does.
 	let appToml: ShopifyAppConfig | undefined;
 	let nudged = false;
@@ -164,6 +168,7 @@ export function shopify(
 		config(config, ctx) {
 			const root = ctx?.root ?? findMonorepoRoot();
 			const apps = config.apps ?? {};
+
 			// Lenient: without the toml (CI, a fresh clone) the app still gets a
 			// dev command, and `setup` / `doctor` report what is missing.
 			appToml = (() => {
@@ -191,6 +196,7 @@ export function shopify(
 							...options.extensions,
 							root,
 						});
+
 			// An app the config defines itself wins over a discovered one.
 			const discovered = Object.fromEntries(
 				Object.entries(extensions).filter(([name]) => !apps[name]),
@@ -233,12 +239,14 @@ export function shopify(
 			};
 
 			const cli = buncargoCli();
+
 			const devStore = store ?? appToml?.devStoreUrl;
 			const shopifyEnv = {
 				SHOPIFY_APP_CONFIG: configName,
 				...(appToml ? { SHOPIFY_API_KEY: appToml.clientId } : {}),
 				...(devStore ? { SHOPIFY_DEV_STORE: devStore } : {}),
 			};
+
 			// Shopify's env goes in as the base, so the config's own `env` wins.
 			return mergeConfigs(
 				{ ...config, env: () => shopifyEnv },
@@ -310,6 +318,8 @@ export function shopify(
 						config: configName,
 						linked: appToml !== undefined && isClientId(appToml.clientId),
 						interactive,
+						sessionFile: shopifySessionFile(),
+						env: process.env,
 					}),
 			},
 		],

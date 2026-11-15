@@ -7,6 +7,7 @@ async function releaseTargets({
 	fetch: request = fetch,
 }) {
 	const repo = context.repo;
+
 	async function atCommit(tag) {
 		let release;
 		try {
@@ -18,6 +19,7 @@ async function releaseTargets({
 			if (error.status === 404) return undefined;
 			throw error;
 		}
+
 		if (release.draft || release.prerelease) return undefined;
 		// getCommit peels annotated tags too. target_commitish can simply be 'main'.
 		const { data: commit } = await github.rest.repos.getCommit({
@@ -26,17 +28,20 @@ async function releaseTargets({
 		});
 		return commit.sha === context.sha ? release : undefined;
 	}
+
 	for (const path of [".", "menubar"]) {
 		if (!/^\d+\.\d+\.\d+$/.test(versions[path] ?? "")) {
 			throw new Error(`Invalid release version for ${path}`);
 		}
 	}
+
 	const cliVersion = versions["."];
 	const barVersion = versions.menubar;
 	const [cli, bar] = await Promise.all([
 		atCommit(`v${cliVersion}`),
 		atCommit(`bar-v${barVersion}`),
 	]);
+
 	let publishNpm = false;
 	if (cli) {
 		const response = await request(
@@ -45,17 +50,21 @@ async function releaseTargets({
 				signal: AbortSignal.timeout(10000),
 			},
 		);
-		if (response.status === 404) publishNpm = true;
-		else if (response.ok) {
+		if (response.status === 404) {
+			publishNpm = true;
+		} else if (response.ok) {
 			const metadata = await response.json();
 			if (metadata.name !== "buncargo" || metadata.version !== cliVersion) {
 				throw new Error("npm returned unexpected release metadata");
 			}
-		} else
+		} else {
 			throw new Error(
 				`Could not check npm publication: HTTP ${response.status}`,
 			);
+		}
 	}
+
+	// A release whose zip and checksum are not both uploaded is retried.
 	const barComplete =
 		bar &&
 		[
@@ -66,6 +75,7 @@ async function releaseTargets({
 				(asset) => asset.name === name && asset.state === "uploaded",
 			),
 		);
+
 	return {
 		cli_released: Boolean(cli),
 		publish_npm: publishNpm,
@@ -73,4 +83,5 @@ async function releaseTargets({
 		bar_version: barVersion,
 	};
 }
+
 module.exports = { releaseTargets };

@@ -60,10 +60,12 @@ export default defineDevConfig({
 		join(consumer, "firebase.json"),
 		JSON.stringify({ emulators: { auth: { port: 9099 } } }),
 	);
+
 	// The integration resolves the checkout's own `node_modules/.bin` first.
 	const reportEnv = `#!/bin/sh\nprintf '%s|%s' "\${VERIFY_UNSET-unset}" "$VERIFY_KEPT"\n`;
 	const fakeFirebase = join(consumer, "node_modules", ".bin", "firebase");
 	writeFileSync(fakeFirebase, reportEnv, { mode: 0o755 });
+
 	const tool = join(consumer, "tools", "probe");
 	mkdirSync(tool, { recursive: true });
 	writeFileSync(join(tool, "report-env.sh"), reportEnv, { mode: 0o755 });
@@ -73,6 +75,7 @@ export default defineDevConfig({
 			scripts: { dev: "sh report-env.sh", build: "sh report-env.sh" },
 		}),
 	);
+
 	const env = {
 		...process.env,
 		VERIFY_UNSET: "set",
@@ -97,14 +100,17 @@ if (!app || !("devCommand" in app)) throw new Error("no firebase app");
 const { stdout } = await env.exec(app.devCommand, { app: "firebase" });
 process.stdout.write(stdout);`,
 	);
+
 	const { VERIFY_MODULES_FILE: _file, ...libraryEnv } = env;
 	assert.equal(
 		command([process.execPath, "integration-cli.ts"], consumer, libraryEnv),
 		"unset|kept",
 	);
 }
+
 const artifacts = join(root, ".buncargo", "artifacts");
 mkdirSync(artifacts, { recursive: true });
+
 function command(argv: string[], cwd: string, env = process.env) {
 	const result = Bun.spawnSync(argv, {
 		cwd,
@@ -119,6 +125,7 @@ function command(argv: string[], cwd: string, env = process.env) {
 	);
 	return result.stdout.toString();
 }
+
 const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const packed = process.argv[2]
 	? resolve(process.argv[2])
@@ -138,12 +145,16 @@ const packed = process.argv[2]
 				),
 			)[0].filename,
 		);
+
+// The `$` and the spaces in the name catch a path that reaches a shell unquoted.
 const consumer = mkdtempSync(join(tmpdir(), "buncargo-consumer $ space-"));
+
 try {
 	writeFileSync(
 		join(consumer, "package.json"),
 		JSON.stringify({ private: true, type: "module" }),
 	);
+
 	command(
 		[
 			"npm",
@@ -157,10 +168,12 @@ try {
 		],
 		consumer,
 	);
+
 	const installed = join(consumer, "node_modules", "buncargo");
 	const packageJson = JSON.parse(
 		readFileSync(join(installed, "package.json"), "utf8"),
 	);
+
 	const specifiers: string[] = [];
 	for (const [subpath, conditions] of Object.entries(packageJson.exports) as [
 		string,
@@ -169,24 +182,30 @@ try {
 		specifiers.push(
 			subpath === "." ? "buncargo" : `buncargo/${subpath.slice(2)}`,
 		);
-		for (const target of Object.values(conditions))
+		for (const target of Object.values(conditions)) {
 			assert(
 				existsSync(join(installed, target)),
 				`${subpath} missing ${target}`,
 			);
+		}
 	}
+
 	writeFileSync(
 		join(consumer, "imports.mjs"),
 		`for (const name of ${JSON.stringify(specifiers)}) await import(name);`,
 	);
 	command([process.execPath, "imports.mjs"], consumer);
 	command(["node", "imports.mjs"], consumer);
+
 	// Bun loads the same build the CLI runs: a second copy of a module keeps
 	// its own module state. The package ships no source to load.
 	assert(!existsSync(join(installed, "src")), "the package ships src/");
+
 	// What an agent upgrading buncargo in a project reads to see what changed.
-	for (const file of ["CHANGELOG.md", "docs/migration.md"])
+	for (const file of ["CHANGELOG.md", "docs/migration.md"]) {
 		assert(existsSync(join(installed, file)), `the package omits ${file}`);
+	}
+
 	const rootModules: string[] = JSON.parse(
 		command(
 			[
@@ -202,6 +221,7 @@ try {
 		rootModules.length <= 60,
 		`import "buncargo" loads ${rootModules.length} modules`,
 	);
+
 	// Exercise the published browser entry, including shared build chunks.
 	const clientBuild = await Bun.build({
 		entrypoints: [join(installed, packageJson.exports["./client"].browser)],
@@ -209,14 +229,17 @@ try {
 		format: "cjs",
 	});
 	assert(clientBuild.success, clientBuild.logs.join("\n"));
+
 	const clientOutput = clientBuild.outputs[0];
 	assert(clientOutput, "Missing client helper bundle");
+
 	const clientPrefix = new Function(
 		"module",
 		"__DEV__",
 		"process",
 		`${await clientOutput.text()}\nreturn module.exports.devCookiePrefix("platform", "0123456789abcdef");`,
 	);
+
 	assert.equal(
 		clientPrefix({ exports: {} }, true, undefined),
 		"platform-0123456789abcdef",
@@ -228,6 +251,7 @@ try {
 		}),
 		"platform",
 	);
+
 	writeFileSync(
 		join(consumer, "consumer.ts"),
 		`
@@ -270,6 +294,7 @@ void invalidJob;
 void web;
 `,
 	);
+
 	writeFileSync(
 		join(consumer, "tsconfig.json"),
 		JSON.stringify({
@@ -285,6 +310,7 @@ void web;
 			files: ["consumer.ts"],
 		}),
 	);
+
 	command(
 		[
 			process.execPath,
@@ -294,6 +320,7 @@ void web;
 		],
 		consumer,
 	);
+
 	const cli = join(installed, packageJson.bin.buncargo);
 	writeFileSync(
 		join(consumer, "dev.config.ts"),
@@ -309,6 +336,7 @@ void web;
   },
 };`,
 	);
+
 	const argv = ["a b", "a'b", 'a"b', "$HOME", "$(false)", ";", "--app=child"];
 	assert.deepEqual(
 		JSON.parse(
@@ -329,6 +357,7 @@ void web;
 		),
 		{ args: argv, overlay: "ok" },
 	);
+
 	verifyConfigWithIntegration(consumer, cli, installed);
 
 	assert(
@@ -344,11 +373,13 @@ void web;
 			"BUNCARGO_CONNECT_TOKENS",
 		),
 	);
+
 	// Bun canonicalizes argv[1]; symlinked homes must identify the same coordinator bundle.
 	const realHome = join(consumer, "home");
 	const linkedHome = join(consumer, "linked-home");
 	mkdirSync(realHome);
 	symlinkSync(realHome, linkedHome, "dir");
+
 	const bundleProbe = join(consumer, "bundle-probe.ts");
 	writeFileSync(
 		bundleProbe,
@@ -369,14 +400,16 @@ assert.equal(installConnectBundle(), path);
 console.log(path);
 `,
 	);
+
 	const installedPaths = [linkedHome, realHome].map((home) =>
 		command([process.execPath, bundleProbe], consumer, { HOME: home }),
 	);
 	assert.equal(installedPaths[0], installedPaths[1]);
+
 	// The watchdog is machine-wide and configured by nothing but the run
 	// registry, so the only thing to prove here is that the packed bundle
-	// runs standalone out of the installed package — it is executed by a
-	// detached process that cannot reach the consumer's code-split chunks.
+	// runs standalone out of the installed package. A detached process runs
+	// it, and that process cannot reach the consumer's code-split chunks.
 	//
 	// Hermetic on purpose: an isolated HOME so it reads an empty registry,
 	// and a PATH of one empty directory so it finds no container runtime. It
@@ -389,6 +422,7 @@ console.log(path);
 	const emptyBin = join(consumer, "watchdog-empty-bin");
 	mkdirSync(watchdogHome, { recursive: true });
 	mkdirSync(emptyBin, { recursive: true });
+
 	const watchdog = join(installed, "dist/core/watchdog-runner.js");
 	const watchdogResult = Bun.spawnSync([process.execPath, watchdog], {
 		cwd: consumer,
@@ -403,6 +437,7 @@ console.log(path);
 	});
 	assert.equal(watchdogResult.exitCode, 0);
 	assert(watchdogResult.stdout.toString().includes("Nothing left to watch"));
+
 	// Its version is read from the installed package.json, through the
 	// build's chunk layout; `ensureWatchdog` replaces a runner without one.
 	assert(
@@ -410,17 +445,21 @@ console.log(path);
 			.toString()
 			.includes(`[watchdog ${packageJson.version} pid `),
 	);
+
 	for (const daemon of ["hostsd.js", "connectd.js"]) {
 		const detachedDaemon = join(consumer, "detached", daemon);
 		mkdirSync(dirname(detachedDaemon), { recursive: true });
 		copyFileSync(join(installed, "dist", daemon), detachedDaemon);
-		if (daemon === "connectd.js")
+
+		if (daemon === "connectd.js") {
 			assert(
 				command(
 					[process.execPath, detachedDaemon, "connect", "--help"],
 					consumer,
 				).includes("BUNCARGO_CONNECT_TOKENS"),
 			);
+		}
+
 		const bundle = await Bun.build({
 			entrypoints: [detachedDaemon],
 			target: "bun",
@@ -430,6 +469,7 @@ console.log(path);
 			`Standalone ${daemon} does not bundle: ${bundle.logs.join("\n")}`,
 		);
 	}
+
 	writeFileSync(join(artifacts, "verified-package.txt"), `${packed}\n`);
 	console.log(
 		`Verified ${packageJson.name}@${packageJson.version}: ${specifiers.length} exports, declarations, CLI, watchdog and standalone daemons.\n${packed}`,

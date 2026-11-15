@@ -7,10 +7,6 @@ import type {
 } from "./computed";
 import type { ServiceConfig } from "./service";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Hooks
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * Execution options for the exec helper.
  */
@@ -77,7 +73,7 @@ export interface HookContext<
 	exec: (
 		cmd: string | readonly string[],
 		options?: ExecOptions,
-	) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+	) => Promise<ExecResult>;
 	/** Path to monorepo root */
 	root: string;
 	/** Whether running in CI environment */

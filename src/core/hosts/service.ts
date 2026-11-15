@@ -79,22 +79,6 @@ export function toHostsUserMessage(error: unknown): string {
 }
 
 /**
- * What the service runs: the Bun binary against the bundle we install into a
- * root-owned directory. `process.execPath` is left as-is; the manifest records
- * it so a Bun that later moves is reported as stale rather than failing
- * silently.
- */
-function resolveHostsDaemonCommand(version: string): {
-	program: string;
-	args: string[];
-} {
-	return {
-		program: process.execPath,
-		args: [hostsDaemonBundlePath(version)],
-	};
-}
-
-/**
  * Path of the unit file for this platform, or `undefined` where named hosts
  * are unsupported.
  */
@@ -113,6 +97,7 @@ export function isHostsServiceInstalled(): boolean {
 
 function validateManifest(value: unknown): HostsServiceManifest | undefined {
 	if (!isRecord(value)) return undefined;
+
 	const manifest = value;
 	if (
 		typeof manifest.version !== "number" ||
@@ -124,6 +109,7 @@ function validateManifest(value: unknown): HostsServiceManifest | undefined {
 	if (typeof manifest.program !== "string") return undefined;
 	if (!Array.isArray(manifest.args)) return undefined;
 	if (!manifest.args.every((arg) => typeof arg === "string")) return undefined;
+
 	return {
 		version: manifest.version,
 		protocol: manifest.protocol,
@@ -168,6 +154,7 @@ export function missingServiceTargets(
 	fileExists: (path: string) => boolean = existsSync,
 ): string[] {
 	const targets = [manifest.program, manifest.args[0]];
+
 	return targets.filter(
 		(target): target is string =>
 			typeof target === "string" && target.length > 0 && !fileExists(target),
@@ -191,6 +178,7 @@ export function describeStaleService(input: {
 	fileExists: (path: string) => boolean;
 }): string | undefined {
 	const { installed, manifest, fileExists } = input;
+
 	// Installed once and the unit is gone (removed by hand, or a failed
 	// reinstall that had nothing to put back): not a machine that never had
 	// it, which is what saying nothing here made it look like.
@@ -198,6 +186,7 @@ export function describeStaleService(input: {
 		return "Named-hosts service was installed, but its unit file is gone. Run `buncargo hosts install` to repair it.";
 	}
 	if (!installed) return undefined;
+
 	// Also what a manifest from before the protocol reads as.
 	if (!manifest) {
 		return "Named-hosts service was installed by an older buncargo, or its manifest is missing. Run `buncargo hosts install` to update it.";
@@ -211,6 +200,7 @@ export function describeStaleService(input: {
 	if (manifest.protocol < MIN_HOSTS_PROTOCOL) {
 		return `Named-hosts service runs buncargo ${manifest.buncargoVersion} (protocol ${manifest.protocol}), older than this buncargo needs (protocol ${MIN_HOSTS_PROTOCOL}). Run \`buncargo hosts install\` to update it.`;
 	}
+
 	return undefined;
 }
 
@@ -233,11 +223,13 @@ function describeNewerService(
 	bundleVersion: string,
 ): string | undefined {
 	if (!manifest) return undefined;
-	const newer =
+
+	const isNewer =
 		manifest.protocol > HOSTS_PROTOCOL ||
 		(manifest.protocol === HOSTS_PROTOCOL &&
 			Bun.semver.order(manifest.buncargoVersion, bundleVersion) > 0);
-	if (!newer) return undefined;
+	if (!isNewer) return undefined;
+
 	return `Kept the named-hosts service from buncargo ${manifest.buncargoVersion}, newer than this buncargo ${bundleVersion}. \`buncargo hosts install --force\` replaces it.`;
 }
 
@@ -279,12 +271,14 @@ function activateService(runner: PrivilegedRunner): void {
 		} catch {
 			// not loaded
 		}
+
 		waitForLaunchdUnload(runner);
 		runner.run("launchctl", ["bootstrap", "system", LAUNCHD_PLIST], {
 			stdio: "ignore",
 		});
 		return;
 	}
+
 	runner.run("systemctl", ["daemon-reload"], { stdio: "ignore" });
 	runner.run("systemctl", ["enable", SYSTEMD_UNIT], { stdio: "ignore" });
 	// Restart, not `start` or `enable --now`: both are no-ops on an active
@@ -376,8 +370,13 @@ export function installHostsService(install: HostsServiceInstall): {
 		);
 		if (newer) return { kept: newer };
 	}
-	const { program, args } = resolveHostsDaemonCommand(bundle.version);
-	const bundlePath = args[0] as string;
+
+	// The service runs the Bun binary against the bundle installed into a
+	// root-owned directory. `process.execPath` is recorded in the manifest, so
+	// a Bun that later moves is reported as stale instead of failing silently.
+	const program = process.execPath;
+	const bundlePath = hostsDaemonBundlePath(bundle.version);
+	const args = [bundlePath];
 	const input = { program, args, user };
 	const contents =
 		process.platform === "darwin"
@@ -395,6 +394,7 @@ export function installHostsService(install: HostsServiceInstall): {
 	} catch {
 		throw privilegeError("install the :443 proxy service");
 	}
+
 	try {
 		runner.run("mkdir", ["-p", HOSTS_DAEMON_DIR]);
 		runner.writeFile(bundlePath, bundle.contents);
@@ -431,6 +431,7 @@ export function installHostsService(install: HostsServiceInstall): {
 		buncargoVersion: bundle.version,
 	});
 	removeSupersededBundles(runner, bundlePath);
+
 	return {};
 }
 

@@ -32,6 +32,7 @@ import * as log from "../log";
 export function parseAge(value: string): number | undefined {
 	const match = /^(\d+)(m|h|d)$/.exec(value.trim());
 	if (!match) return undefined;
+
 	const unit = { m: 60_000, h: 3_600_000, d: 86_400_000 }[
 		match[2] as "m" | "h" | "d"
 	];
@@ -113,13 +114,16 @@ export const pruneCommand = defineCommand({
 			yes: values.yes,
 			olderThanMs: olderThan === undefined ? undefined : parseAge(olderThan),
 		};
+
 		if (!values.project) return prune(parsed);
+
 		if (parsed.olderThanMs !== undefined) {
 			log.error(
 				"--older-than applies to deleted checkouts' volumes, not to --project.",
 			);
 			return 1;
 		}
+
 		return pruneProject(parsed);
 	},
 });
@@ -152,12 +156,15 @@ async function prune(parsed: PruneRequest): Promise<number> {
 			: { ms: parsed.olderThanMs, now: Date.now() };
 	for (const stack of swept.swept) log.info(describeSwept(stack));
 
+	// Read again before each removal batch, so a claim or run that appeared
+	// since the listing is seen.
 	const inventory = async (): Promise<VolumeReport[] | undefined> => {
 		const volumes = (
 			await Promise.all(runtimes.map((runtime) => runtime.listVolumes()))
 		).flat();
 		const claims = readClaims();
 		if (!claims) return undefined;
+
 		return planVolumePrune({
 			volumes,
 			containers: await listBuncargoContainers(runtimes),
@@ -176,10 +183,11 @@ async function prune(parsed: PruneRequest): Promise<number> {
 	);
 	if (proposed.length === 0) {
 		log.info("No volumes to reclaim.");
-		if (deletedFor)
+		if (deletedFor) {
 			log.hint(
 				`Only checkouts deleted at least ${formatSpan(deletedFor.ms)} ago count; without --older-than every deleted checkout does.`,
 			);
+		}
 		log.hint(
 			"Only a deleted checkout's volumes are proposed here. A project's ci and deleted-worktree stacks: `buncargo prune --project --dry-run` in one of its checkouts.",
 		);
@@ -188,10 +196,11 @@ async function prune(parsed: PruneRequest): Promise<number> {
 
 	log.line();
 	log.info(
-		`${proposed.length} volume${proposed.length === 1 ? "" : "s"} of deleted checkouts, with no containers and no run:`,
+		`${plural(proposed.length, "volume")} of deleted checkouts, with no containers and no run:`,
 	);
-	for (const { volume, verdict } of proposed)
+	for (const { volume, verdict } of proposed) {
 		log.line(`  ${volume.name}  (${volume.project}: ${verdict.reason})`);
+	}
 	log.line();
 	log.warn("Removing these destroys their data, databases included.");
 
@@ -204,7 +213,7 @@ async function prune(parsed: PruneRequest): Promise<number> {
 		const accepted =
 			isInteractive() &&
 			(await askConfirm([
-				`  Remove ${proposed.length} volume${proposed.length === 1 ? "" : "s"}? This cannot be undone.`,
+				`  Remove ${plural(proposed.length, "volume")}? This cannot be undone.`,
 				"",
 				"  y to remove  ·  Enter to keep them",
 			]));
@@ -215,13 +224,16 @@ async function prune(parsed: PruneRequest): Promise<number> {
 	}
 
 	let removed = 0;
-	for (const project of new Set(proposed.map(({ volume }) => volume.project)))
+	const projects = new Set(proposed.map(({ volume }) => volume.project));
+	for (const project of projects) {
 		removed += await removeProjectVolumes(
 			runtimes,
 			proposed.filter(({ volume }) => volume.project === project),
 			inventory,
 		);
-	log.done(`Removed ${removed} volume${removed === 1 ? "" : "s"}`);
+	}
+	log.done(`Removed ${plural(removed, "volume")}`);
+
 	return 0;
 }
 
@@ -249,6 +261,7 @@ async function removeProjectVolumes(
 ): Promise<number> {
 	const [first] = listed;
 	if (!first || first.verdict.kind !== "orphaned") return 0;
+
 	const project = first.volume.project ?? "";
 	try {
 		return await withProjectLifecycleLock(
@@ -257,6 +270,7 @@ async function removeProjectVolumes(
 			async () => {
 				const fresh = await inventory();
 				if (!fresh) return 0;
+
 				let removed = 0;
 				for (const runtime of runtimes) {
 					const names = listed
@@ -272,11 +286,14 @@ async function removeProjectVolumes(
 							return [];
 						});
 					if (names.length === 0) continue;
+
 					const failures = await runtime.removeVolumes(names);
 					removed += names.length - failures.length;
-					for (const failure of failures)
+					for (const failure of failures) {
 						log.warn(`Could not remove ${failure.name}: ${failure.error}`);
+					}
 				}
+
 				return removed;
 			},
 			{ timeoutMs: 0 },
@@ -300,10 +317,12 @@ function reportUnattributed(reports: readonly VolumeReport[]): void {
 		(report) => report.verdict.kind === "unattributed",
 	);
 	if (unattributed.length === 0) return;
+
 	// Counted, not listed: naming them invites removing one, and the whole
 	// point is that we cannot say whose they are.
+	const verb = unattributed.length === 1 ? "was" : "were";
 	log.info(
-		`${unattributed.length} volume${unattributed.length === 1 ? "" : "s"} could not be traced to a project and ${unattributed.length === 1 ? "was" : "were"} left alone.`,
+		`${plural(unattributed.length, "volume")} could not be traced to a project and ${verb} left alone.`,
 	);
 }
 
@@ -320,6 +339,7 @@ async function pruneProject(parsed: {
 }): Promise<number> {
 	const env = await loadDevEnv();
 	const runtime = containerRuntimeForEnv(env);
+
 	if (!runtime.capabilities.composeProjectResources) {
 		log.error(
 			`prune --project needs Docker. ${runtime.displayName} records no Compose project on its volumes, so none can be traced to a checkout.`,
@@ -349,18 +369,19 @@ async function pruneProject(parsed: {
 	};
 	const { checkouts, plan } = await inventory();
 
-	for (const stack of plan.kept)
+	for (const stack of plan.kept) {
 		log.info(`Kept ${stack.projectName}: ${stack.reason}.`);
+	}
 	if (plan.remove.length === 0) {
 		log.info(
-			`Nothing to reclaim across ${checkouts.length} checkout${checkouts.length === 1 ? "" : "s"}. Every existing checkout's dev stack is kept.`,
+			`Nothing to reclaim across ${plural(checkouts.length, "checkout")}. Every existing checkout's dev stack is kept.`,
 		);
 		return 0;
 	}
 
 	log.line();
 	log.info(
-		`${plan.remove.length} stack${plan.remove.length === 1 ? "" : "s"} of this project's ci runs and deleted worktrees:`,
+		`${plural(plan.remove.length, "stack")} of this project's ci runs and deleted worktrees:`,
 	);
 	for (const stack of plan.remove) {
 		const parts = [
@@ -368,6 +389,7 @@ async function pruneProject(parsed: {
 			count(stack.volumes.length, "volume"),
 			count(stack.networks.length, "network"),
 		].filter(Boolean);
+
 		log.line(`  ${stack.projectName}  (${parts.join(", ")})`);
 		for (const volume of stack.volumes) log.line(`    volume  ${volume}`);
 	}
@@ -378,11 +400,12 @@ async function pruneProject(parsed: {
 		log.hint("Run without --dry-run to remove them.");
 		return 0;
 	}
+
 	if (!parsed.yes) {
 		const accepted =
 			isInteractive() &&
 			(await askConfirm([
-				`  Remove ${plan.remove.length} stack${plan.remove.length === 1 ? "" : "s"}? This cannot be undone.`,
+				`  Remove ${plural(plan.remove.length, "stack")}? This cannot be undone.`,
 				"",
 				"  y to remove  ·  Enter to keep them",
 			]));
@@ -396,14 +419,18 @@ async function pruneProject(parsed: {
 	for (const stack of plan.remove) {
 		if (await removeStack(runtime, stack, inventory)) removed++;
 	}
-	log.done(
-		`Removed ${removed} of ${plan.remove.length} stack${plan.remove.length === 1 ? "" : "s"}`,
-	);
+	log.done(`Removed ${removed} of ${plural(plan.remove.length, "stack")}`);
+
 	return 0;
 }
 
+function plural(n: number, noun: string): string {
+	return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+/** Like `plural`, and empty for zero, so a list of parts can drop it. */
 function count(n: number, noun: string): string {
-	return n === 0 ? "" : `${n} ${noun}${n === 1 ? "" : "s"}`;
+	return n === 0 ? "" : plural(n, noun);
 }
 
 /**
@@ -435,6 +462,7 @@ async function removeStack(
 					log.info(`Kept ${listed.projectName}: ${reason}.`);
 					return false;
 				}
+
 				for (const [kind, names] of [
 					["container", stack.containers],
 					["volume", stack.volumes],
@@ -444,6 +472,7 @@ async function removeStack(
 					for (const name of names.filter((name) => confirmed.has(name))) {
 						const error = await remove(kind, name);
 						if (error === undefined) continue;
+
 						log.warn(
 							`Kept the rest of ${stack.projectName}: ${kind} ${name}: ${error}`,
 						);

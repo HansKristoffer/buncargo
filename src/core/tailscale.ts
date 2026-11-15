@@ -21,9 +21,10 @@ export function tailscaleAddress(
 		if (!/^(tailscale|utun)/.test(name)) continue;
 		for (const address of addresses ?? []) {
 			const [a, b] = address.address.split(".").map(Number);
-			if (address.family === "IPv4" && a === 100 && b >= 64 && b < 128)
-				return address.address;
+			const isTailnetRange = a === 100 && b >= 64 && b < 128;
+			if (address.family === "IPv4" && isTailnetRange) return address.address;
 		}
 	}
+
 	return undefined;
 }

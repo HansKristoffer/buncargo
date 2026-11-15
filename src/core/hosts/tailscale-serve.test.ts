@@ -79,20 +79,25 @@ function fakeTailscale(
 		if (command === "status") return options.status ?? ok(runningStatus);
 		if (command === "debug") return ok(JSON.stringify({ OperatorUser: "dev" }));
 		if (rest[0] === "status") return ok(JSON.stringify({ TCP: tcp, Web: web }));
+
 		const refusal = refusals.shift();
 		if (refusal) return refusal;
+
 		const port = (rest.find((arg) => arg.startsWith("--https=")) ?? "").slice(
 			"--https=".length,
 		);
 		if (rest.at(-1) === "off") {
-			if (!web[`${HOST}:${port}`])
+			if (!web[`${HOST}:${port}`]) {
 				return fail(
 					"error: failed to remove web serve: handler does not exist",
 				);
+			}
+
 			delete web[`${HOST}:${port}`];
 			delete tcp[port];
 			return ok();
 		}
+
 		web[`${HOST}:${port}`] = {
 			Handlers: { "/": { Proxy: rest.at(-1) as string } },
 		};

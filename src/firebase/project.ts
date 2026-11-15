@@ -38,6 +38,7 @@ function readDefaultProject(workdir: string): string | undefined {
 		const project = record(rc.projects).default;
 		return typeof project === "string" && project ? project : undefined;
 	} catch {
+		// No `.firebaserc`, or one that does not parse: there is no default project.
 		return undefined;
 	}
 }
@@ -51,8 +52,11 @@ function readDefaultProject(workdir: string): string | undefined {
 export function readFirebaseProject(workdir: string): FirebaseProject {
 	const path = join(workdir, FIREBASE_CONFIG_FILE);
 	const defaultProject = readDefaultProject(workdir);
-	if (!existsSync(path))
+
+	if (!existsSync(path)) {
 		return { path, exists: false, raw: {}, defaultProject };
+	}
+
 	try {
 		return {
 			path,

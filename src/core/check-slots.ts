@@ -156,10 +156,15 @@ function tryAcquire(
 function release(slot: HeldSlot): void {
 	try {
 		unlinkSync(slot.file);
-	} catch {}
+	} catch {
+		// Best effort: the kernel frees the lock when the process exits, file or not.
+	}
+
 	try {
 		closeSync(slot.fd);
-	} catch {}
+	} catch {
+		// Best effort, for the same reason.
+	}
 }
 
 /**
@@ -261,6 +266,7 @@ export interface CheckSlotStatus {
 export function checkSlotStatus(env: NodeJS.ProcessEnv): CheckSlotStatus {
 	const capacity = checkSlotCount(env);
 	const dir = slotDirectory(env);
+
 	let waiting = 0;
 	try {
 		waiting = liveWaiters(dir).length;
@@ -283,9 +289,11 @@ export function formatCheckSlotHolder(holder: CheckSlotHolder): string {
 
 /** The line a waiting check prints, each time `onWait` is called. */
 export function formatCheckSlotWait(wait: CheckSlotWait): string {
-	const line =
+	const queue =
 		wait.waiting > 1 ? `, ${wait.position} of ${wait.waiting} waiting` : "";
-	return `Waiting for a check slot${line}: ${wait.holders.map(formatCheckSlotHolder).join(", ")}`;
+	const holders = wait.holders.map(formatCheckSlotHolder).join(", ");
+
+	return `Waiting for a check slot${queue}: ${holders}`;
 }
 
 /**
@@ -300,8 +308,10 @@ async function acquireSlot(
 	options: CheckSlotOptions,
 ): Promise<HeldSlot | undefined> {
 	const { clock, onWait } = options;
+
 	try {
 		mkdirSync(dir, { recursive: true });
+
 		let slot = tryAcquire(dir, slots, holder);
 		if (slot) return slot;
 
@@ -321,6 +331,7 @@ async function acquireSlot(
 		} finally {
 			release(queued);
 		}
+
 		if (slot) return slot;
 
 		const holders = checkSlotHolders(dir, slots).map(formatCheckSlotHolder);
@@ -359,6 +370,7 @@ export async function withCheckSlot<T>(
 	const held = await acquireSlot(dir, slots, holder, options);
 	if (!held) return run();
 
+	// The lock dies with the process, but the file would stay behind.
 	const releaseHeld = () => release(held);
 	process.once("exit", releaseHeld);
 	env[CHECK_SLOT_ENV] = held.file;

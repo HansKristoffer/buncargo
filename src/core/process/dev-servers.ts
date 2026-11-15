@@ -232,20 +232,21 @@ export async function loadStartSecrets(
 	options: { signal?: AbortSignal; onWait?: (ms: number) => void } = {},
 ): Promise<Record<string, Record<string, string>>> {
 	const secrets = await loadAppSecrets(apps, options);
+
 	const missing = missingRequiredSecrets(apps, (name) => ({
 		...process.env,
 		...secrets[name],
 		...appEnv(name),
 	}));
+
 	if (Object.keys(missing).length > 0) {
-		throw new Error(
-			`Required secrets are missing:\n${Object.entries(missing)
-				.map(([name, keys]) => `  ${name}: ${keys.join(", ")}`)
-				.join(
-					"\n",
-				)}\nAdd them to the app's Infisical scope, or export them. \`buncargo secrets ls\` shows what each app gets.`,
-		);
+		const missingLines = Object.entries(missing)
+			.map(([name, keys]) => `  ${name}: ${keys.join(", ")}`)
+			.join("\n");
+		const message = `Required secrets are missing:\n${missingLines}\nAdd them to the app's Infisical scope, or export them. \`buncargo secrets ls\` shows what each app gets.`;
+		throw new Error(message);
 	}
+
 	return secrets;
 }
 
@@ -265,7 +266,9 @@ function interruptOnSignals(): { signal: AbortSignal; dispose(): void } {
 	const interrupt = () =>
 		controller.abort(new RunInterrupted("Run interrupted"));
 	const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
 	for (const signal of signals) process.on(signal, interrupt);
+
 	return {
 		signal: controller.signal,
 		dispose: () => {
@@ -276,6 +279,7 @@ function interruptOnSignals(): { signal: AbortSignal; dispose(): void } {
 
 function toAppFailure(name: string, error: unknown): AppFailure {
 	if (error instanceof AppFailure) return error;
+
 	const message = error instanceof Error ? error.message : String(error);
 	return new AppFailure(name, "not-ready", message, { cause: error });
 }
@@ -308,11 +312,12 @@ export async function startDevServers(
 	} = options;
 
 	const startable = startableApps(apps, productionBuild);
+
 	// Here rather than in the environment layer because this is the one function
 	// every spawner goes through: the environment's `spawn()`, which `start()`
-	// and the CLI both use, lands here, and another caller cannot miss it. Lowest precedence — the
-	// app's computed env is layered on top, and `loadAppSecrets` drops keys the
-	// developer already exported.
+	// and the CLI both use, lands here, and another caller cannot miss it.
+	// Lowest precedence: the app's computed env is layered on top, and
+	// `loadAppSecrets` drops keys the developer already exported.
 	const secrets = await loadStartSecrets(
 		startable,
 		(name) => resolveAppEnv(envVarsByApp, name),
@@ -321,11 +326,13 @@ export async function startDevServers(
 			onWait: (ms) => options.onPhase?.("secrets", ms),
 		},
 	);
+
 	warnShadowedSecrets(
 		root,
 		readEnvOverrides(root),
 		Object.values(secrets).flatMap((values) => Object.keys(values)),
 	);
+
 	const appEnv = (name: string) => ({
 		...secrets[name],
 		...resolveAppEnv(envVarsByApp, name),
@@ -342,17 +349,20 @@ export async function startDevServers(
 		await output.close();
 		stopPrinting?.();
 	};
+
 	// Under pseudo-terminals every app has a terminal of its own: none needs the real one.
 	const configuredInteractive =
 		output.terminals === "pty"
 			? undefined
 			: Object.entries(startable).find(([, app]) => app.interactive)?.[0];
 	const attachedName = attachOverride ?? configuredInteractive;
+
 	if (attachOverride && !startable[attachOverride]) {
 		throw new Error(`--attach=${attachOverride} is not in the start set`);
 	}
 
 	const interrupts = interruptOnSignals();
+
 	const supervisor = new AppSupervision(
 		mapValues(startable, (config, name) => ({
 			optional: !config.essential,
@@ -375,6 +385,7 @@ export async function startDevServers(
 				output.announce(name, text, { raw: formatWarn(text), level: "warn" }),
 		},
 	);
+
 	const pids = supervisor.pids;
 	let handedOff = false;
 
@@ -385,23 +396,28 @@ export async function startDevServers(
 		previous: AppLife,
 		event: AppEvent,
 	): void {
-		if (verbose && life.pid !== undefined && life.pid !== previous.pid)
+		if (verbose && life.pid !== undefined && life.pid !== previous.pid) {
 			output.announce(name, `PID: ${life.pid}`, {
 				raw: formatPidLine(name, life.pid, nameWidth),
 			});
+		}
+
 		if (event.type === "restarting") {
 			const text = `restarting: ${event.reason}`;
 			output.announce(name, text, {
 				raw: formatStep(`🔁 Restarting ${name}: ${event.reason}`),
 			});
 		}
+
 		// The run is ending: its rows stay as they were.
 		if (event.type === "exited" && event.runEnding) return;
+
 		const show = () => {
 			// Read when shown: parking may have decided more since, and a
 			// newer process's row is not this one's to change.
 			const now = supervisor.life(name);
 			if (now.generation !== life.generation) return;
+
 			const state = appState(now);
 			const shown = output.states.get(name);
 			const same =
@@ -410,6 +426,7 @@ export async function startDevServers(
 				shown.restartable === state.restartable;
 			if (!same) output.state(name, state);
 		};
+
 		// After the app's last screen, so its final words precede the verdict.
 		const screen = output.screens.get(name);
 		if (event.type === "exited" && screen) void screen.flush().then(show);
@@ -421,8 +438,10 @@ export async function startDevServers(
 	const restartApp = async (name: string, reason?: string) => {
 		const replaced = await supervisor.restart(name, reason);
 		if (replaced) checkOnTheSide(name, true);
+
 		return replaced;
 	};
+
 	output.controls = { restart: (name) => restartApp(name, "requested") };
 
 	const scannerFor = createCaptureRestarts(startable, {
@@ -448,6 +467,7 @@ export async function startDevServers(
 		// and earlier servers have bound their ports, so a snapshot taken before
 		// the first wave would be describing a machine that has since changed.
 		supervisor.signal.throwIfAborted();
+
 		const portOwners = await createPortOwnerSnapshotAsync({
 			signal: supervisor.signal,
 			runtime: options.runtime,
@@ -457,6 +477,7 @@ export async function startDevServers(
 				return port === undefined ? [] : [port];
 			}),
 		});
+
 		const toStart: [string, ResolvedApp][] = [];
 		for (const [name, config] of Object.entries(wave)) {
 			const prepared = await prepareAppPort(
@@ -471,14 +492,17 @@ export async function startDevServers(
 				options.skipContainers,
 			);
 			supervisor.signal.throwIfAborted();
+
 			if (prepared === "start") {
 				toStart.push([name, config]);
 				continue;
 			}
+
 			if (verbose) {
 				const text = `♻️  Reusing existing process on port ${ports[name]} (${name})`;
 				output.announce(name, text, { raw: formatStep(text) });
 			}
+
 			supervisor.reuse(name, probation(name));
 		}
 
@@ -500,6 +524,7 @@ export async function startDevServers(
 		for (const [name, config] of toStart) {
 			const attached = name === attachedName;
 			const onText = scannerFor(name, config);
+
 			const spawnOnce = () =>
 				spawnManagedApp(name, config, root, appEnv(name), {
 					attached,
@@ -510,6 +535,7 @@ export async function startDevServers(
 					onText: watchForReady(name, config, onText),
 					unsetEnv: options.unsetEnv,
 				});
+
 			const spawnApp = (onProbation = false) =>
 				config.port === undefined
 					? spawnOwnedWorker(root, name, spawnOnce, supervisor.signal, {
@@ -517,6 +543,7 @@ export async function startDevServers(
 						})
 					: Promise.resolve(spawnOnce());
 			supervisor.setSpawner(name, () => spawnApp());
+
 			const child = await spawnApp(probation(name));
 			await supervisor.register(name, child, {
 				probation: probation(name),
@@ -528,6 +555,7 @@ export async function startDevServers(
 	// A fresh scanner per spawn, so a restart waits for the line again; the
 	// app's own captures keep theirs, which report a value only when it changes.
 	const printedReady = new Map<string, Promise<void>>();
+
 	function watchForReady(
 		name: string,
 		config: ResolvedApp,
@@ -535,12 +563,15 @@ export async function startDevServers(
 	): ((text: string) => void) | undefined {
 		const { readiness } = config;
 		if (readiness.kind !== "output") return onText;
+
 		const printed = Promise.withResolvers<void>();
 		printedReady.set(name, printed.promise);
+
 		const scanner = createOutputCaptureScanner({
 			ready: { pattern: readiness.pattern, as: "event" },
 		});
 		let seen = false;
+
 		return (text) => {
 			onText?.(text);
 			if (!seen && scanner.push(text).length > 0) {
@@ -557,12 +588,14 @@ export async function startDevServers(
 	): Promise<void> {
 		const printed = printedReady.get(name);
 		if (!printed) return;
+
 		const timeoutMs = config.healthTimeout;
 		const done = new AbortController();
 		const seconds = Math.round(timeoutMs / 1000);
 		const pattern =
 			config.readiness.kind === "output" ? config.readiness.pattern : "";
 		const timedOut = `${name} did not print ${pattern} within ${seconds}s`;
+
 		try {
 			await Promise.race([
 				printed,
@@ -585,24 +618,30 @@ export async function startDevServers(
 		string,
 		{ generation: number; ready: Promise<void>; fail(error: Error): void }
 	>();
+
 	function appReady(name: string): Promise<void> {
 		const life = supervisor.life(name);
 		const known = readiness.get(name);
 		if (known?.generation === life.generation) return known.ready;
+
 		const config = startable[name];
 		const processSignal = supervisor.processSignal(name);
 		const signal = anySignal(supervisor.signal, processSignal);
 		const failed = Promise.withResolvers<never>();
 		const reused = life.phase === "reused";
+
 		const check = (async () => {
 			signal.throwIfAborted();
+
 			const kind = readinessCheck(config);
 			// Reused from another run: nothing of ours to read.
 			if (kind === "output" && !reused)
 				await waitForPrinted(name, config, signal);
 			if (kind === "health") await health({ [name]: config }, signal);
+
 			signal.throwIfAborted();
 		})();
+
 		const ready = Promise.race([check, failed.promise]).then(
 			() => {
 				supervisor.ready(name, life.generation);
@@ -616,11 +655,13 @@ export async function startDevServers(
 			},
 		);
 		void ready.catch(() => {});
+
 		readiness.set(name, {
 			generation: life.generation,
 			ready,
 			fail: failed.reject,
 		});
+
 		return ready;
 	}
 
@@ -647,6 +688,7 @@ export async function startDevServers(
 	function watchDrift(names: readonly string[]): AbortController {
 		const done = new AbortController();
 		if (!driftProbe) return done;
+
 		// Spawned by this run, listening on a port, and still coming up.
 		const targets = () =>
 			names.flatMap((name) => {
@@ -656,10 +698,13 @@ export async function startDevServers(
 				const listens =
 					config?.port !== undefined && config.readiness.kind !== "none";
 				const checking = readiness.get(name)?.generation === generation;
+
 				if (!listens || !checking || phase !== "starting") return [];
 				if (pid === undefined || port === undefined) return [];
+
 				return [{ name, pid, port }];
 			});
+
 		void watchPortDrift(
 			targets,
 			driftProbe,
@@ -667,6 +712,7 @@ export async function startDevServers(
 			(name, message) =>
 				readiness.get(name)?.fail(new AppFailure(name, "not-ready", message)),
 		);
+
 		return done;
 	}
 
@@ -679,8 +725,10 @@ export async function startDevServers(
 	 */
 	function checkOnTheSide(name: string, ownDriftWatch: boolean): void {
 		if (supervisor.signal.aborted) return;
+
 		const processSignal = supervisor.processSignal(name);
 		const drift = ownDriftWatch ? watchDrift([name]) : undefined;
+
 		void appReady(name)
 			.catch((error) => {
 				if (supervisor.signal.aborted || processSignal.aborted) return;
@@ -693,14 +741,17 @@ export async function startDevServers(
 	async function startWave(wave: Record<string, ResolvedApp>): Promise<void> {
 		const names = Object.keys(wave);
 		if (names.length === 0) return;
+
 		const spareOthers = options.keepOthersOnFailure === true;
 		const essential = names.filter(
 			(name) => supervisor.life(name).standing !== "optional",
 		);
+
 		// Until it is up, an essential app's crash parks it rather than ending
 		// the run. Not the attached app: quitting it ends the run, booted or not.
 		const probation = (name: string) =>
 			spareOthers && essential.includes(name) && name !== attachedName;
+
 		await spawnWave(wave, probation);
 
 		const drift = watchDrift(names);
@@ -710,20 +761,25 @@ export async function startDevServers(
 					output.announce("buncargo", text, { raw: formatWait(text) });
 				}, SLOW_STEP_MS)
 			: undefined;
+
 		try {
 			// A non-essential app never holds the run up.
-			for (const name of names)
+			for (const name of names) {
 				if (!essential.includes(name)) checkOnTheSide(name, false);
+			}
+
 			// A worker or `healthEndpoint: false` app without `readyWhen` is
 			// ready once the rest of its wave is: spared only while it comes up.
 			const checked = essential.filter(
 				(name) => readinessCheck(startable[name]) !== "none",
 			);
 			const unchecked = essential.filter((name) => !checked.includes(name));
+
 			const waits = (group: readonly string[]) =>
 				spareOthers
 					? supervisor.race(Promise.allSettled(group.map(appReady)))
 					: supervisor.race(Promise.all(group.map(appReady))).then(() => []);
+
 			const waited = [...checked, ...unchecked];
 			const results = [...(await waits(checked)), ...(await waits(unchecked))];
 			const failures = results.flatMap((result, index) =>
@@ -731,43 +787,52 @@ export async function startDevServers(
 					? [toAppFailure(waited[index], result.reason)]
 					: [],
 			);
+
 			await supervisor.fail(failures);
 		} catch (error) {
 			// The run's end, or the first app that did not come up.
 			if (!supervisor.signal.aborted && error instanceof AppFailure)
 				await supervisor.fail([error]);
+
 			throw supervisor.signal.aborted ? abortError(supervisor.signal) : error;
 		} finally {
 			clearTimeout(slowWait);
 			drift.abort();
 		}
+
 		supervisor.signal.throwIfAborted();
 	}
 
 	try {
 		// Each layer is ready before the next spawns: that is `startAfter`.
 		for (const layer of order.beforeTunnels) await startWave(layer);
+
 		if (onAfterWave1) {
 			await supervisor.race(onAfterWave1(supervisor.signal));
 		}
 
 		for (const layer of order.afterTunnels) await startWave(layer);
+
 		supervisor.signal.throwIfAborted();
 
 		// After startup, so a save mid-start cannot race the first health check.
 		// Only apps this run spawned: a reused one has nothing here to restart.
-		if (options.watch !== false)
-			for (const [name, config] of Object.entries(startable))
-				if (config.watch && pids[name] !== undefined)
-					watchApp({
-						name,
-						dir: config.cwd ? resolve(root, config.cwd) : root,
-						config: config.watch,
-						signal: supervisor.signal,
-						onChange: (reason) => {
-							void restartApp(name, reason).catch(() => {});
-						},
-					});
+		if (options.watch !== false) {
+			for (const [name, config] of Object.entries(startable)) {
+				if (!config.watch || pids[name] === undefined) continue;
+
+				watchApp({
+					name,
+					dir: config.cwd ? resolve(root, config.cwd) : root,
+					config: config.watch,
+					signal: supervisor.signal,
+					onChange: (reason) => {
+						void restartApp(name, reason).catch(() => {});
+					},
+				});
+			}
+		}
+
 		if (options.onReady) {
 			await supervisor.race(
 				Promise.resolve().then(() => options.onReady?.(supervisor.signal)),
@@ -817,6 +882,7 @@ export async function startDevServers(
 			await onSignal?.();
 			return pids;
 		}
+
 		throw error;
 	} finally {
 		if (!handedOff) {

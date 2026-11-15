@@ -55,6 +55,9 @@ import {
 	stacksForServices,
 } from "./stacks";
 
+/** How long one preparation step, hook or stack `up` may run before it is cut off. */
+const STEP_TIMEOUT_MS = 600_000;
+
 /** `start()`'s options, plus what only `buncargo dev` and the commands set. */
 export interface PrepareOptions extends StartOptions {
 	/** Print the environment banner once the run is claimed. Default: false. */
@@ -185,15 +188,16 @@ export function createLifecycleApi(
 				{
 					...execOptions,
 					signal,
-					timeoutMs: execOptions?.timeoutMs ?? 600000,
+					timeoutMs: execOptions?.timeoutMs ?? STEP_TIMEOUT_MS,
 				},
 				options.production,
 			);
+
 		const beforeMigrations = config.hooks?.beforeMigrations;
 		if (beforeMigrations && plan.beforeMigrations) {
 			await withDeadline(
 				(hookSignal) => beforeMigrations(hookContext(hookSignal)),
-				600000,
+				STEP_TIMEOUT_MS,
 				signal,
 			);
 		}
@@ -227,16 +231,20 @@ export function createLifecycleApi(
 		}
 
 		const generateCheck = config.prisma?.generateCheck;
+
 		const generateNeeded = async (cwd: string) => {
 			if (!generateCheck) return true;
-			if (generateCheck === "schema-hash")
+			if (generateCheck === "schema-hash") {
 				return prismaClientStale(ctx.root, cwd);
+			}
+
 			return withDeadline(
 				async (hookSignal) => generateCheck(hookContext(hookSignal)),
-				600_000,
+				STEP_TIMEOUT_MS,
 				signal,
 			);
 		};
+
 		if (
 			options.generate &&
 			plan.prismaSelected &&
@@ -278,6 +286,7 @@ export function createLifecycleApi(
 		signal?: AbortSignal,
 	): Promise<boolean> {
 		if (!config.prisma) return false;
+
 		const { service: serviceKey, urlEnvVar } = resolvePrismaConfig(
 			config.prisma,
 		);
@@ -285,6 +294,7 @@ export function createLifecycleApi(
 		const url = toUrlMap(ctx.loopbackUrls)[serviceKey];
 		const computed: Record<string, string> = envVars.buildEnvVars();
 		if (!service || computed[urlEnvVar] !== url) return false;
+
 		const count = await appliedMigrationCount({
 			root: ctx.root,
 			prisma: config.prisma,
@@ -293,6 +303,7 @@ export function createLifecycleApi(
 			signal,
 		});
 		if (count === undefined) return false;
+
 		if (verbose) ctx.output.log(formatDone(`Migrations up to date (${count})`));
 		return true;
 	}
@@ -308,17 +319,21 @@ export function createLifecycleApi(
 	): Promise<void> {
 		if (signal?.aborted || !config.prisma) return;
 		if (!migrations.some((migration) => migration.name === "prisma")) return;
+
 		const prisma = resolvePrismaConfig(config.prisma);
 		const url = toUrlMap(ctx.loopbackUrls)[prisma.service];
 		if (!url) return;
+
 		const missing = await missingAppliedMigrations(
 			url,
 			join(ctx.root, prisma.cwd, prisma.migrations),
 		);
 		if (!missing?.length) return;
+
+		const migrationCount = `${missing.length} migration${missing.length === 1 ? "" : "s"}`;
 		console.error(
 			formatWarn(
-				`The database applied ${missing.length} migration${missing.length === 1 ? "" : "s"} this checkout no longer has (${missing.join(", ")}): the chain was squashed or rewritten. Only recreating the database gets past it, and that drops its data: bunx buncargo dev --reset --yes. Ask before running it.`,
+				`The database applied ${migrationCount} this checkout no longer has (${missing.join(", ")}): the chain was squashed or rewritten. Only recreating the database gets past it, and that drops its data: bunx buncargo dev --reset --yes. Ask before running it.`,
 			),
 		);
 	}
@@ -352,9 +367,8 @@ export function createLifecycleApi(
 		}
 
 		if (result.created || result.changed.length > 0) {
-			const what = result.created
-				? "Created"
-				: `Synced ${result.changed.length} value${result.changed.length === 1 ? "" : "s"} in`;
+			const valueCount = `${result.changed.length} value${result.changed.length === 1 ? "" : "s"}`;
+			const what = result.created ? "Created" : `Synced ${valueCount} in`;
 			ctx.output.log(formatDone(`${what} ${relative(ctx.root, result.path)}`));
 		}
 	}
@@ -368,10 +382,12 @@ export function createLifecycleApi(
 					...startOptions,
 					signal: anySignal(signal, startOptions.signal),
 				};
+
 				const prepared = await prepareEnvironment({
 					...options,
 					banner: options.verbose ?? config.options?.verbose ?? true,
 				});
+
 				const spawns =
 					(options.startServers ?? true) &&
 					(options.prepare ?? "all") === "all" &&
@@ -385,10 +401,12 @@ export function createLifecycleApi(
 					const pids = await appPipeline.spawn(claimed, {
 						signal: options.signal,
 						onSeedReady: () => {
-							if (prepared.verbose)
+							if (prepared.verbose) {
 								ctx.output.log(formatDone("All servers ready"));
+							}
 						},
 					});
+
 					if (prepared.verbose) ctx.output.log(formatDone("Environment ready"));
 					return pids;
 				} catch (error) {
@@ -436,10 +454,11 @@ export function createLifecycleApi(
 
 	async function secretsSession(options: PrepareOptions): Promise<void> {
 		const { plan } = planFor(options);
-		if (plan.secrets)
+		if (plan.secrets) {
 			await ensureSecretsSession(startSecretScopes(plan.secrets), {
 				signal: options.signal,
 			});
+		}
 	}
 
 	function prepare(options: PrepareOptions = {}): Promise<Prepared> {
@@ -490,6 +509,7 @@ export function createLifecycleApi(
 		if (startServers && mode === "all") {
 			assertAppWorkingDirectories(apps, ctx.root, productionBuild);
 		}
+
 		const hasServices = selection.requiredServiceKeys.length > 0;
 		const prepared = (seed: PreparedSeed): Prepared => ({
 			selection,
@@ -501,6 +521,7 @@ export function createLifecycleApi(
 			seed,
 			onPhase,
 		});
+
 		// From the plan, before anything runs: the hooks and `runSeed` are told
 		// the selection this preparation makes.
 		latest = { plan, prepared: prepared({ kind: "none" }) };
@@ -512,25 +533,33 @@ export function createLifecycleApi(
 			? prefetchSecrets({ ...plan.secrets, signal: prefetchSignal })
 			: [];
 		if (signal) registerAbortCleanup(signal, Promise.allSettled(prefetches));
+
 		try {
 			// Before the port block, the claim and the first container: an
-			// expired Infisical session stops the start here, not after the containers inside
-			// every app's own loader. The prefetch's own token, so no extra CLI.
-			if (plan.secrets)
+			// expired Infisical session stops the start here, not after the
+			// containers inside every app's own loader. The prefetch's own token,
+			// so no extra CLI.
+			if (plan.secrets) {
 				await ensureSecretsSession(startSecretScopes(plan.secrets), {
 					signal: prefetchSignal,
 				});
+			}
+
 			// After the session: an expired one changes nothing on the way out.
-			if (options.replaceStaleStacks)
+			if (options.replaceStaleStacks) {
 				await replaceStaleStacksOn(
 					ctx.runtime,
 					{ root: ctx.root, projectPrefix: config.projectPrefix },
 					Object.values(ctx.ports),
 					{ signal, verbose },
 				);
+			}
+
 			await ctx.prepareStartAsync(onlyApps, onlyServices, signal);
+
 			if (hasServices) broughtUp = "services";
 			else if (broughtUp === "unknown") broughtUp = "none";
+
 			const portMap = toPortMap(ports);
 			const targetPorts: Record<string, number> = {};
 			for (const serviceKey of selection.requiredServiceKeys) {
@@ -619,14 +648,15 @@ export function createLifecycleApi(
 								...stacks.map(async ({ name, stack }) => {
 									await withDeadline(
 										(stackSignal) => stack.up(hookContext(stackSignal)),
-										600_000,
+										STEP_TIMEOUT_MS,
 										signal,
 									);
 									stacksUp.add(name);
 								}),
 							]);
-							for (const result of results)
+							for (const result of results) {
 								if (result.status === "rejected") throw result.reason;
+							}
 						},
 						{ signal },
 					),
@@ -642,11 +672,13 @@ export function createLifecycleApi(
 			// Before migrations, not just before servers: Prisma and friends read
 			// `.env` off disk themselves, so a stale port fails the migrate step.
 			await phase("dotenv", () => syncConfiguredEnvFile(verbose));
+
 			// Before anything reads them: values not known yet (a tunnel URL, a
 			// capture) render as the file's placeholder and re-render later.
 			for (const path of renderGeneratedFiles(ctx, envVars)) {
 				if (verbose) ctx.output.log(formatDone(`Generated ${path}`));
 			}
+
 			if (mode === "containers") return prepared({ kind: "none" });
 
 			try {
@@ -665,7 +697,7 @@ export function createLifecycleApi(
 					await phase("container hooks", () =>
 						withDeadline(
 							(hookSignal) => afterContainersReady(hookContext(hookSignal)),
-							600_000,
+							STEP_TIMEOUT_MS,
 							signal,
 						),
 					);
@@ -682,6 +714,7 @@ export function createLifecycleApi(
 						),
 					);
 				}
+
 				const seed = await prepareSeed(plan, seedMode, (seedOptions) =>
 					phase("seed", () =>
 						runSeed({ verbose, productionBuild, signal, ...seedOptions }),
@@ -718,10 +751,13 @@ export function createLifecycleApi(
 		run: (options: { force?: boolean }) => Promise<SeedOutcome>,
 	): Promise<PreparedSeed> {
 		if (mode === "skip") return { kind: "none" };
-		if (mode === "force")
+		if (mode === "force") {
 			return { kind: "ran", outcome: await run({ force: true }) };
+		}
+
 		if (plan.seedOverlaps) return { kind: "overlap" };
 		if (!plan.seedSelected) return { kind: "none" };
+
 		const outcome = await run({});
 		assertSeedSucceeded(outcome);
 		return { kind: "ran", outcome };
@@ -741,8 +777,11 @@ export function createLifecycleApi(
 				prepare: mode,
 				seed: options.seed ?? (mode === "all" ? "auto" : "skip"),
 			});
-			for (const name of names)
+
+			for (const name of names) {
 				commandServices.set(name, (commandServices.get(name) ?? 0) + 1);
+			}
+
 			try {
 				return await command({
 					seed:
@@ -759,11 +798,12 @@ export function createLifecycleApi(
 			if (after === "release") {
 				serviceWatch.stop();
 				await runClaim.releaseRun();
-			} else
+			} else {
 				await stop({
 					removeVolumes: after.stop.removeVolumes,
 					verbose: options.verbose,
 				});
+			}
 		}
 	}
 
@@ -791,6 +831,7 @@ export function createLifecycleApi(
 			signal,
 		} = stopOptions;
 		signal?.throwIfAborted();
+
 		const errors: unknown[] = [];
 		async function step(work: () => Promise<void>): Promise<boolean> {
 			try {
@@ -801,6 +842,7 @@ export function createLifecycleApi(
 				return false;
 			}
 		}
+
 		function settled(nothingLeft: boolean): boolean {
 			if (errors.length > 0) throw errors[0];
 			return nothingLeft;
@@ -808,20 +850,24 @@ export function createLifecycleApi(
 
 		// Before anything comes down: this run's own teardown is not news.
 		serviceWatch.stop();
+
 		const beforeStop = config.hooks?.beforeStop;
-		if (beforeStop)
+		if (beforeStop) {
 			await step(() =>
 				withDeadline(
 					(hookSignal) => beforeStop(hookContext(hookSignal)),
-					600000,
+					STEP_TIMEOUT_MS,
 					signal,
 				),
 			);
+		}
 
 		await step(() => stopDevServers(ctx.ownedServerPids));
-		for (const name of Object.keys(ctx.ownedServerPids))
+		for (const name of Object.keys(ctx.ownedServerPids)) {
 			delete ctx.ownedServerPids[name];
+		}
 		await step(() => runClaim.releaseApps());
+
 		if (appOnlyRun()) {
 			// Another run's containers may still use the block, unless the
 			// config has none.
@@ -829,6 +875,7 @@ export function createLifecycleApi(
 		}
 
 		const hasCompose = Object.keys(composeServicesOf(services)).length > 0;
+
 		// Every stack, not just this run's selection: stop means the environment.
 		const stacks = configuredStacks(config);
 		let down = true;
@@ -860,6 +907,7 @@ export function createLifecycleApi(
 							}
 							return;
 						}
+
 						// Each comes down whatever the one before did: a stack that
 						// fails must not leave the rest up. The first failure is
 						// thrown once all have been tried.
@@ -894,13 +942,15 @@ export function createLifecycleApi(
 								failures.push(error);
 							}
 						}
+
 						if (failures.length > 0) throw failures[0];
 					},
 					{ signal },
 				),
 			);
 			down &&= !kept;
-			if (down)
+
+			if (down) {
 				await step(() =>
 					recordTeardown(ctx, {
 						sessionId: runClaim.sessionId,
@@ -911,7 +961,9 @@ export function createLifecycleApi(
 						removeVolumes,
 					}),
 				);
+			}
 		}
+
 		// Containers that did not come down, or that another run keeps, stay
 		// on record, released, for the next `stop` or the sweep to find.
 		await step(() =>
@@ -919,10 +971,12 @@ export function createLifecycleApi(
 				? runClaim.retireRun({ containersDown: hasCompose })
 				: runClaim.releaseRun(),
 		);
+
 		if (down || kept) {
 			broughtUp = "unknown";
 			stacksUp.clear();
 		}
+
 		return settled(down);
 	}
 
@@ -933,6 +987,7 @@ export function createLifecycleApi(
 
 		const stacks = configuredStacks(config);
 		if (!stacks.every(({ name }) => stacksUp.has(name))) return false;
+
 		// A job's container has exited once it did its work.
 		const compose = Object.fromEntries(
 			Object.entries(composeServicesOf(services)).filter(
@@ -941,11 +996,13 @@ export function createLifecycleApi(
 		);
 		const names = resolveComposeServiceNames(services, Object.keys(compose));
 		if (names.length === 0) return stacks.length > 0;
+
 		// Throws when the runtime cannot answer, which is not running either.
 		const states = await projectServiceStates(
 			ctx.runtime,
 			ctx.projectName,
 		).catch(() => []);
+
 		const running = new Set(
 			states.filter((state) => state.serving).map((state) => state.service),
 		);

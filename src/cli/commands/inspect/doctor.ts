@@ -86,19 +86,25 @@ async function checkSetupChecks(
 ): Promise<void> {
 	const anyEnv = env as AnyDevEnvironment;
 	const checks = allChecks(anyEnv, internalsOf(anyEnv).setupChecks);
-	for (const result of await runChecks(checks, {
-		root: env.root,
-		env: anyEnv,
-	})) {
+	const results = await runChecks(checks, { root: env.root, env: anyEnv });
+
+	for (const result of results) {
 		const [line] = describeCheckFailures([result]);
-		if (result.ok) report.note(result.check.name);
-		else if (isWarning(result)) report.note(`warning: ${line}`);
-		else report.issue(`${line} (\`buncargo setup\` offers the fix)`);
+
+		if (result.ok) {
+			report.note(result.check.name);
+		} else if (isWarning(result)) {
+			report.note(`warning: ${line}`);
+		} else {
+			report.issue(`${line} (\`buncargo setup\` offers the fix)`);
+		}
 	}
 }
 
 /** Above this share of the open-file table, name who holds the most. */
 const FILE_TABLE_NOTE = 0.5;
+
+/** Above this share the table is nearly full and doctor reports an issue. */
 const FILE_TABLE_ISSUE = 0.8;
 
 export function describeFileTable(
@@ -109,24 +115,33 @@ export function describeFileTable(
 	const lines = [
 		`Open files: ${usage.open.toLocaleString("en")} of ${usage.max.toLocaleString("en")} (${Math.round(share * 100)}%)`,
 	];
-	if (share >= FILE_TABLE_NOTE)
-		for (const holder of holders())
+
+	if (share >= FILE_TABLE_NOTE) {
+		for (const holder of holders()) {
+			const files = holder.files.toLocaleString("en");
 			lines.push(
-				`  ${holder.files.toLocaleString("en")} held by ${holder.command || "?"} (pid ${holder.pid})`,
+				`  ${files} held by ${holder.command || "?"} (pid ${holder.pid})`,
 			);
+		}
+	}
+
 	return { level: share >= FILE_TABLE_ISSUE ? "issue" : "note", lines };
 }
 
 function checkFileTable(report: DoctorReport): void {
 	const usage = readFileTableUsage();
 	if (!usage) return;
+
 	const { level, lines } = describeFileTable(usage, () => readTopFileHolders());
 	const message = lines.join("\n");
-	if (level === "issue")
+
+	if (level === "issue") {
 		report.issue(
 			`${message}\n  Near the limit, tools fail with ENFILE. A dev server under \`bun --watch\` leaks descriptors on every reload: use the app's \`watch\` config instead.`,
 		);
-	else report.note(message);
+	} else {
+		report.note(message);
+	}
 }
 
 /** Collects the doctor report so each check stays a small pure-ish function. */
@@ -180,6 +195,7 @@ async function checkPortOwnership(
 		ports: Object.values(env.ports),
 	});
 	const lookup = withBindProbe((port) => snapshot.owner(port));
+
 	for (const [name, port] of Object.entries(env.ports)) {
 		const owner = lookup(port);
 		if (!owner) continue;
@@ -226,11 +242,14 @@ async function checkPortOwnership(
 				: null;
 		};
 		try {
-			if (await killPortOwnerFoundBy(sameHolder, port, { runtime }))
+			const stopped = await killPortOwnerFoundBy(sameHolder, port, { runtime });
+			if (stopped) {
 				report.note(
 					`Stopped process ${owner.pids.join(", ")} on port ${port}: its checkout ${owner.cwd} was deleted`,
 				);
-			else report.note(`Port ${port} was freed while doctor ran`);
+			} else {
+				report.note(`Port ${port} was freed while doctor ran`);
+			}
 		} catch (error) {
 			report.issue(
 				`Could not stop process ${owner.pids.join(", ")} on port ${port}: ${getErrorMessage(error)}`,
@@ -242,15 +261,19 @@ async function checkPortOwnership(
 /** Two checkouts whose blocks overlap collide whenever both run (a lost race). */
 function checkOffsetClaims(report: DoctorReport): void {
 	const claims = readHeldOffsetClaims();
-	for (const overlap of overlappingOffsetClaims(claims))
+
+	for (const overlap of overlappingOffsetClaims(claims)) {
 		report.issue(
 			`${describeOffsetClaimOverlap(overlap)}. Move one: \`buncargo ports pin <offset>\` in that checkout.`,
 		);
+	}
+
 	// Claimed before runs refused a shared name: they share one database.
-	for (const [projectName, holders] of sharedProjectNameClaims(claims))
+	for (const [projectName, holders] of sharedProjectNameClaims(claims)) {
 		report.issue(
 			`Compose project ${projectName} is used by ${holders.join(" and ")}, so they share its containers and volumes. Give one its own projectPrefix and start it once, or release the claims of one that no longer runs under it: \`buncargo ports release --root <path>\`.`,
 		);
+	}
 }
 
 async function checkOrphanedContainers(
@@ -265,20 +288,24 @@ async function checkOrphanedContainers(
 			except: { projectName: env.projectName, root: env.root },
 		});
 		for (const stack of result.swept) report.note(describeSwept(stack));
-		for (const failure of result.failed)
+		for (const failure of result.failed) {
 			report.issue(
 				`Could not remove ${failure.projectName} (${failure.root}): ${failure.error}`,
 			);
+		}
+
 		// Not this user's to remove: another user's buncargo on a shared
 		// daemon, or state that was wiped. Said, never touched.
-		for (const stack of result.foreign)
+		for (const stack of result.foreign) {
 			report.note(
 				`warning: ${stack.projectName} (${stack.root || "no checkout recorded"}, ${stack.runtime}) is not in this user's runs or port claims, and ${stack.reason}. It belongs to another user's buncargo or to wiped state, so it is left alone. If it is orphaned, remove it by hand: ${stack.command}`,
 			);
+		}
+
 		// Same project name from another checkout, still owned: a run in a
-		// worktree that resolved to this project's identity. Survived the
-		// sweep, so somebody is using them — say who, because the fix is to
-		// go and stop that run, not to guess.
+		// worktree that resolved to this project's identity. It survived the
+		// sweep, so somebody is using it. Say who, because the fix is to go and
+		// stop that run, not to guess.
 		const foreignRoots = new Set(
 			result.remaining
 				.filter(
@@ -293,9 +320,13 @@ async function checkOrphanedContainers(
 			const owner = result.runs.find(
 				(run) => run.root === root && run.projectName === env.projectName,
 			);
-			const who = owner
-				? `${owner.worktree ?? "the main checkout"}${result.liveSessions.has(owner.sessionId) ? `, running as pid ${owner.pid}` : ", finished and being held"}`
-				: "no run on record";
+			let who = "no run on record";
+			if (owner) {
+				const state = result.liveSessions.has(owner.sessionId)
+					? `, running as pid ${owner.pid}`
+					: ", finished and being held";
+				who = `${owner.worktree ?? "the main checkout"}${state}`;
+			}
 			report.issue(
 				`Containers labeled ${env.projectName} belong to ${root} (${who})`,
 			);
@@ -472,10 +503,11 @@ async function checkNamedHosts(
 	const hostRoutes = (await loadHostRoutes({ strict: true })).filter((route) =>
 		isRouteLive(route),
 	);
+	const routeNoun = hostRoutes.length === 1 ? "route" : "routes";
 	report.note(
 		hostRoutes.length === 0
 			? "Named-hosts route registry is empty"
-			: `Named-hosts registry has ${hostRoutes.length} live ${hostRoutes.length === 1 ? "route" : "routes"}`,
+			: `Named-hosts registry has ${hostRoutes.length} live ${routeNoun}`,
 	);
 	reportDaemonRouteGap(report, health, hostRoutes);
 }
@@ -527,7 +559,7 @@ async function checkSelectedRuntime(
 	report: DoctorReport,
 	runtime: ContainerRuntimeAdapter,
 	available: ContainerRuntimeAdapter[],
-	fix = false,
+	fix: boolean,
 ): Promise<void> {
 	if (available.some((item) => item.name === runtime.name)) return;
 	try {
@@ -572,22 +604,29 @@ async function checkRunRegistry(
 		report.note(
 			`${active} active run${active === 1 ? "" : "s"}, ${held} held for reuse`,
 		);
+
 		// A service down under a live run: its apps fail on their next query.
 		// Another checkout's is said, but is not this checkout's failure.
-		for (const run of live)
+		for (const run of live) {
 			for (const service of run.services) {
 				if (!service.problem) continue;
+
 				const line = `${run.projectName} (${run.root}): ${service.problem.detail}`;
 				if (run.root === root) report.issue(line);
 				else report.note(`warning: ${line}`);
 			}
+		}
+
 		// Who stopped this checkout's containers lately, for the shutdown
 		// nobody remembers.
-		if (root)
-			for (const record of readRemovals()
+		if (root) {
+			const recent = readRemovals()
 				.filter((candidate) => candidate.root === root)
-				.slice(-3))
+				.slice(-3);
+			for (const record of recent) {
 				report.note(`Recent: ${describeRemoval(record)}`);
+			}
+		}
 	} catch (error) {
 		report.issue(`Could not read the run registry: ${getErrorMessage(error)}`);
 	}
@@ -604,7 +643,7 @@ function checkMenuBarApp(report: DoctorReport): void {
 	const installed = readInstalledBarInfo();
 	if (installed) {
 		// An app that cannot read the registry shows an empty menu, which reads
-		// as a broken `dev` — an issue, not a note.
+		// as a broken `dev`. That is an issue, not a note.
 		if (installed.registryVersion < REGISTRY_VERSION) {
 			report.issue(
 				`BuncargoBar ${installed.version ?? ""} reads runs.json v${installed.registryVersion}, buncargo writes v${REGISTRY_VERSION} — run \`buncargo bar update\``,
@@ -663,10 +702,13 @@ async function doctor(fix: boolean): Promise<number> {
 		report.note(
 			`Port offset ${env.portOffset} from ${env.portOffsetProvenance}`,
 		);
+
 		// Its ports are another checkout's: their owners say nothing about it.
-		if (env.portOffsetProvenance === "unallocated")
+		if (env.portOffsetProvenance === "unallocated") {
 			report.note(`warning: ${unallocatedPortsMessage(env.root)}`);
-		else await checkPortOwnership(report, env, selected, fix);
+		} else {
+			await checkPortOwnership(report, env, selected, fix);
+		}
 		await checkOrphanedContainers(report, env, selected);
 		await checkNamedHosts(report, env, hostsFix);
 		await checkSetupChecks(report, env);

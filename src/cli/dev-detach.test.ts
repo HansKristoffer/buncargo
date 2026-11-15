@@ -138,8 +138,11 @@ describe("runDetached", () => {
 		} finally {
 			console.log = realLog;
 			console.error = realError;
-			if (savedScope === undefined) delete process.env.BUNCARGO_SYSTEMD_SCOPE;
-			else process.env.BUNCARGO_SYSTEMD_SCOPE = savedScope;
+			if (savedScope === undefined) {
+				delete process.env.BUNCARGO_SYSTEMD_SCOPE;
+			} else {
+				process.env.BUNCARGO_SYSTEMD_SCOPE = savedScope;
+			}
 			rmSync(root, { recursive: true, force: true });
 		}
 	}
@@ -175,8 +178,9 @@ describe("runDetached", () => {
 				);
 			},
 			after: (root) => {
-				for (const name of readdirSync(logs(root)))
+				for (const name of readdirSync(logs(root))) {
 					files[name] = readFileSync(join(logs(root), name), "utf8");
+				}
 			},
 		});
 		expect(files[`detached-${process.pid}.log`]).toBe(

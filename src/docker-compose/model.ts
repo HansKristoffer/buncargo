@@ -1,4 +1,4 @@
-import { isRecord } from "hanzio";
+import { isRecord, toArray } from "hanzio";
 import type {
 	ComposeDocument,
 	ComposeIdentity,
@@ -56,8 +56,10 @@ function resolveServiceDefinition(
 	const { docker } = config;
 	if (docker.kind === "raw") {
 		const service = { ...docker.service };
-		if (!service.ports || service.ports.length === 0)
+		if (!service.ports || service.ports.length === 0) {
 			service.ports = getDefaultPortBindings(name, config);
+		}
+
 		return { service };
 	}
 
@@ -72,6 +74,7 @@ function resolveServiceDefinition(
 				docker.override as DockerComposeNode,
 			) as DockerComposeServiceRaw)
 		: service;
+
 	return { service: merged, volume };
 }
 
@@ -105,7 +108,9 @@ function withAssignedPorts(
 ): DockerComposeServiceRaw {
 	const bindings = portBindings(name, config, presetOf(config));
 	if (!service.ports || bindings.length === 0) return service;
+
 	const assigned = new Map(bindings.map((b) => [b.claimed, b.assigned]));
+
 	return {
 		...service,
 		ports: service.ports.map((entry) => assigned.get(entry) ?? entry),
@@ -123,14 +128,18 @@ export function assignedPortTargets(
 	const targets: Record<string, AssignedPortTarget> = {};
 	for (const [name, config] of Object.entries(services)) {
 		if (config.kind === "external") continue;
+
 		const published = model.services[config.serviceName]?.ports ?? [];
-		for (const binding of portBindings(name, config, presetOf(config)))
-			if (published.includes(binding.assigned))
-				targets[binding.portKey] = {
-					service: config.serviceName,
-					containerPort: binding.containerPort,
-				};
+		for (const binding of portBindings(name, config, presetOf(config))) {
+			if (!published.includes(binding.assigned)) continue;
+
+			targets[binding.portKey] = {
+				service: config.serviceName,
+				containerPort: binding.containerPort,
+			};
+		}
 	}
+
 	return targets;
 }
 
@@ -147,31 +156,42 @@ function withDataInMemory(
 	// Typed as strings, but a raw service can use Compose's long syntax.
 	const mounts: DockerComposeNode[] = service.volumes ?? [];
 	if (mounts.length === 0) return service;
+
 	const volumes: DockerComposeNode[] = [];
-	const tmpfs: string[] =
-		service.tmpfs === undefined
-			? []
-			: Array.isArray(service.tmpfs)
-				? service.tmpfs.map(String)
-				: [String(service.tmpfs)];
+	const tmpfs: string[] = toArray(service.tmpfs).map(String);
+
 	for (const mount of mounts) {
 		if (isRecord(mount)) {
 			const type = mount.type ?? "volume";
 			const source = typeof mount.source === "string" ? mount.source : "";
-			if (type === "volume" && !kept.has(source))
+
+			if (type === "volume" && !kept.has(source)) {
 				tmpfs.push(String(mount.target));
-			else volumes.push(mount);
+			} else {
+				volumes.push(mount);
+			}
 			continue;
 		}
+
 		const [source = "", target] = String(mount).split(":");
-		// No target: an anonymous volume, mounted at the source position.
-		if (target === undefined) tmpfs.push(source);
-		else if (isBindSource(source) || kept.has(source)) volumes.push(mount);
-		else tmpfs.push(target);
+
+		if (target === undefined) {
+			// No target: an anonymous volume, mounted at the source position.
+			tmpfs.push(source);
+		} else if (isBindSource(source) || kept.has(source)) {
+			volumes.push(mount);
+		} else {
+			tmpfs.push(target);
+		}
 	}
+
 	const inMemory: DockerComposeServiceRaw = { ...service, tmpfs };
-	if (volumes.length > 0) inMemory.volumes = volumes as string[];
-	else delete inMemory.volumes;
+	if (volumes.length > 0) {
+		inMemory.volumes = volumes as string[];
+	} else {
+		delete inMemory.volumes;
+	}
+
 	return inMemory;
 }
 
@@ -194,15 +214,18 @@ export function buildComposeModel(
 			.filter(([, volume]) => Boolean(volume.external))
 			.map(([name]) => name),
 	);
+
 	const composeServices: Record<string, DockerComposeServiceRaw> = {};
 	const composeVolumes: Record<string, DockerComposeVolumeRaw> = {};
 
 	for (const [name, serviceConfig] of Object.entries(services)) {
 		// Its stack's own CLI creates it; buncargo only knows its port.
 		if (serviceConfig.kind === "external") continue;
+
 		const resolved = resolveServiceDefinition(name, serviceConfig, runtime);
 		const { serviceName } = serviceConfig;
 		const { volume } = resolved;
+
 		const stored = inMemory
 			? withDataInMemory(resolved.service, external)
 			: resolved.service;
@@ -210,6 +233,7 @@ export function buildComposeModel(
 			options.ports === "assigned"
 				? withAssignedPorts(stored, name, serviceConfig)
 				: stored;
+
 		if (identity) {
 			const identityLabels = {
 				"buncargo.project": identity.projectName,
@@ -230,6 +254,7 @@ export function buildComposeModel(
 					]
 				: { ...normalizeComposeLabels(service.labels), ...identityLabels };
 		}
+
 		composeServices[serviceName] = service;
 		if (volume && !inMemory) {
 			composeVolumes[volume] = {};
@@ -237,16 +262,19 @@ export function buildComposeModel(
 	}
 
 	for (const [volumeName, volume] of Object.entries(docker?.volumes ?? {})) {
-		if (!inMemory || external.has(volumeName))
+		if (!inMemory || external.has(volumeName)) {
 			composeVolumes[volumeName] = volume;
+		}
 	}
 
 	const document: ComposeDocument = {
+		// The literal Compose placeholder, split so it is not read as a template.
 		name: "$" + "{COMPOSE_PROJECT_NAME}",
 		services: composeServices,
 	};
 	if (Object.keys(composeVolumes).length > 0) {
 		document.volumes = composeVolumes;
 	}
+
 	return document;
 }

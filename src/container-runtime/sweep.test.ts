@@ -132,10 +132,11 @@ describe("decideSweep", () => {
 			["unknown", true, "this user cannot read its checkout"],
 			["present", false, "it is stopped"],
 			["present", true, "it is running"],
-		] as const)
+		] as const) {
 			expect(
 				decideSweep({ ...base, known: false, checkout, anyRunning }, limits),
 			).toEqual({ kind: "foreign", reason });
+		}
 	});
 
 	it("removes a stopped stack nobody owns", () => {
@@ -1055,7 +1056,7 @@ describe("sweepOrphanedContainers", () => {
 
 	it("spares a stack a run claims while the pass is busy elsewhere", async () => {
 		// The pass condemns both stacks from its snapshot. While it tears the
-		// first down, a new run claims the second — publishing before it takes
+		// first down, a new run claims the second, publishing before it takes
 		// the lock, as a real start does. The recheck under the lock must see it.
 		await publishRun(
 			entry({
@@ -1284,9 +1285,11 @@ describe("settleDeletedCheckouts", () => {
 	const LATER = NOW + DELETED_CHECKOUT_SETTLE_MS;
 
 	afterEach(() => {
-		if (optIn === undefined)
+		if (optIn === undefined) {
 			delete process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS;
-		else process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS = optIn;
+		} else {
+			process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS = optIn;
+		}
 	});
 
 	function setup(options: {
@@ -1294,10 +1297,15 @@ describe("settleDeletedCheckouts", () => {
 		claims: Record<string, string>;
 		left?: BuncargoContainer[];
 	}) {
-		if (options.enabled) process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS = "1";
-		else delete process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS;
-		for (const [root, projectName] of Object.entries(options.claims))
+		if (options.enabled) {
+			process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS = "1";
+		} else {
+			delete process.env.BUNCARGO_PRUNE_DELETED_CHECKOUTS;
+		}
+
+		for (const [root, projectName] of Object.entries(options.claims)) {
 			claimOffset({ root, offset: 100, ports: [5532], projectName });
+		}
 
 		const removed: string[][] = [];
 		const runtime = fakeRuntime({

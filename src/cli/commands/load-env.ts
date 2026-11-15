@@ -2,9 +2,9 @@ import { getErrorMessage } from "hanzio";
 import { unallocatedPortsMessage } from "../../core/port-exhaustion";
 import * as log from "../log";
 
-export async function loadEnv(options: { containerRuntime?: string } = {}) {
+export async function loadEnv() {
 	try {
-		return await (await import("../../loader")).loadDevEnv(options);
+		return await (await import("../../loader")).loadDevEnv();
 	} catch (error) {
 		log.fail(getErrorMessage(error));
 	}
@@ -20,10 +20,13 @@ export async function loadLiveEnv() {
 	const { adoptLiveCaptures } = await import("../../core/run-publish");
 	const { internalsOf } = await import("../../environment");
 	const env = await loadEnv();
+
 	// Answered all the same (`portOffsetProvenance: "unallocated"`): these
 	// commands are how an agent finds its way out of a full range.
-	if (env.portOffsetProvenance === "unallocated")
+	if (env.portOffsetProvenance === "unallocated") {
 		log.warn(unallocatedPortsMessage(env.root));
+	}
+
 	const live = env.hosts
 		? readLiveNamedUrls(
 				env.root,
@@ -32,6 +35,7 @@ export async function loadLiveEnv() {
 			)
 		: undefined;
 	if (live) internalsOf(env).setNamedHostsActive(true, live);
+
 	await adoptLiveCaptures(env);
 	return env;
 }

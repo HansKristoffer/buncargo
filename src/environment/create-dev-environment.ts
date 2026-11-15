@@ -92,6 +92,7 @@ function createEnvironment(
 	const coordinator = new LifecycleCoordinator();
 	const serviceWatch = createServiceWatch(ctx, runClaim.sessionId);
 	const recordCapture = createCaptureRecorder(ctx, envVars);
+	const renderFiles = () => renderGeneratedFiles(ctx, envVars);
 	const appPipeline = createAppPipeline({
 		root: ctx.root,
 		ports: ctx.ports,
@@ -110,7 +111,7 @@ function createEnvironment(
 				}),
 			),
 		recordCapture,
-		renderGeneratedFiles: () => renderGeneratedFiles(ctx, envVars),
+		renderGeneratedFiles: renderFiles,
 		runSeed: (options) => lifecycle.runSeed(options),
 		claim: runClaim,
 		ensureWatchdog: () => lifecycle.ensureWatchdog(),
@@ -260,7 +261,7 @@ function createEnvironment(
 		reportTo: (output) => {
 			ctx.output = output;
 		},
-		renderGeneratedFiles: () => renderGeneratedFiles(ctx, envVars),
+		renderGeneratedFiles: renderFiles,
 		recordCapture,
 		seed: resolved.seed
 			? {

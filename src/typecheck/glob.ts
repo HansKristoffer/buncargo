@@ -47,14 +47,21 @@ export function countTypeScriptFiles(dir: string): number {
 	try {
 		entries = readdirSync(dir, { withFileTypes: true });
 	} catch {
+		// A directory that cannot be read has no files to count.
 		return 0;
 	}
+
 	for (const entry of entries) {
 		if (entry.name.startsWith(".")) continue;
+
 		if (entry.isDirectory()) {
-			if (entry.name !== "node_modules")
+			if (entry.name !== "node_modules") {
 				count += countTypeScriptFiles(join(dir, entry.name));
-		} else if (entry.isFile() && /\.tsx?$/.test(entry.name)) count += 1;
+			}
+		} else if (entry.isFile() && /\.tsx?$/.test(entry.name)) {
+			count += 1;
+		}
 	}
+
 	return count;
 }

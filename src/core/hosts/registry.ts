@@ -145,26 +145,23 @@ export function liveNamedHosts(input: {
 	ownerAlive: RouteOwnerCheck;
 }): NamedHost[] {
 	const { root, plan, routes, ownerAlive } = input;
+
 	return plan.filter((entry) =>
 		routes.some(
 			(route) =>
 				route.root === root &&
 				route.hostname === entry.hostname &&
 				route.port === entry.targetPort &&
-				isRouteLive(route, checkoutStillThere, ownerAlive),
+				isRouteLive(route, ownerAlive),
 		),
 	);
-}
-
-function checkoutStillThere(root: string): boolean {
-	return !checkoutDeleted(root);
 }
 
 /**
  * Is this route still attached to something real?
  *
  * Two different deaths. A route with a pid belongs to one run and goes when
- * that run does. A static one — a service URL — has no owner, so nothing would
+ * that run does. A static one (a service URL) has no owner, so nothing would
  * ever retire it; a deleted worktree would keep its hostnames in the registry,
  * and in `/etc/hosts`, forever. The checkout being gone from disk is the only
  * signal that distinguishes "not running" from "no longer exists"; one this
@@ -172,11 +169,11 @@ function checkoutStillThere(root: string): boolean {
  */
 export function isRouteLive(
 	route: HostsRoute,
-	directoryExists: (path: string) => boolean = checkoutStillThere,
 	ownerAlive: RouteOwnerCheck = pidOwnerAlive,
 ): boolean {
 	if (route.kind === "app") return ownerAlive(route);
-	return route.root === "" || directoryExists(route.root);
+
+	return route.root === "" || !checkoutDeleted(route.root);
 }
 
 /**
@@ -207,9 +204,8 @@ async function liveRoutes(
 	const ownerAlive = await (options.owners ?? pidRouteOwners)(
 		routes.filter((route) => route.kind === "app"),
 	);
-	return routes.filter((route) =>
-		isRouteLive(route, checkoutStillThere, ownerAlive),
-	);
+
+	return routes.filter((route) => isRouteLive(route, ownerAlive));
 }
 
 interface PruneOptions extends ListRegistryReadOptions {
@@ -232,6 +228,7 @@ export async function pruneHostRoutes(
 			? await readForRewrite(path)
 			: await registry.read(path);
 		const next = await liveRoutes(routes, options);
+
 		if (next.length !== routes.length) await registry.write(path, next);
 		return next;
 	});
@@ -250,7 +247,7 @@ export type RouteClaim = "take" | "keep" | "conflict";
  *
  * A different root is always a conflict: two projects cannot share a hostname.
  * Within one root the question is whether this is the same run registering
- * again, or a second `buncargo dev` in the same checkout — the common case
+ * again, or a second `buncargo dev` in the same checkout, the common case
  * when a developer (or an agent) opens a second terminal, where the second run
  * reuses the servers the first one started rather than spawning its own.
  *
@@ -258,7 +255,7 @@ export type RouteClaim = "take" | "keep" | "conflict";
  * answered with `keep` rather than a throw: the route is already correct, and
  * the live owner must stay the owner. `releaseNamedHosts` drops only routes
  * carrying its own pid, so leaving the first run as owner is what makes the
- * route survive the second run exiting and disappear when the first one does —
+ * route survive the second run exiting and disappear when the first one does,
  * which is also when the servers it points at go away.
  *
  * Refusing here instead is what left a second run printing `localhost:port`
@@ -275,6 +272,7 @@ export function classifyRouteClaim(
 	options: { takeover?: boolean } = {},
 ): RouteClaim {
 	if (existing.root !== incoming.root) return "conflict";
+
 	// The same run re-registering, or a service route again: refresh it.
 	if (routeOwnerPid(existing) === routeOwnerPid(incoming)) return "take";
 	if (existing.port === incoming.port && existing.kind === incoming.kind) {
@@ -311,6 +309,8 @@ export async function upsertHostRoutes(
 		const stored = await readForRewrite(path);
 		const routes = await liveRoutes(stored);
 		const byHost = new Map(routes.map((route) => [route.hostname, route]));
+
+		// Only the app routes in the way are judged by identity.
 		const held = routesToSave.flatMap((route) => {
 			const existing = byHost.get(route.hostname);
 			return existing?.kind === "app" && existing.pid !== routeOwnerPid(route)
@@ -322,7 +322,8 @@ export async function upsertHostRoutes(
 
 		for (const route of routesToSave) {
 			const existing = byHost.get(route.hostname);
-			if (existing && isRouteLive(existing, checkoutStillThere, ownerAlive)) {
+
+			if (existing && isRouteLive(existing, ownerAlive)) {
 				const claim = classifyRouteClaim(existing, route, {
 					takeover: options.takeover?.has(route.name),
 				});
@@ -379,6 +380,7 @@ export function routesAfterWithdraw(
 			route.pid !== run.pid &&
 			pidOwnerAlive(route),
 	);
+
 	return routes.filter((route) => {
 		if (route.root !== run.root) return true;
 		if (route.kind === "app") return route.pid !== run.pid;

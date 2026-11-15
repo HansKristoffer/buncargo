@@ -43,7 +43,7 @@ done
 
 # The fixture's second run has finished and only its containers remain. Its
 # pid is alive too, so showing it would mean the app is not reading its
-# `lifecycle` — a finished run back in the menu.
+# `lifecycle`, a finished run back in the menu.
 if [[ "$OUTPUT" == *"t3code-released"* ]]; then
   echo "Expected --status to hide the released run" >&2
   exit 1
@@ -60,7 +60,7 @@ fi
 HOME="$FAKE_HOME" "$BINARY" --selftest
 
 # A registry from a newer CLI must fail loudly rather than read as "nothing
-# running" — that message is the only thing telling the user to update the app.
+# running", and that message is the only thing telling the user to update the app.
 sed 's/"version": 2/"version": 99/' "$FIXTURE" > "$FAKE_HOME/.buncargo/runs.json"
 if OUTPUT="$(HOME="$FAKE_HOME" "$BINARY" --status 2>&1)"; then
   echo "Expected --status to fail on an unsupported registry version" >&2

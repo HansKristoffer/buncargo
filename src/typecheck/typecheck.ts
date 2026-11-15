@@ -30,10 +30,6 @@ import {
 import { readTypecheckTimings, writeTypecheckTimings } from "./timings";
 import { workspacePatterns } from "./workspaces";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Types
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * Options for running workspace typechecks.
  */
@@ -154,10 +150,6 @@ function scriptJobs(
 		command: [process.execPath, "run", script],
 	}));
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Helper Functions
-// ═══════════════════════════════════════════════════════════════════════════
 
 /** `file.ts(3,7): error` becomes `file.ts:3:7 - error`, which terminals link. */
 function formatErrorOutput(output: string): string {
@@ -283,7 +275,7 @@ async function resolveIncludedWorkspaces(
 	return { workspaces, problems };
 }
 
-/** Whether `exclude` names this workspace: its path, a glob over it, or its basename. */
+/** The workspace paths `exclude` names: by path, by glob, or by basename. */
 function excludedPaths(
 	exclude: readonly string[],
 	root: string,
@@ -294,14 +286,17 @@ function excludedPaths(
 	const patterns = exclude.map((entry) =>
 		entry.replace(/^\.\//, "").replace(/\/$/, ""),
 	);
-	for (const path of globPaths(patterns, root, { directories: true }))
+
+	for (const path of globPaths(patterns, root, { directories: true })) {
 		excluded.add(path);
-	for (const workspace of workspaces)
-		if (
+	}
+	for (const workspace of workspaces) {
+		const isNamed =
 			patterns.includes(workspace.path) ||
-			patterns.includes(basename(workspace.path))
-		)
-			excluded.add(workspace.path);
+			patterns.includes(basename(workspace.path));
+		if (isNamed) excluded.add(workspace.path);
+	}
+
 	return excluded;
 }
 
@@ -356,17 +351,20 @@ async function discoverWorkspaces(
 	};
 }
 
-function logWorkspaceResult(
-	result: WorkspaceTypecheckResult,
-	verbose: boolean,
+/** The line a finished check prints, and its compiler output when it failed. */
+function logCheckResult(
+	label: string,
+	result: Pick<
+		WorkspaceTypecheckResult,
+		"reused" | "success" | "duration" | "errorOutput"
+	>,
 ): void {
-	if (!verbose) return;
-	const label = workspaceLabel(result.workspace, result.fileCount);
 	if (result.reused) {
 		const from = describePass(result.reused, Date.now());
 		console.log(`✅ ${label} reused (${from})`);
 		return;
 	}
+
 	const icon = result.success ? "✅" : "❌";
 	const log = result.success ? console.log : console.error;
 	log(
@@ -377,29 +375,21 @@ function logWorkspaceResult(
 	}
 }
 
+function logWorkspaceResult(
+	result: WorkspaceTypecheckResult,
+	verbose: boolean,
+): void {
+	if (!verbose) return;
+	logCheckResult(workspaceLabel(result.workspace, result.fileCount), result);
+}
+
 function logRootConfigResult(
 	rootConfig: ConfigTypecheckResult,
 	verbose: boolean,
 ): void {
 	if (!verbose || !rootConfig.configFile) return;
-	if (rootConfig.reused) {
-		const from = describePass(rootConfig.reused, Date.now());
-		console.log(`✅ ${rootConfig.configFile} reused (${from})`);
-		return;
-	}
-	const icon = rootConfig.success ? "✅" : "❌";
-	const log = rootConfig.success ? console.log : console.error;
-	log(
-		`${icon} ${rootConfig.configFile} ${rootConfig.success ? "completed" : "failed"} in ${rootConfig.duration.toFixed(2)}s`,
-	);
-	if (!rootConfig.success && rootConfig.errorOutput) {
-		console.error(`\n${formatErrorOutput(rootConfig.errorOutput)}`);
-	}
+	logCheckResult(rootConfig.configFile, rootConfig);
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Main Export
-// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * Run TypeScript typechecks across all workspaces that have a `typecheck` script.
@@ -535,12 +525,12 @@ export async function runWorkspaceTypecheck(
 	const workspaceCount = fileCounts.size;
 
 	if (workspaces.length === 0) {
-		const rootConfig = includeRootConfig
+		const configOnly = includeRootConfig
 			? await typecheckRootConfig({ root, verbose: false, signal })
 			: undefined;
 		signal?.throwIfAborted();
 		if (verbose) {
-			if (rootConfig) logRootConfigResult(rootConfig, verbose);
+			if (configOnly) logRootConfigResult(configOnly, verbose);
 			console.log(
 				changedFiles
 					? "Nothing to typecheck."
@@ -548,12 +538,12 @@ export async function runWorkspaceTypecheck(
 			);
 		}
 		return {
-			success: (rootConfig?.success ?? true) && problemResults.length === 0,
+			success: (configOnly?.success ?? true) && problemResults.length === 0,
 			totalDuration: Number((totalElapsed() / 1000).toFixed(2)),
 			totalFiles: 0,
 			workspaceCount: 0,
 			results: problemResults,
-			...(rootConfig ? { rootConfig } : {}),
+			...(configOnly ? { rootConfig: configOnly } : {}),
 		};
 	}
 
@@ -660,12 +650,15 @@ export async function runWorkspaceTypecheck(
 		timings,
 		results.filter((result) => !result.reused),
 	);
-	if (reuse && tree !== undefined && treeFingerprint(root) === tree)
+
+	// A tree edited while the checks ran is not the one that passed.
+	if (reuse && tree !== undefined && treeFingerprint(root) === tree) {
 		await recordPasses(root, passedKeys, {
 			tree,
 			at: Date.now(),
 			by: reuse.by,
 		});
+	}
 
 	const totalDuration = Number((totalElapsed() / 1000).toFixed(2));
 	const totalFiles = sumBy([...fileCounts.values()], (count) => count);
@@ -676,10 +669,11 @@ export async function runWorkspaceTypecheck(
 		(rootConfig?.success ?? true);
 
 	if (verbose) {
-		if (notRun.size > 0)
+		if (notRun.size > 0) {
 			console.error(
 				`\nStopped at the first failure; not checked: ${[...notRun].join(", ")}`,
 			);
+		}
 		if (success) {
 			const checked = results.length + (rootConfig?.configFile ? 1 : 0);
 			const summary = reusedSummary(reused, checked, Date.now());

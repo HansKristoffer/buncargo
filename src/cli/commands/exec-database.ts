@@ -58,15 +58,19 @@ export async function databaseOverrides(
 ): Promise<Record<string, string>> {
 	assertDatabaseName(name, "--db");
 	const postgres = findPostgresService(env.services);
-	if (!postgres)
+	if (!postgres) {
 		throw new CliError(
 			"--db needs a Postgres service, and this config has none.",
 		);
+	}
+
 	const port = (env.ports as Record<string, number | undefined>)[postgres.name];
-	if (port === undefined)
+	if (port === undefined) {
 		throw new CliError(`${postgres.name} has no port in ${env.projectName}.`, [
 			"Give the service a port in dev.config.ts, as service.postgres() does.",
 		]);
+	}
+
 	const credentials = postgresCredentials(postgres.service);
 	const ownDatabase = credentials.database;
 
@@ -74,13 +78,15 @@ export async function databaseOverrides(
 		databaseUrl(credentials, port, ownDatabase),
 		name,
 	);
-	if (exists === undefined)
+	if (exists === undefined) {
 		throw new CliError(
 			`Could not reach ${postgres.name} for ${env.projectName} on port ${port} to find database "${name}".`,
 			[
 				"Start it: buncargo sql --create-scratch=<name>, or buncargo dev --up-only",
 			],
 		);
+	}
+
 	if (!exists) {
 		const scratch = name.startsWith("scratch_")
 			? name.slice("scratch_".length)
@@ -95,8 +101,8 @@ export async function databaseOverrides(
 		);
 	}
 
-	const knownApp = app !== undefined && app in env.apps;
-	const computed: Record<string, string> = knownApp
+	const isKnownApp = app !== undefined && app in env.apps;
+	const computed: Record<string, string> = isKnownApp
 		? env.buildAppEnvVars(app)
 		: env.buildEnvVars();
 	const serviceUrl = (env.urls as Record<string, string | undefined>)[
@@ -107,10 +113,12 @@ export async function databaseOverrides(
 		databaseTarget(port, ownDatabase, serviceUrl),
 		name,
 	);
-	if (Object.keys(overrides).length === 0)
+	if (Object.keys(overrides).length === 0) {
 		throw new CliError(
 			`No variable points at ${postgres.name}'s database "${ownDatabase}" on port ${port}, so --db=${name} would change nothing.`,
 			["See the variables: buncargo env"],
 		);
+	}
+
 	return overrides;
 }

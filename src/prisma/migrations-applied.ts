@@ -51,26 +51,31 @@ export async function appliedMigrationCount(
 ): Promise<number | undefined> {
 	input.signal?.throwIfAborted();
 	if (input.service.preset !== "postgres" || !input.url) return;
+
 	try {
+		// Only a local Postgres URL gets the shortcut.
 		const url = new URL(input.url);
-		if (
-			!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
-			!["postgres:", "postgresql:"].includes(url.protocol)
-		)
-			return;
+		const isLocalPostgres =
+			["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
+			["postgres:", "postgresql:"].includes(url.protocol);
+		if (!isLocalPostgres) return;
+
 		const { cwd, migrations } = resolvePrismaConfig(input.prisma);
 		const local = await listMigrationFolders(
 			resolve(input.root, cwd, migrations),
 		);
 		if (local.length === 0) return;
+
 		const rows = await readRows(input.url, input.signal);
-		if (
-			rows.some((row) => row.finished_at == null || row.rolled_back_at != null)
-		)
-			return;
+		const hasUnfinishedRow = rows.some(
+			(row) => row.finished_at == null || row.rolled_back_at != null,
+		);
+		if (hasUnfinishedRow) return;
+
 		const applied = new Set(rows.map((row) => row.migration_name));
 		return local.every((name) => applied.has(name)) ? local.length : undefined;
 	} catch {
+		// An abort is the caller's, not "cannot say".
 		input.signal?.throwIfAborted();
 		return undefined;
 	}

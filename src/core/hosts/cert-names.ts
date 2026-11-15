@@ -10,13 +10,13 @@ import { chownToInvokingUser, getStateDir } from "../state-paths";
  *
  * One leaf serves every project on the machine, and it used to be minted from
  * whatever was in the route registry at that moment. So a project stopping
- * dropped its names, and starting it again reminted — which rebinds the daemon
+ * dropped its names, and starting it again reminted, which rebinds the daemon
  * and drops every proxied websocket, including other projects' HMR sockets.
  * Two projects alternating could remint on every single run.
  *
  * Keyed by repo root, which is also how an entry is retired: a worktree that
  * has been deleted is gone from disk, and its names go with it. That is the
- * one signal available — a route disappears whenever a run ends, and cannot
+ * one signal available: a route disappears whenever a run ends, and cannot
  * distinguish "stopped" from "removed".
  */
 

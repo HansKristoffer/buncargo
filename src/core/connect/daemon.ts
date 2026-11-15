@@ -13,6 +13,7 @@ import { HEARTBEAT_MS, record } from "./protocol";
 import { createPublisher, type SharingIntent } from "./publisher";
 import { createVisitors } from "./visitors";
 
+/** How long the coordinator shares nothing before it considers leaving. */
 const IDLE_TIMEOUT_MS = 60_000;
 
 /** Whether a live run on this origin has written an intent the coordinator has not read yet. */
@@ -143,6 +144,7 @@ async function runCoordinator(controller: AbortController) {
 	const publications = createPublications(origin);
 	const visitors = createVisitors();
 	const token = newCredential("local");
+
 	let snapshot = emptyDirectory();
 	let notice: string | undefined;
 
@@ -200,6 +202,7 @@ async function runCoordinator(controller: AbortController) {
 		maxRequestBodySize: 16384,
 		fetch: handleRequest,
 	});
+
 	let ready = true;
 	let writes = Promise.resolve();
 	// Serialized, so a heartbeat already in flight cannot land after the leaving write.
@@ -219,16 +222,19 @@ async function runCoordinator(controller: AbortController) {
 	};
 
 	await report();
+
 	// Local readiness stays fresh even while a remote directory request is waiting.
 	const heartbeat = setInterval(
 		() => void report().catch(() => controller.abort()),
 		1000,
 	);
+
 	const markLeaving = () => {
 		clearInterval(heartbeat);
 		ready = false;
 		return report().catch(() => controller.abort());
 	};
+
 	let idleSince = Date.now();
 	let nextRefresh = 0;
 

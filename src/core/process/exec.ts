@@ -71,6 +71,7 @@ export function exec(
 
 	try {
 		options.signal?.throwIfAborted();
+
 		recordStartupMetric("subprocesses");
 		const stdout = execSync(cmd, {
 			timeout: options.timeoutMs,
@@ -128,12 +129,17 @@ export async function execAsync(
 		outputPrefix,
 		onOutputLine,
 	} = options;
+
 	signal?.throwIfAborted();
+
 	const executable = typeof cmd === "string" ? cmd : cmd[0];
 	if (!executable) throw new Error("Command cannot be empty");
+
 	const displayCommand = typeof cmd === "string" ? cmd : cmd.join(" ");
+
 	return new Promise((resolvePromise, rejectPromise) => {
 		recordStartupMetric("subprocesses");
+
 		const child = spawn(
 			executable,
 			typeof cmd === "string" ? [] : [...cmd.slice(1)],
@@ -148,6 +154,7 @@ export async function execAsync(
 						: ["ignore", "pipe", "pipe"],
 			},
 		);
+
 		if (verbose && onOutputLine) forEachOutputLine(child, onOutputLine);
 		else if (verbose && outputPrefix)
 			forEachOutputLine(child, (line) =>
@@ -155,17 +162,21 @@ export async function execAsync(
 					formatPrefixedLine(outputPrefix, line, outputPrefix.length),
 				),
 			);
+
 		let stdout = "";
 		let stderr = "";
 		let cancelling = false;
 		let settled = false;
 		let timedOut = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
+
 		const finish = (result: ExecResult, error?: Error) => {
 			if (settled) return;
 			settled = true;
+
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", onAbort);
+
 			if (throwOnError && (error || result.exitCode !== 0))
 				rejectPromise(error ?? commandFailure(displayCommand, result));
 			else
@@ -174,10 +185,12 @@ export async function execAsync(
 					timedOut,
 				});
 		};
+
 		const cancel = async (error: Error) => {
 			if (settled || cancelling) return;
 			cancelling = true;
 			timedOut = error instanceof CommandTimeoutError;
+
 			try {
 				await terminateOwnedProcess(
 					child,
@@ -187,15 +200,20 @@ export async function execAsync(
 			} catch (cleanupError) {
 				error = new AggregateError([error, cleanupError], error.message);
 			}
+
 			finish({ exitCode: 1, stdout, stderr: error.message }, error);
 		};
+
 		const onAbort = () => {
 			const cleanup = cancel(abortError(signal));
 			if (signal) registerAbortCleanup(signal, cleanup);
 		};
+
 		let outputBytes = 0;
+
 		const collect = (chunk: Buffer | string, stream: "stdout" | "stderr") => {
 			if (cancelling || settled) return;
+
 			outputBytes += Buffer.byteLength(chunk);
 			if (maxBufferBytes !== undefined && outputBytes > maxBufferBytes) {
 				void cancel(
@@ -203,19 +221,23 @@ export async function execAsync(
 				);
 				return;
 			}
+
 			if (stream === "stdout") stdout += String(chunk);
 			else stderr += String(chunk);
 		};
+
 		child.stdout?.on("data", (chunk: Buffer | string) =>
 			collect(chunk, "stdout"),
 		);
 		child.stderr?.on("data", (chunk: Buffer | string) =>
 			collect(chunk, "stderr"),
 		);
+
 		child.on("error", (error) => {
 			if (!cancelling)
 				finish({ exitCode: 1, stdout, stderr: error.message }, error);
 		});
+
 		child.on("close", (code, signal) => {
 			if (!cancelling)
 				finish({
@@ -224,8 +246,10 @@ export async function execAsync(
 					stderr,
 				});
 		});
+
 		signal?.addEventListener("abort", onAbort, { once: true });
 		if (signal?.aborted) onAbort();
+
 		if (timeoutMs !== undefined)
 			timer = setTimeout(
 				() => {

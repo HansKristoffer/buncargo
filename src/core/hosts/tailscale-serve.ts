@@ -35,10 +35,6 @@ import {
 	tailscaleCli,
 } from "./tailscale-cli";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Ports
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * An app's HTTPS port is its own port plus this.
  *
@@ -74,6 +70,7 @@ export function tailscaleBlockPorts(input: {
 	appNames: readonly string[];
 }): ((ports: Record<string, number>) => number[]) | undefined {
 	if (!input.hosts || input.mode !== "tailscale") return undefined;
+
 	return (ports) =>
 		input.appNames.flatMap((name) => {
 			const port = ports[name];
@@ -81,10 +78,6 @@ export function tailscaleBlockPorts(input: {
 			return https === undefined ? [] : [https];
 		});
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// The record of what buncargo added
-// ═══════════════════════════════════════════════════════════════════════════
 
 /** One serve entry buncargo added, and the run that owns it. */
 export interface TailscaleServeEntry {
@@ -137,9 +130,11 @@ export function serveOwnersAlive(
 		owner.processIdentity === undefined ? [] : [owner.pid],
 	);
 	const identities = readProcessIdentitiesCached(recorded);
+
 	return (owner) => {
 		if (!isProcessAlive(owner.pid)) return false;
 		if (owner.processIdentity === undefined) return true;
+
 		const actual = identities.get(owner.pid);
 		return actual === undefined || actual === owner.processIdentity;
 	};
@@ -220,14 +215,18 @@ export function servedTailscaleUrls(
 	const urls: Record<string, string> = {};
 	for (const entry of entries) {
 		const port = input.ports[entry.app];
+
 		const current =
 			entry.root === input.root &&
 			entry.servedAt !== undefined &&
 			port !== undefined &&
 			entry.target === serveTarget(port);
-		if (current && input.isAlive(entry))
+
+		if (current && input.isAlive(entry)) {
 			urls[entry.app] = tailscaleServeUrl(entry);
+		}
 	}
+
 	return urls;
 }
 
@@ -255,16 +254,13 @@ export function readServedTailscaleUrlsSync(
 				? file.entries.filter(isServeEntry)
 				: undefined;
 		}) ?? [];
+
 	return servedTailscaleUrls(entries, {
 		root,
 		ports,
 		isAlive: serveOwnersAlive(entries),
 	});
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Deciding what to change
-// ═══════════════════════════════════════════════════════════════════════════
 
 /** An app this run wants served. */
 export interface ServeWant {
@@ -332,6 +328,7 @@ export function planServeChanges(input: {
 	isAlive: (owner: ServeOwner) => boolean;
 }): ServePlan {
 	const { root, pid, hostname, config } = input;
+
 	const ownedHere = {
 		pid,
 		...(input.processIdentity === undefined
@@ -358,13 +355,16 @@ export function planServeChanges(input: {
 		if (!wanted) {
 			// Dead, or this run's own entry for a port the app no longer has.
 			const stale = !alive || (want !== undefined && entry.pid === pid);
-			if (stale) {
-				if (decideRemoval(entry, config) === "off") off.push(entry);
-			} else records.push(entry);
+			if (!stale) {
+				records.push(entry);
+			} else if (decideRemoval(entry, config) === "off") {
+				off.push(entry);
+			}
 			continue;
 		}
 
 		handled.add(want.app);
+
 		const takenOver = input.takeover.has(entry.app);
 		const ours = !alive || entry.pid === pid || takenOver;
 		// What answered for a run that ended says nothing about this one.
@@ -373,6 +373,7 @@ export function planServeChanges(input: {
 		const kept = ours
 			? { ...recorded, ...ownedHere, servedAt }
 			: { ...entry, servedAt };
+
 		const served = config.get(entry.httpsPort);
 		if (matchesConfig(entry, served)) {
 			records.push(kept);
@@ -392,6 +393,7 @@ export function planServeChanges(input: {
 	const freed = new Set(off.map((entry) => entry.httpsPort));
 	for (const want of input.wants) {
 		if (handled.has(want.app)) continue;
+
 		const holder = records.find((entry) => entry.httpsPort === want.httpsPort);
 		if (holder) {
 			refused.push(recordedPortMessage(want, holder));
@@ -401,6 +403,7 @@ export function planServeChanges(input: {
 			refused.push(unrecordedPortMessage(want, hostname));
 			continue;
 		}
+
 		const entry: TailscaleServeEntry = {
 			root,
 			app: want.app,
@@ -428,10 +431,6 @@ function recordedPortMessage(
 	const url = tailscaleServeUrl(holder);
 	return `${want.app} is not served on port ${want.httpsPort}: ${url} serves ${holder.app} of ${holder.root} for run pid ${holder.pid}. Stop that run (\`buncargo stop --all\` in ${holder.root}) and restart this one.`;
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Running the commands
-// ═══════════════════════════════════════════════════════════════════════════
 
 /** Where a probe connects: the machine's Tailscale address, asking for the name. */
 interface ServeProbeTarget {
@@ -474,15 +473,18 @@ function handshake(target: ServeProbeTarget): Promise<string | undefined> {
 			port: target.httpsPort,
 			servername: target.hostname,
 		});
+
 		const timer = setTimeout(() => {
 			socket.destroy();
 			resolve("no TLS handshake within 15s");
 		}, PROBE_HANDSHAKE_MS);
+
 		socket.once("secureConnect", () => {
 			clearTimeout(timer);
 			socket.destroy();
 			resolve(undefined);
 		});
+
 		socket.once("error", (error: NodeJS.ErrnoException) => {
 			clearTimeout(timer);
 			resolve(error.code ?? error.message);
@@ -492,10 +494,12 @@ function handshake(target: ServeProbeTarget): Promise<string | undefined> {
 
 async function probeTls(target: ServeProbeTarget): Promise<string | undefined> {
 	const deadline = performance.now() + PROBE_REFUSED_MS;
+
 	for (;;) {
 		const reason = await handshake(target);
 		const refused = reason === "ECONNREFUSED";
 		if (!refused || performance.now() > deadline) return reason;
+
 		await promiseTimeout(PROBE_RETRY_MS);
 	}
 }
@@ -520,8 +524,12 @@ async function takeOut(
 		"off",
 	]);
 	if (result.exitCode === 0) return undefined;
-	if (/does not exist|not found/i.test(`${result.stderr}\n${result.stdout}`))
-		return undefined;
+
+	const alreadyGone = /does not exist|not found/i.test(
+		`${result.stderr}\n${result.stdout}`,
+	);
+	if (alreadyGone) return undefined;
+
 	return `Could not remove ${tailscaleServeUrl(entry)} (${entry.app}, ${entry.root}) from Tailscale Serve: ${failureLine(result)}. Remove it with \`tailscale serve --https=${entry.httpsPort} off\`.`;
 }
 
@@ -535,9 +543,11 @@ async function takeOutAll(
 	for (const entry of entries) {
 		const failure = await takeOut(cli, entry);
 		if (!failure) continue;
+
 		kept.push(entry);
 		failures.push(failure);
 	}
+
 	return { kept, failures };
 }
 
@@ -558,10 +568,12 @@ async function registerAll(
 			`--https=${entry.httpsPort}`,
 			entry.target,
 		]);
+
 		if (result.exitCode === 0) {
 			added.push(entry);
 			continue;
 		}
+
 		if (isPermissionDenied(result)) {
 			const apps = entries
 				.slice(index)
@@ -572,16 +584,14 @@ async function registerAll(
 			);
 			break;
 		}
+
 		refused.push(
 			`Tailscale did not serve ${entry.app} on port ${entry.httpsPort}: ${failureLine(result)}. \`buncargo doctor\` checks what Tailscale Serve needs.`,
 		);
 	}
+
 	return { added, refused };
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Activation, release and the sweep
-// ═══════════════════════════════════════════════════════════════════════════
 
 export interface TailscaleServeApp {
 	name: string;
@@ -622,6 +632,7 @@ export async function activateTailscaleServe(
 	const fallbacks: string[] = [];
 	const notes: string[] = [];
 	const blockPorts = new Set(input.blockPorts);
+
 	const wants: ServeWant[] = [];
 	for (const app of input.apps) {
 		const httpsPort = tailscaleHttpsPort(app.port);
@@ -639,7 +650,9 @@ export async function activateTailscaleServe(
 	}
 	if (wants.length === 0) return { urls: {}, fallbacks, notes };
 
+	// Started before the lock wait, so `tailscale status` overlaps it.
 	const selfRead = readTailscaleSelf(deps.cli);
+
 	type Applied =
 		| { unavailable: string }
 		| { address: string; serving: TailscaleServeEntry[] };
@@ -665,23 +678,28 @@ export async function activateTailscaleServe(
 			isAlive: deps.ownersAlive(entries),
 		});
 		fallbacks.push(...plan.refused);
+
 		// Recorded before any command runs: a crash from here on leaves a
 		// record the sweep can act on, never an entry nobody knows about.
 		await registry.write(path, [...plan.records, ...plan.off]);
+
 		const removal = await takeOutAll(deps.cli, plan.off);
 		notes.push(...removal.failures);
 		const registration = await registerAll(deps.cli, plan.register);
 		fallbacks.push(...registration.refused);
+
 		// A refused change stays recorded: one that timed out may still have
 		// applied, and removal checks the live config before it touches it.
 		await registry.write(path, [...plan.records, ...removal.kept]);
+
 		return {
 			address: self.address,
 			serving: [...plan.serving, ...registration.added],
 		};
 	});
-	if ("unavailable" in applied)
+	if ("unavailable" in applied) {
 		return { urls: {}, fallbacks: [...fallbacks, applied.unavailable], notes };
+	}
 
 	const answered: TailscaleServeEntry[] = [];
 	await Promise.all(
@@ -712,12 +730,14 @@ async function markServed(
 	answered: readonly TailscaleServeEntry[],
 ): Promise<void> {
 	if (answered.length === 0) return;
+
 	const now = new Date().toISOString();
 	const path = getTailscaleServePath();
 	await withServeLock(async () => {
 		const entries = await registry.read(path);
 		const stamp = (entry: TailscaleServeEntry) =>
 			!entry.servedAt && answered.some((item) => sameEntry(item, entry));
+
 		await registry.write(
 			path,
 			entries.map((entry) =>
@@ -741,28 +761,34 @@ async function removeMatching(
 ): Promise<{ removed: TailscaleServeEntry[]; failures: string[] }> {
 	const unlocked = await loadTailscaleServeEntries();
 	if (!unlocked.some(matcher(unlocked))) return { removed: [], failures: [] };
+
 	const path = getTailscaleServePath();
 	return withServeLock(async () => {
 		const entries = await registry.read(path);
 		const doomed = entries.filter(matcher(entries));
 		if (doomed.length === 0) return { removed: [], failures: [] };
+
 		const read = await readServeConfig(cli);
-		if ("reason" in read)
+		if ("reason" in read) {
 			return {
 				removed: [],
 				failures: [
 					`Tailscale Serve entries of ${describeOwners(doomed)} are still there: ${read.reason}; \`buncargo hosts prune\` tries again.`,
 				],
 			};
+		}
+
 		const off = doomed.filter(
 			(entry) => decideRemoval(entry, read.config) === "off",
 		);
 		const removal = await takeOutAll(cli, off);
 		const stays = new Set(removal.kept);
+
 		await registry.write(
 			path,
 			entries.filter((entry) => !doomed.includes(entry) || stays.has(entry)),
 		);
+
 		return {
 			removed: doomed.filter((entry) => !stays.has(entry)),
 			failures: removal.failures,
@@ -827,10 +853,6 @@ export async function sweepTailscaleServe(
 	}
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Diagnosis
-// ═══════════════════════════════════════════════════════════════════════════
-
 export interface TailscaleDiagnosis {
 	notes: string[];
 	issues: string[];
@@ -869,10 +891,12 @@ export async function diagnoseTailscaleHosts(
 		issues.push(`Tailscale: ${read.reason}`);
 		return { notes, issues };
 	}
+
 	const entries = await loadTailscaleServeEntries();
 	const live = entries.filter(deps.ownersAlive(entries));
 	const count = live.length === 1 ? "1 entry" : `${live.length} entries`;
 	notes.push(`Tailscale Serve: ${count} recorded by buncargo`);
+
 	for (const entry of live) {
 		const url = tailscaleServeUrl(entry);
 		if (!matchesConfig(entry, read.config.get(entry.httpsPort))) {
@@ -881,16 +905,19 @@ export async function diagnoseTailscaleHosts(
 			);
 			continue;
 		}
+
 		const reason = await deps.probe({
 			hostname: entry.hostname,
 			address: self.address,
 			httpsPort: entry.httpsPort,
 		});
-		if (reason)
+		if (reason) {
 			issues.push(
 				`${url} (${entry.app}, ${entry.root}) is in the Tailscale Serve config but no TLS handshake succeeds there (${reason}). Check what else listens on port ${entry.httpsPort}: \`lsof -nP -iTCP:${entry.httpsPort}\`.`,
 			);
+		}
 	}
+
 	return { notes, issues };
 }
 
@@ -900,6 +927,7 @@ export async function describeTailscaleServeEntries(
 ): Promise<string[]> {
 	const entries = await loadTailscaleServeEntries();
 	if (entries.length === 0) return [];
+
 	const alive = deps.ownersAlive(entries);
 	const read = await readServeConfig(deps.cli);
 	const missing = (entry: TailscaleServeEntry) =>

@@ -3,6 +3,7 @@ import { installTool } from "../tool-install";
 
 const FRP_VERSION = "0.71.0";
 
+/** SHA-256 of each platform's release tarball for FRP_VERSION. */
 const checksums: Record<string, string> = {
 	linux_amd64:
 		"84f27e39f11169f7adcef8e8b70c9329de17747b1f14dad9fb95eef5682ea716",
@@ -18,13 +19,15 @@ export async function installFrp(
 	name: "frpc" | "frps" = "frpc",
 	signal?: AbortSignal,
 ) {
-	const platform = `${process.platform}_${process.arch === "x64" ? "amd64" : process.arch}`;
+	const arch = process.arch === "x64" ? "amd64" : process.arch;
+	const platform = `${process.platform}_${arch}`;
 	const sha256 = checksums[platform];
 	if (!sha256) {
 		throw new Error(
 			"frp supports macOS and Linux on x64/arm64; use WSL on Windows.",
 		);
 	}
+
 	const release = `frp_${FRP_VERSION}_${platform}`;
 	return installTool({
 		to: toolCachePath(`${release}/${name}`),

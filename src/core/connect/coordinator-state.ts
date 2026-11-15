@@ -3,6 +3,7 @@ import { readJsonDocument, writeJsonDocument } from "../registry-file";
 import { stateFilePath } from "../state-paths";
 import { record } from "./protocol";
 
+/** How old a heartbeat may be before the coordinator no longer counts as ready. */
 const COORDINATOR_MAX_AGE_MS = 10000;
 
 export interface CoordinatorState {
@@ -54,10 +55,10 @@ export async function readCoordinatorState(
 
 		return state as unknown as CoordinatorState;
 	});
-	return state &&
-		(!liveOnly || matchesProcessIdentity(state.pid, state.identity))
-		? state
-		: undefined;
+	if (!state) return undefined;
+
+	const isLive = matchesProcessIdentity(state.pid, state.identity);
+	return !liveOnly || isLive ? state : undefined;
 }
 
 export const writeCoordinatorState = (state: CoordinatorState) =>

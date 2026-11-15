@@ -5,12 +5,12 @@ import { formatDone, formatFail, formatStep, formatWarn } from "../core/style";
 /**
  * CLI status output.
  *
- * One place for the prefixes and stream choice so command handlers stop
- * hand-writing emoji. The rich environment banner stays in
+ * The one place for the prefixes and stream choice, so command handlers do
+ * not hand-write emoji. The rich environment banner stays in
  * `src/environment/logging.ts`; this is only for CLI-level status and errors.
  */
 
-/** Plain line, no prefix — used for report bodies and key/value listings. */
+/** Plain line with no prefix, for report bodies and key/value listings. */
 export function line(message = ""): void {
 	console.log(message);
 }

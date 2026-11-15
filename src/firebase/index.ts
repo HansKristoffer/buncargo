@@ -132,8 +132,10 @@ function removeStaleHubLocators(dir: string): void {
 		if (!/^hub-.+\.json$/.test(name)) continue;
 		const path = join(dir, name);
 		try {
-			if (isStaleHubLocator(readFileSync(path, "utf8"), isProcessAlive))
+			const content = readFileSync(path, "utf8");
+			if (isStaleHubLocator(content, isProcessAlive)) {
 				rmSync(path, { force: true });
+			}
 		} catch {
 			// Gone already, or unreadable: the CLI reports what it makes of it.
 		}
@@ -149,9 +151,11 @@ export function firebase(
 		options.persist === false
 			? undefined
 			: (options.persist ?? FIREBASE_DEFAULT_DATA_DIR);
+
 	// Set in `config()`, which runs before anything below is called.
 	let project: FirebaseProject | undefined;
 	let selected: FirebaseEmulator[] = [];
+
 	const projectOf = (root: string) => {
 		project ??= readFirebaseProject(workdirOf(root));
 		return project;
@@ -166,14 +170,17 @@ export function firebase(
 			project = read;
 			selected = selectEmulators(read.raw, options.emulators);
 			const raw = read.raw;
+
 			const projectId =
 				options.projectId ??
 				read.defaultProject ??
 				`demo-${config.projectPrefix}`;
 			const base = anchorPort(raw);
+
 			// Every port moves by the offset the app's own port did.
 			const offsetOf = (ports: Readonly<Record<string, number>>) =>
 				(ports[FIREBASE_APP] ?? base) - base;
+
 			const command = [
 				shellQuote(firebaseCli.resolve([workdirOf(root), root])),
 				"emulators:start",
@@ -236,6 +243,7 @@ export function firebase(
 						),
 						projectId,
 					);
+
 					return {
 						...env,
 						...publicEnvCopies(
@@ -282,8 +290,9 @@ export function firebase(
 		describe: (ctx) => {
 			const url = (ctx.urls as Record<string, string>)[FIREBASE_APP];
 			const rows: Record<string, string> = {};
-			if (url && project && uiEnabled(project.raw))
+			if (url && project && uiEnabled(project.raw)) {
 				rows["Firebase Emulator UI"] = url;
+			}
 			return rows;
 		},
 	};

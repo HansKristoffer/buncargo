@@ -6,7 +6,9 @@ const [web, api] = await Promise.all([
 	loadDevEnv<typeof config>({ cwd: import.meta.dir, fresh: true }),
 	loadDevEnv<typeof config>({ cwd: import.meta.dir, fresh: true }),
 ]);
+
 const lifetime = new AbortController();
+
 try {
 	await Promise.all([
 		web.start({
@@ -20,6 +22,7 @@ try {
 			signal: lifetime.signal,
 		}),
 	]);
+
 	console.log(await (await fetch(web.urls.web)).text());
 	console.log(await (await fetch(api.urls.api)).text());
 } finally {

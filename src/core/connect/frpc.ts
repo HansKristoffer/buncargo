@@ -12,6 +12,7 @@ import { newCredential } from "./credentials";
 import { listenLoopback } from "./endpoint";
 import { type Relay, record } from "./protocol";
 
+/** A loopback port free at this moment; another process can take it before the caller binds. */
 export async function freePort() {
 	const server = createServer();
 	const port = await listenLoopback(server);
@@ -26,6 +27,7 @@ export interface FrpcConfig {
 	proxies?: Record<string, unknown>[];
 	visitors?: Record<string, unknown>[];
 }
+
 /** frpc owns the transport. Its authenticated administration endpoint stays on loopback. */
 export async function startFrpc(
 	config: FrpcConfig,
@@ -76,6 +78,7 @@ export async function startFrpc(
 		proxies: config.proxies ?? [],
 		visitors: config.visitors ?? [],
 	};
+
 	await writeFile(path, JSON.stringify(content), { mode: 0o600 });
 
 	// Reject invalid configuration before handing the private directory to the child guard.
@@ -96,6 +99,7 @@ export async function startFrpc(
 
 	const child = startGuardedChild(binary, ["-c", path], directory);
 	const close = () => child.close();
+
 	const admin = async (endpoint: string) => {
 		const response = await fetch(`http://127.0.0.1:${port}/api/${endpoint}`, {
 			headers: {
@@ -120,6 +124,7 @@ export async function startFrpc(
 		await (await admin("reload?strictConfig=true")).text();
 	};
 
+	// Wait up to ten seconds (100 polls, 100 ms apart) for frpc's administration listener.
 	try {
 		for (let i = 0; i < 100; i++) {
 			signal?.throwIfAborted();
@@ -129,7 +134,9 @@ export async function startFrpc(
 			try {
 				await status();
 				return { close, status, reload, alive: () => child.alive };
-			} catch {}
+			} catch {
+				// The administration listener is not up yet; poll again.
+			}
 			await abortableSleep(100, signal);
 		}
 		throw new Error("frpc administration listener did not start");

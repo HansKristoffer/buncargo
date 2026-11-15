@@ -22,10 +22,6 @@ import type { MigrationConfig, PrismaConfig, SeedConfig } from "./preparation";
 import type { DockerComposeGenerationOptions, ServiceConfig } from "./service";
 import type { ConcreteStringKeys } from "./type-utils";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Dev Config
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * Options for the dev environment.
  *
@@ -109,8 +105,8 @@ export interface EnvFileOptions {
 	/**
 	 * Extra keys to sync, merged over the computed ones.
 	 *
-	 * For a name buncargo cannot derive — a second connection string for the same
-	 * database, a URL with a path suffix. Only `loopbackUrls` is offered, not
+	 * For a name buncargo cannot derive, such as a second connection string for
+	 * the same database or a URL with a path suffix. Only `loopbackUrls` is offered, not
 	 * `urls`: a named `https://` host in a dotenv breaks exactly the tooling this
 	 * file exists for. As everywhere else, a key absent from the file is not
 	 * added and a value that is not buncargo's to own is not touched.

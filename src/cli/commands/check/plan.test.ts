@@ -15,8 +15,9 @@ import {
 
 const roots: string[] = [];
 afterEach(() => {
-	for (const root of roots.splice(0))
+	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 function tree(files: string[]) {
@@ -48,8 +49,9 @@ describe("check gates", () => {
 	});
 
 	it("treats a root manifest or the dev config as touching every gate", () => {
-		for (const file of ["package.json", "bun.lock", "dev.config.ts"])
+		for (const file of ["package.json", "bun.lock", "dev.config.ts"]) {
 			expect(selectGates(gates, [file], "changed")).toHaveLength(3);
+		}
 	});
 
 	it("lets a gate with when ignore root-wide files", () => {

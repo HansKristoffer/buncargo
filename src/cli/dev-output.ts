@@ -45,13 +45,16 @@ export function openDevOutput(
 	} catch (error) {
 		log.warn(`App output is not logged to files: ${String(error)}`);
 	}
+
 	const names = Object.keys(apps);
 	const terminal = isInteractive();
-	if (options.tui === "on" && !terminal)
+	if (options.tui === "on" && !terminal) {
 		log.warn("--tui needs a terminal; printing prefixed lines instead.");
+	}
 
 	const actions = appActions(apps);
 	const useTui = options.tui !== "off" && terminal && names.length > 0;
+
 	// In the TUI every app gets a terminal of its own, sized to its pane.
 	const output = new RunOutput({ terminals: useTui ? "pty" : "pipe", logs });
 	const tui = useTui
@@ -64,32 +67,34 @@ export function openDevOutput(
 				quit: () => process.kill(process.pid, "SIGINT"),
 			})
 		: undefined;
+
 	const stopPrinting = tui
 		? undefined
 		: printStream(output, { width: prefixWidth(names) });
+
 	// Stream mode has no footer: say once where each declared action leads.
 	const hinted = new Set<TuiAction>();
 	const stopHints = tui
 		? undefined
 		: output.subscribe({
 				capture: (app, captured) => {
-					for (const action of actions)
-						if (
-							action.app === app &&
-							action.open === captured.name &&
-							!hinted.has(action)
-						) {
-							hinted.add(action);
-							log.hint(
-								`${app}: ${action.label} → buncargo open ${app} ${action.open}`,
-							);
-						}
+					for (const action of actions) {
+						const isThisCapture =
+							action.app === app && action.open === captured.name;
+						if (!isThisCapture || hinted.has(action)) continue;
+
+						hinted.add(action);
+						log.hint(
+							`${app}: ${action.label} → buncargo open ${app} ${action.open}`,
+						);
+					}
 				},
 			});
 	const stopStream = () => {
 		stopPrinting?.();
 		stopHints?.();
 	};
+
 	// Left waiting until the spawner binds `controls`, rather than read and
 	// dropped by a run still starting.
 	const stopRestarts = watchRestartRequests(
@@ -98,6 +103,7 @@ export function openDevOutput(
 		(app) => restartReply(output, app),
 		() => output.controls !== undefined,
 	);
+
 	// Keys for an app under a pseudo-terminal: one in the TUI, or an
 	// interactive app with no terminal to attach to.
 	const stopSends = watchSendRequests(env.root, env.sessionId, (app, text) => {
@@ -106,6 +112,7 @@ export function openDevOutput(
 			output.event(app, `buncargo send: ${refusal}`, "warn");
 			return refusal;
 		}
+
 		output.screens.get(app)?.input(text);
 		return undefined;
 	});
@@ -133,8 +140,10 @@ export async function restartReply(
 	output: Pick<RunOutput, "controls" | "states">,
 	app: string,
 ): Promise<RestartReply> {
-	if (!output.states.has(app) || !output.controls)
+	if (!output.states.has(app) || !output.controls) {
 		return { status: "not-ours", reason: `this run started no app "${app}"` };
+	}
+
 	try {
 		return (await output.controls.restart(app))
 			? { status: "began" }
@@ -153,8 +162,10 @@ export function sendRefusal(
 	output: Pick<RunOutput, "screens" | "states">,
 	app: string,
 ): string | undefined {
-	if (!output.screens.has(app))
+	if (!output.screens.has(app)) {
 		return "it has no terminal of its own to type into; every app in the TUI has one, and outside it an app with interactive: true";
+	}
+
 	const state = output.states.get(app)?.state;
 	if (state === "stopped" || state === "failed")
 		return `it is not running (${state}); start it again with \`buncargo restart ${app}\``;

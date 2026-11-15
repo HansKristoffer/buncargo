@@ -23,11 +23,16 @@ export function inOwnUserScope(
 	platform: NodeJS.Platform = process.platform,
 ): string[] {
 	if (platform !== "linux" || !systemdScopeEnabled(env)) return [...argv];
+
+	// The user manager's private socket is what says one is running.
 	const runtimeDir = env.XDG_RUNTIME_DIR;
-	if (!runtimeDir || !existsSync(join(runtimeDir, "systemd", "private")))
-		return [...argv];
+	const hasUserManager =
+		runtimeDir && existsSync(join(runtimeDir, "systemd", "private"));
+	if (!hasUserManager) return [...argv];
+
 	const systemdRun = lookupOnPath("systemd-run", env);
 	if (!systemdRun) return [...argv];
+
 	return [
 		systemdRun,
 		"--user",

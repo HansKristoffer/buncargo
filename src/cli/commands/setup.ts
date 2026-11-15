@@ -37,10 +37,12 @@ async function applyFix(check: SetupCheck, ctx: CheckContext): Promise<void> {
 			verbose: true,
 			throwOnError: false,
 		});
-		if (result.exitCode !== 0)
+		if (result.exitCode !== 0) {
 			throw new Error(`exited with code ${result.exitCode}`);
+		}
 		return;
 	}
+
 	await check.fix?.(ctx);
 }
 
@@ -77,6 +79,7 @@ async function setup(values: {
 	for (const result of results) {
 		const { check } = result;
 		if (result.ok || !check.fix) continue;
+
 		const accepted =
 			autoFix ||
 			(canAsk &&
@@ -93,6 +96,7 @@ async function setup(values: {
 			skipped++;
 			continue;
 		}
+
 		log.info(`🔧 ${check.name}: ${fixLabel(check)}`);
 		try {
 			await applyFix(check, ctx);
@@ -113,23 +117,20 @@ async function setup(values: {
 
 	log.line();
 	if (errors.length === 0) {
-		log.success(
+		const summary =
 			warnings.length > 0
 				? `Ready, with ${warnings.length} warning${warnings.length === 1 ? "" : "s"}.`
-				: `All ${checks.length} checks pass.`,
-		);
+				: `All ${checks.length} checks pass.`;
+		log.success(summary);
 		return 0;
 	}
 
-	throw new CliError(
-		`${errors.length} check${errors.length === 1 ? "" : "s"} still failing:`,
-		[
-			...describeCheckFailures(errors),
-			...(skipped > 0 && !canAsk
-				? ["Run `bunx buncargo setup --yes` to apply the fixes."]
-				: []),
-		],
-	);
+	const headline = `${errors.length} check${errors.length === 1 ? "" : "s"} still failing:`;
+	const nextStep =
+		skipped > 0 && !canAsk
+			? ["Run `bunx buncargo setup --yes` to apply the fixes."]
+			: [];
+	throw new CliError(headline, [...describeCheckFailures(errors), ...nextStep]);
 }
 
 export const setupCommand = defineCommand({

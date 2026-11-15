@@ -6,11 +6,10 @@ import { toCliError } from "./errors";
 /**
  * Why a dev run failed, as one block at the end of its output.
  *
- * Agents read `dev | tail`. The run used to put "exited with code 1" first,
- * a warning of a few kilobytes after it and the cause somewhere above, and a
- * failed seeder or an app's `MISSING_SECRETS` was not shown at all. The block
- * names what failed in one line, shows that step's last lines, the setup
- * checks that warned, and what to run next.
+ * Agents read `dev | tail`, so the cause cannot sit above a long warning or
+ * be left out (a failed seeder, an app's `MISSING_SECRETS`). The block names
+ * what failed in one line, shows that step's last lines, the setup checks
+ * that warned, and what to run next.
  */
 export interface RunFailure {
 	/** What failed, in one line, naming the app, the seed or the step. */
@@ -79,13 +78,15 @@ export function describeDevFailure(
 	const [cause = "The run failed.", ...rest] = message.split("\n");
 	const { output } = context;
 	const app = output && failedApp(error, output.states);
-	if (!output || app === undefined)
+	if (!output || app === undefined) {
 		return {
 			cause,
 			output: rest,
 			hints: [...ownHints, ...setup],
 			next: [],
 		};
+	}
+
 	return {
 		cause,
 		step: app,
@@ -126,6 +127,7 @@ export function formatRunFailure(failure: RunFailure): {
 	hints: string[];
 } {
 	const hints: string[] = [];
+
 	if (failure.output.length > 0) {
 		const whose = failure.step ? ` of ${failure.step}` : "";
 		hints.push(`Last lines${whose}:`);
@@ -133,5 +135,6 @@ export function formatRunFailure(failure: RunFailure): {
 	}
 	for (const hint of failure.hints) hints.push(...hint.split("\n"));
 	for (const command of failure.next) hints.push(`Next: ${command}`);
+
 	return { message: failure.cause, hints };
 }

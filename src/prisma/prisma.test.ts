@@ -12,8 +12,9 @@ import {
 
 const dirs: string[] = [];
 afterEach(() => {
-	for (const dir of dirs.splice(0))
+	for (const dir of dirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 // migrate-check picks its `migrate diff` flags by this: Prisma 7 renamed and
@@ -62,6 +63,7 @@ it("names the Prisma commands that can lose data", () => {
 	expect(destructivePrismaAction(["db", "push", "--force-reset"])).toContain(
 		"--force-reset",
 	);
-	for (const safe of [["db", "push"], ["migrate", "dev"], ["studio"]])
+	for (const safe of [["db", "push"], ["migrate", "dev"], ["studio"]]) {
 		expect(destructivePrismaAction(safe)).toBeUndefined();
+	}
 });

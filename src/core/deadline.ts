@@ -12,6 +12,7 @@ export function registerAbortCleanup(
 		pending = new Set();
 		abortCleanups.set(signal, pending);
 	}
+
 	pending.add(cleanup);
 	void cleanup.finally(() => pending.delete(cleanup)).catch(() => {});
 }
@@ -19,6 +20,7 @@ export function registerAbortCleanup(
 async function finishAbortCleanup(signal: AbortSignal): Promise<void> {
 	// Let every listener in this abort dispatch register its bounded cleanup.
 	await Promise.resolve();
+
 	const pending = abortCleanups.get(signal);
 	if (pending?.size) await Promise.allSettled([...pending]);
 }
@@ -45,12 +47,14 @@ export function withSignal<T>(
 			throw abortError(signal);
 		});
 	}
+
 	return new Promise<T>((resolve, reject) => {
 		const onAbort = () => {
 			signal.removeEventListener("abort", onAbort);
 			void finishAbortCleanup(signal).then(() => reject(abortError(signal)));
 		};
 		signal.addEventListener("abort", onAbort, { once: true });
+
 		operation
 			.then(
 				(value) => {
@@ -72,11 +76,14 @@ export async function withDeadline<T>(
 	const controller = new AbortController();
 	const cancel = () => {
 		controller.abort(abortError(signal));
-		if (signal)
+		if (signal) {
 			registerAbortCleanup(signal, finishAbortCleanup(controller.signal));
+		}
 	};
+
 	if (signal?.aborted) cancel();
 	else signal?.addEventListener("abort", cancel, { once: true });
+
 	const timer = setTimeout(
 		() =>
 			controller.abort(
@@ -84,6 +91,7 @@ export async function withDeadline<T>(
 			),
 		Math.max(0, timeoutMs),
 	);
+
 	try {
 		controller.signal.throwIfAborted();
 		return await withSignal(
@@ -102,6 +110,7 @@ export function abortableSleep(
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
 		if (signal?.aborted) return reject(abortError(signal));
+
 		const onAbort = () => {
 			clearTimeout(timer);
 			reject(abortError(signal));
@@ -113,6 +122,7 @@ export function abortableSleep(
 			},
 			Math.max(0, ms),
 		);
+
 		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 }

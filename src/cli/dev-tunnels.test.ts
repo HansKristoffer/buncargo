@@ -16,9 +16,9 @@ import {
 import type { AppConfig, DevEnvironment, ServiceConfig } from "../types";
 import { createTunnelCoordinator } from "./dev-tunnels";
 
-it("closes a tunnel acquired while startup is being cancelled", async () => {
-	let closed = 0;
-	const env = {
+/** An environment with one exposable `db` service and no apps. */
+function dbEnvironment(overrides: object = {}) {
+	return {
 		services: { db: { port: 5432, expose: true } },
 		apps: {},
 		ports: { db: 5432 },
@@ -27,10 +27,27 @@ it("closes a tunnel acquired while startup is being cancelled", async () => {
 		setPublicUrls: () => {},
 		clearPublicUrls: () => {},
 		logInfo: () => {},
+		...overrides,
 	} as unknown as DevEnvironment<
 		Record<string, ServiceConfig>,
 		Record<string, AppConfig>
 	>;
+}
+
+function planDbExpose(coordinator: ReturnType<typeof createTunnelCoordinator>) {
+	return coordinator.planExpose({
+		exposeValue: undefined,
+		appsRequested: false,
+		selectedAppNames: new Set(),
+		selectedServiceNames: new Set(["db"]),
+		startAppNames: new Set(),
+		reusedAppNames: new Set(),
+	});
+}
+
+it("closes a tunnel acquired while startup is being cancelled", async () => {
+	let closed = 0;
+	const env = dbEnvironment();
 	const coordinator = createTunnelCoordinator(
 		env,
 		{
@@ -62,14 +79,7 @@ it("closes a tunnel acquired while startup is being cancelled", async () => {
 		},
 		{ exposeRequested: true },
 	);
-	await coordinator.planExpose({
-		exposeValue: undefined,
-		appsRequested: false,
-		selectedAppNames: new Set(),
-		selectedServiceNames: new Set(["db"]),
-		startAppNames: new Set(),
-		reusedAppNames: new Set(),
-	});
+	await planDbExpose(coordinator);
 	const opening = coordinator.openOwnedTunnels().catch(() => {});
 	await coordinator.stop();
 	await opening;
@@ -77,19 +87,7 @@ it("closes a tunnel acquired while startup is being cancelled", async () => {
 });
 
 it("opens the tunnels again after an attempt that failed", async () => {
-	const env = {
-		services: { db: { port: 5432, expose: true } },
-		apps: {},
-		ports: { db: 5432 },
-		root: process.cwd(),
-		publicUrls: {},
-		setPublicUrls: () => {},
-		clearPublicUrls: () => {},
-		logInfo: () => {},
-	} as unknown as DevEnvironment<
-		Record<string, ServiceConfig>,
-		Record<string, AppConfig>
-	>;
+	const env = dbEnvironment();
 	let attempts = 0;
 	const coordinator = createTunnelCoordinator(
 		env,
@@ -112,14 +110,7 @@ it("opens the tunnels again after an attempt that failed", async () => {
 		},
 		{ exposeRequested: true },
 	);
-	await coordinator.planExpose({
-		exposeValue: undefined,
-		appsRequested: false,
-		selectedAppNames: new Set(),
-		selectedServiceNames: new Set(["db"]),
-		startAppNames: new Set(),
-		reusedAppNames: new Set(),
-	});
+	await planDbExpose(coordinator);
 
 	await expect(coordinator.openOwnedTunnels()).rejects.toThrow(
 		"cloudflared is not reachable",
@@ -166,23 +157,14 @@ it("keeps the URLs apps printed when its tunnels open and close", async () => {
 	// Opening replaced the whole map and closing cleared it, so `dev --expose`
 	// lost the URL an app printed (`captures`) before the tunnels opened.
 	const publicUrls: Record<string, string> = {};
-	const env = {
-		services: { db: { port: 5432, expose: true } },
-		apps: {},
-		ports: { db: 5432 },
-		root: process.cwd(),
+	// Replaces the map in place, as the environment's does.
+	const env = dbEnvironment({
 		publicUrls,
-		// Replaces the map in place, as the environment's does.
 		setPublicUrls: (next: Record<string, string>) => {
 			for (const key of Object.keys(publicUrls)) delete publicUrls[key];
 			Object.assign(publicUrls, next);
 		},
-		clearPublicUrls: () => {},
-		logInfo: () => {},
-	} as unknown as DevEnvironment<
-		Record<string, ServiceConfig>,
-		Record<string, AppConfig>
-	>;
+	});
 	const coordinator = createTunnelCoordinator(
 		env,
 		{
@@ -200,14 +182,7 @@ it("keeps the URLs apps printed when its tunnels open and close", async () => {
 		},
 		{ exposeRequested: true },
 	);
-	await coordinator.planExpose({
-		exposeValue: undefined,
-		appsRequested: false,
-		selectedAppNames: new Set(),
-		selectedServiceNames: new Set(["db"]),
-		startAppNames: new Set(),
-		reusedAppNames: new Set(),
-	});
+	await planDbExpose(coordinator);
 	// A wave-1 app printed its own public URL.
 	env.setPublicUrls({ ...publicUrls, mobile: "https://mobile.exp.direct" });
 

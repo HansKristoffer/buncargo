@@ -27,6 +27,7 @@ export const identityRouteOwners: RouteOwners = async (routes) => {
 	);
 	const matches = await processIdentityMatcherAsync(recorded);
 	const judged = new Set(recorded.map((entry) => entry.pid));
+
 	return ({ pid, processIdentity }) =>
 		processIdentity !== undefined && judged.has(pid)
 			? matches(pid, processIdentity)
@@ -42,14 +43,15 @@ export const identityRouteOwners: RouteOwners = async (routes) => {
 function identityRouteOwnersSync(
 	routes: readonly HostsRoute[],
 ): RouteOwnerCheck {
-	const recordedLive = routes.flatMap((route) =>
-		route.kind === "app" &&
-		route.processIdentity !== undefined &&
-		isProcessAlive(route.pid)
-			? [route.pid]
-			: [],
-	);
+	const recordedLive = routes.flatMap((route) => {
+		const isLiveRecordedApp =
+			route.kind === "app" &&
+			route.processIdentity !== undefined &&
+			isProcessAlive(route.pid);
+		return isLiveRecordedApp ? [route.pid] : [];
+	});
 	const identities = readProcessIdentitiesCached(recordedLive);
+
 	return ({ pid, processIdentity }) => {
 		if (!isProcessAlive(pid)) return false;
 		if (processIdentity === undefined) return true;

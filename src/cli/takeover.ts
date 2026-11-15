@@ -1,22 +1,17 @@
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import { getPortOwnerAsync, killPortOwner } from "../core/process";
 import { stopWorker } from "../core/process/worker-ownership";
-import { askConfirm, isInteractive } from "../core/prompt";
+import { askConfirm } from "../core/prompt";
 import { joinColoredNames } from "../core/style";
 import type { ResolvedApp } from "../types";
 import * as log from "./log";
 
-export { isInteractive };
-
-/**
- * Taking over apps another `buncargo dev` is already serving.
- *
- * Without this a second run in a new terminal reports "already running,
- * nothing to start" and exits, leaving the developer to find the other window
- * and Ctrl-C it. The reuse itself stays the default: taking over stops
- * somebody's running servers, so it happens only on an explicit `y` or
- * `--takeover`.
- */
+// Taking over apps another `buncargo dev` is already serving.
+//
+// Without this a second run in a new terminal reports "already running,
+// nothing to start" and exits, leaving the developer to find the other window
+// and Ctrl-C it. Reuse stays the default: taking over stops somebody's running
+// servers, so it happens only on an explicit `y` or `--takeover`.
 
 export interface TakeoverCandidates {
 	apps: Record<string, ResolvedApp>;
@@ -47,8 +42,9 @@ export function takeoverCandidates(
  * Enter must never kill servers in a terminal the developer cannot see.
  */
 export async function promptTakeover(names: string[]): Promise<boolean> {
+	const verb = names.length === 1 ? "is" : "are";
 	return askConfirm([
-		`  ${joinColoredNames(names)} ${names.length === 1 ? "is" : "are"} already running from another terminal.`,
+		`  ${joinColoredNames(names)} ${verb} already running from another terminal.`,
 		"",
 		"  y to stop it and run here  ·  Enter to leave it running",
 	]);
@@ -62,8 +58,10 @@ export async function promptUnhealthyTakeover(
 	names: string[],
 ): Promise<boolean> {
 	const one = names.length === 1;
+	const verb = one ? "is" : "are";
+	const failure = one ? "fails its" : "fail their";
 	return askConfirm([
-		`  ${joinColoredNames(names)} ${one ? "is" : "are"} running from another terminal, but ${one ? "fails its" : "fail their"} health check.`,
+		`  ${joinColoredNames(names)} ${verb} running from another terminal, but ${failure} health check.`,
 		"",
 		"  y to stop it and run here  ·  Enter to cancel",
 	]);
@@ -88,12 +86,16 @@ export async function stopRunningApps(
 	} = {},
 ): Promise<string[]> {
 	const stopped: string[] = [];
+
 	for (const name of names) {
 		const app = options.apps?.[name];
+
+		// A worker has no port: it is stopped through the worker registry, not by its port.
 		if (app && app.port === undefined && options.root) {
 			if (await stopWorker(options.root, name)) stopped.push(name);
 			continue;
 		}
+
 		const port = ports[name];
 		if (port === undefined) continue;
 
@@ -110,7 +112,7 @@ export async function stopRunningApps(
 			runtime: options.runtime,
 			skipContainers: options.skipContainers,
 			verbose: false,
-			timeout: options.apps?.[name]?.stopGraceMs,
+			timeout: app?.stopGraceMs,
 		});
 		if (!released) {
 			throw new Error(

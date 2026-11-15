@@ -18,28 +18,6 @@ import * as log from "./log";
  */
 const REUSE_PROBE_MS = 3000;
 
-/**
- * CLI-level port reuse, the counterpart to `prepareAppPort` in
- * `core/process/dev-servers.ts`. The two run at different moments and answer
- * different questions:
- *
- * - Here, before anything is spawned, a busy port means "something already
- *   serves this app". A passing `healthEndpoint` promotes it to a reuse and the
- *   app leaves the spawn set, so the spawner never sees it.
- * - There, about to bind the port, ownership decides: a container from this
- *   compose project is reused, an orphan process from this repo is killed, and
- *   anything else fails.
- *
- * Ordering makes them consistent for processes: whatever the CLI marks
- * `start` had a free port at classification time. The one case where they
- * disagreed was a *foreign container* publishing an app port — the spawner
- * fails on it while the health probe would happily reuse it — so that check
- * moves up here via {@link classifyPortOccupant}. Plain processes stay with the
- * health probe, since a sibling `buncargo dev` is a legitimate reuse and its
- * reported cwd is not a reliable owner signal. Only when the probe fails does
- * the cwd count, and only together with the run registry: see
- * {@link inspectUnhealthyHolder}.
- */
 export interface ClassifiedCliApps {
 	startApps: Record<string, ResolvedApp>;
 	reusedApps: Record<string, ResolvedApp>;
@@ -89,26 +67,6 @@ export interface ClassifyCliAppsOptions {
 	) => Promise<UnhealthyHolder>;
 }
 
-export function parseRequiredCommaSeparatedFlag(
-	flag: string,
-	value: string | undefined,
-): string[] {
-	if (value === undefined) {
-		throw new Error(`Flag ${flag} requires a comma-separated value.`);
-	}
-
-	const names = value
-		.split(",")
-		.map((name) => name.trim())
-		.filter(Boolean);
-
-	if (names.length === 0) {
-		throw new Error(`Flag ${flag} requires at least one name.`);
-	}
-
-	return names;
-}
-
 function conflictDescriber(
 	options: ClassifyCliAppsOptions,
 	snapshot: PortOwnerSnapshot,
@@ -116,19 +74,23 @@ function conflictDescriber(
 	if (options.describePortConflict) {
 		return options.describePortConflict;
 	}
+
 	const context = options.context;
 	if (!context) {
 		return () => undefined;
 	}
+
 	return (port) => {
 		const owner = snapshot.owner(port);
 		if (owner?.kind !== "container") return undefined;
-		return classifyPortOccupant(owner, {
+
+		const action = classifyPortOccupant(owner, {
 			...context,
 			runtime: options.runtime?.name,
-		}) === "fail"
-			? formatPortOwner(port, owner, { runtime: options.runtime?.name })
-			: undefined;
+		});
+		if (action !== "fail") return undefined;
+
+		return formatPortOwner(port, owner, { runtime: options.runtime?.name });
 	};
 }
 
@@ -141,8 +103,8 @@ export function unhealthyAppMessage(app: UnhealthyApp): string {
  * this checkout.
  *
  * A leftover no live run owns (a dev server that outlived a run killed hard)
- * is stopped here: the spawner kills those anyway, and the failed probe used
- * to stop the run before it got there. A sibling run's server is only
+ * is stopped here: the spawner kills those anyway, so the failed probe must
+ * not stop the run before it gets there. A sibling run's server is only
  * reported, because replacing it goes through the takeover, which also
  * reclaims the named hosts that run owns. When the registry cannot be read,
  * nothing is killed.
@@ -170,8 +132,11 @@ async function inspectUnhealthyHolder(
 	});
 	if (action !== "kill") return undefined;
 
+	// A registry that cannot be read leaves us unable to tell a leftover from a
+	// sibling run's server, so nothing is killed.
 	const runs = await findRunsByRoot(context.root).catch(() => undefined);
 	if (!runs) return undefined;
+
 	const sibling = runs.find((run) =>
 		run.apps.some((app) => app.name === name && app.pid !== undefined),
 	);
@@ -183,19 +148,42 @@ async function inspectUnhealthyHolder(
 		timeout: graceMs,
 	});
 	if (!released) return undefined;
+
 	log.info(
 		`🧹 Stopped a leftover "${name}" on port ${port}: no run owns it and it failed its health check`,
 	);
 	return "stopped";
 }
 
+/**
+ * CLI-level port reuse, the counterpart to `prepareAppPort` in
+ * `core/process/dev-servers.ts`. The two run at different moments and answer
+ * different questions:
+ *
+ * - Here, before anything is spawned, a busy port means "something already
+ *   serves this app". A passing `healthEndpoint` promotes it to a reuse and the
+ *   app leaves the spawn set, so the spawner never sees it.
+ * - There, about to bind the port, ownership decides: a container from this
+ *   compose project is reused, an orphan process from this repo is killed, and
+ *   anything else fails.
+ *
+ * Ordering makes them consistent for processes: whatever the CLI marks
+ * `start` had a free port at classification time. The one case where they
+ * disagreed was a *foreign container* publishing an app port: the spawner
+ * fails on it while the health probe would happily reuse it, so that check
+ * moves up here via {@link classifyPortOccupant}. Plain processes stay with the
+ * health probe, since a sibling `buncargo dev` is a legitimate reuse and its
+ * reported cwd is not a reliable owner signal. Only when the probe fails does
+ * the cwd count, and only together with the run registry: see
+ * {@link inspectUnhealthyHolder}.
+ */
 export async function classifyCliApps(
 	apps: Record<string, ResolvedApp>,
 	ports: Record<string, number>,
 	options: ClassifyCliAppsOptions = {},
 ): Promise<ClassifiedCliApps> {
-	// One reading for both questions this asks of every app port — is it busy,
-	// and is a foreign container holding it — instead of an `lsof` and a
+	// One reading answers both questions asked of every app port (is it busy,
+	// and is a foreign container holding it), instead of an `lsof` and a
 	// container listing per app, twice over.
 	const snapshot = await createPortOwnerSnapshotAsync({
 		signal: options.signal,
@@ -215,6 +203,7 @@ export async function classifyCliApps(
 		options.inspectUnhealthyHolder ??
 		((name: string, port: number) =>
 			inspectUnhealthyHolder(name, port, apps[name]?.stopGraceMs, options));
+
 	const startApps: Record<string, ResolvedApp> = {};
 	const reusedApps: Record<string, ResolvedApp> = {};
 	const startNames: string[] = [];
@@ -254,6 +243,7 @@ export async function classifyCliApps(
 					);
 				}
 				const url = `http://localhost:${port}${readiness.path}`;
+
 				try {
 					await waitForServer(url, REUSE_PROBE_MS);
 				} catch {
@@ -261,6 +251,7 @@ export async function classifyCliApps(
 					if (holder === "stopped") {
 						return { name, config, reuse: false, inferred: false };
 					}
+
 					const app = { name, port, url, detached: !!holder?.detached };
 					if (holder) {
 						return {
@@ -276,10 +267,12 @@ export async function classifyCliApps(
 					);
 				}
 			}
+
 			const probed = readiness.kind === "http" && readiness.declared;
 			return { name, config, reuse: true, inferred: !probed };
 		}),
 	);
+
 	for (const { name, config, reuse, inferred, unhealthy: sick } of decisions) {
 		if (sick) unhealthy.push(sick);
 		if (reuse) {

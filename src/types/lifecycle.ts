@@ -2,10 +2,6 @@ import type { AppConfig } from "./app";
 import type { SeedOutcome } from "./preparation";
 import type { ServiceConfig } from "./service";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Start/Stop Options
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * Options for starting the dev environment.
  */

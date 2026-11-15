@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Status colours, shared by every dot in the UI.
+/// Status colors, shared by every dot in the UI.
 extension RunStatus {
     /// Stopped apps do not hide a failure or startup among the remaining apps.
     static func rollup(_ states: [RunStatus]) -> RunStatus {

@@ -61,15 +61,19 @@ export function openTargets(
 	for (const app of Object.keys(env.apps)) {
 		add(app, environmentOpenUrl(env, app, options.urlHostSet));
 	}
+
 	const serviceAccepts = options.connectionUrls ? isAnyUrl : isHttpUrl;
-	for (const service of Object.keys(env.services))
+	for (const service of Object.keys(env.services)) {
 		add(
 			service,
 			environmentOpenUrl(env, service, options.urlHostSet),
 			serviceAccepts,
 		);
+	}
+
 	for (const [name, value] of Object.entries(env.captured)) add(name, value);
 	for (const [label, value] of Object.entries(env.details())) add(label, value);
+
 	return targets;
 }
 
@@ -119,13 +123,16 @@ export function resolveTarget(
 ): string {
 	const url = findTarget(targets, name);
 	if (url) return url;
+
 	const names = Object.keys(targets);
 	const available =
 		names.length > 0
 			? `Available: ${names.join(", ")}`
 			: "Nothing has a URL yet: is `buncargo dev` running?";
-	if (!(name in env.services))
+	if (!(name in env.services)) {
 		throw new CliError(`No URL named "${name}".`, [available]);
+	}
+
 	const connect = `\`buncargo url ${name}\` prints how to connect`;
 	const why =
 		command === "open"
@@ -155,8 +162,10 @@ export function urlOutput(
 	}
 
 	const entries = Object.entries(targets);
-	if (entries.length === 0)
+	if (entries.length === 0) {
 		throw new CliError("Nothing has a URL yet: is `buncargo dev` running?");
+	}
+
 	const width = Math.max(...entries.map(([key]) => key.length));
 	const insecure = entries
 		.filter(([, url]) => isInsecureRemoteUrl(url))
@@ -202,6 +211,7 @@ export const urlCommand = defineCommand({
 		);
 		for (const line of lines) log.line(line);
 		if (warning) log.warn(warning);
+
 		return 0;
 	},
 });
@@ -236,16 +246,20 @@ export const openCommand = defineCommand({
 		const env = await loadLiveEnv();
 		if (name !== undefined && capture !== undefined) {
 			const url = (env.captured as Record<string, string | undefined>)[capture];
-			if (!(name in env.apps))
+			if (!(name in env.apps)) {
 				throw new CliError(`"${name}" is not an app of this config.`, [
 					`Configured apps: ${Object.keys(env.apps).join(", ") || "none"}`,
 				]);
-			if (!url)
+			}
+			if (!url) {
 				throw new CliError(`${name} has not printed ${capture} yet.`, [
 					"Is `buncargo dev` running? `buncargo url` lists what is known.",
 				]);
+			}
+
 			return openOrFail(url);
 		}
+
 		const targets = openTargets(env, {
 			connectionUrls: false,
 			urlHostSet: urlHostOverride() !== undefined,
@@ -255,6 +269,7 @@ export const openCommand = defineCommand({
 		if (target === undefined) {
 			throw new CliError("No apps to open: name a URL from `buncargo url`.");
 		}
+
 		return openOrFail(resolveTarget(env, targets, target, "open"));
 	},
 });
@@ -266,6 +281,7 @@ export const openCommand = defineCommand({
 function openOrFail(url: string) {
 	log.info(`Opening ${url}`);
 	if (openUrl(url)) return 0;
+
 	throw new CliError(`Could not open a browser here. The URL is ${url}`, [
 		"On a remote machine, give that URL to the person at the browser.",
 	]);

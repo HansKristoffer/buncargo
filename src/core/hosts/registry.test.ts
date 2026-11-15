@@ -31,55 +31,49 @@ async function tempRegistry(): Promise<{ path: string; dir: string }> {
 	return { dir, path };
 }
 
+/** An app route for `web.demo.localhost`, owned by this test process. */
+function appRoute(overrides: Partial<AppHostsRoute> = {}): AppHostsRoute {
+	return {
+		hostname: "web.demo.localhost",
+		port: 3000,
+		kind: "app",
+		name: "web",
+		root: "/repo",
+		pid: process.pid,
+		...overrides,
+	};
+}
+
+function serviceRoute(overrides: { root?: string } = {}): HostsRoute {
+	return {
+		hostname: "mail.demo.localhost",
+		port: 8025,
+		kind: "service",
+		name: "mailpit",
+		root: "/repo",
+		...overrides,
+	};
+}
+
 describe("hosts registry", () => {
 	it("upserts routes and loads them back", async () => {
 		await tempRegistry();
-		await upsertHostRoutes(
-			[
-				{
-					hostname: "api.serpier.localhost",
-					port: 3000,
-					kind: "app",
-					name: "api",
-					root: "/repo",
-					pid: process.pid,
-				},
-			],
-			{ owners: pidRouteOwners },
-		);
+		await upsertHostRoutes([appRoute()], { owners: pidRouteOwners });
+
 		const routes = await loadHostRoutes();
 		expect(routes).toHaveLength(1);
-		expect(routes[0]?.hostname).toBe("api.serpier.localhost");
+		expect(routes[0]?.hostname).toBe("web.demo.localhost");
 	});
 
 	it("takes over a route whose owner pid is dead", async () => {
 		await tempRegistry();
-		await upsertHostRoutes(
-			[
-				{
-					hostname: "api.serpier.localhost",
-					port: 3000,
-					kind: "app",
-					name: "api",
-					root: "/old",
-					pid: 99999999,
-				},
-			],
-			{ owners: pidRouteOwners },
-		);
-		await upsertHostRoutes(
-			[
-				{
-					hostname: "api.serpier.localhost",
-					port: 3100,
-					kind: "app",
-					name: "api",
-					root: "/new",
-					pid: process.pid,
-				},
-			],
-			{ owners: pidRouteOwners },
-		);
+		await upsertHostRoutes([appRoute({ root: "/old", pid: 99999999 })], {
+			owners: pidRouteOwners,
+		});
+		await upsertHostRoutes([appRoute({ root: "/new", port: 3100 })], {
+			owners: pidRouteOwners,
+		});
+
 		const routes = await loadHostRoutes();
 		expect(routes[0]?.port).toBe(3100);
 		expect(routes[0]?.root).toBe("/new");
@@ -89,20 +83,12 @@ describe("hosts registry", () => {
 	// whole plan to localhost:port; the message named a pid and nothing else.
 	it("registers the rest of the plan and names the checkout holding a hostname", async () => {
 		await tempRegistry();
-		const at = (hostname: string, root: string): HostsRoute => ({
-			hostname,
-			port: 3000,
-			kind: "app",
-			name: hostname.split(".")[0] as string,
-			root,
-			pid: process.pid,
-		});
-		await upsertHostRoutes([at("api.serpier.localhost", "/a")], {
-			owners: pidRouteOwners,
-		});
+		const at = (name: string, root: string) =>
+			appRoute({ hostname: `${name}.serpier.localhost`, name, root });
+		await upsertHostRoutes([at("api", "/a")], { owners: pidRouteOwners });
 
 		const conflicts = await upsertHostRoutes(
-			[at("api.serpier.localhost", "/b"), at("web.serpier.localhost", "/b")],
+			[at("api", "/b"), at("web", "/b")],
 			// A takeover is within one checkout; it never crosses projects.
 			{ takeover: new Set(["api"]), owners: pidRouteOwners },
 		);
@@ -120,28 +106,15 @@ describe("hosts registry", () => {
 	it("prunes dead-pid routes and keeps static service routes", async () => {
 		const { dir } = await tempRegistry();
 		await upsertHostRoutes(
-			[
-				{
-					hostname: "api.serpier.localhost",
-					port: 3000,
-					kind: "app",
-					name: "api",
-					root: "/repo",
-					pid: 99999999,
-				},
-				{
-					hostname: "mailpit.serpier.localhost",
-					port: 8025,
-					kind: "service",
-					name: "mailpit",
-					root: dir,
-				},
-			],
-			{ owners: pidRouteOwners },
+			[appRoute({ pid: 99999999 }), serviceRoute({ root: dir })],
+			{
+				owners: pidRouteOwners,
+			},
 		);
+
 		const pruned = await pruneHostRoutes();
 		expect(pruned.map((route) => route.hostname)).toEqual([
-			"mailpit.serpier.localhost",
+			"mail.demo.localhost",
 		]);
 	});
 
@@ -150,14 +123,7 @@ describe("hosts registry", () => {
 	// exits, not when the reusing run does.
 	it("keeps the first run as owner when a second run registers the same route", async () => {
 		await tempRegistry();
-		const route: AppHostsRoute = {
-			hostname: "api.serpier.localhost",
-			port: 3000,
-			kind: "app",
-			name: "api",
-			root: "/repo",
-			pid: process.pid,
-		};
+		const route = appRoute();
 		await upsertHostRoutes([route], { owners: pidRouteOwners });
 		await upsertHostRoutes([{ ...route, pid: process.pid + 1 }], {
 			owners: pidRouteOwners,
@@ -174,20 +140,12 @@ describe("hosts registry", () => {
 		await tempRegistry();
 		const first = process.pid;
 		const second = process.pid + 1;
-		const api: AppHostsRoute = {
-			hostname: "api.serpier.localhost",
-			port: 3000,
-			kind: "app",
+		const api = appRoute({
+			hostname: "api.demo.localhost",
 			name: "api",
-			root: "/repo",
 			pid: first,
-		};
-		const web: AppHostsRoute = {
-			...api,
-			hostname: "web.serpier.localhost",
-			port: 3001,
-			name: "web",
-		};
+		});
+		const web = appRoute({ pid: first, port: 3001 });
 		await upsertHostRoutes([api, web], { owners: pidRouteOwners });
 		await upsertHostRoutes(
 			[
@@ -206,60 +164,33 @@ describe("hosts registry", () => {
 	});
 
 	// Nothing retires a static route on its own, so a deleted worktree would
-	// keep its hostnames in the registry — and in /etc/hosts — forever.
+	// keep its hostnames in the registry, and in /etc/hosts, forever.
 	it("drops a static route whose checkout has been deleted", async () => {
 		await tempRegistry();
-		await upsertHostRoutes(
-			[
-				{
-					hostname: "mailpit.serpier.localhost",
-					port: 8025,
-					kind: "service",
-					name: "mailpit",
-					root: "/repo/worktrees/gone",
-				},
-			],
-			{ owners: pidRouteOwners },
-		);
+		await upsertHostRoutes([serviceRoute({ root: "/repo/worktrees/gone" })], {
+			owners: pidRouteOwners,
+		});
+
 		const pruned = await pruneHostRoutes();
 		expect(pruned).toEqual([]);
 	});
 
 	it("keeps a static route whose checkout is still there", async () => {
 		const { dir } = await tempRegistry();
-		await upsertHostRoutes(
-			[
-				{
-					hostname: "mailpit.serpier.localhost",
-					port: 8025,
-					kind: "service",
-					name: "mailpit",
-					root: dir,
-				},
-			],
-			{ owners: pidRouteOwners },
-		);
+		await upsertHostRoutes([serviceRoute({ root: dir })], {
+			owners: pidRouteOwners,
+		});
+
 		expect(await pruneHostRoutes()).toHaveLength(1);
 	});
 
 	it("removes routes by predicate", async () => {
 		await tempRegistry();
-		await upsertHostRoutes(
-			[
-				{
-					hostname: "api.serpier.localhost",
-					port: 3000,
-					kind: "app",
-					name: "api",
-					root: "/repo",
-					pid: process.pid,
-				},
-			],
-			{ owners: pidRouteOwners },
-		);
+		await upsertHostRoutes([appRoute()], { owners: pidRouteOwners });
 		await removeHostRoutes(
 			(route) => route.root === "/repo" && route.kind === "app",
 		);
+
 		expect(await loadHostRoutes()).toEqual([]);
 	});
 });
@@ -395,30 +326,13 @@ describe("concurrent registration", () => {
 });
 
 describe("registry writers", () => {
-	const route = (overrides: Partial<AppHostsRoute> = {}): AppHostsRoute => ({
-		hostname: "web.demo.localhost",
-		port: 3000,
-		kind: "app",
-		name: "web",
-		root: "/repo",
-		pid: process.pid,
-		...overrides,
-	});
-	const serviceRoute = (root = "/repo"): HostsRoute => ({
-		hostname: "mail.demo.localhost",
-		port: 8025,
-		kind: "service",
-		name: "mailpit",
-		root,
-	});
-
 	// Read leniently, a corrupt file came back as [] and the writer replaced
 	// it with its own routes alone: every other project's named URLs gone.
 	it("refuses to rewrite a registry it cannot read", async () => {
 		const { path } = await tempRegistry();
 		await writeFile(path, "{ not json");
 		await expect(
-			upsertHostRoutes([route()], { owners: pidRouteOwners }),
+			upsertHostRoutes([appRoute()], { owners: pidRouteOwners }),
 		).rejects.toThrow("fix or delete it");
 		await expect(removeHostRoutes(() => true)).rejects.toThrow(
 			"fix or delete it",
@@ -443,10 +357,10 @@ describe("registry writers", () => {
 	it("takes a hostname whose owner's pid now belongs to another process", async () => {
 		await tempRegistry();
 		await upsertHostRoutes(
-			[route({ pid: process.ppid, processIdentity: "v2:a-dead-run" })],
+			[appRoute({ pid: process.ppid, processIdentity: "v2:a-dead-run" })],
 			{ owners: pidRouteOwners },
 		);
-		await upsertHostRoutes([route({ port: 4000 })], {
+		await upsertHostRoutes([appRoute({ port: 4000 })], {
 			owners: identityRouteOwners,
 		});
 		expect(await loadHostRoutes()).toMatchObject([
@@ -458,7 +372,7 @@ describe("registry writers", () => {
 		await tempRegistry();
 		await upsertHostRoutes(
 			[
-				route({
+				appRoute({
 					pid: process.pid,
 					processIdentity: readCurrentProcessIdentity(),
 					root: "/other",
@@ -466,9 +380,12 @@ describe("registry writers", () => {
 			],
 			{ owners: pidRouteOwners },
 		);
-		const conflicts = await upsertHostRoutes([route({ pid: process.ppid })], {
-			owners: identityRouteOwners,
-		});
+		const conflicts = await upsertHostRoutes(
+			[appRoute({ pid: process.ppid })],
+			{
+				owners: identityRouteOwners,
+			},
+		);
 		expect(conflicts).toMatchObject([{ ownerRoot: "/other" }]);
 		expect(await loadHostRoutes()).toMatchObject([{ root: "/other" }]);
 	});
@@ -494,8 +411,8 @@ describe("registry writers", () => {
 	it("takes only the checkout's service routes down with dev --down", () => {
 		const removes = routesDownRemoves("/repo");
 		expect(removes(serviceRoute())).toBe(true);
-		expect(removes(route())).toBe(false);
-		expect(removes(serviceRoute("/other"))).toBe(false);
+		expect(removes(appRoute())).toBe(false);
+		expect(removes(serviceRoute({ root: "/other" }))).toBe(false);
 	});
 });
 
@@ -508,17 +425,8 @@ describe("liveNamedHosts", () => {
 		targetPort: 3000,
 	};
 	const plan = [web];
-	const registered = (
-		overrides: Partial<AppHostsRoute> = {},
-	): AppHostsRoute => ({
-		hostname: "web.demo.localhost",
-		port: 3000,
-		kind: "app",
-		name: "web",
-		root: "/repo",
-		pid: 10,
-		...overrides,
-	});
+	const registered = (overrides: Partial<AppHostsRoute> = {}) =>
+		appRoute({ pid: 10, ...overrides });
 	const ownerAlive = (alive: number[]) => (route: AppHostsRoute) =>
 		alive.includes(route.pid);
 	const live = (routes: HostsRoute[], alive = [10]) =>
@@ -563,24 +471,9 @@ describe("liveNamedHosts", () => {
 });
 
 describe("routesAfterWithdraw", () => {
-	const at = (overrides: Partial<AppHostsRoute>): AppHostsRoute => ({
-		hostname: "web.demo.localhost",
-		port: 3000,
-		kind: "app",
-		name: "web",
-		root: "/repo",
-		pid: process.pid,
-		...overrides,
-	});
-	const own = at({});
-	const service: HostsRoute = {
-		hostname: "mail.demo.localhost",
-		port: 3000,
-		kind: "service",
-		name: "web",
-		root: "/repo",
-	};
-	const elsewhere = at({ root: "/other" });
+	const own = appRoute();
+	const service = serviceRoute();
+	const elsewhere = appRoute({ root: "/other" });
 
 	// Left behind, a fallen-back run's routes read as live named URLs to
 	// `env` and `getEnvVar` while the run printed localhost:port.
@@ -594,7 +487,10 @@ describe("routesAfterWithdraw", () => {
 	});
 
 	it("leaves the service routes to another live run of the checkout", () => {
-		const other = at({ hostname: "api.demo.localhost", pid: process.ppid });
+		const other = appRoute({
+			hostname: "api.demo.localhost",
+			pid: process.ppid,
+		});
 		expect(
 			routesAfterWithdraw([own, service, other], {
 				root: "/repo",

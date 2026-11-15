@@ -30,6 +30,7 @@ it.skipIf(process.platform === "win32")(
 test("probe", () => console.log("PROBE" + JSON.stringify({ home: process.env.HOME, docker: process.env.DOCKER_HOST, binary: Bun.which("docker") })));`;
 			const files = ["a", "b"].map((name) => join(dir, `${name}.probe.ts`));
 			for (const file of files) writeFileSync(file, probe);
+
 			const run = Bun.spawn(
 				[process.execPath, "test", "--parallel=2", ...files],
 				{
@@ -42,7 +43,9 @@ test("probe", () => console.log("PROBE" + JSON.stringify({ home: process.env.HOM
 				new Response(run.stdout).text(),
 				new Response(run.stderr).text(),
 			]);
+
 			expect(await run.exited).toBe(0);
+
 			const seen = `${stdout}${stderr}`
 				.split("\n")
 				.filter((line) => line.startsWith("PROBE"))
@@ -54,6 +57,7 @@ test("probe", () => console.log("PROBE" + JSON.stringify({ home: process.env.HOM
 							binary: string;
 						},
 				);
+
 			expect(seen).toHaveLength(2);
 			expect(new Set(seen.map((file) => file.home)).size).toBe(2);
 			for (const file of seen) {

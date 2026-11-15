@@ -1,20 +1,7 @@
 /** What choosing the primary app reads: a resolved app or one as written. */
 type DependentApp = { requiredApps?: readonly string[] };
 
-/**
- * Which app is "the app" for this project: the menu bar's Open button, the
- * bare named hostname, the TUI's `o`.
- *
- * 1. `options.primaryApp`, when this run started it.
- * 2. The dependency root: the one selected app that no other selected app lists
- *    in `requiredApps`. In an API + web project that is the web app, which is
- *    what someone clicking "open" wants.
- * 3. The first selected app, so this never returns nothing when apps exist.
- *
- * Steps 2 and 3 look only at `selected`, not at every configured app: a
- * `--apps=api` run's primary app is `api`, whatever the config would say for a
- * full run.
- */
+/** What `resolvePrimaryApp` reads. */
 export interface PrimaryAppInput {
 	apps: Readonly<Record<string, DependentApp>>;
 	options?: { primaryApp?: string };
@@ -56,6 +43,20 @@ function dependencyRoots(
 	return names.filter((name) => !depended.has(name));
 }
 
+/**
+ * Which app is "the app" for this project: the menu bar's Open button, the
+ * bare named hostname, the TUI's `o`.
+ *
+ * 1. `options.primaryApp`, when this run started it.
+ * 2. The dependency root: the one selected app that no other selected app lists
+ *    in `requiredApps`. In an API + web project that is the web app, which is
+ *    what someone clicking "open" wants.
+ * 3. The first selected app, so this never returns nothing when apps exist.
+ *
+ * Steps 2 and 3 look only at `selected`, not at every configured app: a
+ * `--apps=api` run's primary app is `api`, whatever the config would say for a
+ * full run.
+ */
 export function resolvePrimaryApp(input: PrimaryAppInput): string | undefined {
 	const names = input.selected ?? Object.keys(input.apps);
 	if (names.length === 0) return undefined;

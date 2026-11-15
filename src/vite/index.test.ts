@@ -44,7 +44,7 @@ describe("readBuncargoViteEnvironment", () => {
 
 describe("buildBuncargoViteConfig", () => {
 	// Vite's default `localhost` resolves to [::1] on many systems, and the
-	// hosts proxy — plus anything else dialing IPv4 — then cannot reach it.
+	// hosts proxy, like anything else dialing IPv4, then cannot reach it.
 	it("binds loopback explicitly", () => {
 		const config = buildBuncargoViteConfig(
 			{ port: 4901, allowedHosts: [] },

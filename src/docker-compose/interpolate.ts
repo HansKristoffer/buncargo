@@ -15,6 +15,13 @@ import type {
  * from here so they cannot disagree about what a service definition means.
  */
 
+/** Per-service identity is independent of the selected app/service subset. */
+export const SERVICE_HASH_LABEL = "buncargo.service-hash";
+
+/**
+ * One match per `$` form: `$$`, `${VAR}` with an optional `:-`, `-`, `:?` or `?`
+ * operator and argument, and a bare `$VAR`.
+ */
 const INTERPOLATION_PATTERN =
 	/\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?])([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
 
@@ -59,12 +66,11 @@ export function interpolate(
 
 			if (operator.endsWith("?")) {
 				if (missing) {
-					throw new Error(
-						`Required variable ${name} is ${found === undefined ? "not set" : "empty"}${
-							argument ? `: ${argument}` : ""
-						}`,
-					);
+					const state = found === undefined ? "not set" : "empty";
+					const reason = argument ? `: ${argument}` : "";
+					throw new Error(`Required variable ${name} is ${state}${reason}`);
 				}
+
 				return found as string;
 			}
 
@@ -91,8 +97,10 @@ export function interpolateNode(
 			if (value === undefined) continue;
 			result[key] = interpolateNode(value, env);
 		}
+
 		return result;
 	}
+
 	return node;
 }
 
@@ -110,17 +118,11 @@ function stableStringify(value: unknown): string {
 	return JSON.stringify(value) ?? "null";
 }
 
-/**
- * Fingerprint the parts of a service that cannot change on a running container.
- *
- * Recorded as a label so a later run can tell "this container is mine and
- * still matches" from "the config changed underneath it", and recreate only in
- * the second case. Only buncargo hash labels are excluded to avoid a self-reference. User labels remain part of the definition.
- */
+/** Compose's list-form labels (`key=value`) as the map form. */
 export function normalizeComposeLabels(
 	labels: DockerComposeServiceRaw["labels"],
 ): Record<string, DockerComposeNode | undefined> {
-	if (Array.isArray(labels))
+	if (Array.isArray(labels)) {
 		return Object.fromEntries(
 			labels.map((entry) => {
 				const text = String(entry);
@@ -128,6 +130,8 @@ export function normalizeComposeLabels(
 				return at < 0 ? [text, ""] : [text.slice(0, at), text.slice(at + 1)];
 			}),
 		);
+	}
+
 	return isRecord(labels) ? labels : {};
 }
 
@@ -136,6 +140,7 @@ function withoutHashLabels(
 	preserveSyntax = false,
 ): DockerComposeServiceRaw {
 	const { labels, ...rest } = service;
+
 	if (preserveSyntax && Array.isArray(labels)) {
 		return {
 			...rest,
@@ -144,17 +149,27 @@ function withoutHashLabels(
 			),
 		};
 	}
+
 	const userLabels = Object.fromEntries(
 		Object.entries(normalizeComposeLabels(labels)).filter(
 			([key]) => key !== SERVICE_HASH_LABEL,
 		),
 	);
+
 	return {
 		...rest,
 		...(Object.keys(userLabels).length ? { labels: userLabels } : {}),
 	};
 }
 
+/**
+ * Fingerprint the parts of a service that cannot change on a running container.
+ *
+ * Recorded as a label so a later run can tell "this container is mine and
+ * still matches" from "the config changed underneath it", and recreate only in
+ * the second case. Buncargo's own hash label is excluded so the hash never
+ * covers itself; user labels stay part of the definition.
+ */
 export function configHashFor(service: DockerComposeServiceRaw): string {
 	return createHash("sha256")
 		.update(stableStringify(withoutHashLabels(service)))
@@ -162,10 +177,18 @@ export function configHashFor(service: DockerComposeServiceRaw): string {
 		.slice(0, 16);
 }
 
-/** Per-service identity is independent of the selected app/service subset. */
-export const SERVICE_HASH_LABEL = "buncargo.service-hash";
+/** The short-syntax source of a volume mount, or of a long-syntax one. */
+function mountSource(mount: unknown): string | undefined {
+	if (typeof mount === "string") return mount.split(":")[0];
+	if (isRecord(mount) && typeof mount.source === "string") return mount.source;
+
+	return undefined;
+}
+
 export function serviceHashEnv(name: string): string {
-	return `BUNCARGO_SERVICE_HASH_${createHash("sha256").update(name).digest("hex").slice(0, 16).toUpperCase()}`;
+	const hash = createHash("sha256").update(name).digest("hex").slice(0, 16);
+
+	return `BUNCARGO_SERVICE_HASH_${hash.toUpperCase()}`;
 }
 
 export function serviceFingerprint(
@@ -181,18 +204,18 @@ export function serviceFingerprint(
 		service as DockerComposeNode,
 		env,
 	) as DockerComposeServiceRaw;
+
 	const volumes: Record<string, unknown> = {};
 	for (const mount of interpolated.volumes ?? []) {
-		const source =
-			typeof mount === "string"
-				? mount.split(":")[0]
-				: (mount as Record<string, unknown>).source;
-		if (typeof source === "string" && model.volumes?.[source])
-			volumes[source] = interpolateNode(
-				model.volumes[source] as DockerComposeNode,
-				env,
-			);
+		const source = mountSource(mount);
+		if (source === undefined || !model.volumes?.[source]) continue;
+
+		volumes[source] = interpolateNode(
+			model.volumes[source] as DockerComposeNode,
+			env,
+		);
 	}
+
 	return createHash("sha256")
 		.update(stableStringify({ service: configHashFor(interpolated), volumes }))
 		.digest("hex")
@@ -203,26 +226,31 @@ export function serviceFingerprint(
 export function canProveServiceUnchanged(
 	service: DockerComposeServiceRaw,
 ): boolean {
-	if (
-		["build", "env_file", "extends", "configs", "secrets", "label_file"].some(
-			(key) => service[key] !== undefined,
-		)
-	)
-		return false;
+	const externalInputs = [
+		"build",
+		"env_file",
+		"extends",
+		"configs",
+		"secrets",
+		"label_file",
+	];
+	if (externalInputs.some((key) => service[key] !== undefined)) return false;
+
 	// An explicit refresh policy is work the backend must perform even when
 	// the generated definition did not change. Latest/default tags also use it.
-	if (
+	const refreshesImage =
 		service.pull_policy !== undefined &&
 		!["never", "missing", "if_not_present"].includes(
 			String(service.pull_policy),
-		)
-	)
-		return false;
+		);
+	if (refreshesImage) return false;
+
 	const image = service.image;
 	if (image && !image.includes("@") && service.pull_policy !== "never") {
 		const basename = image.slice(image.lastIndexOf("/") + 1);
 		if (!basename.includes(":") || basename.endsWith(":latest")) return false;
 	}
+
 	return true;
 }
 
@@ -234,17 +262,17 @@ export function canProveServiceInputs(
 ): boolean {
 	const service = model.services[name];
 	if (!service || !canProveServiceUnchanged(service)) return false;
+
 	const nodes: unknown[] = [withoutHashLabels(service, true)];
 	// Top-level volume settings can themselves reference Compose's implicit .env.
 	for (const mount of service.volumes ?? []) {
-		const rawSource =
-			typeof mount === "string"
-				? mount.split(":")[0]
-				: (mount as Record<string, unknown>).source;
-		if (typeof rawSource !== "string") continue;
+		const rawSource = mountSource(mount);
+		if (rawSource === undefined) continue;
+
 		const source = interpolate(rawSource, env);
 		if (model.volumes?.[source]) nodes.push(model.volumes[source]);
 	}
+
 	const known = (variable: string) => env[variable] !== undefined;
 	return nodes.flatMap(stringsIn).every((value) => {
 		const { variables, understood } = readInterpolation(value);
@@ -271,6 +299,7 @@ function readInterpolation(value: string): {
 } {
 	const variables: string[] = [];
 	let understood = true;
+
 	const remainder = value.replace(
 		INTERPOLATION_PATTERN,
 		(
@@ -287,6 +316,7 @@ function readInterpolation(value: string): {
 			return "";
 		},
 	);
+
 	return { variables, understood: understood && !remainder.includes("$") };
 }
 

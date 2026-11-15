@@ -27,12 +27,16 @@ export const devCommand = defineCommand({
 			const { findCheckoutRoot } =
 				await import("../../loader/find-config-file");
 			const root = findCheckoutRoot(process.cwd());
-			if (root === undefined)
+			if (root === undefined) {
 				log.fail(
 					"No config file found. Create dev.config.ts with: export default defineDevConfig({ ... })",
 				);
-			for (const warning of ignoredFlagWarnings(parsed.values))
+			}
+
+			for (const warning of ignoredFlagWarnings(parsed.values)) {
 				log.warn(warning);
+			}
+
 			const { DETACH_TIMEOUT_MS, runDetached } = await import("../dev-detach");
 			return runDetached({
 				root,
@@ -42,22 +46,26 @@ export const devCommand = defineCommand({
 				timeoutMs: DETACH_TIMEOUT_MS,
 			});
 		}
-		// The runtime has to be known before the environment is built, so it is
-		// read here rather than inside runCli, which is handed a finished env.
+
 		const timer = timingRequested(parsed.values)
 			? createPhaseTimer({ startedAt: 0, json: parsed.values["timing-json"] })
 			: createNoopPhaseTimer();
+
 		try {
+			// The runtime has to be known before the environment is built, so it is
+			// read here rather than inside runCli, which is handed a finished env.
 			const env = await timer.measure("config and ports", async () =>
 				(await import("../../loader")).loadDevEnv({
 					containerRuntime: parsed.values.runtime,
 				}),
 			);
+
 			await (await import("../run-cli")).runCli(env, { parsed, timer });
 		} catch (error) {
 			timer.report();
 			throw error;
 		}
+
 		return 0;
 	},
 });

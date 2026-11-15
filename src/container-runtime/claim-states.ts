@@ -20,6 +20,7 @@ export async function readClaimStates(
 	claims: Record<string, OffsetClaim>,
 ): Promise<Record<string, ClaimState>> {
 	const { live, held } = await readCheckoutRuns(() => true);
+
 	const listings = await Promise.all(
 		containerRuntimesNotDown().map((runtime) => buncargoContainersOn(runtime)),
 	);
@@ -29,6 +30,7 @@ export async function readClaimStates(
 			.filter(isContainerUp)
 			.map((container) => container.project),
 	);
+
 	return claimStates(claims, {
 		liveRoots: new Set(live.map((run) => run.root)),
 		heldRoots: new Set(held.map((run) => run.root)),

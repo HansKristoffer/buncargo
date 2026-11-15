@@ -88,8 +88,8 @@ function writeGeneratedTsconfig(root: string, configFile: string): string {
  *
  * The config sits at the repo root, so it belongs to no workspace and
  * {@link runWorkspaceTypecheck} never reaches it. That blind spot is the reason
- * a config can lose its `defineDevConfig` inference — or stop matching the
- * installed buncargo entirely — without any check failing.
+ * a config can lose its `defineDevConfig` inference, or stop matching the
+ * installed buncargo entirely, without any check failing.
  *
  * Returns a passing result when the repo has no config file, so this is safe to
  * call unconditionally.

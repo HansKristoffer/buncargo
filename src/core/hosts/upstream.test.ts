@@ -61,18 +61,19 @@ describe("createUpstreamResolver", () => {
 
 	it("collapses concurrent first requests into one probe", async () => {
 		let probes = 0;
+		const gate = Promise.withResolvers<void>();
 		const resolver = createUpstreamResolver({
 			probe: async (_port, host) => {
 				probes += 1;
-				await Bun.sleep(5);
+				// Held open until both requests are in flight.
+				await gate.promise;
 				return host === "127.0.0.1";
 			},
 		});
 
-		const [a, b] = await Promise.all([
-			resolver.resolve(4901),
-			resolver.resolve(4901),
-		]);
+		const both = Promise.all([resolver.resolve(4901), resolver.resolve(4901)]);
+		gate.resolve();
+		const [a, b] = await both;
 
 		expect(probes).toBe(1);
 		expect(a?.authority).toBe("127.0.0.1");

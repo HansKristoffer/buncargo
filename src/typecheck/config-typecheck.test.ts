@@ -5,8 +5,8 @@ import { typecheckRootConfig } from "./config-typecheck";
 
 /**
  * Fixtures live inside the repo, not the OS temp dir: `typecheckRootConfig`
- * shells out to `bunx tsc` with the fixture as cwd, and only a directory under
- * the repo resolves the local TypeScript by walking up to `node_modules`.
+ * runs the project's own `tsc`, and only a directory under the repo finds this
+ * repo's TypeScript by walking up to `node_modules`.
  */
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 

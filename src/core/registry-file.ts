@@ -19,8 +19,8 @@ import { getErrorMessage, isRecord, safeJsonParse } from "hanzio";
 
 /**
  * Reading and writing buncargo's persisted state files (`routes.json`,
- * `hosts-service.json`, `offsets.json`), and the text
- * writer the dotenv rewrite shares.
+ * `hosts-service.json`, `offsets.json`), and the text writer the dotenv
+ * rewrite shares.
  *
  * Every read goes through a validator, so a hand-edited or half-written file
  * degrades to "no state" instead of surfacing as a nonsense value later. Every
@@ -28,8 +28,8 @@ import { getErrorMessage, isRecord, safeJsonParse } from "hanzio";
  * their last entry is gone rather than leaving an empty shell behind.
  *
  * Writes land through a temp file and a rename, which is atomic within a
- * directory. These files have concurrent readers — the hosts daemon re-reads
- * `routes.json` every second — and a plain `writeFile` truncates first, so a
+ * directory. These files have concurrent readers (the hosts daemon re-reads
+ * `routes.json` every second), and a plain `writeFile` truncates first, so a
  * reader could otherwise catch the file empty and conclude there is no state.
  * Serializing writers is a separate concern; see `withFileLock`.
  */
@@ -109,12 +109,16 @@ export async function writeJsonDocument(
 	});
 }
 
+function isMissingFile(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
 /** The file's permission bits, or undefined when it does not exist. */
 async function existingMode(path: string): Promise<number | undefined> {
 	try {
 		return (await stat(path)).mode & 0o777;
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		if (isMissingFile(error)) return undefined;
 		throw error;
 	}
 }
@@ -146,7 +150,7 @@ export async function writeTextFile(
 /**
  * A state file that exists but could not be turned into state.
  *
- * Worth its own type because the alternative — a missing file — means the
+ * Worth its own type because the alternative, a missing file, means the
  * opposite to a reader. Collapsing the two is what let the hosts daemon serve
  * an empty world from a registry full of routes it simply could not read.
  */
@@ -248,7 +252,7 @@ export function defineListRegistry<T>(options: {
 		try {
 			return await readFile(path, "utf-8");
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+			if (isMissingFile(error)) return undefined;
 			throw error;
 		}
 	}
@@ -276,12 +280,15 @@ export function defineListRegistry<T>(options: {
 				afterWrite?.(backup);
 			}
 		}
+
 		if (entries.length > 0 && raw === serialize({ version, [key]: entries }))
 			return;
+
 		if (entries.length === 0) {
 			await rm(path, { force: true });
 			return;
 		}
+
 		await writeJsonDocument(
 			path,
 			{ version, [key]: entries },
@@ -299,9 +306,11 @@ export function defineListRegistry<T>(options: {
 				throw new StateFileUnreadableError(path, getErrorMessage(error));
 			}
 			if (raw === undefined) return [];
+
 			checkVersion(path, raw);
 			const entries = parse(raw, validate);
 			if (entries) return entries;
+
 			if (!readOptions.strict) return [];
 			throw new StateFileUnreadableError(
 				path,
@@ -317,6 +326,7 @@ export function defineListRegistry<T>(options: {
 		async update(path, change) {
 			const raw = await readRaw(path);
 			if (raw !== undefined) checkVersion(path, raw);
+
 			const entries = raw === undefined ? [] : (parse(raw, validate) ?? []);
 			const next = await change(entries);
 			if (next) await store(path, raw, next);

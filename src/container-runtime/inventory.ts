@@ -11,8 +11,7 @@ import type { ContainerRuntimeAdapter } from "./types";
  * or restarting container still holds its stack, its ports and its claim.
  *
  * Reads the state rather than searching the human status line: `Up 3
- * minutes` and `Exited (0) 2 hours ago` both contain a word this used to
- * match.
+ * minutes` and `Exited (0) 2 hours ago` can both contain the same word.
  */
 export function isContainerUp(container: BuncargoContainer): boolean {
 	return isContainerLive(parseContainerState(container.state));
@@ -49,6 +48,7 @@ export function groupBuncargoContainers(
 	for (const container of containers) {
 		const runtime = container.runtime ?? "docker";
 		const key = `${runtime}\t${container.project}\t${container.root}`;
+
 		let group = groups.get(key);
 		if (!group) {
 			group = {
@@ -59,8 +59,10 @@ export function groupBuncargoContainers(
 			};
 			groups.set(key, group);
 		}
+
 		group.containers.push(container);
 	}
+
 	return [...groups.values()];
 }
 

@@ -281,9 +281,11 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 	const bundle = { contents: "// daemon\n", version: "9.9.9" };
 	const bundlePath = "/usr/local/libexec/buncargo/hostsd-9.9.9.js";
 
-	// An older project accepting the update prompt took the newer project's
-	// daemon away and dropped every proxied websocket on the machine.
-	/** What another project's `hosts install` left on the machine. */
+	/**
+	 * What another project's `hosts install` left on the machine. An older
+	 * project accepting the update prompt used to take that daemon away and
+	 * drop every proxied websocket on the machine.
+	 */
 	function installedBy(installed: Partial<HostsServiceManifest>): void {
 		const path = getServiceManifestPath();
 		mkdirSync(dirname(path), { recursive: true });
@@ -355,17 +357,6 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 			command: "mkdir",
 			args: ["-p", "/usr/local/libexec/buncargo"],
 		});
-	});
-
-	it("rolls back the bundle as well when the service fails to load", () => {
-		const { runner, files } = recordingRunner({ failOn: activateFails });
-
-		expect(() => installHostsService({ user, runner, bundle })).toThrow(
-			HOSTS_SERVICE_START_MESSAGE,
-		);
-
-		expect(files.has(bundlePath)).toBe(false);
-		expect(files.has(servicePath)).toBe(false);
 	});
 
 	it("removes the installed bundle on uninstall", () => {
@@ -473,7 +464,7 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 		expect(files.has(servicePath)).toBe(false);
 	});
 
-	it("rolls back the unit file when it fails to load", () => {
+	it("rolls back the unit file and the bundle when the service fails to load", () => {
 		const { runner, calls, files } = recordingRunner({ failOn: activateFails });
 
 		expect(() => installHostsService({ user, runner, bundle })).toThrow(
@@ -483,6 +474,7 @@ describe.skipIf(!hostsServicePath())("installHostsService", () => {
 		// A leftover unit file would make isHostsServiceInstalled() report a
 		// service that never loaded, and every later run would skip setup.
 		expect(files.has(servicePath)).toBe(false);
+		expect(files.has(bundlePath)).toBe(false);
 		expect(commandNames(calls)).toContain("removeFile");
 		expect(readHostsServiceManifest()).toBeUndefined();
 	});

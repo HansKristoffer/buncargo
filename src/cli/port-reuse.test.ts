@@ -1,31 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { resolveApps } from "../config/resolve";
-import {
-	classifyCliApps,
-	parseRequiredCommaSeparatedFlag,
-	type UnhealthyHolder,
-} from "./port-reuse";
-
-describe("parseRequiredCommaSeparatedFlag", () => {
-	it("parses comma-separated names", () => {
-		expect(parseRequiredCommaSeparatedFlag("--apps", "api, platform")).toEqual([
-			"api",
-			"platform",
-		]);
-	});
-
-	it("throws when the value is missing", () => {
-		expect(() => parseRequiredCommaSeparatedFlag("--apps", undefined)).toThrow(
-			"Flag --apps requires a comma-separated value.",
-		);
-	});
-
-	it("throws when no names are provided", () => {
-		expect(() => parseRequiredCommaSeparatedFlag("--apps", " , ")).toThrow(
-			"Flag --apps requires at least one name.",
-		);
-	});
-});
+import { classifyCliApps, type UnhealthyHolder } from "./port-reuse";
 
 describe("classifyCliApps", () => {
 	it("reuses busy healthy apps and starts the rest", async () => {

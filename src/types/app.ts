@@ -7,10 +7,6 @@ import type {
 } from "./config";
 import type { ServiceConfig } from "./service";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// App Configuration
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * Configuration for an application (e.g., api, web).
  */
@@ -130,7 +126,7 @@ export interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	envVars?: (...args: never[]) => EnvValues;
 }
 
-/** See {@link AppConfigBase.watch}. */
+/** See {@link AppOptions.watch}. */
 export interface AppWatchConfig {
 	/** Files or directories, relative to the app's `cwd`, watched recursively. */
 	paths: readonly string[];
@@ -188,7 +184,7 @@ export interface CaptureConfig {
  * Declared per app; `secrets` at the config level supplies the fields every
  * app shares. Buncargo fetches each distinct scope once per dev run and hands
  * the values to the child processes, so the apps' own loaders never spawn the
- * Infisical CLI — concurrent CLI processes hang.
+ * Infisical CLI, which hangs when several run at once.
  */
 export interface SecretsScopeConfig {
 	/** Infisical project id. Required, here or in the config-level defaults. */
@@ -269,22 +265,7 @@ export type DeclaredAppEnvVars<TApp> = "envVars" extends keyof TApp
 		: EnvValues
 	: EnvValues;
 
-/**
- * `TApps` with every position that names a service or app key narrowed to this
- * config's own keys, plus the keys its integrations add (`TAddedServices`,
- * `TAddedApps`).
- *
- * The `envVars` parameters are spelled out with `NoInfer` rather than reused
- * from {@link EnvVarsBuilder}: a builder that reads `ports.web` would otherwise
- * make `TApps` an inference target from inside the very object it is inferred
- * from, and TypeScript resolves that circularity by falling back to the
- * `Record<string, AppConfig>` constraint — losing every app key. The return type
- * is carried over from the app's own declaration so `buildAppEnvVars` can see it.
- *
- * The `never` branch keeps the no-apps instantiation (`Record<string, never>`)
- * assignable to `Record<string, AppConfig>`; rewriting `never` would otherwise
- * drop the required `port` / `devCommand` members.
- */
+/** An app definition without the keys {@link TypedAppDefinitions} narrows. */
 type AppDefinitionBase<T extends AppConfig> = T extends AppConfig
 	? Omit<T, "requiredServices" | "requiredApps" | "envVars">
 	: never;
@@ -301,6 +282,23 @@ type NoUnknownAppKeys<T> = {
 	[P in Exclude<keyof T, AppKey>]: never;
 };
 
+/**
+ * `TApps` with every position that names a service or app key narrowed to this
+ * config's own keys, plus the keys its integrations add (`TAddedServices`,
+ * `TAddedApps`).
+ *
+ * The `envVars` parameters are spelled out with `NoInfer` rather than reused
+ * from {@link EnvVarsBuilder}: a builder that reads `ports.web` would otherwise
+ * make `TApps` an inference target from inside the very object it is inferred
+ * from, and TypeScript resolves that circularity by falling back to the
+ * `Record<string, AppConfig>` constraint, which loses every app key. The return
+ * type is carried over from the app's own declaration so `buildAppEnvVars` can
+ * see it.
+ *
+ * The `never` branch keeps the no-apps instantiation (`Record<string, never>`)
+ * assignable to `Record<string, AppConfig>`; rewriting `never` would otherwise
+ * drop the required `port` / `devCommand` members.
+ */
 export type TypedAppDefinitions<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,

@@ -32,10 +32,10 @@ import * as log from "../log";
 const COMMAND_SIGNAL = new AbortController().signal;
 
 /**
- * `buncargo bar` — the menu bar app, from the CLI side.
+ * `buncargo bar`: the menu bar app, from the CLI side.
  *
- * Install, update, open, check and remove. The CLI is the only updater — the
- * app ships no update checker — so `update` here and the background check in
+ * Install, update, open, check and remove. The CLI is the only updater (the
+ * app ships no update checker), so `update` here and the background check in
  * `dev` are the two ways an installed app ever moves forward.
  */
 function barStep(
@@ -146,7 +146,7 @@ async function runInstall(fromSource: boolean): Promise<void> {
 }
 
 /**
- * `bar update` — the manual half of the same path `dev` takes automatically.
+ * `bar update` is the manual half of the same path `dev` takes automatically.
  *
  * Always passes `minRegistryVersion`, so a release that still cannot read this
  * CLI's registry is refused with a message rather than installed over a working
@@ -190,6 +190,7 @@ async function runUpdate(): Promise<void> {
 async function printStatus(): Promise<void> {
 	const info = readInstalledBarInfo();
 	const manifest = readBarManifest();
+
 	log.line(`app: ${info?.path ?? "not installed"}`);
 	if (info) {
 		log.line(`  version: ${info.version ?? manifest?.appVersion ?? "unknown"}`);

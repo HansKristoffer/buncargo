@@ -74,12 +74,12 @@ export async function activateNamedHosts(
 	},
 	deps: NamedHostsDeps,
 ): Promise<string[]> {
-	if (!env.hosts) {
-		return [];
-	}
+	if (!env.hosts) return [];
+
 	const { hosts } = env;
-	if (hosts.mode === "tailscale")
+	if (hosts.mode === "tailscale") {
 		return options.enabled ? activateTailscaleHosts(env, hosts, options) : [];
+	}
 
 	// Named hosts still work, but something about the setup will bite later.
 	const notes: string[] = [];
@@ -96,18 +96,22 @@ export async function activateNamedHosts(
 			// An unreadable registry: activation reports it, or had nothing to.
 		}
 		env.setNamedHostsActive(false);
+
 		return reason === undefined
 			? notes
 			: [...notes, `${HOSTS_FALLBACK} ${reason}`];
 	};
 
 	if (!options.enabled) return fallBack();
+
 	options.signal?.throwIfAborted();
 	const result = await deps.ensureHostsReady();
 	options.signal?.throwIfAborted();
+
 	if (!result.ok) {
 		return fallBack(result.reason === "disabled" ? undefined : result.message);
 	}
+
 	notes.push(...(result.notes ?? []));
 
 	try {
@@ -116,12 +120,13 @@ export async function activateNamedHosts(
 		// hostname it tries to serve with a certificate that omits it.
 		await deps.syncCertificateForRoutes({
 			// Wildcards as well as this run's exact hostnames, so the next
-			// worktree of this project is already covered and needs no remint —
+			// worktree of this project is already covered and needs no remint,
 			// and remembered under this root, so the coverage survives the
 			// project not running.
 			include: certificateHostnames(hosts.plan, hosts.tld),
 			root: env.root,
 		});
+
 		// App routes die with this process; service routes outlive it. A
 		// hostname a live owner elsewhere holds stays on `localhost:port`
 		// alone, with a warning naming that owner.
@@ -134,10 +139,12 @@ export async function activateNamedHosts(
 			}),
 			{ takeover: new Set(options.takeover), owners: deps.owners },
 		);
+
 		const held = new Set(conflicts.map((conflict) => conflict.hostname));
 		notes.push(
 			...conflicts.map((conflict) => `${HOSTS_FALLBACK} ${conflict.message}`),
 		);
+
 		const hostnames = hosts.plan
 			.map((entry) => entry.hostname)
 			.filter((hostname) => !held.has(hostname));
@@ -146,8 +153,8 @@ export async function activateNamedHosts(
 		// Mint again now that this run's routes are on disk.
 		//
 		// The first sync read the registry before publishing, so a run that
-		// minted in that gap produced a certificate covering itself and not us
-		// — its mint is the one the daemon ends up serving, and our hostnames
+		// minted in that gap produced a certificate covering itself and not us.
+		// Its mint is the one the daemon ends up serving, and our hostnames
 		// fail TLS until something else remints. This second pass runs under
 		// the same lock and sees every concurrent run's routes, so whichever
 		// run finishes last leaves a certificate covering all of them. It
@@ -175,6 +182,7 @@ export async function activateNamedHosts(
 		options.signal?.throwIfAborted();
 		return fallBack(toHostsUserMessage(error));
 	}
+
 	return notes;
 }
 
@@ -189,11 +197,13 @@ async function activateTailscaleHosts(
 	hosts: HostsRuntime,
 	options: { signal?: AbortSignal; takeover?: readonly string[] },
 ): Promise<string[]> {
-	const unavailable = (reason: string) => `Named URLs unavailable: ${reason}`;
+	const unavailable = (reason: string) => `${HOSTS_FALLBACK} ${reason}`;
+
 	options.signal?.throwIfAborted();
 	const apps = hosts.plan
 		.filter((entry) => entry.kind === "app")
 		.map((entry) => ({ name: entry.name, port: entry.targetPort }));
+
 	try {
 		const result = await activateTailscaleServe(
 			{
@@ -241,12 +251,14 @@ export async function reclaimAppRoute(
 		await reclaimTailscaleApp(env.root, env.hosts, name);
 		return undefined;
 	}
+
 	const routes = routesFromPlan(env.hosts.plan, {
 		root: env.root,
 		pid: process.pid,
 		processIdentity: await readCurrentProcessIdentityAsync(),
 	}).filter((route) => route.kind === "app" && route.name === name);
 	if (routes.length === 0) return undefined;
+
 	try {
 		const [conflict] = await upsertHostRoutes(routes, {
 			owners: identityRouteOwners,
@@ -303,6 +315,7 @@ export async function releaseNamedHosts(
 		env.setNamedHostsActive(false);
 		return warnings;
 	}
+
 	try {
 		await removeHostRoutes(
 			(route) =>
@@ -313,6 +326,7 @@ export async function releaseNamedHosts(
 	} catch {
 		// registry is best-effort
 	}
+
 	env.setNamedHostsActive(false);
 	return [];
 }

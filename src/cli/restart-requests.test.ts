@@ -52,8 +52,8 @@ it("restarts each requested app once, answering every request, including one ask
 	}
 });
 
-// Asked before the run's apps had spawned: the request used to be read and
-// dropped, and `restart` had already said it was asked.
+// Asked before the run's apps had spawned: reading and dropping it would leave
+// `restart` having said it was asked.
 it("keeps a restart request until the run can act on it", async () => {
 	const root = mkdtempSync(join(tmpdir(), "buncargo-restart-pending-"));
 	const restarted: string[] = [];
@@ -77,8 +77,9 @@ it("keeps a restart request until the run can act on it", async () => {
 		while (polls < 2 && performance.now() < deadline) await Bun.sleep(20);
 		expect(restarted).toEqual([]);
 		ready = true;
-		while (restarted.length === 0 && performance.now() < deadline)
+		while (restarted.length === 0 && performance.now() < deadline) {
 			await Bun.sleep(20);
+		}
 		expect(restarted).toEqual(["api"]);
 	} finally {
 		stop();

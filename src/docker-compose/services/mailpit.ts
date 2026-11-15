@@ -24,7 +24,6 @@ export const mailpitDockerService = defineDockerService<
 	preset: "mailpit",
 	defaults: {
 		port: 8025,
-		secondaryPort: 1025,
 		healthCheck: "http",
 	},
 	env: {

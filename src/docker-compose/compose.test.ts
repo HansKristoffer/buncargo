@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
 	existsSync,
 	mkdirSync,
+	mkdtempSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -186,6 +187,7 @@ describe("buildComposeModel", () => {
 		});
 
 		const compose = buildComposeModel(services);
+
 		expect(compose.services.postgres).toEqual({
 			image: "postgres:16-alpine",
 			ports: ["127.0.0.1:$" + "{POSTGRES_PORT:-5432}:5432"],
@@ -284,6 +286,7 @@ describe("buildComposeModel with data on tmpfs", () => {
 		}).services;
 
 		const args = postgres?.runArgs ?? [];
+
 		expect(args[args.indexOf("--tmpfs") + 1]).toBe("/var/lib/postgresql/data");
 		expect(args).not.toContain("--volume");
 		expect(postgres?.volumes).toEqual([]);
@@ -291,6 +294,7 @@ describe("buildComposeModel with data on tmpfs", () => {
 
 	it("keeps named volumes by default", () => {
 		const compose = buildComposeModel(services, docker);
+
 		expect(compose.services.postgres?.volumes).toEqual([
 			"postgres_data:/var/lib/postgresql/data",
 		]);
@@ -319,8 +323,7 @@ describe("composeToYaml", () => {
 
 describe("writeGeneratedComposeFile", () => {
 	it("writes compose file and returns compose -f path", () => {
-		const root = join(tmpdir(), `buncargo-compose-test-${Date.now()}`);
-		mkdirSync(root, { recursive: true });
+		const root = mkdtempSync(join(tmpdir(), "buncargo-compose-test-"));
 		try {
 			const composeFile = writeGeneratedComposeFile(
 				root,
@@ -342,8 +345,7 @@ describe("writeGeneratedComposeFile", () => {
 	});
 
 	it("refuses a different if-missing artifact without overwriting it", () => {
-		const root = join(tmpdir(), `buncargo-compose-test-${Date.now()}-missing`);
-		mkdirSync(root, { recursive: true });
+		const root = mkdtempSync(join(tmpdir(), "buncargo-compose-test-"));
 		try {
 			const filePath = join(root, ".buncargo/docker-compose.generated.yml");
 			mkdirSync(join(root, ".buncargo"), { recursive: true });

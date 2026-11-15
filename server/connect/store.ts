@@ -11,6 +11,7 @@ export const hash = (value: string) =>
 	createHash("sha256").update(value).digest("hex");
 
 export const identifier = () => randomBytes(16).toString("hex");
+
 /** All persisted payloads are authenticated/encrypted, including database and STCP credentials. */
 export class Store {
 	readonly db: Database;
@@ -22,13 +23,22 @@ export class Store {
 		if (key.length !== 32) {
 			throw new Error("CONNECT_STORAGE_KEY must contain 32 bytes in hex");
 		}
+
 		this.db = new Database(path, { create: true, strict: true });
 		if (path !== ":memory:") {
 			chmodSync(path, 0o600);
 		}
-		this.db.exec(
-			"PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS records (kind TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(kind,id))",
-		);
+
+		this.db.exec(`
+			PRAGMA journal_mode=WAL;
+			PRAGMA busy_timeout=5000;
+			CREATE TABLE IF NOT EXISTS records (
+				kind TEXT NOT NULL,
+				id TEXT NOT NULL,
+				data TEXT NOT NULL,
+				PRIMARY KEY(kind, id)
+			)
+		`);
 	}
 
 	get<T>(kind: string, id: string): T | undefined {
@@ -50,14 +60,19 @@ export class Store {
 	set(kind: string, id: string, value: unknown) {
 		const iv = randomBytes(12);
 		const cipher = createCipheriv("aes-256-gcm", this.key, iv);
+
+		// Binding kind and id as AAD stops a ciphertext being moved to another record.
 		cipher.setAAD(Buffer.from(`${kind}:${id}`));
 		const data = Buffer.concat([
 			cipher.update(JSON.stringify(value)),
 			cipher.final(),
 		]);
+
+		// Stored layout, read back by decode: 12-byte IV, 16-byte GCM tag, ciphertext.
 		const encoded = Buffer.concat([iv, cipher.getAuthTag(), data]).toString(
 			"base64",
 		);
+
 		this.db
 			.query(
 				"INSERT INTO records VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data",
@@ -78,6 +93,7 @@ export class Store {
 	}
 
 	private decode<T>(kind: string, id: string, value: string): T {
+		// Layout written by set: 12-byte IV, 16-byte GCM tag, ciphertext.
 		const bytes = Buffer.from(value, "base64");
 		const cipher = createDecipheriv(
 			"aes-256-gcm",

@@ -42,8 +42,9 @@ export function parseEnvAssignment(
 	text: string,
 ): { key: string; value: string } | { error: string } {
 	const at = text.indexOf("=");
-	const key = at === -1 ? text : text.slice(0, at);
 	if (at === -1) return { error: `Expected KEY=VALUE, got "${text}".` };
+
+	const key = text.slice(0, at);
 	if (!ENV_NAME.test(key)) return { error: `"${key}" is not a variable name.` };
 	return { key, value: text.slice(at + 1) };
 }
@@ -54,12 +55,15 @@ export async function updateEnvOverrides(
 	change: { set?: Record<string, string>; unset?: readonly string[] },
 ): Promise<Record<string, string>> {
 	const path = getEnvOverridesPath(root);
+
 	return withFileLock(path, async () => {
 		const values = { ...readEnvOverrides(root), ...change.set };
 		for (const key of change.unset ?? []) delete values[key];
+
 		const sorted = Object.fromEntries(
 			Object.entries(values).sort(([a], [b]) => a.localeCompare(b)),
 		);
+
 		await writeJsonDocument(path, { version: 1, values: sorted });
 		return sorted;
 	});
@@ -74,8 +78,9 @@ export function applyEnvOverrides(
 	overrides: Readonly<Record<string, string>>,
 	input: Readonly<Record<string, string>>,
 ): void {
-	for (const [key, value] of Object.entries(overrides))
+	for (const [key, value] of Object.entries(overrides)) {
 		vars[key] = input[key] ?? value;
+	}
 }
 
 /** Overridden secret keys already warned about in this process. */
@@ -94,7 +99,9 @@ export function warnShadowedSecrets(
 		(key) => key in overrides && !warnedShadows.has(key),
 	);
 	if (shadowed.length === 0) return;
+
 	for (const key of shadowed) warnedShadows.add(key);
+
 	const keys = shadowed.join(", ");
 	console.warn(
 		formatWarn(
