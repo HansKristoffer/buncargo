@@ -43,6 +43,7 @@ export async function findWorker(
 	const entries = await registry.read(pathFor(root), { strict: true });
 	const entry = entries.find((entry) => entry.name === name);
 	if (!entry) return undefined;
+
 	const check = await checkProcessIdentityAsync(
 		entry.pid,
 		entry.identity,
@@ -76,6 +77,7 @@ export function decideWorkerClaim(
 		return check === "mismatch" ? [] : [{ entry, check }];
 	});
 	const held = standing.find(({ entry }) => entry.name === name);
+
 	if (held) return { kind: "held", holder: held.entry, check: held.check };
 	return { kind: "claim", standing: standing.map(({ entry }) => entry) };
 }
@@ -103,11 +105,9 @@ export async function spawnOwnedWorker(
 		path,
 		async () => {
 			const recorded = await registry.read(path, { strict: true });
-			const decision = decideWorkerClaim(
-				recorded,
-				await checkProcessIdentitiesAsync(recorded, signal),
-				name,
-			);
+			const checks = await checkProcessIdentitiesAsync(recorded, signal);
+			const decision = decideWorkerClaim(recorded, checks, name);
+
 			if (decision.kind === "held") {
 				const { pid } = decision.holder;
 				const reason = typedSwitch(decision.check, {
@@ -123,6 +123,7 @@ export async function spawnOwnedWorker(
 			signal?.throwIfAborted();
 			const child = spawn();
 			const exited = () => child.exitCode !== null || child.signalCode !== null;
+
 			// A worker that died before it was claimed can leave its own
 			// children holding the group, unowned: nothing would ever stop them.
 			const handBack = async () => {
@@ -140,10 +141,12 @@ export async function spawnOwnedWorker(
 				const identity = child.pid
 					? await readProcessIdentityAsync(child.pid, signal)
 					: undefined;
+
 				if (exited() && options.allowEarlyExit) return await handBack();
 				if (!child.pid || exited()) {
 					throw new Error(`Worker "${name}" exited before process startup`);
 				}
+
 				// Running, but a claim without its identity could never be told
 				// apart from a later process reusing the pid.
 				if (!identity) {
@@ -182,8 +185,10 @@ export async function stopWorker(root: string, name: string): Promise<boolean> {
 	return withFileLock(path, async () => {
 		const entries = await registry.read(path, { strict: true });
 		const entry = entries.find((item) => item.name === name);
-		if (!entry || !(await terminateProcessGroup(entry.pid, entry.identity)))
-			return false;
+		if (!entry) return false;
+
+		const stopped = await terminateProcessGroup(entry.pid, entry.identity);
+		if (!stopped) return false;
 
 		await registry.write(
 			path,

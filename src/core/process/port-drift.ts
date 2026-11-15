@@ -17,7 +17,7 @@ import {
  *
  * A framework that finds its port taken (Astro, Vite without `strictPort`)
  * prints "trying another one" and listens on the next port, while readiness
- * keeps asking the assigned one until it times out a minute later - and then
+ * keeps asking the assigned one until it times out a minute later, and then
  * fails a run whose other apps were fine. This turns that minute into one
  * named error.
  *
@@ -53,9 +53,14 @@ export function driftedPorts(
 ): number[] {
 	const members = new Set(tree);
 	const ports: number[] = [];
-	for (const [port, pids] of listeners.pidsByPort)
-		if (port !== target.port && pids.some((pid) => members.has(pid)))
+
+	for (const [port, pids] of listeners.pidsByPort) {
+		const isOtherPort = port !== target.port;
+		if (isOtherPort && pids.some((pid) => members.has(pid))) {
 			ports.push(port);
+		}
+	}
+
 	return ports.sort((a, b) => a - b);
 }
 
@@ -75,21 +80,26 @@ export async function checkPortDrift(
 	signal: AbortSignal,
 ): Promise<{ name: string; message: string } | undefined> {
 	if (targets.length === 0) return undefined;
+
 	const listeners = await probe.listeners(signal);
+
 	for (const target of targets) {
 		const holder = await probe.foreignHolder(target.port, listeners, signal);
 		if (!holder) continue;
+
 		const listening = driftedPorts(
 			target,
 			listeners,
 			probe.processTree(target.pid),
 		);
-		if (listening.length > 0)
+		if (listening.length > 0) {
 			return {
 				name: target.name,
 				message: formatDrift(target, listening, holder),
 			};
+		}
 	}
+
 	return undefined;
 }
 
@@ -100,7 +110,8 @@ export function systemDriftProbe(options: {
 	return {
 		listeners: (signal) => readListenerSnapshotAsync(signal),
 		async foreignHolder(port, listeners, signal) {
-			if ((listeners.pidsByPort.get(port)?.length ?? 0) > 0) {
+			const isListed = (listeners.pidsByPort.get(port)?.length ?? 0) > 0;
+			if (isListed) {
 				// Visible: ours (the app, or a server it detached) is no drift.
 				const owner = createPortOwnerSnapshot({
 					listeners,
@@ -109,8 +120,9 @@ export function systemDriftProbe(options: {
 				}).owner(port);
 				return classifyPortOccupant(owner, options) === "fail" ? owner : null;
 			}
+
 			// Nothing listed, yet something answers: a holder `lsof` cannot show
-			// this user. Connecting, never binding - a probe that bound the port
+			// this user. Connecting, never binding: a probe that bound the port
 			// could itself push a booting app off it.
 			return (await isTcpPortOpen(port, "127.0.0.1", 500, signal))
 				? { kind: "unidentified" }

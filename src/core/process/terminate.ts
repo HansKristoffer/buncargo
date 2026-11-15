@@ -29,14 +29,17 @@ const groupWatches = new WeakMap<AppChild | DetachedApp, Promise<void>>();
 /** Whether anything of `child` (its leader, or what is left of its group) still runs. */
 export function ownedProcessAlive(child: AppChild | DetachedApp): boolean {
 	if (!child.pid) return false;
+
 	// Its identity stopped matching: whatever holds that pid now is not ours.
 	if (child instanceof DetachedApp && child.exitCode !== null) return false;
 	if (emptiedGroups.has(child)) return false;
 	if (groupAlive(child.pid)) return true;
+
 	// On macOS the group can disappear while its leader still awaits reaping,
 	// so group disappearance alone does not acknowledge process cleanup. Once
 	// the exit was seen the leader is reaped, and its pid may be reused.
 	if (!exitSeen(child)) return isProcessAlive(child.pid);
+
 	emptiedGroups.add(child);
 	return false;
 }
@@ -53,9 +56,11 @@ export function ownedProcessGone(
 	pollMs = 250,
 ): Promise<void> {
 	let watch = groupWatches.get(child);
+
 	if (!watch) {
 		watch = new Promise<void>((resolve) => {
 			if (!ownedProcessAlive(child)) return resolve();
+
 			const timer = setInterval(() => {
 				if (ownedProcessAlive(child)) return;
 				clearInterval(timer);
@@ -126,13 +131,26 @@ function signalGroup(
 		signalProcessTree(child.pid, signal);
 		return;
 	}
+
 	try {
 		process.kill(-child.pid, signal);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
+
 		// macOS can report EPERM for a group whose last member is exiting.
 		// Keep waiting below; a real permission failure still times out.
 		if (code !== "ESRCH" && code !== "EPERM") throw error;
+	}
+}
+
+/** Polls until nothing of `child` runs, or `ms` has passed. */
+async function waitUntilGone(
+	child: AppChild | DetachedApp,
+	ms: number,
+): Promise<void> {
+	const deadline = performance.now() + ms;
+	while (ownedProcessAlive(child) && performance.now() < deadline) {
+		await abortableSleep(25);
 	}
 }
 
@@ -142,18 +160,18 @@ async function signalUntilGone(
 	initialSignal: NodeJS.Signals,
 ): Promise<void> {
 	signalGroup(child, initialSignal);
-	const deadline = performance.now() + graceMs;
-	while (ownedProcessAlive(child) && performance.now() < deadline)
-		await abortableSleep(25);
+	await waitUntilGone(child, graceMs);
 	if (!ownedProcessAlive(child)) return;
+
+	// The pid may have changed hands during the grace period.
 	const ours = await stillOurs(child);
 	if (!confirmedOurs(ours, child.pid ?? 0, "SIGKILL")) return;
+
 	signalGroup(child, "SIGKILL");
-	const killDeadline = performance.now() + 1000;
-	while (ownedProcessAlive(child) && performance.now() < killDeadline)
-		await abortableSleep(25);
-	if (ownedProcessAlive(child))
+	await waitUntilGone(child, 1000);
+	if (ownedProcessAlive(child)) {
 		throw new Error(`Process group ${child.pid} did not exit after SIGKILL`);
+	}
 }
 
 /** How long a process gets after SIGTERM before SIGKILL, unless it sets `stopGraceMs`. */

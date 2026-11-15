@@ -4,8 +4,8 @@ import { recordStartupMetric } from "../startup-metrics";
 /**
  * One reading of every TCP listener on the machine.
  *
- * Asking `lsof` per port is what a dev run used to do — three times per port,
- * plus a `ps` and a second `lsof` for each owner — and every one of those is a
+ * Asking `lsof` per port is what a dev run used to do: three times per port,
+ * plus a `ps` and a second `lsof` for each owner, and every one of those is a
  * fork. A single `lsof` answers the same questions for every port at once, at
  * the cost of one, and the answer cannot be inconsistent between two ports of
  * the same run.
@@ -40,11 +40,17 @@ function portFromLsofName(name: string): number | undefined {
 	return Number.isInteger(port) && port > 0 ? port : undefined;
 }
 
+/** The pid of an `lsof` `p` field, or undefined for one that is not a pid. */
+function pidFromLsofField(value: string): number | undefined {
+	const pid = Number.parseInt(value, 10);
+	return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
 /**
  * Parse `lsof -F pcn` output.
  *
  * The format is a stream of one-letter-prefixed lines: `p` opens a process
- * block, `c` names it, and each `n` is one of its files — here, one listening
+ * block, `c` names it, and each `n` is one of its files, here one listening
  * socket, because the caller filtered on `-sTCP:LISTEN`.
  */
 function parseListenerSnapshot(output: string): ListenerSnapshot {
@@ -55,11 +61,11 @@ function parseListenerSnapshot(output: string): ListenerSnapshot {
 		const field = line[0];
 		const value = line.slice(1);
 		if (field === "p") {
-			const parsed = Number.parseInt(value, 10);
-			pid = Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+			pid = pidFromLsofField(value);
 			continue;
 		}
 		if (pid === undefined) continue;
+
 		if (field === "c") {
 			snapshot.commandByPid.set(pid, value.trim());
 			continue;
@@ -89,8 +95,7 @@ function parseProcessCwds(output: string): Map<number, string> {
 		const field = line[0];
 		const value = line.slice(1);
 		if (field === "p") {
-			const parsed = Number.parseInt(value, 10);
-			pid = Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+			pid = pidFromLsofField(value);
 			continue;
 		}
 		if (field === "n" && pid !== undefined) {
@@ -128,7 +133,7 @@ export function readListenerSnapshot(): ListenerSnapshot {
  * Working directories for a set of pids, in one call.
  *
  * Only asked for the handful of processes that turned out to hold a port this
- * run cares about — the cwd is what separates an orphan of this repo, which is
+ * run cares about. The cwd is what separates an orphan of this repo, which is
  * killed, from a stranger's process, which is not.
  */
 export function readProcessCwds(pids: number[]): Map<number, string> {

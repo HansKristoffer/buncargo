@@ -99,9 +99,11 @@ function explicitLevel(text: string): OutputLine["level"] | "info" | undefined {
 	if (keyed !== undefined) {
 		const asNumber = Number(keyed);
 		if (!Number.isNaN(asNumber)) return numericLevel(asNumber);
+
 		const level = LEVEL_WORDS[keyed.toLowerCase()];
 		if (level !== undefined) return level;
 	}
+
 	const head = text.trimStart().slice(0, LEVEL_SEARCH_CHARS);
 	const words = head.split(/\s+/, LEVEL_SEARCH_WORDS);
 	for (const word of words) {
@@ -121,6 +123,7 @@ function explicitLevel(text: string): OutputLine["level"] | "info" | undefined {
 export function lineLevel(text: string): OutputLine["level"] {
 	const explicit = explicitLevel(text);
 	if (explicit !== undefined) return explicit === "info" ? undefined : explicit;
+
 	if (ERROR.test(text) || NAMED_ERROR.test(text)) return "error";
 	if (WARN.test(text)) return "warn";
 	return undefined;
@@ -149,12 +152,14 @@ export function createErrorFilter(): (text: string) => boolean {
 	let depth = 0;
 	let blockLines = 0;
 	let keepBlock = false;
+
 	return (text) => {
 		if (depth > 0 && blockLines < MAX_BLOCK_LINES) {
 			depth += bracketBalance(text);
 			blockLines++;
 			return keepBlock;
 		}
+
 		depth = 0;
 		const keep = lineLevel(text) === "error";
 		const opensBlock = /[{[]$/.test(text.trimEnd());
@@ -163,6 +168,7 @@ export function createErrorFilter(): (text: string) => boolean {
 			blockLines = 0;
 			keepBlock = keep;
 		}
+
 		return keep;
 	};
 }
@@ -243,12 +249,14 @@ export class RunOutput {
 
 	state(app: string, state: AppStateDetail): void {
 		this.states.set(app, state);
-		if (state.state !== "starting")
-			this.event(
-				app,
-				state.detail ? `${state.state} (${state.detail})` : state.state,
-				state.state === "failed" ? "error" : undefined,
-			);
+
+		if (state.state !== "starting") {
+			const text = state.detail
+				? `${state.state} (${state.detail})`
+				: state.state;
+			this.event(app, text, state.state === "failed" ? "error" : undefined);
+		}
+
 		for (const listener of this.listeners) listener.state?.(app, state);
 	}
 
@@ -259,6 +267,7 @@ export class RunOutput {
 			this.captured.set(app, values);
 			this.event(app, `${captured.name}: ${captured.value}`);
 		}
+
 		for (const listener of this.listeners) listener.capture?.(app, captured);
 	}
 
@@ -314,11 +323,13 @@ export class RunOutput {
 			if (tail.length > TAIL_LINES) tail.shift();
 			this.tails.set(line.app, tail);
 		}
+
 		this.logs?.write(
 			line.app,
 			line.event ? `[buncargo] ${line.text}` : line.text,
 			line.time,
 		);
+
 		for (const listener of this.listeners) listener.line?.(line);
 	}
 }
@@ -349,8 +360,10 @@ export function printStream(
 		state(app, { state, detail, restartable }) {
 			if (state !== "stopped" && state !== "failed") return;
 			if (!restartable) return;
+
+			const detailSuffix = detail ? ` (${detail})` : "";
 			const lines = [
-				`  ${pc.red("✗")}  ${colorizeName(app)} ${state}${detail ? ` (${detail})` : ""}; the rest of the run keeps going`,
+				`  ${pc.red("✗")}  ${colorizeName(app)} ${state}${detailSuffix}; the rest of the run keeps going`,
 				...lastErrorLines(output.tail(app)).map(
 					(line) => `       ${pc.dim(line)}`,
 				),
