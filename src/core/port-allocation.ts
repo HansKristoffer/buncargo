@@ -298,7 +298,7 @@ export interface AllocatePortBlockInput extends PortPlanInput {
 	 * Without it every lookup asks Docker, and under Apple the port looks like
 	 * it is held by the `container` forwarder process rather than by a container
 	 * of ours. That reads as a conflict, shifts the offset by
-	 * {@link PORT_OFFSET_STEP}, and changes the generated model - which changes
+	 * {@link PORT_OFFSET_STEP}, and changes the generated model, which changes
 	 * the config hash and recreates the container on every single run.
 	 */
 	runtime?: ContainerRuntimeAdapter;
@@ -358,16 +358,21 @@ export function chooseBlock(
 /** An environment's ports at any offset, and the blocks it searches. */
 function portLayout(input: PortPlanInput) {
 	const basePorts = buildPortMap(input.services, input.apps);
-	for (const [name, port] of Object.entries(basePorts))
-		if (!Number.isInteger(port) || port < 1 || port > 65535)
+	for (const [name, port] of Object.entries(basePorts)) {
+		if (!Number.isInteger(port) || port < 1 || port > 65535) {
 			throw new Error(
 				`Invalid base port for ${name}: ${port}. Expected an integer in 1..65535.`,
 			);
+		}
+	}
+
 	const withExtras = (ports: Record<string, number>) => ({
 		...ports,
 		...extraPortMap(input.apps, ports, basePorts),
 	});
 	const at = (offset: number) => shiftPorts(basePorts, offset);
+	const overflows = (offset: number) =>
+		Object.values(withExtras(at(offset))).some((port) => port > 65535);
 	const candidate = (offset: number): BlockCandidate => {
 		const ports = at(offset);
 		return {
@@ -389,6 +394,7 @@ function portLayout(input: PortPlanInput) {
 		basePorts,
 		withExtras,
 		at,
+		overflows,
 		candidate,
 		hashed,
 		maxOffset,
@@ -408,11 +414,14 @@ type PortLayout = ReturnType<typeof portLayout>;
 /** `BUNCARGO_PORT_OFFSET`'s block, which nothing probes or claims. */
 function overridePlan(layout: PortLayout, offset: number): PortPlan {
 	const ports = layout.at(offset);
-	for (const [name, port] of Object.entries(layout.withExtras(ports)))
-		if (!Number.isInteger(port) || port < 1 || port > 65535)
+	for (const [name, port] of Object.entries(layout.withExtras(ports))) {
+		if (!Number.isInteger(port) || port < 1 || port > 65535) {
 			throw new Error(
 				`Effective port for ${name} is ${port}; BUNCARGO_PORT_OFFSET must keep every port in 1..65535.`,
 			);
+		}
+	}
+
 	return { offset, ports, provenance: "env" };
 }
 
@@ -482,14 +491,12 @@ export function readPortPlan(input: PortPlanInput): PortPlan {
 
 /** The claim's block, with the config's current ports. */
 function claimPlan(layout: PortLayout, offset: number): PortPlan {
-	if (
-		Object.values(layout.withExtras(layout.at(offset))).some(
-			(port) => port > 65535,
-		)
-	)
+	if (layout.overflows(offset)) {
 		throw new Error(
 			`The claimed offset ${offset} cannot accommodate this config; run dev to move the checkout's block.`,
 		);
+	}
+
 	return { offset, ports: layout.at(offset), provenance: "claim" };
 }
 
@@ -589,17 +596,20 @@ function allocateBlock(
 			Object.keys(layout.basePorts).some(
 				(name) => !input.probeNames?.includes(name),
 			);
-		const overflows = Object.values(
-			layout.withExtras(layout.at(own.offset)),
-		).some((port) => port > 65535);
-		if (blocked && partial && !overflows && offsetClaimHoldsBlock(own))
+		if (
+			blocked &&
+			partial &&
+			!layout.overflows(own.offset) &&
+			offsetClaimHoldsBlock(own)
+		) {
+			const nextStep =
+				blocked.claimKeys.length > 0
+					? "Start the full environment to move this checkout's shared port block."
+					: "Stop that port's owner, or start the full environment to reconcile its shared port block.";
 			throw new Error(
-				`Selected app ports conflict with the claimed allocation: ${blocked.problem}. ${
-					blocked.claimKeys.length > 0
-						? "Start the full environment to move this checkout's shared port block."
-						: "Stop that port's owner, or start the full environment to reconcile its shared port block."
-				}`,
+				`Selected app ports conflict with the claimed allocation: ${blocked.problem}. ${nextStep}`,
 			);
+		}
 	}
 
 	const choice = chooseBlock(layout.search(), others, busy);

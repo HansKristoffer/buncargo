@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveApps, resolveServices } from "../config/resolve";
 import { service } from "../docker-compose/services";
@@ -13,10 +12,21 @@ import {
 	getProjectName,
 	getWorktreeProjectSuffix,
 } from "./ports";
+import { useTempHome } from "./test-env.testing";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// computeUrls Tests
-// ═══════════════════════════════════════════════════════════════════════════
+const home = useTempHome();
+
+/** A directory under the temporary HOME whose `.git` file names `worktree`'s gitdir. */
+function worktreeCheckout(worktree: string, name = "checkout"): string {
+	const parent = mkdtempSync(join(home(), "parent-"));
+	const root = join(parent, name);
+	mkdirSync(root);
+	writeFileSync(
+		join(root, ".git"),
+		`gitdir: /tmp/repo/.git/worktrees/${worktree}`,
+	);
+	return root;
+}
 
 describe("computeUrls", () => {
 	it("builds a preset's URL from the preset, whatever its key", () => {
@@ -50,41 +60,20 @@ describe("computeUrls", () => {
 		expect(result.postgres).toContain("@localhost:5432");
 	});
 
-	it("uses default URL builder for postgres", () => {
-		const services = resolveServices({
-			postgres: { port: 5432 },
-		});
-		const ports = { postgres: 5432 };
-
-		const result = computeUrls(services, {}, ports, localIp);
-
-		expect(result.postgres).toBe(
+	it.each([
+		[
+			"postgres",
+			5432,
 			"postgresql://postgres:postgres@localhost:5432/postgres",
-		);
-	});
+		],
+		["redis", 6379, "redis://localhost:6379"],
+		["clickhouse", 8123, "http://default:clickhouse@localhost:8123/default"],
+	])("builds the default %s URL from its key", (name, port, expected) => {
+		const services = resolveServices({ [name]: { port } });
 
-	it("uses default URL builder for redis", () => {
-		const services = resolveServices({
-			redis: { port: 6379 },
-		});
-		const ports = { redis: 6379 };
+		const result = computeUrls(services, {}, { [name]: port }, localIp);
 
-		const result = computeUrls(services, {}, ports, localIp);
-
-		expect(result.redis).toBe("redis://localhost:6379");
-	});
-
-	it("uses default URL builder for clickhouse", () => {
-		const services = resolveServices({
-			clickhouse: { port: 8123 },
-		});
-		const ports = { clickhouse: 8123 };
-
-		const result = computeUrls(services, {}, ports, localIp);
-
-		expect(result.clickhouse).toBe(
-			"http://default:clickhouse@localhost:8123/default",
-		);
+		expect(result[name]).toBe(expected);
 	});
 
 	it("uses custom urlTemplate when provided", () => {
@@ -210,10 +199,6 @@ describe("computeUrls", () => {
 	});
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// computeLoopbackUrls Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
 describe("computeLoopbackUrls", () => {
 	const services = resolveServices({
 		postgres: { port: 5432 },
@@ -263,214 +248,124 @@ describe("computeLoopbackUrls", () => {
 	});
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// getProjectName Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
 describe("getProjectName", () => {
 	it("generates project name from prefix and directory", () => {
-		// Using a known directory path for testing
-		const result = getProjectName("myapp", undefined, "/home/user/myproject");
-
-		expect(result).toBe("myapp-myproject");
+		expect(getProjectName("myapp", undefined, "/home/user/myproject")).toBe(
+			"myapp-myproject",
+		);
 	});
 
 	it("handles suffix correctly", () => {
-		const result = getProjectName("myapp", "test", "/home/user/myproject");
-
-		expect(result).toBe("myapp-myproject-test");
-	});
-
-	it("sanitizes special characters in directory names", () => {
-		const result = getProjectName(
-			"myapp",
-			undefined,
-			"/home/user/My_Project.Name",
+		expect(getProjectName("myapp", "test", "/home/user/myproject")).toBe(
+			"myapp-myproject-test",
 		);
-
-		expect(result).toBe("myapp-my-project-name");
 	});
 
-	it("converts uppercase to lowercase", () => {
-		const result = getProjectName("myapp", undefined, "/home/user/MyProject");
-
-		expect(result).toBe("myapp-myproject");
-	});
-
-	it("preserves hyphens in directory name", () => {
-		const result = getProjectName("myapp", undefined, "/home/user/my-project");
-
-		expect(result).toBe("myapp-my-project");
-	});
-
-	it("replaces underscores with hyphens", () => {
-		const result = getProjectName("myapp", undefined, "/home/user/my_project");
-
-		expect(result).toBe("myapp-my-project");
+	it.each([
+		["My_Project.Name", "my-project-name"],
+		["MyProject", "myproject"],
+		["my-project", "my-project"],
+		["my_project", "my-project"],
+	])("writes the directory %s as %s", (directory, expected) => {
+		expect(getProjectName("myapp", undefined, `/home/user/${directory}`)).toBe(
+			`myapp-${expected}`,
+		);
 	});
 });
-
-// ═══════════════════════════════════════════════════════════════════════════
-// getWorktreeProjectSuffix Tests
-// ═══════════════════════════════════════════════════════════════════════════
 
 describe("getWorktreeProjectSuffix", () => {
 	it("returns null outside worktree", () => {
-		const result = getWorktreeProjectSuffix("/tmp/does-not-exist");
-		expect(result).toBeNull();
+		expect(getWorktreeProjectSuffix("/tmp/does-not-exist")).toBeNull();
 	});
 
 	it("returns sanitized suffix from worktree name", () => {
-		const testDir = join(tmpdir(), `buncargo-worktree-test-${Date.now()}`);
-		mkdirSync(testDir, { recursive: true });
-		try {
-			writeFileSync(
-				join(testDir, ".git"),
-				"gitdir: /tmp/repo/worktrees/Feature_Branch.1",
-			);
-			const result = getWorktreeProjectSuffix(testDir);
-			expect(result).toBe("feature-branch-1");
-		} finally {
-			rmSync(testDir, { recursive: true, force: true });
-		}
+		const root = worktreeCheckout("Feature_Branch.1");
+
+		expect(getWorktreeProjectSuffix(root)).toBe("feature-branch-1");
 	});
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// computeDevIdentity Tests
-// ═══════════════════════════════════════════════════════════════════════════
-
 describe("computeDevIdentity", () => {
 	it("includes worktree suffix in project name by default", () => {
-		const testDir = join(tmpdir(), `buncargo-identity-test-${Date.now()}-1`);
-		mkdirSync(testDir, { recursive: true });
-		try {
-			writeFileSync(
-				join(testDir, ".git"),
-				"gitdir: /tmp/repo/worktrees/Feature_A",
-			);
-			const identity = computeDevIdentity({
-				projectPrefix: "myapp",
-				root: testDir,
-			});
-			expect(identity.worktree).toBe(true);
-			expect(identity.worktreeSuffix).toBe("feature-a");
-			expect(identity.projectSuffix).toBe("feature-a");
-			expect(identity.projectName).toBe(
-				getProjectName("myapp", "feature-a", testDir),
-			);
-		} finally {
-			rmSync(testDir, { recursive: true, force: true });
-		}
+		const root = worktreeCheckout("Feature_A");
+
+		const identity = computeDevIdentity({ projectPrefix: "myapp", root });
+
+		expect(identity.worktree).toBe(true);
+		expect(identity.worktreeSuffix).toBe("feature-a");
+		expect(identity.projectSuffix).toBe("feature-a");
+		expect(identity.projectName).toBe(
+			getProjectName("myapp", "feature-a", root),
+		);
 	});
 
 	it("does not repeat a worktree name its directory already carries", () => {
-		const parent = join(tmpdir(), `buncargo-identity-test-${Date.now()}-3`);
-		const testDir = join(parent, "t3code-fc4fa622");
-		mkdirSync(testDir, { recursive: true });
-		try {
-			writeFileSync(
-				join(testDir, ".git"),
-				"gitdir: /tmp/repo/worktrees/t3code-fc4fa622",
-			);
-			const identity = computeDevIdentity({
-				projectPrefix: "gey",
-				root: testDir,
-			});
-			expect(identity.worktreeSuffix).toBe("t3code-fc4fa622");
-			expect(identity.projectName).toBe("gey-t3code-fc4fa622");
+		const root = worktreeCheckout("t3code-fc4fa622", "t3code-fc4fa622");
 
-			const e2e = computeDevIdentity({
-				projectPrefix: "gey",
-				suffix: "e2e",
-				root: testDir,
-			});
-			expect(e2e.projectName).toBe("gey-t3code-fc4fa622-e2e");
-		} finally {
-			rmSync(parent, { recursive: true, force: true });
-		}
+		const identity = computeDevIdentity({ projectPrefix: "gey", root });
+		expect(identity.worktreeSuffix).toBe("t3code-fc4fa622");
+		expect(identity.projectName).toBe("gey-t3code-fc4fa622");
+
+		const e2e = computeDevIdentity({
+			projectPrefix: "gey",
+			suffix: "e2e",
+			root,
+		});
+		expect(e2e.projectName).toBe("gey-t3code-fc4fa622-e2e");
 	});
 
 	it("omits worktree suffix when isolation is disabled", () => {
-		const testDir = join(tmpdir(), `buncargo-identity-test-${Date.now()}-2`);
-		mkdirSync(testDir, { recursive: true });
-		try {
-			writeFileSync(
-				join(testDir, ".git"),
-				"gitdir: /tmp/repo/worktrees/Feature_A",
-			);
-			const identity = computeDevIdentity({
-				projectPrefix: "myapp",
-				root: testDir,
-				worktreeIsolation: false,
-			});
-			expect(identity.worktree).toBe(true);
-			expect(identity.worktreeSuffix).toBeNull();
-			expect(identity.projectSuffix).toBeUndefined();
-			expect(identity.projectName).toBe(
-				getProjectName("myapp", undefined, testDir),
-			);
-		} finally {
-			rmSync(testDir, { recursive: true, force: true });
-		}
+		const root = worktreeCheckout("Feature_A");
+
+		const identity = computeDevIdentity({
+			projectPrefix: "myapp",
+			root,
+			worktreeIsolation: false,
+		});
+
+		expect(identity.worktree).toBe(true);
+		expect(identity.worktreeSuffix).toBeNull();
+		expect(identity.projectSuffix).toBeUndefined();
+		expect(identity.projectName).toBe(getProjectName("myapp", undefined, root));
 	});
 
 	it("composes explicit suffix with worktree suffix in stable order", () => {
-		const testDir = join(tmpdir(), `buncargo-identity-test-${Date.now()}-3`);
-		mkdirSync(testDir, { recursive: true });
-		try {
-			writeFileSync(
-				join(testDir, ".git"),
-				"gitdir: /tmp/repo/worktrees/Feature_A",
-			);
-			const identity = computeDevIdentity({
-				projectPrefix: "myapp",
-				root: testDir,
-				suffix: "test",
-			});
-			expect(identity.projectSuffix).toBe("test-feature-a");
-			expect(identity.projectName).toBe(
-				getProjectName("myapp", "test-feature-a", testDir),
-			);
-		} finally {
-			rmSync(testDir, { recursive: true, force: true });
-		}
+		const root = worktreeCheckout("Feature_A");
+
+		const identity = computeDevIdentity({
+			projectPrefix: "myapp",
+			root,
+			suffix: "test",
+		});
+
+		expect(identity.projectSuffix).toBe("test-feature-a");
+		expect(identity.projectName).toBe(
+			getProjectName("myapp", "test-feature-a", root),
+		);
 	});
 });
 
 describe("checkoutProjectNames", () => {
 	it("names a checkout's dev and ci stacks the way its runs do", () => {
-		const parent = join(tmpdir(), `buncargo-names-test-${Date.now()}`);
-		const worktree = join(parent, "t3code-fc4fa622");
-		const renamed = join(parent, "renamed");
-		mkdirSync(worktree, { recursive: true });
-		mkdirSync(renamed, { recursive: true });
-		try {
-			writeFileSync(
-				join(worktree, ".git"),
-				"gitdir: /tmp/repo/.git/worktrees/t3code-fc4fa622",
-			);
-			writeFileSync(
-				join(renamed, ".git"),
-				"gitdir: /tmp/repo/.git/worktrees/Feature_A",
-			);
-			for (const root of [worktree, renamed, parent]) {
-				const names = checkoutProjectNames({ projectPrefix: "gey", root });
-				expect(names).toEqual({
-					dev: computeDevIdentity({ projectPrefix: "gey", root }).projectName,
-					ci: computeDevIdentity({ projectPrefix: "gey", root, suffix: "ci" })
-						.projectName,
-				});
-			}
-			expect(
-				checkoutProjectNames({ projectPrefix: "gey", root: renamed }),
-			).toEqual({
-				dev: "gey-renamed-feature-a",
-				ci: "gey-renamed-ci-feature-a",
+		const worktree = worktreeCheckout("t3code-fc4fa622", "t3code-fc4fa622");
+		const renamed = worktreeCheckout("Feature_A", "renamed");
+		const notAWorktree = mkdtempSync(join(home(), "plain-"));
+
+		for (const root of [worktree, renamed, notAWorktree]) {
+			const names = checkoutProjectNames({ projectPrefix: "gey", root });
+			expect(names).toEqual({
+				dev: computeDevIdentity({ projectPrefix: "gey", root }).projectName,
+				ci: computeDevIdentity({ projectPrefix: "gey", root, suffix: "ci" })
+					.projectName,
 			});
-		} finally {
-			rmSync(parent, { recursive: true, force: true });
 		}
+
+		expect(
+			checkoutProjectNames({ projectPrefix: "gey", root: renamed }),
+		).toEqual({
+			dev: "gey-renamed-feature-a",
+			ci: "gey-renamed-ci-feature-a",
+		});
 	});
 
 	it("names a deleted worktree's stacks from its worktree name", () => {

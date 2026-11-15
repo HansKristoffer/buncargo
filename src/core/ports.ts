@@ -10,15 +10,11 @@ import type {
 	ServiceConfig,
 } from "../types";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Port / URL Map Boundary
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * Ports keyed by an unknown set of names.
  *
- * `ComputedPorts` is an intersection of mapped types with no index signature —
- * that is what makes `ports.typo` an error — so it cannot flow into helpers that
+ * `ComputedPorts` is an intersection of mapped types with no index signature,
+ * which is what makes `ports.typo` an error, so it cannot flow into helpers that
  * legitimately work over unknown keys. `PortMap` is that untyped shape, and
  * {@link toPortMap} / {@link asComputedPorts} are the only two places the
  * conversion happens.
@@ -76,13 +72,7 @@ export function asComputedLoopbackUrls<
 	return urls as ComputedLoopbackUrls<TServices, TApps>;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Monorepo Root Detection
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Find the monorepo root by looking for package.json with workspaces.
- */
+/** The nearest directory above `startDir` whose package.json has workspaces, or `startDir` itself. */
 export function findMonorepoRoot(startDir?: string): string {
 	const initial = resolve(startDir ?? process.cwd());
 	let dir = initial;
@@ -104,10 +94,6 @@ export function findMonorepoRoot(startDir?: string): string {
 		dir = parent;
 	}
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Worktree Detection
-// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * Get the worktree name from .git file (if in a worktree).
@@ -145,9 +131,7 @@ export function enclosingWorktreeName(root: string): string | null {
 	}
 }
 
-/**
- * Check if the current directory is a git worktree.
- */
+/** Whether the checkout at `root` is a Git worktree. */
 export function isWorktree(root?: string): boolean {
 	return getWorktreeName(root) !== null;
 }
@@ -176,10 +160,6 @@ export function getWorktreeProjectSuffix(root?: string): string | null {
 export function worktreeProjectSuffix(worktreeName: string): string {
 	return sanitizeProjectSuffix(worktreeName) || "worktree";
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Project Naming
-// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * Generate Docker project name from prefix and directory.
@@ -325,10 +305,6 @@ export function checkoutProjectNames(
 			.projectName;
 	return { dev: name(), ci: name(CI_PROJECT_SUFFIX) };
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// URL Generation
-// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * The environment variable stem for a service or app key: `my-db` becomes
