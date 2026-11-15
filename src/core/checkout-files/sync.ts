@@ -469,12 +469,12 @@ export function lastSyncReport(root: string): CheckoutFilesReport | undefined {
 const defaultLog: Log = (line) => console.error(line);
 
 function warnRefusal(log: Log, path: string, refusal: string): void {
-	const fix =
-		refusal === "is not gitignored"
-			? " `buncargo setup` adds it to .gitignore."
-			: refusal === "is tracked by git"
-				? ` Untrack it with \`git rm --cached ${path}\` and gitignore it.`
-				: "";
+	let fix = "";
+	if (refusal === "is not gitignored")
+		fix = " `buncargo setup` adds it to .gitignore.";
+	else if (refusal === "is tracked by git")
+		fix = ` Untrack it with \`git rm --cached ${path}\` and gitignore it.`;
+
 	log(formatWarn(`Skipped ${path}: it ${refusal}.${fix}`));
 }
 
@@ -499,6 +499,7 @@ export async function syncCheckoutFiles(
 	const log = options.log ?? defaultLog;
 	const selected = selectSpecs(specs, options.paths);
 	let opened = openCheckoutFiles(root, selected, options);
+
 	if (options.ci && !opened.manifest) {
 		// Nothing to sync from, and a CI job's files are its own business.
 		const report = { repoKey: opened.repoKey, files: [] };
@@ -525,6 +526,8 @@ export async function syncCheckoutFiles(
 	const needsBaseCopy = (view: View) =>
 		baseCopyRepair(root, view) !== undefined;
 
+	// The common, in-step load takes no lock; it reads again under the lock
+	// only because another process may have written since the unlocked read.
 	let refusals = new Map<string, string>();
 	if (opened.views.some(needsWrite) || opened.views.some(needsBaseCopy))
 		await withStoreLock(opened.dir, () => {
@@ -540,6 +543,7 @@ export async function syncCheckoutFiles(
 		});
 
 	const report = reportOf(root, opened, refusals);
+
 	for (const view of opened.views) {
 		if (plan(view) !== "wait") continue;
 		const path = view.spec.path;
@@ -549,6 +553,7 @@ export async function syncCheckoutFiles(
 			),
 		);
 	}
+
 	for (const { path, state, refusal, mergeable } of report.files) {
 		if (state !== "conflict" || refusal) continue;
 		const keep = mergeable
@@ -560,6 +565,7 @@ export async function syncCheckoutFiles(
 			),
 		);
 	}
+
 	if (!options.paths) lastReports.set(root, report);
 	return report;
 }
@@ -619,14 +625,13 @@ function apply(
 							`Replaced ${path} with the file store's copy; yours is in ${backup}`,
 						),
 					);
-				} else
-					log(
-						formatStep(
-							view.local.data
-								? `Updated ${path} from the file store`
-								: `Copied ${path} from the file store`,
-						),
-					);
+				} else {
+					const message = view.local.data
+						? `Updated ${path} from the file store`
+						: `Copied ${path} from the file store`;
+					log(formatStep(message));
+				}
+
 				writeLocal(root, path, view.store.data);
 				recordBase(root, state, path, view.store.data, view.store.hash);
 			}),
@@ -746,6 +751,7 @@ export async function mergeCheckoutFile(
 		const view = opened.views[0];
 		const local = view?.local.data;
 		const store = view?.store;
+
 		if (!view || !local || !view.localHash) {
 			const refusal = view?.local.refusal;
 			throw new Error(
@@ -765,6 +771,8 @@ export async function mergeCheckoutFile(
 		const refusal = gitignoreRefusals(root, [path]).get(path);
 		if (refusal) throw new Error(`Cannot merge ${path}: it ${refusal}.`);
 
+		// `inputs` hashes what this merge read, so answers asked outside the lock
+		// apply only while the copies are still the ones they were asked about.
 		const baseData = readBaseCopy(root, path, view.base);
 		const base = baseData !== undefined;
 		const read = `${view.localHash}:${store.hash}:${base ? view.base : ""}`;
@@ -775,6 +783,7 @@ export async function mergeCheckoutFile(
 		const answered =
 			options.answered?.inputs === inputs ? options.answered.take : [];
 		const take = new Map([...(options.take ?? []), ...answered]);
+
 		let result: ReturnType<typeof mergeDotenv>;
 		try {
 			const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -785,13 +794,12 @@ export async function mergeCheckoutFile(
 				take,
 			);
 		} catch (error) {
-			const reason =
-				error instanceof DotenvMergeError
-					? error.message
-					: error instanceof TypeError
-						? "It is not UTF-8 text."
-						: undefined;
+			// A fatal TextDecoder throws a TypeError for bytes that are not UTF-8.
+			let reason: string | undefined;
+			if (error instanceof DotenvMergeError) reason = error.message;
+			else if (error instanceof TypeError) reason = "It is not UTF-8 text.";
 			if (!reason) throw error;
+
 			throw new Error(
 				`Cannot merge ${path}: only dotenv files merge key by key. ${reason} Keep yours with \`buncargo files save ${path}\`, or take the store's with \`buncargo files pull --force ${path}\`.`,
 			);
@@ -801,6 +809,7 @@ export async function mergeCheckoutFile(
 
 		const data = Buffer.from(result.text);
 		const hash = sha256(data);
+
 		let backup: string | undefined;
 		if (hash !== view.localHash) {
 			backup = backUp(root, path, local);
@@ -810,9 +819,11 @@ export async function mergeCheckoutFile(
 			writeStoreEntries(opened.dir, opened.manifest, [
 				{ path, data, machine: view.spec.machine },
 			]);
+
 		const state = { ...opened.state };
 		recordBase(root, state, path, data, hash);
 		writeCheckoutState(root, state);
+
 		log(
 			formatStep(
 				backup

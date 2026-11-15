@@ -3,11 +3,18 @@ import { isTcpPortOpen } from "../network";
 import { request } from "./client";
 import { type Frpc, freePort, startFrpc } from "./frpc";
 import {
+	HEX_ID,
 	LEASE_MS,
 	type Receiver,
 	type TCPConnection,
 	type VisitorLease,
 } from "./protocol";
+
+function visitorScheme(preset: string | undefined) {
+	if (preset === "postgres") return "postgresql";
+	if (preset === "redis") return "redis";
+	return "tcp";
+}
 
 interface Visitor {
 	client: Frpc;
@@ -19,6 +26,7 @@ interface Visitor {
 export function createVisitors() {
 	const entries = new Map<string, Visitor>();
 	const pending = new Map<string, Promise<TCPConnection>>();
+
 	const disconnect = async (id: string) => {
 		const entry = entries.get(id);
 		entries.delete(id);
@@ -33,6 +41,7 @@ export function createVisitors() {
 		}
 	}, 250);
 	timer.unref();
+
 	const ensure = async (
 		receiver: Receiver,
 		id: string,
@@ -42,6 +51,7 @@ export function createVisitors() {
 			return existing.connection;
 		}
 		await disconnect(id);
+
 		const started = performance.now();
 		const lease = await request<VisitorLease>(
 			receiver.origin,
@@ -51,11 +61,13 @@ export function createVisitors() {
 		);
 		if (
 			lease.target.id !== id ||
-			!/^[a-f0-9]{32}$/.test(lease.proxyName) ||
+			!HEX_ID.test(lease.proxyName) ||
 			!/^bc_tcp_[a-f0-9]{64}$/.test(lease.secretKey)
 		) {
 			throw new Error("Invalid visitor grant");
 		}
+
+		// A visitor that never starts listening is retried on a new port.
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const port = await freePort();
 			const client = await startFrpc({
@@ -86,12 +98,8 @@ export function createVisitors() {
 				await client.close();
 				continue;
 			}
-			const scheme =
-				lease.target.preset === "postgres"
-					? "postgresql"
-					: lease.target.preset === "redis"
-						? "redis"
-						: "tcp";
+
+			const scheme = visitorScheme(lease.target.preset);
 			let url = `${scheme}://127.0.0.1:${port}`;
 			let tablePlusUrl: string | undefined;
 			if (lease.target.tablePlusUrl) {
@@ -109,6 +117,7 @@ export function createVisitors() {
 					tablePlusUrl = url;
 				}
 			}
+
 			const connection = { targetId: id, port, url, tablePlusUrl };
 			entries.set(id, {
 				client,
@@ -122,6 +131,7 @@ export function createVisitors() {
 			"Could not bind a local visitor; check relay access and retry",
 		);
 	};
+
 	return {
 		ensure(receiver: Receiver, id: string) {
 			let task = pending.get(id);
@@ -133,6 +143,7 @@ export function createVisitors() {
 		},
 		async disconnect(id: string) {
 			// A click during startup must not leave a listener appearing after disconnect returned.
+			// A failed start left nothing to wait for; the disconnect below still runs.
 			await pending.get(id)?.catch(() => {});
 			await disconnect(id);
 		},

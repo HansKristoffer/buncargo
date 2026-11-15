@@ -41,10 +41,13 @@ export async function exportBundle(
 ): Promise<Bundle> {
 	return withStoreLock(dir, () => {
 		const files: BundleFile[] = [];
-		for (const [path, entry] of Object.entries(
-			readStoreManifest(dir)?.files ?? {},
-		).sort()) {
+		const entries = Object.entries(readStoreManifest(dir)?.files ?? {}).sort();
+
+		for (const [path, entry] of entries) {
 			if (entry.machine && !options.includeMachine) continue;
+
+			// An unreadable data file is skipped, so an export during a write
+			// lacks that file instead of carrying bytes the manifest disowns.
 			const read = readStoreData(dir, path, entry);
 			if (read.kind !== "ok") continue;
 			files.push({
@@ -55,6 +58,7 @@ export async function exportBundle(
 				data: read.data.toString("base64"),
 			});
 		}
+
 		return { kind: BUNDLE_KIND, version: BUNDLE_VERSION, repoKey, files };
 	});
 }
@@ -67,6 +71,7 @@ export function parseBundle(text: string): Bundle {
 	} catch {
 		throw new Error("The input is not a checkout files bundle (not JSON).");
 	}
+
 	if (!isRecord(value) || value.kind !== BUNDLE_KIND)
 		throw new Error(
 			"The input is not a checkout files bundle. Make one with `buncargo files export`.",
@@ -75,9 +80,11 @@ export function parseBundle(text: string): Bundle {
 		throw new Error(
 			`The bundle has version ${JSON.stringify(value.version)}, this buncargo reads ${BUNDLE_VERSION}. Update buncargo.`,
 		);
+
 	const { repoKey, files } = value;
 	if (typeof repoKey !== "string" || !Array.isArray(files))
 		throw new Error("The bundle has no repoKey or files.");
+
 	return {
 		kind: BUNDLE_KIND,
 		version: BUNDLE_VERSION,
@@ -89,17 +96,20 @@ export function parseBundle(text: string): Bundle {
 function parseBundleFile(entry: unknown): BundleFile {
 	const fields: Record<string, unknown> = isRecord(entry) ? entry : {};
 	const { path, data, updatedAt, machine, sha256: hash } = fields;
+
 	if (typeof path !== "string")
 		throw new Error(`Bundle entry ${JSON.stringify(path)} is not a path.`);
 	const pathError = checkoutPathError(path);
 	if (pathError)
 		throw new Error(`Bundle entry ${JSON.stringify(path)} ${pathError}.`);
+
 	if (
 		typeof data !== "string" ||
 		typeof updatedAt !== "string" ||
 		typeof machine !== "boolean"
 	)
 		throw new Error(`Bundle entry ${path} is incomplete.`);
+
 	const bytes = Buffer.from(data, "base64");
 	if (bytes.length > MAX_FILE_BYTES)
 		throw new Error(`Bundle entry ${path} is larger than 1 MiB.`);

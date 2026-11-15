@@ -6,6 +6,7 @@ import { ForwardSockets } from "./sockets";
 export async function createGate(upstreamPort: number, allowed: () => boolean) {
 	const sockets = new ForwardSockets();
 	let disabled = false;
+
 	const server = createServer({ allowHalfOpen: true }, (socket) => {
 		sockets.track(socket);
 		if (disabled || !allowed()) {
@@ -17,6 +18,7 @@ export async function createGate(upstreamPort: number, allowed: () => boolean) {
 		);
 		sockets.bridge(socket, upstream);
 	});
+
 	let port: number;
 	try {
 		port = await listenLoopback(server);
@@ -24,17 +26,22 @@ export async function createGate(upstreamPort: number, allowed: () => boolean) {
 		server.close();
 		throw error;
 	}
+
+	// A connection open when the target's lease lapses is cut within a quarter
+	// second, instead of living until its peer hangs up.
 	const sweep = setInterval(() => {
 		if (!allowed()) {
 			sockets.destroy();
 		}
 	}, 250);
 	sweep.unref();
+
 	const disable = () => {
 		clearInterval(sweep);
 		disabled = true;
 		sockets.destroy();
 	};
+
 	let closing: Promise<void> | undefined;
 	return {
 		port,

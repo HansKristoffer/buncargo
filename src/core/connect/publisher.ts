@@ -8,6 +8,7 @@ import { type Frpc, runningProxies, startFrpc } from "./frpc";
 import { createGate } from "./gate";
 import { isForgotten } from "./json";
 import {
+	HEX_ID,
 	LEASE_MS,
 	type PublicationLease,
 	type RunInput,
@@ -117,7 +118,7 @@ export function createPublisher(intent: SharingIntent) {
 			!Array.isArray(lease.assignments) ||
 			lease.assignments.length > 1024 ||
 			lease.credential !== intent.credential ||
-			!/^[a-f0-9]{32}$/.test(lease.id)
+			!HEX_ID.test(lease.id)
 		) {
 			throw new Error("Invalid publication lease");
 		}
@@ -157,7 +158,7 @@ export function createPublisher(intent: SharingIntent) {
 				continue;
 			}
 			if (
-				!/^[a-f0-9]{32}$/.test(assignment.id) ||
+				!HEX_ID.test(assignment.id) ||
 				assignment.protocol !== target.protocol
 			) {
 				throw new Error("Invalid proxy allocation");
@@ -257,7 +258,9 @@ export function createPublisher(intent: SharingIntent) {
 					intent.credential,
 					undefined,
 					"DELETE",
-				).catch(() => {});
+				).catch(() => {
+					// The relay expires the publication on its own lease.
+				});
 			}
 		},
 	};
