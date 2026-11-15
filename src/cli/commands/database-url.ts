@@ -33,8 +33,10 @@ export function databaseUrl(
 export function findPostgresService(
 	services: Record<string, ResolvedService>,
 ): { name: string; service: ResolvedService } | undefined {
-	for (const [name, service] of Object.entries(services))
+	for (const [name, service] of Object.entries(services)) {
 		if (service.preset === "postgres") return { name, service };
+	}
+
 	return undefined;
 }
 
@@ -53,17 +55,23 @@ export function databaseTarget(
 	serviceUrl: string | undefined,
 ): DatabaseTarget {
 	const hosts = new Set(LOOPBACK_HOSTS);
-	if (serviceUrl !== undefined && URL.canParse(serviceUrl))
+	if (serviceUrl !== undefined && URL.canParse(serviceUrl)) {
 		hosts.add(new URL(serviceUrl).hostname);
+	}
+
 	return { hosts, port, database };
 }
 
 function pointsAt(value: string, target: DatabaseTarget): URL | undefined {
-	if (!/^postgres(ql)?:\/\//.test(value) || !URL.canParse(value)) return;
+	if (!/^postgres(ql)?:\/\//.test(value) || !URL.canParse(value)) {
+		return undefined;
+	}
+
 	const url = new URL(value);
 	const samePlace =
 		target.hosts.has(url.hostname) && url.port === String(target.port);
 	if (!samePlace) return undefined;
+
 	try {
 		const database = decodeURIComponent(url.pathname.slice(1));
 		return database === target.database ? url : undefined;
@@ -88,8 +96,10 @@ export function pointEnvAtDatabase(
 	for (const [key, value] of Object.entries(env)) {
 		const url = value === undefined ? undefined : pointsAt(value, target);
 		if (!url) continue;
+
 		url.pathname = `/${encodeURIComponent(name)}`;
 		rewritten[key] = url.toString();
 	}
+
 	return rewritten;
 }

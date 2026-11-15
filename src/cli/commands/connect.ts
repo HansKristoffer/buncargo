@@ -30,6 +30,7 @@ function formatDirectory(directory: Directory): string {
 		);
 		return [name, ...targets].join("\n");
 	});
+
 	return [directory.notice ?? "Connected", ...runs].join("\n");
 }
 

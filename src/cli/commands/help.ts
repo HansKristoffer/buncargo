@@ -15,17 +15,21 @@ import { formatTaskRows } from "./run";
 
 /** One row per command, from its own spec. */
 async function commandRows(): Promise<string[]> {
-	const rows: HelpRow[] = (await loadAllCommands()).map((command) =>
-		"subcommands" in command
-			? {
-					command: command.spec.usage ?? `${command.spec.name} <command>`,
-					description: `${command.spec.summary} (${Object.keys(command.subcommands).join(" | ")})`,
-				}
-			: {
-					command: commandUsage(command.spec).replace(/^buncargo /, ""),
-					description: command.spec.summary,
-				},
-	);
+	const rows: HelpRow[] = (await loadAllCommands()).map((command) => {
+		if ("subcommands" in command) {
+			const subcommands = Object.keys(command.subcommands).join(" | ");
+			return {
+				command: command.spec.usage ?? `${command.spec.name} <command>`,
+				description: `${command.spec.summary} (${subcommands})`,
+			};
+		}
+
+		return {
+			command: commandUsage(command.spec).replace(/^buncargo /, ""),
+			description: command.spec.summary,
+		};
+	});
+
 	const width = Math.max(...rows.map((row) => row.command.length));
 	return rows.map((row) =>
 		`  ${row.command.padEnd(width)}  ${row.description ?? ""}`.trimEnd(),
@@ -38,14 +42,19 @@ async function configSections(): Promise<string> {
 	const tasks = config?.tasks ?? {};
 	const rows = (config?.integrations ?? []).flatMap(integrationCommandRows);
 	const width = Math.max(0, ...rows.map((row) => row.command.length));
-	return [
-		Object.keys(tasks).length > 0
-			? `\nTASKS (bunx buncargo run <task>):\n${formatTaskRows(tasks).join("\n")}\n`
-			: "",
-		rows.length > 0
-			? `\nINTEGRATIONS:\n${rows.map((row) => `  ${row.command.padEnd(width)}  ${row.description}`).join("\n")}\n`
-			: "",
-	].join("");
+
+	let text = "";
+	if (Object.keys(tasks).length > 0) {
+		text += `\nTASKS (bunx buncargo run <task>):\n${formatTaskRows(tasks).join("\n")}\n`;
+	}
+	if (rows.length > 0) {
+		const lines = rows.map(
+			(row) => `  ${row.command.padEnd(width)}  ${row.description}`,
+		);
+		text += `\nINTEGRATIONS:\n${lines.join("\n")}\n`;
+	}
+
+	return text;
 }
 
 export async function showHelp(): Promise<void> {
@@ -106,10 +115,12 @@ export const helpCommand = defineCommand({
 			await showHelp();
 			return 0;
 		}
-		if (guide !== "agents")
+		if (guide !== "agents") {
 			throw new CliError(`No help for "${guide}".`, [
 				`Run "bunx buncargo ${guide} --help" for a command's options.`,
 			]);
+		}
+
 		const { agentsGuide } = await import("../agents-guide");
 		const exitCodes =
 			topic === "exits" || topic === "all"

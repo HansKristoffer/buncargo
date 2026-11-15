@@ -18,6 +18,7 @@ export function getEnvDotPath(snapshot: object, path: string): unknown {
 		}
 		current = (current as Record<string, unknown>)[part];
 	}
+
 	return current;
 }
 
@@ -95,13 +96,16 @@ const envShowCommand = defineCommand({
 	exits: BASE_EXITS,
 	json: "EnvJson",
 	run: async ({ values }) => {
-		if (values.get !== undefined && values.export)
+		if (values.get !== undefined && values.export) {
 			throw new CliError("Choose either --get or --export, not both.");
+		}
+
 		const snapshot = await readEnvJson();
 		if (values.export) {
 			log.line(formatEnvExports(snapshot.vars));
 			return 0;
 		}
+
 		const path = values.get;
 		if (path !== undefined) {
 			// A bare variable name (`--get DATABASE_URL`) reads from `vars`.
@@ -109,9 +113,11 @@ const envShowCommand = defineCommand({
 				getEnvDotPath(snapshot, path) ??
 				(path.includes(".") ? undefined : snapshot.vars[path]);
 			if (value === undefined) throw new CliError(`Unknown env path: ${path}`);
+
 			log.line(formatEnvDotValue(value));
 			return 0;
 		}
+
 		log.line(JSON.stringify(snapshot, null, 2));
 		return 0;
 	},

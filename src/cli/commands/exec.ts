@@ -94,8 +94,10 @@ export const execCommand = defineCommand({
 		1: "bad arguments; otherwise the command's own code",
 	},
 	run: ({ values, passthrough }) => {
-		if (passthrough.length === 0)
+		if (passthrough.length === 0) {
 			throw argumentsError(["Provide a command after --"], "exec");
+		}
+
 		return exec({ ...values, command: [...passthrough] });
 	},
 });
@@ -115,10 +117,11 @@ async function exec(parsed: {
 					exists: databaseExists,
 					inherited: process.env,
 				});
-	if (databaseEnv)
-		console.error(
-			`${Object.keys(databaseEnv).join(", ")} → database ${parsed.db}`,
-		);
+	if (databaseEnv) {
+		const names = Object.keys(databaseEnv).join(", ");
+		console.error(`${names} → database ${parsed.db}`);
+	}
+
 	const run = () =>
 		runForwardingSignals((signal) =>
 			env.exec(parsed.command, {

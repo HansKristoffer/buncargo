@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import {
 	existsSync,
 	mkdirSync,
@@ -12,6 +12,7 @@ import { join, resolve } from "node:path";
 import { offsetClaimsOf } from "../../core/offset-claims";
 import { execAsync } from "../../core/process";
 import { loadDevEnv } from "../../loader";
+import { withAppendedArgs } from "./exec";
 
 const cli = resolve(import.meta.dir, "../bin.ts");
 const roots: string[] = [];
@@ -35,8 +36,29 @@ function fixture() {
 }
 
 afterEach(() => {
-	for (const root of roots.splice(0))
+	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+describe("withAppendedArgs", () => {
+	it("keeps a bare command a shell string", () => {
+		expect(withAppendedArgs("bun scripts/seed.ts", [])).toBe(
+			"bun scripts/seed.ts",
+		);
+	});
+
+	// Positional parameters: the shell never re-parses what was passed.
+	it("passes extra args to sh as positional parameters", () => {
+		expect(withAppendedArgs("bun seed.ts", ["a b", "$HOME"])).toEqual([
+			"sh",
+			"-c",
+			'bun seed.ts "$@"',
+			"sh",
+			"a b",
+			"$HOME",
+		]);
+	});
 });
 
 it("exec passes argv unchanged and uses app environment/cwd from a nested invocation", async () => {

@@ -64,6 +64,7 @@ function ciSuffix(): string {
 			? RUNNER_NAME?.toLowerCase().replace(/[^a-z0-9]+/g, "-")
 			: undefined;
 	const id = randomBytes(3).toString("hex");
+
 	return [CI_PROJECT_SUFFIX, id, runner].filter(Boolean).join("-");
 }
 
@@ -164,24 +165,23 @@ export const ciCommand = defineCommand({
 		1: "preparation failed, an app failed to build or become healthy, or bad arguments; otherwise the command's own code",
 		2: "--migrate-check: the schema has changes no migration contains (before any command runs)",
 	},
-	run: ({ values, passthrough }) =>
-		withStatusOnStderr(() =>
-			runCi({
-				migrate: values.migrate,
-				seed: values.seed,
-				schemaPush: values.schema === "push",
-				migrateCheck: values["migrate-check"],
-				slot: values.slot,
-				services:
-					values.services === undefined
-						? undefined
-						: commaList(values.services),
-				apps: values.apps === undefined ? undefined : commaList(values.apps),
-				build: values.build,
-				runtime: values.runtime,
-				command: passthrough,
-			}),
-		),
+	run: ({ values, passthrough }) => {
+		const request: CiRequest = {
+			migrate: values.migrate,
+			seed: values.seed,
+			schemaPush: values.schema === "push",
+			migrateCheck: values["migrate-check"],
+			slot: values.slot,
+			services:
+				values.services === undefined ? undefined : commaList(values.services),
+			apps: values.apps === undefined ? undefined : commaList(values.apps),
+			build: values.build,
+			runtime: values.runtime,
+			command: passthrough,
+		};
+
+		return withStatusOnStderr(() => runCi(request));
+	},
 });
 
 /**
@@ -210,9 +210,11 @@ async function runCi(parsed: CiRequest): Promise<number> {
 		data: "tmpfs",
 		ports: "assigned",
 	});
+
 	// Its progress, and the output of the commands it runs for itself (Prisma
 	// generate, the seed), on stderr.
 	internalsOf(env).reportTo(STDERR_OUTPUT);
+
 	const prisma = env.prisma;
 	const services = parsed.services ?? Object.keys(env.services);
 	const unknown = services.filter((name) => !env.services[name]);
@@ -221,11 +223,11 @@ async function runCi(parsed: CiRequest): Promise<number> {
 			`Configured services: ${Object.keys(env.services).join(", ") || "none"}`,
 		]);
 	}
-	const prismaFlag = parsed.schemaPush
-		? "--schema=push"
-		: parsed.migrateCheck
-			? "--migrate-check"
-			: undefined;
+
+	let prismaFlag: string | undefined;
+	if (parsed.schemaPush) prismaFlag = "--schema=push";
+	else if (parsed.migrateCheck) prismaFlag = "--migrate-check";
+
 	if (prismaFlag && !prisma) {
 		throw new CliError(
 			`${prismaFlag} needs a prisma block in your dev config.`,
@@ -239,6 +241,7 @@ async function runCi(parsed: CiRequest): Promise<number> {
 	if (parsed.build && !parsed.apps) {
 		throw new CliError("--build needs --apps: it builds the apps it starts.");
 	}
+
 	const apps = parsed.apps ?? [];
 	const unknownApps = apps.filter((name) => !env.apps[name]);
 	if (unknownApps.length > 0) {
@@ -246,6 +249,7 @@ async function runCi(parsed: CiRequest): Promise<number> {
 			`Configured apps: ${Object.keys(env.apps).join(", ") || "none"}`,
 		]);
 	}
+
 	// Unless `docker.generatedFile` names one file for every stack.
 	const ownComposeFile =
 		env.composeFile !== checkout.composeFile
@@ -257,6 +261,8 @@ async function runCi(parsed: CiRequest): Promise<number> {
 	// would otherwise kill this process half way and leave the stack. The
 	// containers' own commands run in their own process group, so the
 	// terminal's signal does not reach them.
+	const prepare =
+		parsed.migrate || parsed.seed || parsed.schemaPush ? "all" : "containers";
 	const run = () =>
 		runForwardingSignals(async (signal) => {
 			try {
@@ -269,10 +275,7 @@ async function runCi(parsed: CiRequest): Promise<number> {
 						// exists. Explicit, so a config's `autoShutdown: false`, which
 						// is about dev containers, does not keep a ci stack.
 						claim: { idleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS },
-						prepare:
-							parsed.migrate || parsed.seed || parsed.schemaPush
-								? "all"
-								: "containers",
+						prepare,
 						schema: parsed.schemaPush ? "push" : "migrate",
 						// Forced: `seed.check` is for skipping a seed on a warm local
 						// database, and a CI database is never warm.
@@ -300,12 +303,13 @@ async function runCi(parsed: CiRequest): Promise<number> {
 						// Inside `withServices`, so the teardown's `stop()` stops them
 						// with the stack. Throws when one fails to build or start, or
 						// misses its health check.
-						if (apps.length > 0)
+						if (apps.length > 0) {
 							await env.startServers({
 								onlyApps: apps,
 								productionBuild: parsed.build,
 								signal,
 							});
+						}
 
 						if (parsed.command.length === 0) return exited(0);
 
@@ -318,8 +322,10 @@ async function runCi(parsed: CiRequest): Promise<number> {
 							throwOnError: false,
 							signal,
 						});
-						if (result.exitCode !== 0 && !signal.aborted)
+						if (result.exitCode !== 0 && !signal.aborted) {
 							await reportContainerLoss(env);
+						}
+
 						return result;
 					},
 				);
@@ -333,6 +339,7 @@ async function runCi(parsed: CiRequest): Promise<number> {
 		});
 
 	if (!parsed.slot) return run();
+
 	return withCheckSlot(["ci", ...parsed.command].join(" ").slice(0, 60), run, {
 		...processCheckSlot,
 		onWait: (wait) => console.error(formatCheckSlotWait(wait)),

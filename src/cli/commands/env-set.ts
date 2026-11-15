@@ -16,10 +16,12 @@ import * as log from "../log";
 /** Where `loadDevEnv` reads overrides from, or a file no run would read. */
 function checkoutRoot(): string {
 	const root = findCheckoutRoot(process.cwd());
-	if (!root)
+	if (!root) {
 		throw new CliError(
 			"No config file found. Run this inside a checkout with a dev.config.ts.",
 		);
+	}
+
 	return root;
 }
 
@@ -56,8 +58,10 @@ export const envSetCommand = defineCommand({
 			else set[parsed.key] = parsed.value;
 		}
 		if (errors.length > 0) throw argumentsError(errors, "env set");
+
 		const root = checkoutRoot();
 		const now = await updateEnvOverrides(root, { set });
+
 		log.done(`Set ${Object.keys(set).join(", ")} for ${root}`);
 		log.hint(
 			"Applies from the next run, exec or task. A running dev keeps its environment until restarted.",
@@ -93,9 +97,10 @@ export const envUnsetCommand = defineCommand({
 
 function printRemaining(overrides: Record<string, string>): void {
 	const keys = Object.keys(overrides);
-	log.info(
-		keys.length === 0
-			? "No env overrides in this checkout."
-			: `Env overrides in this checkout: ${keys.join(", ")}`,
-	);
+	if (keys.length === 0) {
+		log.info("No env overrides in this checkout.");
+		return;
+	}
+
+	log.info(`Env overrides in this checkout: ${keys.join(", ")}`);
 }

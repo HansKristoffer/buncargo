@@ -154,12 +154,15 @@ async function printHostsStatus(): Promise<void> {
 		await printTailscaleStatus();
 		return;
 	}
+
 	const health = await readHostsDaemonHealth();
-	const healthy = health !== undefined;
 	const mkcertPath = resolvedMkcertPath();
-	log.line(
-		`daemon: ${!health ? "down" : health.outdated ? "outdated" : "healthy"}`,
-	);
+
+	let daemonState = "healthy";
+	if (!health) daemonState = "down";
+	else if (health.outdated) daemonState = "outdated";
+	log.line(`daemon: ${daemonState}`);
+
 	if (health?.outdated) {
 		log.line(`  ${OUTDATED_DAEMON_MESSAGE}`);
 	} else if (health) {
@@ -168,9 +171,11 @@ async function printHostsStatus(): Promise<void> {
 		const stale = ageMs > RELOAD_STALL_MS ? "  (stale)" : "";
 		log.line(`  refreshed: ${Math.round(ageMs / 1000)}s ago${stale}`);
 		// Routes the previous leaf misses show below as not served; this is why.
-		if (health.bindError)
+		if (health.bindError) {
 			log.line(`  certificate: cannot load the new one (${health.bindError})`);
+		}
 	}
+
 	log.line(`service: ${isHostsServiceInstalled() ? "installed" : "missing"}`);
 	const manifest = readHostsServiceManifest();
 	if (manifest) {
@@ -179,29 +184,26 @@ async function printHostsStatus(): Promise<void> {
 		);
 		log.line(`  exec: ${[manifest.program, ...manifest.args].join(" ")}`);
 	}
+
 	log.line(`mkcert: ${mkcertPath ?? "missing"}`);
 	const stale = describeStaleHostsService();
 	if (stale) {
 		log.line(`  stale: ${stale}`);
 	}
+
 	const caPath = getCaPath(mkcertPath);
-	const ca = !caPath
-		? "missing"
-		: isCaTrusted(mkcertPath)
-			? caPath
-			: `${caPath} (not trusted)`;
+	let ca = "missing";
+	if (caPath) ca = isCaTrusted(mkcertPath) ? caPath : `${caPath} (not trusted)`;
 	log.line(`ca: ${ca}`);
-	if (!healthy) {
-		const squatter = describePortSquatter(HOSTS_HTTPS_PORT);
-		if (squatter) {
-			log.line(`port: ${squatter}`);
-		}
-	} else {
-		const hijack = await describeLoopbackHijack();
-		if (hijack) {
-			log.line(`port: ${hijack}`);
-		}
+
+	// Down: who holds the daemon's port. Up: whether loopback traffic reaches it.
+	const portProblem = health
+		? await describeLoopbackHijack()
+		: describePortSquatter(HOSTS_HTTPS_PORT);
+	if (portProblem) {
+		log.line(`port: ${portProblem}`);
 	}
+
 	const routes = await pruneHostRoutes();
 	log.line();
 	log.line("routes:");
@@ -209,6 +211,7 @@ async function printHostsStatus(): Promise<void> {
 		log.line("  (none)");
 		return;
 	}
+
 	// Marked per route rather than summarized: the registry and the daemon
 	// disagreeing is invisible from either side alone, and it is the difference
 	// between a working named URL and a 404 from our own proxy.
@@ -220,6 +223,7 @@ async function printHostsStatus(): Promise<void> {
 			served && !served.has(route.hostname)
 				? "  ← not served by the daemon"
 				: "";
+
 		log.line(
 			`  ${route.hostname} → :${route.port}  (${route.kind}:${route.name}, ${owner})${unserved}`,
 		);
@@ -231,6 +235,7 @@ async function printTailscaleStatus(): Promise<void> {
 	const entries = await describeTailscaleServeEntries(tailscaleServeDeps());
 	log.line();
 	log.line("tailscale serve:");
+
 	if (entries.length === 0) log.line("  (none)");
 	for (const entry of entries) log.line(`  ${entry}`);
 }
