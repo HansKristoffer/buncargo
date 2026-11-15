@@ -20,39 +20,46 @@ export function createCaptureRestarts(
 	},
 ): (name: string, config: ResolvedApp) => ((text: string) => void) | undefined {
 	let queue = Promise.resolve();
+
 	return (name, config) => {
 		if (!config.captures || !Object.keys(config.captures).length)
 			return undefined;
+
 		const scanner = createOutputCaptureScanner(config.captures);
+
 		return (text) => {
 			if (options.signal.aborted) return;
+
 			for (const captured of scanner.push(text)) {
 				queue = queue
 					.then(async () => {
 						options.signal.throwIfAborted();
+
 						const changed = await withSignal(
 							Promise.resolve().then(
 								() => options.onCapture?.(name, captured) ?? [],
 							),
 							options.signal,
 						);
+
 						for (const [other, app] of Object.entries(apps)) {
-							if (
-								other !== name &&
-								app.restartOn?.some((key) => changed.includes(key))
-							) {
-								options.signal.throwIfAborted();
-								await options.restart(other);
-							}
+							const dependsOnChange = app.restartOn?.some((key) =>
+								changed.includes(key),
+							);
+							if (other === name || !dependsOnChange) continue;
+
+							options.signal.throwIfAborted();
+							await options.restart(other);
 						}
 					})
 					.catch((error: unknown) => {
-						if (!options.signal.aborted)
-							console.warn(
-								formatWarn(
-									`Handling ${name}'s ${captured.name} failed: ${getErrorMessage(error)}`,
-								),
-							);
+						if (options.signal.aborted) return;
+
+						console.warn(
+							formatWarn(
+								`Handling ${name}'s ${captured.name} failed: ${getErrorMessage(error)}`,
+							),
+						);
 					});
 			}
 		};

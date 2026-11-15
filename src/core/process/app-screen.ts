@@ -147,6 +147,7 @@ export class AppScreen {
 			this.dropping = true;
 			return;
 		}
+
 		this.pending += data.length;
 		this.term.write(data, () => {
 			this.pending -= data.length;
@@ -166,6 +167,7 @@ export class AppScreen {
 
 	resize(cols: number, rows: number): void {
 		if (cols === this.term.cols && rows === this.term.rows) return;
+
 		this.term.resize(cols, rows);
 		this.pty?.resize(cols, rows);
 	}
@@ -182,6 +184,7 @@ export class AppScreen {
 
 	private commit(final: boolean): void {
 		const normal = this.term.buffer.normal;
+
 		// Rows shift up once the scrollback is full; a marker follows them.
 		let shift = 0;
 		if (this.anchor && !this.anchor.marker.isDisposed)
@@ -197,6 +200,7 @@ export class AppScreen {
 			this.low = Number.POSITIVE_INFINITY;
 			this.sent.clear();
 		}
+
 		if (shift > 0) {
 			this.emitted = Math.max(0, this.emitted - shift);
 			this.low -= shift;
@@ -204,6 +208,7 @@ export class AppScreen {
 				[...this.sent].map(([row, text]) => [row - shift, text]),
 			);
 		}
+
 		this.cleared = 0;
 		this.anchor?.marker.dispose();
 
@@ -217,8 +222,10 @@ export class AppScreen {
 		let end = final
 			? lastContentRow(normal) + 1
 			: Math.min(cursor - this.live, normal.length);
+
 		// A logical line still wrapping onto the next row is not finished.
 		while (!final && end > start && normal.getLine(end)?.isWrapped) end--;
+
 		if (this.term.buffer.active.type === "normal" || final)
 			this.emitRows(normal, start, end);
 		this.emitted = Math.max(start, end);
@@ -238,8 +245,10 @@ export class AppScreen {
 
 		for (const row of this.sent.keys())
 			if (row < this.emitted - 500) this.sent.delete(row);
+
 		this.low = Number.POSITIVE_INFINITY;
 		this.reach = 0;
+
 		// In the scrollback when there is one: rows on screen can be erased
 		// (which disposes a marker too), rows above it only trimmed or cleared.
 		const marker = this.term.registerMarker(
@@ -255,14 +264,17 @@ export class AppScreen {
 		end: number,
 	): void {
 		let pending: { row: number; text: string } | undefined;
+
 		const send = () => {
 			if (!pending || this.sent.get(pending.row) === pending.text) return;
 			this.sent.set(pending.row, pending.text);
 			this.onLine(pending.text);
 		};
+
 		for (let row = start; row < end; row++) {
 			const line = buffer.getLine(row);
 			if (!line) continue;
+
 			const text = line.translateToString(true);
 			if (line.isWrapped && pending) pending.text += text;
 			else {
@@ -270,6 +282,7 @@ export class AppScreen {
 				pending = { row, text };
 			}
 		}
+
 		send();
 	}
 

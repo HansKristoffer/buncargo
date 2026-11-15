@@ -120,12 +120,14 @@ export class AppSupervision {
 		apps: Readonly<Record<string, SupervisedApp>>,
 		private options: AppSupervisionOptions = {},
 	) {
-		for (const [name, spec] of Object.entries(apps))
+		for (const [name, spec] of Object.entries(apps)) {
 			this.apps.set(name, {
 				spec,
 				life: initialLife(spec),
 				process: new AbortController(),
 			});
+		}
+
 		if (options.signal?.aborted) this.onAbort();
 		else
 			options.signal?.addEventListener("abort", this.onAbort, { once: true });
@@ -178,8 +180,10 @@ export class AppSupervision {
 			await terminateOwnedProcess(child, this.graceFor(name));
 			this.controller.signal.throwIfAborted();
 		}
+
 		this.own(name, child);
 		if (!child.pid) return;
+
 		this.track(name, child.pid);
 		this.apply(name, {
 			type: "spawned",
@@ -196,6 +200,7 @@ export class AppSupervision {
 		const { life } = this.entry(name);
 		if (life.generation !== generation || this.controller.signal.aborted)
 			return false;
+
 		const comingUp = life.phase === "starting" || life.phase === "reused";
 		if (comingUp) this.apply(name, { type: "ready" });
 		return comingUp;
@@ -208,15 +213,18 @@ export class AppSupervision {
 	 */
 	async fail(failures: readonly AppFailure[]): Promise<void> {
 		if (failures.length === 0 || this.controller.signal.aborted) return;
+
 		const ending = this.endingFailure(failures);
 		for (const failure of failures) {
 			const park = ending === undefined;
 			this.apply(failure.app, { type: "failed", failure, park });
 		}
+
 		if (ending) {
 			this.controller.abort(ending);
 			return;
 		}
+
 		// Its exit keeps the reason above.
 		await Promise.all(
 			failures.map(({ app }) => {
@@ -237,8 +245,10 @@ export class AppSupervision {
 		);
 		if (essential.length === 0) return undefined;
 		if (!this.options.keepOthersOnFailure) return essential[0];
+
+		// The lives as they would be with every failed app parked.
 		const lives = new Map(this.lives());
-		for (const failure of essential)
+		for (const failure of essential) {
 			lives.set(
 				failure.app,
 				transition(this.entry(failure.app).life, {
@@ -247,14 +257,18 @@ export class AppSupervision {
 					park: true,
 				}),
 			);
+		}
+
 		const verdict = runVerdict(
 			lives,
 			(name) => this.apps.get(name)?.spec.startAfter,
 		);
 		if (!verdict.ends) return undefined;
+
 		const cause =
 			essential.find(({ app }) => app === verdict.app) ?? essential[0];
 		if (!cause || verdict.dependents.length === 0) return cause;
+
 		const verb = verdict.dependents.length === 1 ? "starts" : "start";
 		const waiting = `${verdict.dependents.join(", ")} ${verb} after ${verdict.app}`;
 		return new AppFailure(
@@ -279,6 +293,7 @@ export class AppSupervision {
 	): Promise<boolean> {
 		const queued = this.queued.get(name);
 		if (queued) return queued;
+
 		const previous = this.running.get(name) ?? Promise.resolve();
 		const operation = previous
 			.catch(() => {})
@@ -288,15 +303,18 @@ export class AppSupervision {
 			});
 		this.queued.set(name, operation);
 		this.running.set(name, operation);
+
 		void operation
 			.finally(() => {
 				if (this.running.get(name) === operation) this.running.delete(name);
 			})
 			.catch(() => {});
+
 		this.restarts.add(operation);
 		void operation
 			.finally(() => this.restarts.delete(operation))
 			.catch(() => {});
+
 		return operation;
 	}
 
@@ -305,16 +323,19 @@ export class AppSupervision {
 		const current = entry?.child;
 		if (!entry || !current || !entry.spawn || this.controller.signal.aborted)
 			return false;
+
 		entry.process.abort(new Error(`App "${name}" is restarting: ${reason}`));
 		const beforeSpawn = Promise.resolve(
 			this.apply(name, { type: "restarting", reason }),
 		).catch(() => {});
+
 		// From here the app's row says it is restarting: every way this ends
 		// moves it on, a retire that fails included.
 		try {
 			await this.retire(current);
 			await beforeSpawn;
 			this.controller.signal.throwIfAborted();
+
 			const child = await entry.spawn();
 			await this.register(name, child, { probation: false });
 		} catch (error) {
@@ -328,6 +349,7 @@ export class AppSupervision {
 			}
 			throw error;
 		}
+
 		return true;
 	}
 
@@ -338,15 +360,18 @@ export class AppSupervision {
 	async retire(child: OwnedChild): Promise<void> {
 		this.retired.add(child);
 		this.replaced.add(child);
+
 		// An exit already being handled may be adopting the server it left
 		// behind: settled first, so that server is stopped too.
 		await this.exits.get(child)?.catch(() => {});
 		await terminateOwnedProcess(child, this.graceOf(child));
+
 		if (child instanceof DetachedApp) {
 			child.dispose();
 			this.live.delete(child);
 			this.retired.delete(child);
 		}
+
 		this.children.delete(child);
 		if (child.exitCode !== null || child.signalCode !== null)
 			this.retired.delete(child);
@@ -375,14 +400,17 @@ export class AppSupervision {
 	stop(): Promise<void> {
 		this.cleanup ??= (async () => {
 			this.controller.abort(new RunInterrupted("Run stopped"));
+
 			await Promise.allSettled([...this.restarts]);
 			await Promise.allSettled([...this.exits.values()]);
+
 			const results = await Promise.allSettled(
 				[...this.children].map((child) =>
 					terminateOwnedProcess(child, this.graceOf(child)),
 				),
 			);
 			await Promise.allSettled([...this.exits.values()]);
+
 			const errors = results.flatMap((result) =>
 				result.status === "rejected" ? [result.reason] : [],
 			);
@@ -393,10 +421,13 @@ export class AppSupervision {
 	}
 
 	dispose(): void {
-		for (const pid of Object.values(this.pids))
+		for (const pid of Object.values(this.pids)) {
 			if (activeSessions.get(pid) === this) activeSessions.delete(pid);
-		for (const child of this.children)
+		}
+		for (const child of this.children) {
 			if (child instanceof DetachedApp) child.dispose();
+		}
+
 		this.options.signal?.removeEventListener("abort", this.onAbort);
 	}
 
@@ -410,6 +441,7 @@ export class AppSupervision {
 		const entry = this.entry(name);
 		const previous = entry.life;
 		entry.life = transition(previous, event);
+
 		try {
 			return this.options.onPhase?.(name, entry.life, previous, event);
 		} catch {
@@ -424,11 +456,13 @@ export class AppSupervision {
 		entry.process = new AbortController();
 		this.children.add(child);
 		this.live.add(child);
+
 		events(child).once("error", (error) => {
 			this.live.delete(child);
 			const message = `Failed to start app "${name}": ${error.message}`;
 			this.controller.abort(new AppFailure(name, "start", message));
 		});
+
 		this.watchExit(name, child);
 	}
 
@@ -440,6 +474,7 @@ export class AppSupervision {
 				.catch((error) => this.controller.abort(error))
 				.finally(() => this.exits.delete(child));
 		};
+
 		// A child can be gone before it is registered: a worker that crashed
 		// while its ownership was being claimed. Its exit counts all the same.
 		if (child.exitCode !== null || child.signalCode !== null)
@@ -457,11 +492,13 @@ export class AppSupervision {
 			this.live.delete(child);
 			return;
 		}
+
 		const entry = this.entry(name);
 		if (await this.adoptDetached(name, child, exit)) return;
 
 		this.live.delete(child);
 		this.forgetIfGone(child);
+
 		const runEnding = this.controller.signal.aborted;
 		const how = exit.signal ? `signal ${exit.signal}` : `code ${exit.code}`;
 		const failure = new AppFailure(
@@ -470,16 +507,20 @@ export class AppSupervision {
 			`App "${name}" exited with ${how}`,
 		);
 		entry.process.abort(failure);
+
 		const before = entry.life;
 		this.apply(name, { type: "exited", exit, runEnding });
+
 		if (!runEnding) {
 			const outcome = afterExit(before, entry.life);
 			if (outcome === "fails") this.controller.abort(failure);
-			if (outcome === "interrupts")
+			if (outcome === "interrupts") {
 				this.controller.abort(
 					new RunInterrupted(`Attached app "${name}" exited`),
 				);
+			}
 		}
+
 		this.settleIfDone();
 	}
 
@@ -500,6 +541,7 @@ export class AppSupervision {
 			child.pid !== undefined &&
 			!(child instanceof DetachedApp);
 		if (!mayHaveDetached) return false;
+
 		const detached = await findDetachedApp(port, child.pid);
 		// A restart retired it while its listener was being looked for: that
 		// listener is the old server, and the replacement needs the port.
@@ -511,9 +553,12 @@ export class AppSupervision {
 				await terminateOwnedProcess(detached.child, this.graceFor(name));
 			return true;
 		}
+
 		if (!detached) return false;
+
 		this.live.delete(child);
 		this.forgetIfGone(child);
+
 		const server = detached.child;
 		this.entry(name).child = server;
 		this.children.add(server);
@@ -521,6 +566,7 @@ export class AppSupervision {
 		this.watchExit(name, server);
 		this.track(name, server.pid);
 		this.apply(name, { type: "adopted", pid: server.pid });
+
 		if (!this.warnedDetaches.has(name)) {
 			this.warnedDetaches.add(name);
 			this.options.onNotice?.(
@@ -528,9 +574,11 @@ export class AppSupervision {
 				`App "${name}" on port ${port}, pid ${server.pid} (${detached.command ?? "unknown command"}): the app detached from buncargo; it will be stopped with the run`,
 			);
 		}
+
 		if (this.controller.signal.aborted)
 			await terminateOwnedProcess(server, this.graceFor(name));
 		else server.watch();
+
 		return true;
 	}
 
@@ -540,12 +588,14 @@ export class AppSupervision {
 	 */
 	private settleIfDone(): void {
 		if (!this.sealed || this.live.size > 0) return;
+
 		for (const { life } of this.apps.values()) {
 			const waitingForRestart =
 				life.phase === "down" &&
 				(life.standing === "optional" || life.standing === "parked");
 			if (waitingForRestart || life.phase === "restarting") return;
 		}
+
 		this.done.resolve();
 	}
 
@@ -560,8 +610,10 @@ export class AppSupervision {
 	}
 
 	private graceOf(child: OwnedChild): number | undefined {
-		for (const [name, entry] of this.apps)
+		for (const [name, entry] of this.apps) {
 			if (entry.child === child) return this.graceFor(name);
+		}
+
 		return this.options.shutdownGraceMs;
 	}
 
@@ -575,17 +627,20 @@ export class AppSupervision {
 		const previous = this.pids[name];
 		if (previous !== undefined && activeSessions.get(previous) === this)
 			activeSessions.delete(previous);
+
 		this.pids[name] = pid;
 		activeSessions.set(pid, this);
 	}
 }
 
+/** Stop the sessions that own these pids, then wait for each one's output to finish. */
 export async function stopDevServers(
 	pids: Readonly<Record<string, number>>,
 ): Promise<void> {
 	const sessions = new Set(
 		Object.values(pids).flatMap((pid) => activeSessions.get(pid) ?? []),
 	);
+
 	const results = await Promise.allSettled(
 		[...sessions].map(async (session) => {
 			try {
@@ -595,6 +650,7 @@ export async function stopDevServers(
 			}
 		}),
 	);
+
 	const errors = results.flatMap((result) =>
 		result.status === "rejected" ? [result.reason] : [],
 	);

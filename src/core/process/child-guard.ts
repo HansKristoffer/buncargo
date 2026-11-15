@@ -58,6 +58,7 @@ export function spawnGuarded(
 	} = {},
 ): ChildProcess {
 	const output = options.output ?? "ignore";
+
 	const child = spawn(
 		process.execPath,
 		[
@@ -75,7 +76,10 @@ export function spawnGuarded(
 			detached: options.detached ?? false,
 		},
 	);
+
+	// Ending stdin of a guard that already exited emits EPIPE, which must not crash the run.
 	child.stdin?.on("error", () => {});
+
 	return child;
 }
 
@@ -87,6 +91,7 @@ export function startGuardedChild(
 ) {
 	const child = spawnGuarded(binary, args, { directory });
 	let alive = true;
+
 	const finished = new Promise<void>((resolve) => {
 		const done = () => {
 			alive = false;
@@ -95,6 +100,7 @@ export function startGuardedChild(
 		child.once("exit", done);
 		child.once("error", done);
 	});
+
 	return {
 		get alive() {
 			return alive;

@@ -18,8 +18,7 @@ import { terminateOwnedProcess } from "./terminate";
 /**
  * Spawning one app process: the shell it runs under, where its output goes
  * (a pseudo-terminal of its own in the TUI and for the attached app, pipes
- * otherwise), and its prebuild.
- * `dev-servers.ts` orchestrates many of these.
+ * otherwise), and its prebuild. `dev-servers.ts` orchestrates many of these.
  */
 
 function resolveShell(): string {
@@ -42,6 +41,7 @@ const SHELL = resolveShell();
 /** Execute configured shell syntax consistently across every app spawn path. */
 function spawnAppCommand(command: string, options: SpawnOptions): ChildProcess {
 	if (!command.trim()) throw new Error("Command cannot be empty");
+
 	recordStartupMetric("subprocesses");
 	return spawn(command, [], { ...options, shell: SHELL });
 }
@@ -60,6 +60,10 @@ function appSpawnOptions(
 	};
 }
 
+/**
+ * The command an app starts with: `prodCommand` in a production build, else
+ * `devCommand`. Undefined when `devCommand` is not a string.
+ */
 export function resolveStartCommand(
 	config: ResolvedApp,
 	productionBuild: boolean,
@@ -123,6 +127,7 @@ export function spawnManagedApp(
 			},
 		});
 		screen.bind(child);
+
 		if (!options.waitForExit) child.unref();
 		return child;
 	}
@@ -135,6 +140,7 @@ export function spawnManagedApp(
 	});
 	output.pipe(name, child.stdout, options.onText);
 	output.pipe(name, child.stderr, options.onText);
+
 	if (!options.waitForExit) child.unref();
 	return child;
 }
@@ -154,10 +160,12 @@ function attachToTerminal(
 	options: Parameters<typeof spawnManagedApp>[4],
 ) {
 	const { stdin, stdout } = process;
+
 	const lines = createLineSplitter({
 		onText: options.onText,
 		onLine: (line) => options.output.line(name, line, { echoed: true }),
 	});
+
 	const child = new PtyApp([SHELL, "-c", command], {
 		cwd: base.cwd,
 		env: base.env,
@@ -176,11 +184,13 @@ function attachToTerminal(
 		child.resize(cols, rows);
 	};
 	const restoreTerminal = () => stdin.setRawMode?.(false);
+
 	stdin.setRawMode?.(true);
 	stdin.on("data", forwardKeys);
 	stdin.resume();
 	stdout.on("resize", forwardSize);
 	process.once("exit", restoreTerminal);
+
 	child.once("exit", () => {
 		lines.end();
 		stdin.off("data", forwardKeys);
@@ -219,7 +229,9 @@ export async function runPrebuild(
 ): Promise<void> {
 	const command = config.prebuild;
 	if (!command) return;
+
 	options.signal.throwIfAborted();
+
 	const child = spawnAppCommand(command, {
 		...appSpawnOptions(config, root, envVars, options.unsetEnv),
 		stdio: ["ignore", "pipe", "pipe"],
@@ -234,12 +246,15 @@ export async function runPrebuild(
 			terminateOwnedProcess(child, options.graceMs),
 		);
 	options.signal.addEventListener("abort", onAbort, { once: true });
+
 	try {
 		const code = await new Promise<number | null>((resolvePromise, reject) => {
 			child.once("error", reject);
 			child.once("exit", (exitCode) => resolvePromise(exitCode));
 		});
+
 		options.signal.throwIfAborted();
+
 		if (code !== 0) {
 			throw new Error(
 				`Prebuild for "${name}" (${command}) exited with code ${code ?? "null"}`,
