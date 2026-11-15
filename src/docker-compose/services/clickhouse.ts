@@ -27,7 +27,6 @@ export const clickhouseDockerService = defineDockerService<
 	preset: "clickhouse",
 	defaults: {
 		port: 8123,
-		secondaryPort: 9000,
 		healthCheck: "http",
 	},
 	env: {

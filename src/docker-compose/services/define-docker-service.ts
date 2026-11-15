@@ -69,7 +69,6 @@ type PresetServiceConfigBase<TServiceConfig extends ServiceConfig> = Omit<
 interface DockerServicePresetDefaults {
 	port: number;
 	healthCheck: BuiltInHealthCheck;
-	secondaryPort?: number;
 }
 
 /** What a preset's connection URL is built from. */
@@ -142,11 +141,13 @@ export function defineDockerService<
 			env: input.env,
 			docker: createPresetDefinition(options?.docker),
 		};
+
 		if (input.enhanceServiceConfig) {
 			return input.enhanceServiceConfig(base, options);
 		}
+
 		// Without an enhancer the preset contributes nothing beyond the base, so
-		// its config type is exactly this shape - TServiceConfig hides that.
+		// its config type is exactly this shape; TServiceConfig hides that.
 		return base as TServiceConfig;
 	}
 
