@@ -6,16 +6,19 @@ import { docPathsConfig, findDocProblems, formatDocProblem } from "./docs";
 
 const roots: string[] = [];
 afterEach(() => {
-	for (const root of roots.splice(0))
+	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 function docs(files: Record<string, string>) {
 	const root = mkdtempSync(join(tmpdir(), "buncargo-docs-"));
 	roots.push(root);
 	mkdirSync(join(root, "docs"));
-	for (const [file, text] of Object.entries(files))
+	for (const [file, text] of Object.entries(files)) {
 		writeFileSync(join(root, file), text);
+	}
+
 	return root;
 }
 

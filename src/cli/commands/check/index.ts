@@ -48,8 +48,10 @@ function stagedFiles(root: string): string[] {
 		["git", "diff", "--cached", "--name-only", "--relative", "--diff-filter=d"],
 		{ cwd: root, stdout: "pipe", stderr: "pipe" },
 	);
-	if (result.exitCode !== 0)
+	if (result.exitCode !== 0) {
 		throw new CliError("check --staged: git could not list staged files.");
+	}
+
 	return result.stdout.toString().split("\n").filter(Boolean);
 }
 
@@ -61,8 +63,10 @@ function stepList(
 ): string[] | undefined {
 	if (value === undefined) return undefined;
 	const names = commaList(value);
-	if (names.length === 0)
+	if (names.length === 0) {
 		errors.push(`--${flag} requires at least one step name.`);
+	}
+
 	return names;
 }
 
@@ -75,8 +79,10 @@ function unknownStepErrors(
 		.flatMap((names) => names ?? [])
 		.filter((name) => !known.includes(name));
 	if (unknown.length === 0) return [];
+
+	const noun = unknown.length > 1 ? "steps" : "step";
 	return [
-		`Unknown check step${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}. Known: ${known.join(", ")}`,
+		`Unknown check ${noun}: ${unknown.join(", ")}. Known: ${known.join(", ")}`,
 	];
 }
 
@@ -87,6 +93,7 @@ function printPlan(plan: CheckPlan, mode: CheckMode, json: boolean): void {
 		label: step.label,
 		command: stepRerun(step),
 	}));
+
 	if (json) {
 		console.log(
 			JSON.stringify(
@@ -101,8 +108,10 @@ function printPlan(plan: CheckPlan, mode: CheckMode, json: boolean): void {
 		);
 		return;
 	}
-	for (const step of steps)
+
+	for (const step of steps) {
 		console.log(`${step.name}\t${step.label}\t${step.command}`);
+	}
 	if (plan.deferred) console.log(`tests (not run)\t${plan.deferred.command}`);
 }
 
@@ -111,10 +120,12 @@ function checkAllDocs(root: string, config: CheckConfig): number {
 	const files = markdownFiles(root);
 	const problems = findDocProblems(root, files, docPathsConfig(config.docs));
 	for (const problem of problems) console.error(formatDocProblem(problem));
+
 	const icon = problems.length > 0 ? "✗" : "✓";
 	const summary = `${icon} docs: ${files.length} files, ${problems.length} problems`;
 	if (problems.length > 0) console.error(summary);
 	else console.log(summary);
+
 	return problems.length > 0 ? 1 : 0;
 }
 
@@ -198,10 +209,12 @@ const CHECK_SPEC = {
 
 async function loadConfig(root: string): Promise<CheckConfig> {
 	const settings = await loadCheckConfig(root);
-	if (settings.errors.length > 0)
+	if (settings.errors.length > 0) {
 		throw new CliError(settings.errors[0] ?? "Invalid check config.", [
 			...settings.errors.slice(1),
 		]);
+	}
+
 	if (settings.warning) console.warn(settings.warning);
 	return settings.config ?? {};
 }
@@ -213,10 +226,12 @@ async function check({
 	const only = stepList("only", values.only, errors);
 	const skip = stepList("skip", values.skip, errors);
 	if (staged && all) errors.push("--staged and --all cannot be combined.");
-	if (base !== undefined && (staged || all))
+	if (base !== undefined && (staged || all)) {
 		errors.push("--base only applies to the default changed-files mode.");
+	}
 	if (json && !list) errors.push("--json only applies to --list.");
 	if (errors.length > 0) throw argumentsError(errors, "check");
+
 	// CI checks what it was given: a runner that keeps its checkout must not
 	// answer from an earlier job.
 	const run: CheckRun = {
@@ -229,7 +244,9 @@ async function check({
 	const stepErrors = unknownStepErrors(config, [only, skip]);
 	if (stepErrors.length > 0) throw argumentsError(stepErrors, "check");
 
-	const mode: CheckMode = all ? "all" : staged ? "staged" : "changed";
+	let mode: CheckMode = "changed";
+	if (all) mode = "all";
+	else if (staged) mode = "staged";
 
 	const changed: string[] = typedSwitch(mode, {
 		all: () => [],
@@ -245,6 +262,7 @@ async function check({
 			}
 		},
 	});
+
 	// Deleted paths select workspaces and gates; the formatters cannot read them.
 	const existing = changed.filter((file) => existsSync(join(root, file)));
 	const tests =
@@ -254,6 +272,7 @@ async function check({
 					also: config.testAlso,
 				})
 			: [];
+
 	const cli = buncargoCli();
 	const plan = filterPlan(
 		planCheck(
@@ -314,15 +333,18 @@ async function runPlan(
 	}
 
 	const { keys, tree } = runner.passedOnTree();
-	if (tree !== undefined)
+	if (tree !== undefined) {
 		await recordPasses(root, keys, {
 			tree,
 			at: Date.now(),
 			by: runName(process.argv.slice(2)),
 		});
+	}
 
-	for (const line of formatVerdict(runner.failures, plan.deferred, notRun))
+	for (const line of formatVerdict(runner.failures, plan.deferred, notRun)) {
 		console.log(line);
+	}
+
 	return verdictFails(runner.failures, plan.deferred) ? 1 : 0;
 }
 
@@ -332,12 +354,13 @@ function inlineProblems(
 	config: CheckConfig,
 	step: InlineStep,
 ): string[] {
-	if (step.kind === "docs")
+	if (step.kind === "docs") {
 		return findDocProblems(
 			root,
 			markdownFiles(root),
 			docPathsConfig(config.docs),
 		).map(formatDocProblem);
+	}
 
 	if (Bun.version === step.pinned) return [];
 	const install = bunInstallCommand(step.pinned);

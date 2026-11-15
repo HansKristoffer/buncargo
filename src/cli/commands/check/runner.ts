@@ -44,6 +44,7 @@ export function rerunCommand(step: {
 		}
 		shown = next;
 	}
+
 	return shown;
 }
 
@@ -56,7 +57,7 @@ function plural(count: number, noun: string): string {
 	return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-/** What ends `check` on a failure: the last line of its output. */
+/** What starts the verdict line of a failed `check`. */
 const FAIL_PREFIX = "FAIL: ";
 
 /**
@@ -74,23 +75,27 @@ export function formatVerdict(
 	const notRunTests = deferred
 		? `${plural(deferred.files.length, "test file")} not run`
 		: undefined;
+
 	const failed = new Set(failures.map((failure) => failure.name));
 	if (deferred?.strict) failed.add("tests");
-	return [
-		...failures.map(
-			(failure) =>
-				`  ✗ ${failure.label} (${failure.reason}) · rerun: ${failure.rerun}`,
-		),
-		...(notRun.length > 0
-			? [
-					`  - stopped at the first failure, not run: ${notRun.join(", ")} (--keep-going runs every step)`,
-				]
-			: []),
-		...(deferred
-			? [`  - ${notRunTests}, they need services: ${deferred.command}`]
-			: []),
+
+	const lines = failures.map(
+		(failure) =>
+			`  ✗ ${failure.label} (${failure.reason}) · rerun: ${failure.rerun}`,
+	);
+	if (notRun.length > 0) {
+		lines.push(
+			`  - stopped at the first failure, not run: ${notRun.join(", ")} (--keep-going runs every step)`,
+		);
+	}
+	if (deferred) {
+		lines.push(`  - ${notRunTests}, they need services: ${deferred.command}`);
+	}
+	lines.push(
 		failed.size > 0 ? `${FAIL_PREFIX}${[...failed].join(", ")}` : "PASS",
-	];
+	);
+
+	return lines;
 }
 
 /** Whether the verdict fails the check. */
@@ -117,6 +122,7 @@ export function bunTestFailures(output: string): string[] | undefined {
 	let fileShown = false;
 	let block: string[] = [];
 	let failed = false;
+
 	for (const line of output.split("\n")) {
 		if (BUN_TEST_FILE.test(line)) {
 			file = line;
@@ -133,6 +139,7 @@ export function bunTestFailures(output: string): string[] | undefined {
 		} else if (BUN_TEST_TOTAL.test(line)) lines.push(line);
 		else block.push(line);
 	}
+
 	return failed ? lines : undefined;
 }
 
@@ -166,11 +173,13 @@ async function attempt(
 		const reason = `could not start: ${getErrorMessage(error)}`;
 		return { code: 127, reason, output: "" };
 	}
+
 	const [stdout, stderr, code] = await Promise.all([
 		new Response(child.stdout).text(),
 		new Response(child.stderr).text(),
 		child.exited,
 	]);
+
 	const reason = child.signalCode
 		? `killed by ${child.signalCode}`
 		: `exit ${code}`;
@@ -230,18 +239,25 @@ export function stepRunner(
 		note?: string,
 	) => {
 		if (github) print("::endgroup::");
+
 		const seconds = (elapsed() / 1000).toFixed(1);
 		if (!failure) {
 			const suffix = note ? ` · ${note}` : "";
 			print(`✓ ${step.label} ${seconds}s${suffix}`);
 			return;
 		}
+
 		const rerun = stepRerun(step);
 		print(`✗ ${step.label} ${seconds}s (${failure.reason})`);
-		if (github)
-			print(
-				`::error title=${escapeWorkflowProperty(step.name)}::${escapeWorkflowData(`${failure.reason} · rerun: ${rerun}`)}`,
+		if (github) {
+			const annotation = escapeWorkflowData(
+				`${failure.reason} · rerun: ${rerun}`,
 			);
+			print(
+				`::error title=${escapeWorkflowProperty(step.name)}::${annotation}`,
+			);
+		}
+
 		failures.push({
 			name: step.name,
 			label: step.label,
@@ -260,20 +276,22 @@ export function stepRunner(
 		const elapsed = begin(step);
 		const cwd = step.cwd ? join(root, step.cwd) : root;
 		let result = await attempt(step.command, cwd);
+
 		if (result.code !== 0 && step.fix) {
-			print(
-				`… ${step.label} failed; running its fix: ${rerunCommand({ command: step.fix })}`,
-			);
+			const fixCommand = rerunCommand({ command: step.fix });
+			print(`… ${step.label} failed; running its fix: ${fixCommand}`);
+
 			const fix = await attempt(step.fix, cwd);
 			if (fix.code !== 0) {
 				showOutput(fix.output, false);
 				finish(step, elapsed, { reason: `fix: ${fix.reason}` });
 				return fix.code;
 			}
+
 			result = await attempt(step.command, cwd);
-			if (result.code === 0)
-				print(`fixed by ${rerunCommand({ command: step.fix })}`);
+			if (result.code === 0) print(`fixed by ${fixCommand}`);
 		}
+
 		if (result.code !== 0) showOutput(result.output, step.bunTest === true);
 		// The typecheck's own account of the workspaces it did not check again.
 		const note =
@@ -309,10 +327,12 @@ export function stepRunner(
 
 			const treeBefore = tree;
 			const code = await execute(step);
+
 			// Read again: the step, or its fix, may have written files.
 			tree = reuse?.tree();
-			if (code === 0 && treeBefore !== undefined && step.reuse !== false)
-				passed.push({ key, tree: treeBefore });
+			const isReusable = treeBefore !== undefined && step.reuse !== false;
+			if (code === 0 && isReusable) passed.push({ key, tree: treeBefore });
+
 			return code;
 		},
 		/** A step `check` does itself: it fails with any problem. */

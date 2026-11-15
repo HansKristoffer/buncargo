@@ -124,11 +124,13 @@ export function formatCommands(
 	];
 	const label = mode === "changed" ? "bun fmt" : "bun fmt --check";
 	if (mode === "all") return [{ label, command: [...flags, ...globs] }];
+
 	const matchers = globs.map((glob) => new Bun.Glob(glob));
 	const selected = files.filter(
 		(file) =>
 			matchers.length === 0 || matchers.some((glob) => glob.match(file)),
 	);
+
 	return chunkArray(selected, FILE_CHUNK).map((chunk) => ({
 		label: `${label} (${chunk.length} files)`,
 		command: [...flags, ...chunk],
@@ -175,7 +177,7 @@ export function selectGates(
 }
 
 function biomeSteps(existing: readonly string[], mode: CheckMode): Step[] {
-	if (mode === "all")
+	if (mode === "all") {
 		return [
 			{
 				kind: "command",
@@ -184,8 +186,11 @@ function biomeSteps(existing: readonly string[], mode: CheckMode): Step[] {
 				command: ["bunx", "biome", "check"],
 			},
 		];
+	}
+
 	const write = mode === "staged" ? [] : ["--write"];
 	const label = mode === "staged" ? "biome" : "biome --write";
+
 	return chunkArray([...existing], FILE_CHUNK).map((chunk) => ({
 		kind: "command",
 		name: "biome",
@@ -258,10 +263,11 @@ export function planCheck(
 	run: CheckRun,
 ): CheckPlan {
 	if (mode !== "all" && files.changed.length === 0) return { steps: [] };
+
 	const steps: Step[] = [];
 
 	// First, as it is the cheapest, and bun fmt's output depends on it.
-	if (repo.pinnedBun)
+	if (repo.pinnedBun) {
 		steps.push({
 			kind: "bun-version",
 			pinned: repo.pinnedBun,
@@ -270,29 +276,29 @@ export function planCheck(
 			label: `bun ${repo.pinnedBun} (.bun-version)`,
 			rerun: "bun --version",
 		});
+	}
 
 	// Formatting before Biome, so the lint sees the formatted files. From the
 	// root: bun fmt skips `.prettierignore` entries only there.
-	if (config.format)
-		for (const { label, command } of formatCommands(
-			config.format,
-			files.existing,
-			mode,
-		))
+	if (config.format) {
+		const formats = formatCommands(config.format, files.existing, mode);
+		for (const { label, command } of formats) {
 			steps.push({ kind: "command", name: "format", label, command });
+		}
+	}
 
 	if (repo.biome) steps.push(...biomeSteps(files.existing, mode));
 
-	if (
-		config.docs !== false &&
-		touches(files.changed, ["**/*.md", "*.md"], mode)
-	)
+	const checksDocs =
+		config.docs !== false && touches(files.changed, ["**/*.md", "*.md"], mode);
+	if (checksDocs) {
 		steps.push({
 			kind: "docs",
 			name: "docs",
 			label: "docs",
 			rerun: "buncargo check docs",
 		});
+	}
 
 	// The typecheck picks the changed workspaces and their dependents, and
 	// waits for one of the machine-wide check slots. Staged mode compares the
@@ -314,7 +320,7 @@ export function planCheck(
 		reuse: false,
 	});
 
-	for (const gate of selectGates(config.gates ?? [], files.changed, mode))
+	for (const gate of selectGates(config.gates ?? [], files.changed, mode)) {
 		steps.push({
 			kind: "command",
 			name: gate.name,
@@ -325,12 +331,15 @@ export function planCheck(
 			fix: gate.fix && mode === "changed" ? ["sh", "-c", gate.fix] : undefined,
 			...(gate.reuse === false ? { reuse: false as const } : {}),
 		});
+	}
 
 	// The tests next to the changed files are a handful: light enough to run
 	// without a slot.
 	if (mode !== "changed") return { steps };
+
 	const tests = testPlan(config, files.tests);
 	if (tests.step) steps.push(tests.step);
+
 	return { steps, deferred: tests.deferred };
 }
 
@@ -353,6 +362,7 @@ export function filterPlan(
 	const keep = (name: string) =>
 		(filter.only === undefined || filter.only.includes(name)) &&
 		!filter.skip?.includes(name);
+
 	return {
 		steps: plan.steps.filter((step) => keep(step.name)),
 		...(plan.deferred && keep("tests") ? { deferred: plan.deferred } : {}),
@@ -373,19 +383,25 @@ export async function testsFor(
 	},
 ): Promise<string[]> {
 	const tests = new Set<string>();
+
 	for (const file of files) {
 		if (/\.test\.[cm]?[jt]sx?$/.test(file)) {
 			tests.add(file);
 			continue;
 		}
+
 		const source = file.match(/^(.*)\.[cm]?[jt]sx?$/);
 		if (!source) continue;
+
 		const glob = new Bun.Glob(`${source[1]}{,.*}.test.{ts,tsx,js,jsx}`);
 		for await (const test of glob.scan(root)) tests.add(test);
 	}
-	for (const entry of settings.also ?? [])
-		if (matchesAny(files, entry.when))
-			for (const test of globPaths(entry.tests, root)) tests.add(test);
+
+	for (const entry of settings.also ?? []) {
+		if (!matchesAny(files, entry.when)) continue;
+
+		for (const test of globPaths(entry.tests, root)) tests.add(test);
+	}
 
 	const excluded = (settings.exclude ?? []).map(
 		(pattern) => new Bun.Glob(pattern),
