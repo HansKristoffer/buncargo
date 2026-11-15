@@ -197,11 +197,6 @@ export interface DevEnvContext {
  * suffix before the extension. Sharing the file let `ci` overwrite the dev
  * stack's model, and fail where it is written only when missing.
  */
-/** The key a selection is compared by: the same apps and services, in the same order. */
-function selectionKey(plan: StartPlan) {
-	return JSON.stringify([plan.appNames, plan.requiredServiceKeys]);
-}
-
 function suffixedComposeFile(
 	generatedFile: string | undefined,
 	suffix: string,
@@ -214,6 +209,11 @@ function suffixedComposeFile(
 	const extension = extname(generatedFile);
 	const stem = generatedFile.slice(0, generatedFile.length - extension.length);
 	return `${stem}.${label}${extension}`;
+}
+
+/** The key a selection is compared by: the same apps and services, in the same order. */
+function selectionKey(plan: StartPlan) {
+	return JSON.stringify([plan.appNames, plan.requiredServiceKeys]);
 }
 
 export function createDevEnvContext(
