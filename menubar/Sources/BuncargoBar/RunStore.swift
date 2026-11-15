@@ -5,8 +5,8 @@ import Foundation
 ///
 /// Watches the *directory*, not the file. Every buncargo state file is written
 /// through a temp file and a rename, so a file watch would hold an inode that
-/// never gets written again — the same reason the hosts daemon watches
-/// directories. The timer stays as the backstop: it is what notices a run whose
+/// never gets written again. The hosts daemon watches directories for the
+/// same reason. The timer stays as the backstop: it is what notices a run whose
 /// process died, which no filesystem event announces.
 @MainActor
 final class RunStore: ObservableObject {

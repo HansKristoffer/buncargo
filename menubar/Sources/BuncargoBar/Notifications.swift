@@ -57,8 +57,7 @@ enum Notifier {
     /// Runs whose main app is up and has not been announced yet.
     ///
     /// `announced` is pruned to the live runs first, so a key is forgotten only
-    /// once its run is gone — a run that goes ready → starting → ready stays
-    /// quiet.
+    /// once its run is gone. A run that goes ready, starting, ready stays quiet.
     nonisolated static func newlyStarted(runs: [Run], announced: inout Set<String>) -> [Run] {
         announced.formIntersection(Set(runs.map(key)))
         return runs.filter { run in
