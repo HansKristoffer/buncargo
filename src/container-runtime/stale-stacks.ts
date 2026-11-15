@@ -37,10 +37,13 @@ export function findStaleStacks(
 	wantedPorts: ReadonlySet<number>,
 ): StaleStack[] {
 	const stacks = new Map<string, StaleStack>();
+
 	for (const [port, owner] of owners) {
 		if (!wantedPorts.has(port)) continue;
+
 		const projectName = staleStackProject(owner, checkout);
 		if (!projectName) continue;
+
 		const stack = stacks.get(projectName) ?? {
 			projectName,
 			runtime,
@@ -49,6 +52,7 @@ export function findStaleStacks(
 		stack.ports.push(port);
 		stacks.set(projectName, stack);
 	}
+
 	return [...stacks.values()];
 }
 
@@ -73,11 +77,12 @@ export function decideStaleStack(input: {
 	const live = input.liveRuns.find(
 		(run) => run.projectName === input.projectName,
 	);
-	if (live)
+	if (live) {
 		return {
 			remove: false,
 			reason: `a live run (pid ${live.pid}, ${live.root}) still uses it. Stop that run (\`buncargo stop --all --root ${live.root}\`), then start again`,
 		};
+	}
 
 	const elsewhere = input.containers.find(
 		(container) => container.root !== input.root,
@@ -89,6 +94,7 @@ export function decideStaleStack(input: {
 			reason: `it also has containers of ${where}, so it is not this checkout's alone`,
 		};
 	}
+
 	return { remove: true };
 }
 
@@ -144,12 +150,14 @@ export async function replaceStaleStacks(
 				});
 				if (!decision.remove) return decision;
 
-				if (verbose)
+				if (verbose) {
 					console.log(
 						formatStep(
 							`♻️  Removing stale stack ${stack.projectName} of this checkout (holding ${stack.ports.join(", ")}); its volumes are kept`,
 						),
 					);
+				}
+
 				await runtime.down({
 					root: checkout.root,
 					projectName: stack.projectName,
@@ -157,8 +165,10 @@ export async function replaceStaleStacks(
 					verbose,
 					signal,
 				});
+
 				return decision;
 			};
+
 			const decision = await withProjectLifecycleLock(
 				stack.projectName,
 				checkout.root,
@@ -174,12 +184,14 @@ export async function replaceStaleStacks(
 
 			if (!decision.remove) {
 				result.kept.push({ stack, reason: decision.reason });
-				if (verbose)
+
+				if (verbose) {
 					console.warn(
 						formatWarn(
 							`Stale stack ${stack.projectName} (holding ${stack.ports.join(", ")}) left alone: ${decision.reason}.`,
 						),
 					);
+				}
 				continue;
 			}
 
@@ -197,6 +209,7 @@ export async function replaceStaleStacks(
 			]);
 		}
 	}
+
 	return result;
 }
 
@@ -212,12 +225,14 @@ export async function replaceStaleStacksOn(
 	wantedPorts: readonly number[],
 	options: { signal?: AbortSignal; verbose?: boolean } = {},
 ): Promise<ReplaceStaleStacksResult> {
-	if (!isRuntimeUp(selected))
+	if (!isRuntimeUp(selected)) {
 		console.warn(
 			formatWarn(
 				`--replace-stale: ${selected.displayName} is not running, so no stale stack was looked for on it. If a port conflict names one once it is up, run again.`,
 			),
 		);
+	}
+
 	const others = containerRuntimeCandidates().filter(
 		(candidate) => candidate.name !== selected.name,
 	);

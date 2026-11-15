@@ -60,10 +60,13 @@ export function orphanVolumeReporter(deps: OrphanVolumeReportDeps) {
 		const active = runtimes().filter((runtime) =>
 			answered.includes(runtime.name),
 		);
+
 		// Nothing listed is no pass: the hour starts when one is made.
 		if (active.length === 0) return;
+
 		// A pass that fails tries again soon, not an hour later.
 		nextAt = startedAt + ORPHAN_VOLUME_REPORT_RETRY_MS;
+
 		try {
 			const containers = (
 				await Promise.all(
@@ -82,12 +85,18 @@ export function orphanVolumeReporter(deps: OrphanVolumeReportDeps) {
 				}),
 			).map((volume) => volume.name);
 			nextAt = startedAt + ORPHAN_VOLUME_REPORT_INTERVAL_MS;
+
 			const key = names.join("\n");
 			if (key === reported) return;
 			reported = key;
 			if (names.length === 0) return;
+
+			const subject =
+				names.length === 1
+					? "1 volume belongs"
+					: `${names.length} volumes belong`;
 			deps.log(
-				`${names.length} volume${names.length === 1 ? "" : "s"} belong${names.length === 1 ? "s" : ""} to deleted checkouts, with no container and no run: ${names.join(", ")}. Review them with \`bunx buncargo prune --dry-run\`; nothing is removed automatically.`,
+				`${subject} to deleted checkouts, with no container and no run: ${names.join(", ")}. Review them with \`bunx buncargo prune --dry-run\`; nothing is removed automatically.`,
 			);
 		} catch {
 			// A registry or runtime that cannot be read this pass is reported by

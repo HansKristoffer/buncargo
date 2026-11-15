@@ -40,6 +40,8 @@ export async function assertServicePortsClaimable(
 		containers: context.containerOwners,
 		signal,
 	});
+
+	// Built only on a conflict: it also asks the other runtimes who holds the port.
 	let diagnosticSnapshot:
 		Awaited<ReturnType<typeof createPortOwnerSnapshotAsync>> | undefined;
 
@@ -59,13 +61,15 @@ export async function assertServicePortsClaimable(
 					(candidate) => candidate.name !== runtime.name,
 				),
 			});
+
+			const checkout =
+				context.projectPrefix === undefined
+					? undefined
+					: { root: context.root, projectPrefix: context.projectPrefix };
 			throw new Error(
 				formatPortOwner(port, diagnosticSnapshot.owner(port) ?? owner, {
 					runtime: runtime.name,
-					checkout:
-						context.projectPrefix === undefined
-							? undefined
-							: { root: context.root, projectPrefix: context.projectPrefix },
+					checkout,
 				}),
 			);
 		}

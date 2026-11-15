@@ -61,17 +61,22 @@ export function observeServices(
 ): Map<string, ServiceCondition> {
 	// A running container of a service wins over a stale stopped one.
 	const byService = new Map<string, ServiceRuntimeState>();
-	for (const state of states)
-		if (!byService.get(state.service)?.serving)
+	for (const state of states) {
+		if (!byService.get(state.service)?.serving) {
 			byService.set(state.service, state);
+		}
+	}
+
 	const observed = new Map<string, ServiceCondition>();
 	for (const service of watched) {
 		const state = byService.get(service);
 		const condition = state
 			? conditionOf(state)
 			: { state: "missing" as const };
+
 		if (condition) observed.set(service, condition);
 	}
+
 	return observed;
 }
 
@@ -90,13 +95,16 @@ export function settleConditions(
 	observed: ReadonlyMap<string, ServiceCondition>,
 ): Map<string, ServiceCondition> {
 	const settled = new Map(reported);
+
 	for (const [service, condition] of observed) {
 		const unconfirmed =
 			condition.state === "up" &&
 			isRestarting(reported.get(service)) &&
 			previouslyObserved.get(service)?.state !== "up";
+
 		if (!unconfirmed) settled.set(service, condition);
 	}
+
 	return settled;
 }
 
@@ -106,11 +114,14 @@ export function serviceChanges(
 	next: ReadonlyMap<string, ServiceCondition>,
 ): ServiceChange[] {
 	const changes: ServiceChange[] = [];
+
 	for (const [service, condition] of next) {
 		const before = previous.get(service) ?? { state: "up" };
-		if (JSON.stringify(before) !== JSON.stringify(condition))
-			changes.push({ service, condition });
+		const changed = JSON.stringify(before) !== JSON.stringify(condition);
+
+		if (changed) changes.push({ service, condition });
 	}
+
 	return changes;
 }
 
@@ -154,6 +165,7 @@ export function watchServiceContainers(input: {
 
 	const poll = async () => {
 		const watched = input.services();
+
 		if (watched.length > 0) {
 			const signal = timeoutSignal(intervalMs, controller.signal);
 			let states: ServiceRuntimeState[] | undefined;
@@ -167,12 +179,14 @@ export function watchServiceContainers(input: {
 				// Unanswered: nothing is known to have changed.
 			}
 			if (controller.signal.aborted) return;
+
 			if (states) {
 				const observed = observeServices(watched, states);
 				const next = settleConditions(known, lastObserved, observed);
 				const changes = serviceChanges(known, next);
 				known = next;
 				lastObserved = observed;
+
 				try {
 					if (changes.length > 0) input.onChange(changes);
 				} catch {
@@ -180,6 +194,7 @@ export function watchServiceContainers(input: {
 				}
 			}
 		}
+
 		schedule();
 	};
 	const schedule = () => {

@@ -7,7 +7,7 @@
  * and the person decides.
  *
  * What it can know is narrow. A volume carries Compose's project label and
- * nothing else — buncargo cannot add a label of its own, because Compose
+ * nothing else. buncargo cannot add a label of its own, because Compose
  * compares a volume against the file and offers to recreate it, which is the
  * data loss this exists to prevent. So the checkout a volume belongs to is
  * known only from this user's port claims, and a volume is proposed only when
@@ -65,9 +65,11 @@ export function planVolumePrune(input: PruneInput): VolumeReport[] {
 		checkouts: input.checkouts,
 		deletedFor: input.deletedFor,
 	};
+
 	return input.volumes.map((volume): VolumeReport => {
 		const decision = decideVolume(volume, state);
-		if (decision.propose)
+
+		if (decision.propose) {
 			return {
 				volume,
 				verdict: {
@@ -76,6 +78,8 @@ export function planVolumePrune(input: PruneInput): VolumeReport[] {
 					root: decision.root,
 				},
 			};
+		}
+
 		const kind = volume.project ? "in-use" : "unattributed";
 		return { volume, verdict: { kind, reason: decision.reason } };
 	});

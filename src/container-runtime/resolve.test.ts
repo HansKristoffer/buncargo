@@ -9,7 +9,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isContainerUp } from "./inventory";
 import {
 	containerRuntimeCandidates,
 	containerRuntimeForEnv,
@@ -199,51 +198,5 @@ describe("containerRuntimeForEnv", () => {
 			containerRuntimeBinary: "/opt/bin/container",
 		});
 		expect(runtime.name).toBe("apple");
-	});
-});
-
-describe("isContainerUp", () => {
-	it("reads the state, not the human status line", () => {
-		const base = {
-			id: "a",
-			name: "a",
-			ports: "",
-			project: "p",
-			root: "/r",
-			worktree: "",
-			service: "postgres",
-		};
-		expect(
-			isContainerUp({ ...base, state: "running", status: "Up 3 minutes" }),
-		).toBe(true);
-		// Both runtimes spell it the same, so Apple needs no second vocabulary.
-		expect(
-			isContainerUp({ ...base, state: "running", status: "running" }),
-		).toBe(true);
-		// "Exited (0) 1 hour ago" and "Up 3 minutes" both contain a word the
-		// old substring match accepted; only the state separates them.
-		expect(
-			isContainerUp({
-				...base,
-				state: "exited",
-				status: "Exited (0) 1 hour ago",
-			}),
-		).toBe(false);
-		expect(
-			isContainerUp({ ...base, state: "stopped", status: "stopped" }),
-		).toBe(false);
-		// A paused or restarting container still holds its ports and its stack:
-		// reading it as stopped would let the sweep call the stack abandoned and
-		// the allocator hand its ports to another checkout.
-		expect(isContainerUp({ ...base, state: "paused", status: "Paused" })).toBe(
-			true,
-		);
-		expect(
-			isContainerUp({
-				...base,
-				state: "restarting",
-				status: "Restarting (1) 2 seconds ago",
-			}),
-		).toBe(true);
 	});
 });

@@ -45,6 +45,7 @@ function assignedHostPortsOf(
 	targets: Readonly<Record<string, AssignedPortTarget>>,
 ): Record<string, number> {
 	const hostPorts: Record<string, number> = {};
+
 	for (const [portKey, target] of Object.entries(targets)) {
 		const container = serviceContainerOf(
 			containers,
@@ -55,8 +56,10 @@ function assignedHostPortsOf(
 			(port) =>
 				(container.targetPorts?.[port] ?? port) === target.containerPort,
 		);
+
 		if (hostPort !== undefined) hostPorts[portKey] = hostPort;
 	}
+
 	return hostPorts;
 }
 
@@ -74,8 +77,7 @@ interface RuntimeReading {
  *
  * A listing that answers proves the runtime is up, so only one that fails
  * asks the runtime to start, or to throw why it cannot. That keeps a warm
- * start at one runtime call inside the project lock, where it used to be a
- * daemon probe and two listings of the same containers.
+ * start at one runtime call inside the project lock.
  */
 async function readRuntime(
 	runtime: ContainerRuntimeAdapter,
@@ -85,18 +87,22 @@ async function readRuntime(
 ): Promise<RuntimeReading> {
 	const list = async (): Promise<RuntimeReading> => {
 		const containers = await runtime.containers(signal);
+
 		return {
 			containers,
 			states: serviceStatesOf(containers, projectName),
 			portOwners: portOwnersOf(containers, runtime.name),
 		};
 	};
+
 	try {
 		return await list();
 	} catch {
 		signal?.throwIfAborted();
 	}
+
 	await ensureRunning();
+
 	try {
 		return await list();
 	} catch {
@@ -122,7 +128,7 @@ function servicesAllRunning(
 /**
  * Whether every selected service is running from exactly this stack.
  *
- * A container with no hash — created before the label existed — is not a
+ * A container with no hash (created before the label existed) is not a
  * match: "cannot compare" has to mean reconcile, or an upgrade would leave a
  * project running yesterday's config forever.
  */
@@ -229,6 +235,7 @@ export async function ensureServicesRunning(
 		request.signal,
 	);
 	const { states, portOwners } = reading;
+
 	// An assigned port is free by construction: the runtime picks it at `up`.
 	const claimedPorts = Object.fromEntries(
 		Object.entries(ports).filter(([key]) => !(key in assignedPorts)),
@@ -279,16 +286,17 @@ export async function ensureServicesRunning(
 	const upToDate = stackMatches(states, composeServiceNames, hashes, provable);
 
 	// `up` is the only place either backend compares a running container
-	// against the config it was started from, so skipping it unconditionally
-	// made an edited image, port or env var take effect only after a manual
-	// `--down`. The service hashes make that comparison explicit and cheap: it
-	// covers the interpolated definition of every selected service, so anything
-	// that would change a container changes it, and only an exact match skips.
+	// against the config it was started from, so it cannot be skipped
+	// unconditionally: an edited image, port or env var would then take effect
+	// only after a manual `--down`. The service hashes make the comparison
+	// explicit and cheap. They cover the interpolated definition of every
+	// selected service, so anything that would change a container changes the
+	// hash, and only an exact match skips `up`.
 	//
-	// Worth doing because `docker compose up` on an unchanged stack still costs
-	// most of a second, on a command a developer or an agent runs constantly.
-	// A container from before the label carries no hash, which reads as "cannot
-	// compare" and reconciles.
+	// Skipping matters because `docker compose up` on an unchanged stack still
+	// costs most of a second, on a command a developer or an agent runs
+	// constantly. A container from before the label carries no hash, which
+	// reads as "cannot compare" and reconciles.
 	recordStartupMetric(upToDate ? "container reuse" : "container reconcile");
 	if (!upToDate) {
 		const upRequest = {
@@ -305,15 +313,13 @@ export async function ensureServicesRunning(
 		await runtime.up(upRequest);
 	}
 
-	const waitFor = wait
-		? services
-		: Object.fromEntries(
-				Object.entries(services).filter(
-					([, service]) => service.kind === "job",
-				),
-			);
+	const jobsOnly = Object.fromEntries(
+		Object.entries(services).filter(([, service]) => service.kind === "job"),
+	);
+	const waitFor = wait ? services : jobsOnly;
 	const assigning = Object.keys(assignedPorts).length > 0;
 	const waiting = Object.keys(waitFor).length > 0;
+
 	// Re-read only when the reconcile ran: `up` is what changes state, and
 	// the listing from before it describes the previous containers.
 	const listing =
@@ -325,6 +331,7 @@ export async function ensureServicesRunning(
 		projectName,
 		assignedPorts,
 	);
+
 	if (waiting) {
 		await waitForAllServices(
 			waitFor,

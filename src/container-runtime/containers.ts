@@ -20,10 +20,9 @@ import type {
  *
  * A startup asks four questions of the runtime: is it up, which of this
  * project's services run and from which config, and which container holds
- * each port. Each used to be its own `docker ps` in its own format, so a warm
- * start forked the same listing three times inside the project lock. Each
- * backend now lists once into `RuntimeContainer` records, and
- * everything else is a projection of those records here.
+ * each port. Each backend lists once into `RuntimeContainer` records and
+ * everything else is a projection of those records here, so a warm start
+ * forks one listing inside the project lock instead of one per question.
  */
 
 /** This project's service containers, as the startup and the watch read them. */
@@ -34,6 +33,7 @@ export function serviceStatesOf(
 	return containers.flatMap((container) => {
 		const { project, service, serviceHash } = container.labels;
 		if (project !== projectName || !service) return [];
+
 		return [
 			{
 				service,
@@ -79,6 +79,7 @@ export function portOwnersOf(
 	const owners = new Map<number, PortContainerOwner>();
 	for (const container of containers) {
 		if (!isContainerLive(container.state)) continue;
+
 		const owner: PortContainerOwner = {
 			id: container.id,
 			name: container.name,
@@ -86,9 +87,12 @@ export function portOwnersOf(
 			root: container.labels.root,
 			...(runtime ? { runtime } : {}),
 		};
-		for (const port of container.ports)
+
+		for (const port of container.ports) {
 			if (!owners.has(port)) owners.set(port, owner);
+		}
 	}
+
 	return owners;
 }
 
@@ -100,6 +104,7 @@ export function buncargoContainersOf(
 	return containers.flatMap((container) => {
 		const { project, root, worktree, service } = container.labels;
 		if (!project) return [];
+
 		return [
 			{
 				id: container.id,
@@ -177,6 +182,7 @@ export async function diagnoseService(
 	request: ServiceDiagnosisRequest,
 ): Promise<ServiceDiagnosis | undefined> {
 	const deadline = performance.now() + (request.timeoutMs ?? 2000);
+
 	try {
 		const container = serviceContainerOf(
 			await withDeadline(
@@ -196,6 +202,7 @@ export async function diagnoseService(
 				: { exitCode: container.exitCode }),
 		};
 		if (remainingTime(deadline) === 0) return { ...state, logTail: "" };
+
 		const logTail = await runtime.logs({
 			id: container.id,
 			tail: request.tail ?? DEFAULT_LOG_TAIL,
@@ -230,6 +237,7 @@ export async function probeContainerPort(
 	},
 ): Promise<boolean> {
 	const deadline = performance.now() + request.timeoutMs;
+
 	try {
 		const container = serviceContainerOf(
 			await withDeadline(
@@ -241,10 +249,13 @@ export async function probeContainerPort(
 			request.serviceName,
 		);
 		// Unanswered fails the probe, which the next poll asks again.
-		if (!container?.address || !isContainerServing(container.state))
+		if (!container?.address || !isContainerServing(container.state)) {
 			return false;
+		}
+
 		const containerPort =
 			container.targetPorts?.[request.hostPort] ?? request.hostPort;
+
 		return await isTcpPortOpen(
 			containerPort,
 			container.address,
