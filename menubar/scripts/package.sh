@@ -12,7 +12,7 @@ APP_BUNDLE="$ROOT/$APP_NAME.app"
 VERSION="${VERSION:-$(tr -d "[:space:]" < "$ROOT/version.txt")}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 # Which runs.json schema this build can decode, taken from the fixture both
-# test suites already validate — so the number in the bundle and the number the
+# test suites already validate, so the number in the bundle and the number the
 # Swift decoder enforces cannot drift apart. `buncargo dev` reads it back out of
 # Info.plist to decide whether an installed app is too old for the CLI.
 REGISTRY_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' \
