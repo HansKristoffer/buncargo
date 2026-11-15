@@ -44,6 +44,7 @@ export async function explainMissingContainers(
 			return service ? [[key, service]] : [];
 		}),
 	);
+
 	const compose = composeServicesOf(selected);
 	const expected = resolveComposeServiceNames(compose, Object.keys(compose));
 	if (expected.length === 0) return undefined;
@@ -60,6 +61,7 @@ export async function explainMissingContainers(
 		// A runtime that does not answer says nothing about what it holds.
 		return undefined;
 	}
+
 	if (expected.every((name) => present.has(name))) return undefined;
 
 	return explainContainerLoss({

@@ -26,6 +26,7 @@ export function createCaptureRecorder(
 			ctx.setPublicUrls({ ...ctx.publicUrls, [app]: captured.value });
 			changed.push(`publicUrls.${app}`);
 		}
+
 		if (
 			captured.as !== "event" &&
 			ctx.captured[captured.name] !== captured.value
@@ -49,6 +50,7 @@ export function createCaptureRecorder(
 				console.log(formatDone(`Updated ${path}`));
 			}
 		}
+
 		return changed;
 	};
 }

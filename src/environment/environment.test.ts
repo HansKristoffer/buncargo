@@ -283,10 +283,15 @@ describe("createDevEnvironment env builders", () => {
 			});
 			expect(fingerprints[0]).toBe(fingerprints[1]);
 		} finally {
-			if (offset === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
-			else process.env.BUNCARGO_PORT_OFFSET = offset;
+			if (offset === undefined) {
+				delete process.env.BUNCARGO_PORT_OFFSET;
+			} else {
+				process.env.BUNCARGO_PORT_OFFSET = offset;
+			}
 			process.chdir(originalCwd);
-			for (const root of roots) rmSync(root, { recursive: true, force: true });
+			for (const root of roots) {
+				rmSync(root, { recursive: true, force: true });
+			}
 		}
 	});
 
@@ -315,8 +320,11 @@ describe("createDevEnvironment env builders", () => {
 				"worker.tailnet.ts.net",
 			);
 		} finally {
-			if (previous === undefined) delete process.env.BUNCARGO_URL_HOST;
-			else process.env.BUNCARGO_URL_HOST = previous;
+			if (previous === undefined) {
+				delete process.env.BUNCARGO_URL_HOST;
+			} else {
+				process.env.BUNCARGO_URL_HOST = previous;
+			}
 			process.chdir(originalCwd);
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -326,9 +334,9 @@ describe("createDevEnvironment env builders", () => {
 		const root = createWorktreeRoot("Feature_Hosts");
 		const previousHosts = process.env.BUNCARGO_HOSTS;
 		delete process.env.BUNCARGO_HOSTS;
-		// This one does not depend on the CI gate today — the plan is built from
-		// config and activated explicitly — but clearing `CI` alone reads as if
-		// it did, which is the half-measure that broke the sibling test.
+		// This one does not depend on the CI gate today, since the plan is built
+		// from config and activated explicitly. But clearing `CI` alone reads as
+		// if it did, which is the half-measure that broke the sibling test.
 		try {
 			process.chdir(root);
 			const env = createDevEnvironment(
@@ -385,8 +393,11 @@ describe("createDevEnvironment env builders", () => {
 			expect(plainEnv.BUNCARGO_APP_NAME).toBe("web");
 			expect(plainEnv.BUNCARGO_APP_HOSTNAME).toBeUndefined();
 		} finally {
-			if (previousHosts === undefined) delete process.env.BUNCARGO_HOSTS;
-			else process.env.BUNCARGO_HOSTS = previousHosts;
+			if (previousHosts === undefined) {
+				delete process.env.BUNCARGO_HOSTS;
+			} else {
+				process.env.BUNCARGO_HOSTS = previousHosts;
+			}
 			process.chdir(originalCwd);
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -406,8 +417,11 @@ describe("createDevEnvironment env builders", () => {
 		);
 		const apply = (values: Record<string, string | undefined>) => {
 			for (const [name, value] of Object.entries(values)) {
-				if (value === undefined) delete process.env[name];
-				else process.env[name] = value;
+				if (value === undefined) {
+					delete process.env[name];
+				} else {
+					process.env[name] = value;
+				}
 			}
 		};
 		apply(overrides);

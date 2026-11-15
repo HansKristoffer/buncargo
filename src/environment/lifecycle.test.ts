@@ -200,6 +200,7 @@ describe("startup modes and hooks", () => {
 		// unowned, and the watchdog is ensured right behind it.
 		expect(events).toEqual(["claim", "watchdog", "artifact", "runtime", "up"]);
 	});
+
 	it("migrate-only applies migrations without generation or seeds", async () => {
 		const { events, lifecycle } = fixture();
 		await lifecycle.start({
@@ -218,6 +219,7 @@ describe("startup modes and hooks", () => {
 			"migrate",
 		]);
 	});
+
 	it("library preparation does not fire server hooks without servers", async () => {
 		const { events, lifecycle } = fixture();
 		await lifecycle.start({ startServers: false, verbose: false, wait: false });
@@ -234,6 +236,7 @@ describe("startup modes and hooks", () => {
 			"seed check",
 		]);
 	});
+
 	it("fires server hooks once around server readiness", async () => {
 		const { events, lifecycle } = fixture();
 		await lifecycle.start({ verbose: false, wait: false });
@@ -241,6 +244,7 @@ describe("startup modes and hooks", () => {
 		expect(events.filter((event) => event === "before")).toHaveLength(1);
 		expect(events.filter((event) => event === "after")).toHaveLength(1);
 	});
+
 	it("an explicit generation check can skip generation while retaining migrations", async () => {
 		const { ctx, events, lifecycle } = fixture();
 		if (!ctx.config.prisma) throw new Error("fixture needs prisma");
@@ -249,6 +253,7 @@ describe("startup modes and hooks", () => {
 		expect(events).toContain("migrate");
 		expect(events).not.toContain("generate");
 	});
+
 	it('generateCheck "schema-hash" generates only when the schema changed since the last generate', async () => {
 		const root = mkdtempSync(join(tmpdir(), "buncargo-generate-check-"));
 		const schema = join(root, "packages/prisma/prisma/schema.prisma");
@@ -275,6 +280,7 @@ describe("startup modes and hooks", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+
 	it("a library start ensures the watchdog unless told not to", async () => {
 		// Only the CLI used to start one, so a script that started containers
 		// and then crashed left them for somebody's next CLI command.
@@ -288,6 +294,7 @@ describe("startup modes and hooks", () => {
 		});
 		expect(events).toEqual(["claim", "artifact", "runtime", "up"]);
 	});
+
 	it("an app-only start ensures the watchdog once its apps are up, unless told not to", async () => {
 		// The watchdog lists live runs to BuncargoBar on the tailnet, and a run
 		// without containers is in the registry for its apps alone.
@@ -304,6 +311,7 @@ describe("startup modes and hooks", () => {
 			);
 		}
 	});
+
 	it("an explicit stop retires the claim rather than holding it, and records the removal", async () => {
 		const { ctx, events, lifecycle } = fixture();
 		ctx.runtime.down = async () => {
@@ -330,6 +338,7 @@ describe("startup modes and hooks", () => {
 			},
 		]);
 	});
+
 	it("keeps the services another live run of the project uses, and tears them down with force", async () => {
 		const { ctx, events, lifecycle } = fixture();
 		ctx.runtime.down = async () => {
@@ -367,6 +376,7 @@ describe("startup modes and hooks", () => {
 			await retireRuns([other]);
 		}
 	});
+
 	it("stops the apps, their leases, the containers and the entry when beforeStop throws, then rejects with its error", async () => {
 		const { ctx, events, lifecycle } = fixture();
 		ctx.runtime.down = async () => {
@@ -395,6 +405,7 @@ describe("startup modes and hooks", () => {
 		// A stop that failed gives no block back.
 		expect(events).not.toContain("release claim");
 	});
+
 	it("says once that the watchdog did not start, where the run's service changes are said", async () => {
 		// Swallowed, a missing runner left nothing sweeping until a `ls`.
 		const { lifecycle, runClaim, serviceWatch } = fixture();
@@ -417,6 +428,7 @@ describe("startup modes and hooks", () => {
 		}
 		expect(said).toEqual([[expect.stringContaining("runner missing"), true]]);
 	});
+
 	it("stop tears down the containers a start brought up, whatever a later start selected", async () => {
 		const { ctx, events, lifecycle } = fixture();
 		ctx.runtime.down = async () => {
@@ -439,6 +451,7 @@ describe("startup modes and hooks", () => {
 		await lifecycle.stop({ verbose: false });
 		expect(events).not.toContain("down");
 	});
+
 	it("reads as running with every service up, a finished job included", async () => {
 		// A job's container exits once it has run, which read as not running.
 		const { ctx, lifecycle } = fixture();
@@ -469,6 +482,7 @@ describe("startup modes and hooks", () => {
 		];
 		expect(await lifecycle.isRunning()).toBe(false);
 	});
+
 	it("rejects an invalid selection before writing the artifact or starting runtime", async () => {
 		const { events, lifecycle } = fixture();
 		await expect(lifecycle.start({ onlyApps: ["missing"] })).rejects.toThrow(
@@ -476,6 +490,7 @@ describe("startup modes and hooks", () => {
 		);
 		expect(events).toEqual([]);
 	});
+
 	it("honors cancellation before startup mutations", async () => {
 		const { events, lifecycle } = fixture();
 		await expect(
@@ -556,8 +571,11 @@ describe("production or development, in CI", () => {
 		try {
 			return await run();
 		} finally {
-			if (previous === undefined) delete process.env.CI;
-			else process.env.CI = previous;
+			if (previous === undefined) {
+				delete process.env.CI;
+			} else {
+				process.env.CI = previous;
+			}
 		}
 	}
 
@@ -643,6 +661,7 @@ it("runs bootstrap before Prisma and supplies expanded selection", async () => {
 		events.indexOf("bunx --no-install prisma migrate deploy"),
 	);
 });
+
 it("bootstrap failure prevents automatic and custom migrations", async () => {
 	const { ctx, events, lifecycle } = fixture();
 	ctx.config.hooks = {
@@ -656,6 +675,7 @@ it("bootstrap failure prevents automatic and custom migrations", async () => {
 	expect(events).not.toContain("bunx --no-install prisma migrate deploy");
 	expect(events).not.toContain("migrate");
 });
+
 it("containers-only does not invoke bootstrap", async () => {
 	const { ctx, lifecycle } = fixture();
 	ctx.config.hooks = {
@@ -670,6 +690,7 @@ it("containers-only does not invoke bootstrap", async () => {
 		verbose: false,
 	});
 });
+
 it("starts services requiring preparation after migrations and seeds using one artifact", async () => {
 	const { ctx, events, lifecycle } = fixture();
 	ctx.services.sync = resolveService("sync", {
@@ -763,8 +784,9 @@ describe("Infisical secrets at start", () => {
 			expect(fake.cliCalls()).toEqual([]);
 			ctx.runtime.ensureRunning = async () => {
 				const deadline = Date.now() + 5000;
-				while (fake.requests.length < 2 && Date.now() < deadline)
+				while (fake.requests.length < 2 && Date.now() < deadline) {
 					await Bun.sleep(10);
+				}
 				expect(fake.requests).toHaveLength(2);
 			};
 			await lifecycle.start({
@@ -784,8 +806,11 @@ describe("Infisical secrets at start", () => {
 			ctx.runtime.ensureRunning = runtimeStart;
 			clearScopeSecretsCache();
 			fake.stop();
-			if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
-			else process.env.BUNCARGO_INFISICAL_PATH = binary;
+			if (binary === undefined) {
+				delete process.env.BUNCARGO_INFISICAL_PATH;
+			} else {
+				process.env.BUNCARGO_INFISICAL_PATH = binary;
+			}
 		}
 	});
 
@@ -796,7 +821,9 @@ describe("Infisical secrets at start", () => {
 		const ambient = [...CI_ENV_VARS, "INFISICAL_TOKEN"].map(
 			(name) => [name, process.env[name]] as const,
 		);
-		for (const [name] of ambient) delete process.env[name];
+		for (const [name] of ambient) {
+			delete process.env[name];
+		}
 		process.env.BUNCARGO_INFISICAL_PATH = fake.cliPath;
 		clearScopeSecretsCache();
 		const { ctx, events, lifecycle } = fixture();
@@ -813,12 +840,16 @@ describe("Infisical secrets at start", () => {
 			expect(events).not.toContain("claim");
 			expect(events).not.toContain("runtime");
 		} finally {
-			for (const [name, value] of ambient)
+			for (const [name, value] of ambient) {
 				if (value !== undefined) process.env[name] = value;
+			}
 			clearScopeSecretsCache();
 			fake.stop();
-			if (binary === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
-			else process.env.BUNCARGO_INFISICAL_PATH = binary;
+			if (binary === undefined) {
+				delete process.env.BUNCARGO_INFISICAL_PATH;
+			} else {
+				process.env.BUNCARGO_INFISICAL_PATH = binary;
+			}
 		}
 	});
 });

@@ -25,8 +25,9 @@ function checkout(): string {
 }
 
 afterEach(() => {
-	for (const root of roots.splice(0))
+	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 it("prints the declared input in env, and none of the rest of the shell", async () => {
@@ -70,9 +71,13 @@ it("gives the same fingerprint whatever the shell's PWD and SHLVL", () => {
 		});
 		expect(fingerprints[0]).toBe(fingerprints[1]);
 	} finally {
-		for (const [key, value] of Object.entries(saved))
-			if (value === undefined) delete process.env[key];
-			else process.env[key] = value;
+		for (const [key, value] of Object.entries(saved)) {
+			if (value === undefined) {
+				delete process.env[key];
+			} else {
+				process.env[key] = value;
+			}
+		}
 	}
 });
 
