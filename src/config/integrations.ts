@@ -44,9 +44,10 @@ function composeHooks(
 
 /**
  * Apply a config's integrations: each `config()` transform in order, then the
- * hooks, setup checks and preflight steps they contribute. Runs before validation, so everything an
- * integration adds is validated like the rest. `root` is the checkout the
- * config belongs to; without it, the one around the working directory.
+ * hooks, setup checks and preflight steps they contribute. Runs before
+ * validation, so everything an integration adds is validated like the rest.
+ * `root` is the checkout the config belongs to; without it, the one around the
+ * working directory.
  */
 export function applyIntegrations<T extends object>(
 	config: T,

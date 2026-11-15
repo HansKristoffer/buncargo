@@ -18,16 +18,21 @@ export function createValidationContext(errors: string[]) {
 		}
 	};
 	const claimPort = (port: number | undefined, path: string) => {
-		if (!Number.isInteger(port) || (port ?? 0) < 1 || (port ?? 0) > 65535) {
+		const valid =
+			typeof port === "number" &&
+			Number.isInteger(port) &&
+			port >= 1 &&
+			port <= 65535;
+		if (!valid) {
 			errors.push(`${path} must be an integer between 1 and 65535`);
 			return;
 		}
 
-		const previous = portOwners.get(port as number);
+		const previous = portOwners.get(port);
 		if (previous) {
 			errors.push(`${path} duplicates port ${port} used by ${previous}`);
 		} else {
-			portOwners.set(port as number, path);
+			portOwners.set(port, path);
 		}
 	};
 

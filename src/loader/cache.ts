@@ -2,6 +2,7 @@ import type { AnyDevEnvironment } from "../types";
 
 /** Each loaded environment, by the config and load options it was built for. */
 const environments = new Map<string, AnyDevEnvironment>();
+
 /**
  * Configs whose environment is never served from cache: they name `envFiles`,
  * whose contents can change between loads without the config changing.

@@ -16,39 +16,24 @@ import {
 } from "./key-tables";
 import type { ShapeChecks } from "./shape-checks";
 
-export function validateSupplementShapes(
+/** `docker`, `prisma`, `seed` and `hooks`: the sections made of known keys. */
+function validateSectionShapes(
 	value: Record<string, unknown>,
 	checks: ShapeChecks,
 ): void {
-	const {
-		errors,
-		object,
-		record,
-		check,
-		strings,
-		fields,
-		duration,
-		secretsScope,
-	} = checks;
-	errors.push(
-		...unknownKeyErrors(value, "config", CONFIG_KEYS, RENAMED_KEYS.config),
-	);
-	secretsScope(value.secrets, "secrets");
-	check(
-		value.unsetEnv,
-		"unsetEnv",
-		strings(value.unsetEnv),
-		"an array of variable names",
-	);
+	const { errors, object, record, check, fields } = checks;
 	for (const key of ["docker", "options", "prisma", "seed", "hooks"]) {
 		if (value[key] !== undefined) record(value[key], key);
 	}
+
 	if (object(value.docker)) {
 		errors.push(...unknownKeyErrors(value.docker, "docker", DOCKER_KEYS));
 		for (const type of ["string", "boolean"] as const)
 			fields(value.docker, "docker.", keysChecked(DOCKER_KEYS, type), type);
 	}
+
 	if (object(value.prisma)) {
+		const { urlEnvVar, generateCheck } = value.prisma;
 		errors.push(...unknownKeyErrors(value.prisma, "prisma", PRISMA_KEYS));
 		fields(
 			value.prisma,
@@ -56,35 +41,40 @@ export function validateSupplementShapes(
 			keysChecked(PRISMA_KEYS, "string"),
 			"string",
 		);
-	}
-	if (object(value.prisma)) {
-		const names = value.prisma.urlEnvVar;
 		check(
-			names,
+			urlEnvVar,
 			"prisma.urlEnvVar",
-			typeof names === "string" ||
-				(Array.isArray(names) &&
-					names.length > 0 &&
-					names.every((name) => typeof name === "string")),
+			typeof urlEnvVar === "string" ||
+				(Array.isArray(urlEnvVar) &&
+					urlEnvVar.length > 0 &&
+					urlEnvVar.every((name) => typeof name === "string")),
 			"a variable name or a non-empty list of them",
 		);
+		check(
+			generateCheck,
+			"prisma.generateCheck",
+			typeof generateCheck === "function" || generateCheck === "schema-hash",
+			'a function or "schema-hash"',
+		);
 	}
+
 	if (object(value.seed)) {
 		errors.push(...unknownKeyErrors(value.seed, "seed", SEED_KEYS));
 		for (const type of ["string", "function", "boolean"] as const)
 			fields(value.seed, "seed.", keysChecked(SEED_KEYS, type), type);
 	}
-	if (object(value.prisma))
-		check(
-			value.prisma.generateCheck,
-			"prisma.generateCheck",
-			typeof value.prisma.generateCheck === "function" ||
-				value.prisma.generateCheck === "schema-hash",
-			'a function or "schema-hash"',
-		);
+
 	if (object(value.hooks))
 		for (const [key, hook] of Object.entries(value.hooks))
 			check(hook, `hooks.${key}`, typeof hook === "function", "a function");
+}
+
+/** `migrations`, `integrations`, `preflight`, `generatedFiles` and `setupChecks`: the lists of entries. */
+function validateListShapes(
+	value: Record<string, unknown>,
+	checks: ShapeChecks,
+): void {
+	const { errors, object, record, check, fields } = checks;
 	if (value.migrations !== undefined) {
 		if (!Array.isArray(value.migrations))
 			errors.push("migrations must be an array");
@@ -98,6 +88,7 @@ export function validateSupplementShapes(
 						"string",
 					);
 	}
+
 	if (value.integrations !== undefined) {
 		if (!Array.isArray(value.integrations))
 			errors.push("integrations must be an array");
@@ -125,6 +116,7 @@ export function validateSupplementShapes(
 					);
 			}
 	}
+
 	check(
 		value.preflight,
 		"preflight",
@@ -139,6 +131,7 @@ export function validateSupplementShapes(
 			),
 		"an array of { name, apps?, run }",
 	);
+
 	if (value.generatedFiles !== undefined) {
 		if (!Array.isArray(value.generatedFiles))
 			errors.push("generatedFiles must be an array");
@@ -153,6 +146,7 @@ export function validateSupplementShapes(
 				fields(entry, `${path}.`, ["gitignore"], "boolean");
 			}
 	}
+
 	if (value.setupChecks !== undefined) {
 		if (!Array.isArray(value.setupChecks))
 			errors.push("setupChecks must be an array");
@@ -174,12 +168,18 @@ export function validateSupplementShapes(
 				fields(entry, `${path}.`, ["fast"], "boolean");
 			}
 	}
-	validateTypecheckShape(value.typecheck, checks);
-	validateCheckShape(value.check, checks);
-	validatePredeployShape(value.predeploy, checks);
+}
+
+/** `tasks` and `profiles`: named entries that share a name rule. */
+function validateNamedEntryShapes(
+	value: Record<string, unknown>,
+	checks: ShapeChecks,
+): void {
+	const { errors, record, check, strings, fields } = checks;
 	for (const kind of ["tasks", "profiles"] as const) {
 		const entries = value[kind];
 		if (entries === undefined || !record(entries, kind)) continue;
+
 		for (const [name, entry] of Object.entries(entries)) {
 			const path = `${kind}.${name}`;
 			// Colons allowed: `shop:seed` is how package scripts are named too.
@@ -194,6 +194,7 @@ export function validateSupplementShapes(
 				),
 			);
 			fields(entry, `${path}.`, ["description"], "string");
+
 			if (kind === "profiles") {
 				if (!strings(entry.apps) || entry.apps.length === 0)
 					errors.push(`${path}.apps must be a nonempty array of app names`);
@@ -210,73 +211,104 @@ export function validateSupplementShapes(
 			);
 		}
 	}
-	if (object(value.options)) {
-		const options = value.options;
-		if (options.envFiles !== undefined) {
-			if (!Array.isArray(options.envFiles))
-				errors.push("options.envFiles must be an array");
-			else
-				for (const [index, file] of options.envFiles.entries()) {
-					if (typeof file === "string" && file.length > 0) continue;
-					if (
-						!object(file) ||
-						typeof file.path !== "string" ||
-						!file.path ||
-						(file.optional !== undefined && typeof file.optional !== "boolean")
-					)
-						errors.push(
-							`options.envFiles.${index} must be a path or {path, optional}`,
-						);
-				}
-		}
-		errors.push(
-			...unknownKeyErrors(
-				options,
-				"options",
-				OPTIONS_KEYS,
-				RENAMED_KEYS.options,
-			),
-		);
-		errors.push(...checkoutFileErrors(options.checkoutFiles));
-		for (const type of ["boolean", "string"] as const)
-			fields(options, "options.", keysChecked(OPTIONS_KEYS, type), type);
-		if (options.autoShutdown !== false)
-			duration(options.autoShutdown, "options.autoShutdown");
-		if (
-			options.onAppFailure !== undefined &&
-			options.onAppFailure !== "keep-others" &&
-			options.onAppFailure !== "stop-run"
-		)
-			errors.push('options.onAppFailure must be "keep-others" or "stop-run"');
-		for (const name of ["hosts", "envFile"]) {
-			const option = options[name];
-			if (option === undefined || typeof option === "boolean") continue;
-			if (!record(option, `options.${name}`)) continue;
-			if (name === "hosts") {
-				errors.push(
-					...unknownKeyErrors(
-						option,
-						"options.hosts",
-						HOSTS_KEYS,
-						RENAMED_KEYS["options.hosts"],
-					),
-				);
-				fields(option, "options.hosts.", ["tld"], "string");
-				check(
-					option.services,
-					"options.hosts.services",
-					option.services === true || strings(option.services),
-					"true or an array of service names",
-				);
-			} else {
-				errors.push(
-					...unknownKeyErrors(option, "options.envFile", ENV_FILE_KEYS),
-				);
-				fields(option, "options.envFile.", ["path", "createFrom"], "string");
-				fields(option, "options.envFile.", ["values"], "function");
+}
+
+/** `options`, including the `hosts` and `envFile` groups it nests. */
+function validateOptionsShape(
+	value: Record<string, unknown>,
+	checks: ShapeChecks,
+): void {
+	const { errors, object, record, check, strings, fields, duration } = checks;
+	if (!object(value.options)) return;
+
+	const options = value.options;
+	if (options.envFiles !== undefined) {
+		if (!Array.isArray(options.envFiles))
+			errors.push("options.envFiles must be an array");
+		else
+			for (const [index, file] of options.envFiles.entries()) {
+				if (typeof file === "string" && file.length > 0) continue;
+				if (
+					!object(file) ||
+					typeof file.path !== "string" ||
+					!file.path ||
+					(file.optional !== undefined && typeof file.optional !== "boolean")
+				)
+					errors.push(
+						`options.envFiles.${index} must be a path or {path, optional}`,
+					);
 			}
+	}
+
+	errors.push(
+		...unknownKeyErrors(options, "options", OPTIONS_KEYS, RENAMED_KEYS.options),
+	);
+	errors.push(...checkoutFileErrors(options.checkoutFiles));
+	for (const type of ["boolean", "string"] as const)
+		fields(options, "options.", keysChecked(OPTIONS_KEYS, type), type);
+	if (options.autoShutdown !== false)
+		duration(options.autoShutdown, "options.autoShutdown");
+	if (
+		options.onAppFailure !== undefined &&
+		options.onAppFailure !== "keep-others" &&
+		options.onAppFailure !== "stop-run"
+	)
+		errors.push('options.onAppFailure must be "keep-others" or "stop-run"');
+
+	for (const name of ["hosts", "envFile"]) {
+		const option = options[name];
+		if (option === undefined || typeof option === "boolean") continue;
+		if (!record(option, `options.${name}`)) continue;
+
+		if (name === "hosts") {
+			errors.push(
+				...unknownKeyErrors(
+					option,
+					"options.hosts",
+					HOSTS_KEYS,
+					RENAMED_KEYS["options.hosts"],
+				),
+			);
+			fields(option, "options.hosts.", ["tld"], "string");
+			check(
+				option.services,
+				"options.hosts.services",
+				option.services === true || strings(option.services),
+				"true or an array of service names",
+			);
+		} else {
+			errors.push(
+				...unknownKeyErrors(option, "options.envFile", ENV_FILE_KEYS),
+			);
+			fields(option, "options.envFile.", ["path", "createFrom"], "string");
+			fields(option, "options.envFile.", ["values"], "function");
 		}
 	}
+}
+
+export function validateSupplementShapes(
+	value: Record<string, unknown>,
+	checks: ShapeChecks,
+): void {
+	const { errors, check, strings, secretsScope } = checks;
+	errors.push(
+		...unknownKeyErrors(value, "config", CONFIG_KEYS, RENAMED_KEYS.config),
+	);
+	secretsScope(value.secrets, "secrets");
+	check(
+		value.unsetEnv,
+		"unsetEnv",
+		strings(value.unsetEnv),
+		"an array of variable names",
+	);
+
+	validateSectionShapes(value, checks);
+	validateListShapes(value, checks);
+	validateTypecheckShape(value.typecheck, checks);
+	validateCheckShape(value.check, checks);
+	validatePredeployShape(value.predeploy, checks);
+	validateNamedEntryShapes(value, checks);
+	validateOptionsShape(value, checks);
 }
 
 function rootRelative(entry: string) {
