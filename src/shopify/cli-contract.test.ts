@@ -66,8 +66,9 @@ describe("Shopify captures under a terminal", () => {
 		const raw = `${frame(1)}${frame(1)}\r\n✅ Ready, watching for changes in your app\r\n`;
 		const found = [];
 		// As a pseudo-terminal delivers it: in arbitrary chunks.
-		for (let index = 0; index < raw.length; index += 37)
+		for (let index = 0; index < raw.length; index += 37) {
 			found.push(...scanner.push(raw.slice(index, index + 37)));
+		}
 		expect(
 			Object.fromEntries(found.map((entry) => [entry.name, entry.value])),
 		).toEqual({
@@ -108,8 +109,9 @@ describe("Shopify captures in a narrow pane", () => {
 		it(`reads the whole tunnel URL in ${size}-byte chunks, and nothing cut off`, () => {
 			const scanner = createOutputCaptureScanner(SHOPIFY_CAPTURES);
 			const found = [];
-			for (let index = 0; index < raw.length; index += size)
+			for (let index = 0; index < raw.length; index += size) {
 				found.push(...scanner.push(raw.slice(index, index + size)));
+			}
 			expect(
 				found
 					.filter((entry) => entry.name === "appUrl")
