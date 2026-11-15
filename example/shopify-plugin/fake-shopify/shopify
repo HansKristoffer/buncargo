@@ -18,6 +18,7 @@ if (command === "version") {
 	console.log("3.93.1");
 	process.exit(0);
 }
+
 if (command === "auth" || (command === "app" && sub === "config")) process.exit(0);
 if (!(command === "app" && sub === "dev")) {
 	console.error(`fake shopify: unsupported ${args.join(" ")}`);
@@ -33,6 +34,7 @@ if (!webDir) {
 	console.error("fake shopify: web_directories is empty; the real CLI would start every web");
 	process.exit(1);
 }
+
 const web = Bun.TOML.parse(readFileSync(join(webDir, "shopify.web.toml"), "utf8")) as {
 	port?: number;
 	commands: { dev: string };
@@ -64,6 +66,7 @@ const stop = () => {
 	proxy.stop(true);
 	process.exit(0);
 };
+
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
 await child.exited;
