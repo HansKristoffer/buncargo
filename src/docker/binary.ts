@@ -83,12 +83,11 @@ export function runDocker(
 	if (result.error) {
 		const { error } = result;
 		const code = "code" in error ? error.code : undefined;
-		const status: DockerRunStatus =
-			code === "ENOENT"
-				? "notFound"
-				: code === "ETIMEDOUT"
-					? "timedOut"
-					: "exit";
+
+		let status: DockerRunStatus = "exit";
+		if (code === "ENOENT") status = "notFound";
+		else if (code === "ETIMEDOUT") status = "timedOut";
+
 		return runResult(status, 1, "", error.message);
 	}
 
@@ -120,6 +119,7 @@ export async function runDockerAsync(
 		},
 	);
 	options.signal?.throwIfAborted();
+
 	const { exitCode, stdout, stderr } = result;
 	if (result.timedOut) return runResult("timedOut", exitCode, stdout, stderr);
 	if (exitCode === 0) return runResult("ok", exitCode, stdout, stderr);

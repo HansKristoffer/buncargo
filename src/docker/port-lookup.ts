@@ -2,16 +2,6 @@ import { portOwnersOf } from "../container-runtime/containers";
 import type { PortContainerOwner } from "../types";
 import { listDockerContainers, listDockerContainersAsync } from "./containers";
 
-export function parseDockerPublishedPort(
-	portsField: string,
-	port: number,
-): boolean {
-	const pattern = new RegExp(
-		`(?:^|,|\\s)(?:\\[::\\]|0\\.0\\.0\\.0|127\\.0\\.0\\.1|\\*):${port}->`,
-	);
-	return pattern.test(portsField) || new RegExp(`:${port}->`).test(portsField);
-}
-
 /**
  * Which Docker container is publishing each host port, from one `docker ps`:
  * for the port-owner lookups that name no runtime, and the synchronous ones,
