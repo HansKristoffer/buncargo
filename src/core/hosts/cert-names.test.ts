@@ -48,7 +48,7 @@ afterAll(() => unreadable?.cleanup());
 /**
  * One leaf serves every project on the machine. Minting it from the live route
  * registry alone meant a project stopping dropped its names, and starting it
- * again reminted — which rebinds the daemon and drops every other project's
+ * again reminted, which rebinds the daemon and drops every other project's
  * websockets. Two projects alternating reminted on every run.
  */
 describe("rememberCertNames", () => {
@@ -89,8 +89,8 @@ describe("rememberCertNames", () => {
 		).toEqual(["new.localhost"]);
 	});
 
-	// A caller that only wants the union — the second sync pass in
-	// `activateNamedHosts` — must not be able to erase a project by omission.
+	// A caller that only wants the union (the second sync pass in
+	// `activateNamedHosts`) must not be able to erase a project by omission.
 	it("does not erase a project when called with no names", async () => {
 		const a = checkout("a");
 		await rememberCertNames({

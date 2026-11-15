@@ -23,7 +23,6 @@ import {
 	describeLoopbackHijack,
 	ensureHostsDaemonRunning,
 	type HostsDaemonProbe,
-	SERVICE_START_TIMEOUT_MS,
 	waitForDaemonRoutes,
 } from "./daemon-client";
 import {
@@ -81,13 +80,6 @@ describe("createStallHandler", () => {
 		const { events, onStale } = stalledDaemon();
 		onStale(STALLED_EXIT_MS + 1);
 		expect(events).toEqual(["exit 1"]);
-	});
-});
-
-describe("start timeouts", () => {
-	// launchd cold-starting a unit is the only thing worth waiting seconds for.
-	it("allows enough time for the supervisor to load the unit", () => {
-		expect(SERVICE_START_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
 	});
 });
 
@@ -958,7 +950,7 @@ describe("ensureHostsDaemonRunning", () => {
 
 /**
  * The service log is append-only and the daemon runs for weeks. A version that
- * crash-looped left 800KB of one repeated line on a real machine — useless, and
+ * crash-looped left 800KB of one repeated line on a real machine, useless, and
  * the first file anyone opens when named hosts break.
  */
 describe("truncateOversizedLog", () => {

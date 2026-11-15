@@ -13,8 +13,9 @@ import { createPrivilegedRunner } from "./privileged";
 describe("createPrivilegedRunner", () => {
 	const dirs: string[] = [];
 	afterEach(() => {
-		for (const dir of dirs.splice(0))
+		for (const dir of dirs.splice(0)) {
 			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	const sibling = `/etc/.hosts.buncargo-${process.pid}.tmp`;

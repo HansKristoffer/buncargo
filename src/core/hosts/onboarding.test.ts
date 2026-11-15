@@ -17,8 +17,8 @@ const REASON =
 	"Named-hosts service runs buncargo 15.1.0 (protocol 1), older than this buncargo needs (protocol 2). Run `buncargo hosts install` to update it.";
 
 describe("repairStaleService", () => {
-	// The stale daemon is still serving, so this path must never fail the run —
-	// only tell the user what will bite them and how to fix it.
+	// The stale daemon is still serving, so this path must never fail the run.
+	// Only tell the user what will bite them and how to fix it.
 	it("carries the reason as a note when there is no TTY to prompt on", async () => {
 		let reinstalls = 0;
 		const result = await repairStaleService(REASON, {

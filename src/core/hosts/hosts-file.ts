@@ -38,14 +38,17 @@ function findManagedBlock(
 	while (start !== -1) {
 		const end = contents.indexOf(HOSTS_BLOCK_END, start);
 		if (end === -1) return undefined;
+
 		const next = contents.indexOf(
 			HOSTS_BLOCK_START,
 			start + HOSTS_BLOCK_START.length,
 		);
 		const orphan = next !== -1 && next < end;
 		if (!orphan) return { start, end };
+
 		start = next;
 	}
+
 	return undefined;
 }
 
@@ -58,6 +61,7 @@ export function extractManagedBlock(contents: string): {
 	if (!found) {
 		return { before: contents.replace(/\s*$/, ""), block: null, after: "" };
 	}
+
 	const { start, end } = found;
 	return {
 		before: contents.slice(0, start).replace(/\s*$/, ""),
@@ -68,11 +72,12 @@ export function extractManagedBlock(contents: string): {
 
 export function applyHostsBlock(contents: string, hostnames: string[]): string {
 	const { before, after } = extractManagedBlock(contents);
+
 	if (hostnames.length === 0) {
-		return (
-			[before, after].filter(Boolean).join("\n") + (before || after ? "\n" : "")
-		);
+		const remaining = [before, after].filter(Boolean).join("\n");
+		return remaining + (before || after ? "\n" : "");
 	}
+
 	const parts = [before, buildHostsBlock(hostnames), after].filter(Boolean);
 	return `${parts.join("\n\n")}\n`;
 }
@@ -84,7 +89,7 @@ const HOSTS_FILE_MODE = 0o644;
  * Replace the hosts file through a temp file and a rename.
  *
  * `writeFileSync` truncates in place, and every name resolution on the machine
- * reads this file — including the `localhost` entry the system itself depends
+ * reads this file, including the `localhost` entry the system itself depends
  * on. A resolver landing inside that window sees a truncated file and fails to
  * resolve names that are plainly there. A rename within `/etc` is atomic, so a
  * reader sees either the old file or the new one.
@@ -106,6 +111,7 @@ function writeHostsFileAtomically(filePath: string, contents: string): void {
 		dirname(filePath),
 		`.buncargo-hosts.${process.pid}.${Date.now()}.tmp`,
 	);
+
 	try {
 		writeFileSync(temp, contents, { mode });
 		chmodSync(temp, mode);
@@ -127,6 +133,7 @@ export function syncHostsFile(
 ): void {
 	const current = readFileSync(filePath, "utf-8");
 	const next = applyHostsBlock(current, hostnames);
+
 	if (next !== current) {
 		writeHostsFileAtomically(filePath, next);
 	}
@@ -158,6 +165,8 @@ export function cleanHostsFileAsRoot(
 	} catch (error) {
 		if (!isPermissionError(error)) throw error;
 	}
+
+	// Only the privileged write is left: this user cannot write the file.
 	const current = readFileSync(filePath, "utf-8");
 	const next = applyHostsBlock(current, []);
 	if (next !== current) runner.writeFile(filePath, next);

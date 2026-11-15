@@ -131,8 +131,8 @@ export interface StaleServiceRepairDeps {
 /**
  * Repair a service that answers on :443 but runs the wrong code.
  *
- * A stale service is not a failure — it is serving — so this cannot abort the
- * run. But it also cannot be silent: reinstalling needs `sudo`, so the daemon
+ * A stale service is not a failure, since it is serving, so this cannot abort
+ * the run. But it also cannot be silent: reinstalling needs `sudo`, so the daemon
  * has no way to update itself, and left as a passive warning it just fills
  * `/var/log/buncargo-hosts.log` with reload failures for whatever the old bundle
  * cannot handle. Every edge is injected so the branching is testable without a
@@ -147,8 +147,10 @@ export async function repairStaleService(
 		caPath: deps.caPath(),
 		notes: [staleService],
 	};
+
 	if (!deps.prompt) return asIs;
 	if ((await deps.prompt(staleService)) === "skip") return asIs;
+
 	try {
 		const notes = await deps.reinstall();
 		return {
@@ -203,6 +205,7 @@ export async function installHosts(
 	// files, so "the CA exists" skipped this on the reinstall that needed it.
 	// `mkcert -install` asks for nothing when the CA is already trusted.
 	deps.installTrust(mkcertPath);
+
 	// Mint before the service starts. The daemon cannot bind :443 without a
 	// leaf, and it will not mint one itself.
 	await deps.mintCertificate();
@@ -217,6 +220,7 @@ export async function installHosts(
 	if (!ready.ok) {
 		throw new Error(ready.message ?? "Named-hosts daemon failed to start");
 	}
+
 	return notes;
 }
 
@@ -266,8 +270,10 @@ export async function uninstallHosts(
 	deps: HostsUninstallDeps,
 ): Promise<string[]> {
 	const warnings: string[] = [];
+
 	deps.removeService();
 	deps.removeTrust();
+
 	// As root when needed: the daemon that wrote the block is stopped now, and
 	// the block left behind points every hostname at a proxy that is gone.
 	try {
@@ -276,9 +282,11 @@ export async function uninstallHosts(
 		const message = `Could not remove buncargo's block from ${DEFAULT_HOSTS_FILE} (${getErrorMessage(error)}); its hostnames still point at 127.0.0.1. Run \`buncargo hosts uninstall\` again from a terminal, or delete the lines from \`${HOSTS_BLOCK_START}\` to \`${HOSTS_BLOCK_END}\` with \`sudo $EDITOR ${DEFAULT_HOSTS_FILE}\`.`;
 		warnings.push(message);
 	}
+
 	await deps.clearRoutes();
 	deps.removeCertNames();
 	deps.persistDecline();
+
 	return warnings;
 }
 
@@ -328,6 +336,7 @@ export async function ensureHostsReady(input: {
 			message: "Named hosts are not enabled in config.",
 		};
 	}
+
 	// Tailscale mode never reaches here, but must never install the daemon.
 	if (hostsMode() !== "loopback") {
 		return {
@@ -337,6 +346,7 @@ export async function ensureHostsReady(input: {
 				"Loopback named hosts are off (CI, BUNCARGO_HOSTS=0 or BUNCARGO_HOSTS=tailscale).",
 		};
 	}
+
 	if (!isHostsPlatformSupported()) {
 		return {
 			ok: false,
@@ -344,6 +354,7 @@ export async function ensureHostsReady(input: {
 			message: "Named hosts are supported on macOS and Linux only.",
 		};
 	}
+
 	if (hasDeclinedHosts()) {
 		return {
 			ok: false,
@@ -443,6 +454,7 @@ export async function ensureHostsReady(input: {
 			message: ready.message ?? "Named-hosts daemon is not running.",
 		};
 	}
+
 	return { ok: true, caPath: getCaPath(resolvedMkcertPath()) };
 }
 
@@ -464,6 +476,7 @@ export function hostsServiceFix(input: {
 	| { action: "needs-terminal"; issue: string } {
 	const { installed, stale, wedged, interactive } = input;
 	if (installed && !stale && !wedged) return { action: "none" };
+
 	if (!interactive) {
 		const why =
 			stale ??
@@ -475,6 +488,7 @@ export function hostsServiceFix(input: {
 			issue: `${why} Fixing it needs your password: run \`buncargo hosts install\` (or \`buncargo doctor --fix\`) in a terminal.`,
 		};
 	}
+
 	const note = stale
 		? "Reinstalled the named-hosts service after a stale install"
 		: wedged
@@ -499,10 +513,12 @@ export async function doctorFixHosts(
 	const fixed: string[] = [];
 	const issues: HostsFixIssue[] = [];
 	const interactive = options.interactive ?? isInteractive();
+
 	// A choice, not a fault: `buncargo hosts install` is how it is undone, and
 	// doctor says so rather than asking for a password to set up something
 	// every run would go on ignoring.
 	if (hasDeclinedHosts()) return { fixed, issues };
+
 	try {
 		const mkcertPath = await ensureMkcert();
 		if (!isCaTrusted(mkcertPath)) {
@@ -517,9 +533,11 @@ export async function doctorFixHosts(
 			installTrust(mkcertPath);
 			fixed.push("Trusted the local mkcert CA");
 		}
+
 		// A certificate that no longer covers the registered hostnames stops the
 		// daemon binding, and the daemon cannot repair that itself.
 		await syncCertificateForRoutes(machineMkcert);
+
 		const stale = describeStaleHostsService();
 		const installed = isHostsServiceInstalled();
 		// An installed service that is not answering is exactly the case doctor
@@ -528,12 +546,16 @@ export async function doctorFixHosts(
 		// healthy from the outside while every named URL 404s.
 		const wedged = installed && !stale && (await isHostsDaemonWedged());
 		const fix = hostsServiceFix({ installed, stale, wedged, interactive });
+
 		const needsTerminal = typedSwitch(fix, "action", {
 			none: () => false,
 			install: ({ note }) => {
 				const { kept } = installHostsService(machineServiceInstall());
-				if (kept) issues.push({ kind: "service", message: kept });
-				else fixed.push(note);
+				if (kept) {
+					issues.push({ kind: "service", message: kept });
+				} else {
+					fixed.push(note);
+				}
 				return false;
 			},
 			"needs-terminal": ({ issue }) => {
@@ -542,16 +564,19 @@ export async function doctorFixHosts(
 			},
 		});
 		if (needsTerminal) return { fixed, issues };
+
 		const ready = await ensureHostsDaemonRunning(hostsDaemonProbe(), {
 			timeoutMs: SERVICE_START_TIMEOUT_MS,
 		});
-		if (!ready.ok)
+		if (!ready.ok) {
 			issues.push({
 				kind: "daemon",
 				message: ready.message ?? "Named-hosts daemon is not running.",
 			});
+		}
 	} catch (error) {
 		issues.push({ kind: "other", message: toHostsUserMessage(error) });
 	}
+
 	return { fixed, issues };
 }

@@ -231,7 +231,7 @@ describe("applyHostPlanToUrls", () => {
 
 /**
  * The churn this exists to remove: a new worktree adds a label in front of
- * every hostname, so each fresh checkout used to force a remint — and a remint
+ * every hostname, so each fresh checkout used to force a remint, and a remint
  * rebinds the daemon, dropping every proxied websocket on the machine.
  */
 describe("certificateHostnames", () => {

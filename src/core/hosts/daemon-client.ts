@@ -18,7 +18,7 @@ import { describePortSquatter } from "./squatter";
  *
  * Deliberately separate from the daemon itself. This reaches for the service
  * manifest and, to name whatever else is holding `:443`, for the container
- * runtimes — none of which belongs in the single file a root launchd job
+ * runtimes, none of which belongs in the single file a root launchd job
  * executes.
  */
 
@@ -44,7 +44,7 @@ export async function isHostsDaemonHealthy(port?: number): Promise<boolean> {
  *
  * Health alone is not enough: the listener and the reload loop are independent,
  * so a daemon whose loop stopped keeps returning 200 while every named URL
- * 404s against a frozen map. Both cases want the same repair — reload it. So
+ * 404s against a frozen map. Both cases want the same repair: reload it. So
  * does an outdated daemon, which the reload replaces with this version's.
  */
 export async function isHostsDaemonWedged(): Promise<boolean> {
@@ -65,7 +65,7 @@ export const OUTDATED_DAEMON_MESSAGE = `the named-hosts daemon is older than thi
  *
  * Health over `127.0.0.1` proves nothing about `::1`, and browsers resolve
  * `*.localhost` to both and try `::1` first. A dual-stack server on the same
- * port — Node's default `listen(443)`, Portless, Caddy — binds beside a proxy
+ * port (Node's default `listen(443)`, Portless, Caddy) binds beside a proxy
  * that only holds one family, and its plain-HTTP answer surfaces in the
  * browser as ERR_SSL_PROTOCOL_ERROR while every CLI check passes.
  */
@@ -83,6 +83,7 @@ export async function describeLoopbackHijack(
 	);
 	const hostname = LOOPBACK_HOSTNAMES.find((_, index) => hijacked[index]);
 	if (hostname === undefined) return undefined;
+
 	const daemonPid = readDaemonPid();
 	const squatter = describePortSquatter(httpsPort, {
 		ignorePids: daemonPid === undefined ? [] : [daemonPid],
@@ -127,6 +128,7 @@ export async function waitForDaemonRoutes(
 	options: { timeoutMs?: number; port?: number } = {},
 ): Promise<DaemonRouteCheck> {
 	if (hostnames.length === 0) return { ok: true };
+
 	const deadline = Date.now() + (options.timeoutMs ?? ROUTE_PICKUP_TIMEOUT_MS);
 	let missing: string[] = [...hostnames];
 	let everAnswered = false;
@@ -181,10 +183,15 @@ function describeRouteGap(input: {
 	port: number;
 }): string {
 	const names = input.missing.join(", ");
-	if (!input.everAnswered)
+
+	if (!input.everAnswered) {
 		return `the daemon on :${input.port} stopped answering. Run \`buncargo hosts install\`.`;
-	if (input.bindError !== undefined)
+	}
+
+	if (input.bindError !== undefined) {
 		return `the daemon could not load the certificate covering ${names} (${input.bindError}). Check ${hostsServiceLogHint()}, then run \`buncargo hosts install\`.`;
+	}
+
 	return `the daemon is not serving ${names}. Run \`buncargo hosts install\`.`;
 }
 
@@ -243,7 +250,7 @@ async function pollHealthy(
  *
  * Never starts one itself. A user-level daemon could not bind `:443` alongside
  * the installed service anyway, and now that the listener sets `SO_REUSEPORT`
- * — so a reload can hand over without a gap — a second process would bind
+ * so a reload can hand over without a gap, a second process would bind
  * *successfully* and the two would answer from separate route maps at random.
  * The service is the only thing that owns this port; every caller here reaches
  * this after `runHostsInstall` has loaded it.

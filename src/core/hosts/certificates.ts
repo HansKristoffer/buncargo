@@ -111,37 +111,44 @@ export async function syncCertificateForRoutes(
 	} = {},
 ): Promise<CertificateFiles> {
 	const certPath = getCertPath();
+	const include = options.include ?? [];
 	let mkcertPath = mkcert.installed();
+
 	for (;;) {
 		const result = await withFileLock(certPath, async () => {
 			const routes = await loadHostRoutes();
+
 			// Remembered names as well as live routes: a certificate minted from
 			// the registry alone loses a project's names the moment it stops, and
 			// reminting on its next run rebinds the daemon and drops every other
 			// project's websockets.
 			const remembered = await rememberCertNames({
 				root: options.root,
-				names: options.include ?? [],
+				names: include,
 			});
 			const hostnames = [
 				...new Set([
 					...routes.map((route) => route.hostname),
-					...(options.include ?? []),
+					...include,
 					...remembered,
 				]),
 			].sort();
 			const wanted = hostnamesForCertificate(hostnames);
+
 			// Resolving/downloading a tool can take minutes. Release the lock
 			// so the daemon can go on reading the last valid certificate, then
 			// recompute the union, which a concurrent run may have widened.
 			if (!mkcertPath && certNeedsRenewal(certPath, wanted)) return undefined;
+
 			const minted = mintCert(wanted, {
 				mkcertPath,
 				timeoutMs: MINT_TIMEOUT_MS,
 			});
 			return { certPath: minted.certPath, keyPath: minted.keyPath };
 		});
+
 		if (result) return result;
+
 		mkcertPath = await downloadMkcert(mkcert);
 	}
 }
@@ -202,6 +209,7 @@ export function certificateServes(
 ): ((hostname: string, now: number) => boolean) | undefined {
 	const leaf = parseCertificateLeaf(certPem);
 	if (leaf === undefined || Number.isNaN(leaf.validTo)) return undefined;
+
 	return (hostname, now) =>
 		leaf.validTo > now && certificateCovers(leaf.names, hostname);
 }
@@ -220,10 +228,12 @@ export function describeCertificateGap(
 	if (!existsSync(certPath)) {
 		return `Named-hosts certificate is missing at ${certPath}. Run \`buncargo hosts install\`.`;
 	}
+
 	const leaf = readCertificateLeaf(certPath);
 	if (!leaf) {
 		return `Named-hosts certificate at ${certPath} could not be read. Run \`buncargo hosts install\`.`;
 	}
+
 	const shortfall = certificateShortfall(
 		leaf,
 		hostnamesForCertificate(hostnames),
