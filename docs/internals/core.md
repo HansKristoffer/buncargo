@@ -12,9 +12,9 @@ Cross-cutting utilities in `src/core/` that most features touch.
 - `child-env.ts` is the environment of every process started for the project (apps, `exec`,
   `slot`, tasks, migrations, the seed, prisma): never the connect tokens, and never the config's
   `unsetEnv`, which the environment that spawns it passes down. It was module state once, and the
-  environment built last decided for every environment in the process. buncargo's own tools (the connect coordinator, frpc, cloudflared,
-  the Infisical CLI) get `connectProcessEnv` from the same module: no connect tokens, but the full
-  environment.
+  environment built last decided for every environment in the process. buncargo's own tools (the
+  connect coordinator, frpc, cloudflared, the Infisical CLI) get `connectProcessEnv` from the same
+  module: no connect tokens, but the full environment.
 - `state-paths.ts` owns both state directories: `~/.buncargo` (machine-wide: routes, runs,
   certificates, downloaded tools) and `<root>/.buncargo` (per-checkout: tunnel
   registry, typecheck artifacts), plus the `sudo`-aware home resolution and chown that make the
@@ -46,11 +46,9 @@ Cross-cutting utilities in `src/core/` that most features touch.
   free, but it is still a fork and an exec, reached for `docker`, `container` and `mkcert` before a
   run starts anything.
 - `utils.ts` re-exports hanzio's `promiseTimeout` as `sleep`, because `buncargo/api` publishes it.
-  Internal code imports `promiseTimeout` from `hanzio` directly: `utils.ts`
-  also holds `getEnvVar` and so imports the checkout view (port allocation, the host plan, the
-  network helpers), and
-  taking `sleep` from it once pulled that whole graph into the single file a root launchd job
-  executes.
+  Internal code imports `promiseTimeout` from `hanzio` directly: `utils.ts` also holds `getEnvVar`
+  and so imports the checkout view (port allocation, the host plan, the network helpers). Taking
+  `sleep` from it once pulled that whole graph into the single file a root launchd job executes.
 - `timing.ts` measures CLI entry through actual app readiness (or startup failure), including
   config/ports, preparation, tunnels and both waves. `--timing-json` includes numeric-only startup
   metrics. Keep diagnostics free of commands, secrets and environment values; counters are dormant
@@ -58,7 +56,7 @@ Cross-cutting utilities in `src/core/` that most features touch.
 
 ## Shared answers
 
-- `prompt.ts` is the one prompt primitive: `askChoice`/`askConfirm`, `isInteractive`, decline
+- `prompt.ts` is the one module that asks prompts: `askChoice`/`askConfirm`, `isInteractive`, decline
   markers, and `claimFirstRunPrompt`. That last one is why it exists: "at most one first-run setup
   question per run" cannot be enforced while each prompt owns its own gating, and a fresh machine
   can otherwise hit both named-hosts setup and the menu bar offer in one `dev`. Ctrl-C and Ctrl-D

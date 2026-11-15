@@ -20,8 +20,8 @@ context. `secrets ls` prints key names, `secrets check` key counts.
 - The CLI session token is cached per site and binary, and a universal-auth token per site and
   identity, alongside scope fetches, and cleared by `clearScopeSecretsCache`: N scopes cost one
   sign-in and N lists. Organization exchanges stay per scope. A scope's `only` and `exclude` are
-  applied after the cache, so scopes that differ only in them share one fetch. A failed `user get token` is
-  not cached. A token Infisical answers 401 to (expired, or a logout elsewhere) is forgotten and
+  applied after the cache, so scopes that differ only in them share one fetch. A failed
+  `user get token` is not cached. A token Infisical answers 401 to (expired, or a logout elsewhere) is forgotten and
   the CLI asked once more, so a long run's later scopes do not fail on what its first one cached.
 - The Infisical CLI is only asked for `infisical user get token`, under a `withFileLock` on
   `~/.buncargo/infisical-cli`, because concurrent Infisical CLI processes hang. When
@@ -55,8 +55,7 @@ context. `secrets ls` prints key names, `secrets check` key counts.
   site among a set of scopes; it is the token the fetches use (cached per site), so it costs no
   extra process. `start()` awaits it for the scopes it prefetches, before the claim; `dev` fires
   it for the selected apps' and the config-level scopes right after selection and awaits it
-  before named hosts, so it
-  overlaps the checks and preflight; `run` awaits it before a task's services. `exec` and a task
+  before named hosts, so it overlaps the checks and preflight; `run` awaits it before a task's services. `exec` and a task
   without services need nothing extra: their own first fetch throws the same error just as fast.
   `loadAppSecrets` and `resolveSecrets` rethrow it rather than warn. `toCliError` turns any
   `SecretsError` into its message and `Fix:` line, which is why `errors.ts` imports nothing.

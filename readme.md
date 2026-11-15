@@ -4,32 +4,32 @@ A Bun-first development environment toolkit. Define Docker services, app servers
 
 ![BuncargoBar showing a running project, its apps and services](https://raw.githubusercontent.com/HansKristoffer/buncargo/main/buncargo-topbar.png)
 
-*[BuncargoBar](menubar/README.md), the optional menu bar app: every running project, worktree, app and service - open a URL, copy a connection string, or stop one of them.*
+*[BuncargoBar](menubar/README.md), the optional menu bar app: every running project, worktree, app and service. Open a URL, copy a connection string, or stop one of them.*
 
 ## Why Buncargo?
 
 Local development environments are fragile: hand-written compose files, scattered ports, and conflicts when two checkouts run at once. Buncargo is the single source of truth. It generates Compose, allocates a unique port block per project (and per worktree), starts only the services the selected apps need, and tears containers down when the CLI is gone.
 
-## Key Features
+## Key features
 
-- **Single config file** - services, apps, ports, URLs, migrations, hooks
-- **Auto-generated Docker Compose** - stamped with `buncargo.*` labels
-- **Port allocation** - hash of `projectPrefix` + worktree, then probe and claim the block in `~/.buncargo/offsets.json`
-- **Built-in presets** - Postgres, Redis, ClickHouse
-- **Dev server orchestration** - reuse healthy apps, kill own orphans, fail on foreign port owners
-- **Terminal UI** - the default in a terminal (`--no-tui` for prefixed lines): every app in its own terminal pane, full-screen apps (Shopify CLI, Expo) render natively, an Overview interleaves the rest
-- **Non-essential apps and logs** - `essential: false` apps stop without ending the run (`r` restarts); every run's output in `.buncargo/logs`, read with `buncargo logs`
-- **Phased public tunnels** - start backend, wait for health, open tunnels, then start apps that need `*_PUBLIC_URL`
-- **Checkout files** - gitignored `.env.local` files reach every worktree and clone from one copy per machine, without overwriting local edits (`buncargo files`)
-- **Prisma integration** - `bunx buncargo prisma` with the right `DATABASE_URL`, and `buncargo predeploy` to migrate and seed before a deploy
-- **Named HTTPS URLs** - opt-in `https://api.myapp.localhost` via a shared loopback proxy (mkcert + `:443`), or on a remote machine `https://<machine>.ts.net:<port>` through Tailscale Serve with `BUNCARGO_HOSTS=tailscale`
-- **Watchdog** - one sweeper per machine removes containers once their run has ended, their checkout is deleted, or they are left stopped
-- **Run registry + menu bar app** - every active run in `~/.buncargo/runs.json`, surfaced by `buncargo runs` and BuncargoBar
-- **Works under AI agents** - `dev --detach` returns once the apps are up, `wait`, `logs`, `status --json`, `env --get DATABASE_URL` and `sql` answer what agents otherwise dig out of logs and `docker ps`; `buncargo help agents` is their guide
+- **Single config file**: services, apps, ports, URLs, migrations, hooks
+- **Auto-generated Docker Compose**: stamped with `buncargo.*` labels
+- **Port allocation**: hash of `projectPrefix` + worktree, then probe and claim the block in `~/.buncargo/offsets.json`
+- **Built-in presets**: Postgres, Redis, ClickHouse
+- **Dev server orchestration**: reuse healthy apps, kill own orphans, fail on foreign port owners
+- **Terminal UI**: the default in a terminal (`--no-tui` for prefixed lines): every app in its own terminal pane, full-screen apps (Shopify CLI, Expo) render natively, an Overview interleaves the rest
+- **Non-essential apps and logs**: `essential: false` apps stop without ending the run (`r` restarts); every run's output in `.buncargo/logs`, read with `buncargo logs`
+- **Phased public tunnels**: start backend, wait for health, open tunnels, then start apps that need `*_PUBLIC_URL`
+- **Checkout files**: gitignored `.env.local` files reach every worktree and clone from one copy per machine, without overwriting local edits (`buncargo files`)
+- **Prisma integration**: `bunx buncargo prisma` with the right `DATABASE_URL`, and `buncargo predeploy` to migrate and seed before a deploy
+- **Named HTTPS URLs**: opt-in `https://api.myapp.localhost` via a shared loopback proxy (mkcert + `:443`), or on a remote machine `https://<machine>.ts.net:<port>` through Tailscale Serve with `BUNCARGO_HOSTS=tailscale`
+- **Watchdog**: one sweeper per machine removes containers once their run has ended, their checkout is deleted, or they are left stopped
+- **Run registry + menu bar app**: every active run in `~/.buncargo/runs.json`, surfaced by `buncargo runs` and BuncargoBar
+- **Works under AI agents**: `dev --detach` returns once the apps are up, `wait`, `logs`, `status --json`, `env --get DATABASE_URL` and `sql` answer what agents otherwise dig out of logs and `docker ps`; `buncargo help agents` is their guide
 
 Buncargo requires Bun 1.4.4 or newer on macOS or Linux (WSL on Windows).
 
-## Quick Start
+## Quick start
 
 ### 1. Install
 
@@ -243,7 +243,7 @@ The data survives: it is imported from `.firebase-emulator-data` on start and ex
 
 ### Built-in service helpers
 
-All of `service.postgres()`, `redis()`, `clickhouse()`, `mailpit()`, `typesense()`, `minio()` accept `port`, `expose`, `healthCheck`, `serviceName`, and `docker`. Beyond that each takes only what it honors: `database` / `user` / `password` on `postgres` and `clickhouse` (their URLs carry credentials), `secondaryPort` on `clickhouse` and `mailpit`, `apiKey` on `typesense`, `user` / `password` on `minio` (the root credentials, `minioadmin` by default, also given to the apps as `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` beside `MINIO_URL`). Anything else is a type error - use `service.custom({ ... })` for a service that needs more.
+All of `service.postgres()`, `redis()`, `clickhouse()`, `mailpit()`, `typesense()`, `minio()` accept `port`, `expose`, `healthCheck`, `serviceName`, and `docker`. Beyond that each takes only what it honors: `database` / `user` / `password` on `postgres` and `clickhouse` (their URLs carry credentials), `secondaryPort` on `clickhouse` and `mailpit`, `apiKey` on `typesense`, `user` / `password` on `minio` (the root credentials, `minioadmin` by default, also given to the apps as `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` beside `MINIO_URL`). Anything else is a type error. Use `service.custom({ ... })` for a service that needs more.
 
 Health check defaults follow what each image can actually run: `pg_isready` on postgres, `redis-cli` on redis, in-container HTTP on clickhouse, and `tcp` on mailpit, typesense and minio, whose images ship no `wget` or `curl` to probe with. A `tcp` check emits no Compose healthcheck and is polled from the host instead; minio keeps one that bash runs, so a job can wait for it.
 
