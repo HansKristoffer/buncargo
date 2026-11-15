@@ -58,7 +58,7 @@ Cross-cutting utilities in `src/core/` that most features touch.
 
 ## Shared answers
 
-- `prompt.ts` is the one prompt primitive: `askChoice`/`askConfirm`, `isInteractive`, decline
+- `prompt.ts` is the one module that asks prompts: `askChoice`/`askConfirm`, `isInteractive`, decline
   markers, and `claimFirstRunPrompt`. That last one is why it exists: "at most one first-run setup
   question per run" cannot be enforced while each prompt owns its own gating, and a fresh machine
   can otherwise hit both named-hosts setup and the menu bar offer in one `dev`. Ctrl-C and Ctrl-D

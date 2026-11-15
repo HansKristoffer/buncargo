@@ -73,7 +73,7 @@ only on purpose.
   completion references must target jobs.
 - `core/env-input.ts` is the only dotenv input loader. It returns an isolated root-relative
   snapshot after config evaluation. Shared generated values beat defaults; app overrides stay
-  last. `exec` uses the existing argv execution primitive and persisted ports, without startup or
+  last. `exec` uses the existing argv execution path and persisted ports, without startup or
   probes.
 
 ## Topics

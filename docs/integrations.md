@@ -65,7 +65,7 @@ export function stripe(options: {
 
 - **Merge, don't replace.** `mergeConfigs(config, { apps, env })` composes `env` builders and merges groups; spreading `config.apps` keeps the user's apps. An app the user defines should win over one you add under the same name.
 - **The user's env wins.** Put your `env` values beneath the config's own, so a user can always override one: `mergeConfigs({ ...config, env: yourEnv }, { env: config.env })`.
-- **Use the primitives.** Ordering is `startAfter`, values from output are `captures` (with `label` to show them, `env` to export them and `secret` to keep a credential out of the run registry), files other tools read are `generatedFiles`, one-at-a-time resources are `exclusive`, one-off builds are `prebuild`, workspaces are `discoverApps`. The Shopify integration is almost entirely these.
+- **Use the existing options.** Ordering is `startAfter`, values from output are `captures` (with `label` to show them, `env` to export them and `secret` to keep a credential out of the run registry), files other tools read are `generatedFiles`, one-at-a-time resources are `exclusive`, one-off builds are `prebuild`, workspaces are `discoverApps`. The Shopify integration is almost entirely these.
 - **Be lenient in `config()`.** A missing file (a toml in CI, a fresh clone) should leave a working config and a failing check, not a config error that breaks every command.
 - **Keep checks honest about cost.** Anything that spawns a process or calls a network is `fast: false`; `dev` runs the fast ones on every start in every worktree.
 - **Declare the names you add.** Type the factory's return with the apps and services `config()` adds, as `stripe()` does with `BuncargoIntegration<{ apps: "stripeListen" }>` (services go in `services`). A config that lists the integration can then name them in `requiredServices`, `requiredApps`, `startAfter`, `tasks` and `profiles`; other configs cannot.
@@ -101,5 +101,5 @@ export function stripe(options: {
 - `generatedFiles` writes `firebase.buncargo.json` beside `firebase.json`, with every port written out and listen hosts defaulting to `127.0.0.1`.
 - The `firebase` app lists every other emulator port as `extraPorts`, so the allocator claims and probes them with the checkout's block.
 - `appEnv` gives the `firebase` app a short temp dir of its own, and `hooks.beforeServers` creates it.
-- `setupChecks`: CLI installed, `firebase.json` present and configuring an emulator, Java on `PATH` when a JVM emulator runs, the data directory gitignored, CLI version in the tested 13.x–15.x range.
+- `setupChecks`: CLI installed, `firebase.json` present and configuring an emulator, Java on `PATH` when a JVM emulator runs, the data directory gitignored, CLI version in the tested 13.x to 15.x range.
 - `describe`: the Emulator UI.
