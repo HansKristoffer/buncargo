@@ -74,7 +74,7 @@ export function serviceContainerOf(
 export function portOwnersOf(
 	containers: readonly RuntimeContainer[],
 	/** The runtime that listed them, recorded on each owner. */
-	runtime?: ContainerRuntimeName,
+	runtime: ContainerRuntimeName,
 ): Map<number, PortContainerOwner> {
 	const owners = new Map<number, PortContainerOwner>();
 	for (const container of containers) {

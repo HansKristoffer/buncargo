@@ -12,7 +12,11 @@ import {
 	routesDownRemoves,
 } from "../core/hosts";
 import { releaseLeases } from "../core/leases";
-import { askConfirm, PromptInterruptedError } from "../core/prompt";
+import {
+	askConfirm,
+	isInteractive,
+	PromptInterruptedError,
+} from "../core/prompt";
 import {
 	flushRunPatches,
 	recordAppUrls,
@@ -114,7 +118,6 @@ import {
 	type RunFailure,
 } from "./run-failure";
 import {
-	isInteractive,
 	promptTakeover,
 	promptUnhealthyTakeover,
 	stopRunningApps,

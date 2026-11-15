@@ -1,12 +1,10 @@
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import { getPortOwnerAsync, killPortOwner } from "../core/process";
 import { stopWorker } from "../core/process/worker-ownership";
-import { askConfirm, isInteractive } from "../core/prompt";
+import { askConfirm } from "../core/prompt";
 import { joinColoredNames } from "../core/style";
 import type { ResolvedApp } from "../types";
 import * as log from "./log";
-
-export { isInteractive };
 
 // Taking over apps another `buncargo dev` is already serving.
 //
