@@ -42,6 +42,18 @@ function appendRequest(
 }
 
 /**
+ * Moves `file` to `aside` before reading it, so a request appended meanwhile
+ * lands in a new file instead of being deleted unread. Throws when `file` is
+ * gone (taken or withdrawn already).
+ */
+function takeRequestLines(file: string, aside: string): string[] {
+	renameSync(file, aside);
+	const lines = readFileSync(aside, "utf8").split("\n").filter(Boolean);
+	rmSync(aside, { force: true });
+	return lines;
+}
+
+/**
  * Hand each batch of requests to `handle` as it arrives, until the returned
  * stop. Requests wait in their file until `ready()`: one read before the run
  * can act on it would be lost.
@@ -57,19 +69,18 @@ function watchRequests(
 	const taken = `${file}.taken`;
 	const timer = setInterval(() => {
 		if (!existsSync(file) || !ready()) return;
-		let lines: string[] = [];
+
+		let lines: string[];
 		try {
-			// Moved aside before it is read: a request appended meanwhile lands
-			// in a new file for the next poll instead of being deleted unread.
-			renameSync(file, taken);
-			lines = readFileSync(taken, "utf8").split("\n").filter(Boolean);
-			rmSync(taken, { force: true });
+			lines = takeRequestLines(file, taken);
 		} catch {
 			return;
 		}
+
 		handle(lines);
 	}, POLL_MS);
 	timer.unref?.();
+
 	return () => {
 		clearInterval(timer);
 		rmSync(file, { force: true });
@@ -109,8 +120,7 @@ export async function awaitRestartTaken(
 
 /**
  * Take back request `id` nobody took, leaving any other request in the
- * file. Moved aside first, as the run does, so a request appended meanwhile
- * is not lost.
+ * file.
  */
 export function withdrawRestartRequest(
 	root: string,
@@ -119,15 +129,15 @@ export function withdrawRestartRequest(
 ): void {
 	const file = requestFile(root, sessionId, "restart");
 	const aside = `${file}.withdrawn-${randomUUID()}`;
+
 	let lines: string[];
 	try {
-		renameSync(file, aside);
-		lines = readFileSync(aside, "utf8").split("\n").filter(Boolean);
-		rmSync(aside, { force: true });
+		lines = takeRequestLines(file, aside);
 	} catch {
 		// Taken after all, or already withdrawn.
 		return;
 	}
+
 	const kept = lines.filter((line) => parseRequest(line)?.id !== id);
 	if (kept.length > 0) appendFileSync(file, `${kept.join("\n")}\n`);
 }
@@ -160,14 +170,18 @@ export function watchRestartRequests(
 		"restart",
 		(lines) => {
 			const requests = lines.flatMap((line) => parseRequest(line) ?? []);
-			for (const [app, asked] of Map.groupBy(requests, (entry) => entry.app))
+
+			for (const [app, asked] of Map.groupBy(requests, (entry) => entry.app)) {
 				void restart(app).then((reply) => {
-					for (const { id } of asked)
+					for (const { id } of asked) {
 						writeReply(root, sessionId, "restart", id, reply);
+					}
 				});
+			}
 		},
 		ready,
 	);
+
 	return () => {
 		stop();
 		rmSync(repliesDir(root, sessionId, "restart"), {
@@ -180,9 +194,9 @@ export function watchRestartRequests(
 function parseRequest(line: string): { id: string; app: string } | undefined {
 	try {
 		const { id, app } = JSON.parse(line) as { id?: unknown; app?: unknown };
-		return typeof id === "string" && typeof app === "string"
-			? { id, app }
-			: undefined;
+		if (typeof id !== "string" || typeof app !== "string") return undefined;
+
+		return { id, app };
 	} catch {
 		// A torn line: the request is lost, not the run.
 		return undefined;
@@ -239,6 +253,7 @@ function writeReply(
 	if (!REQUEST_ID.test(id)) return;
 	const dir = repliesDir(root, sessionId, kind);
 	const path = join(dir, id);
+
 	try {
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(`${path}.tmp`, JSON.stringify(reply));
@@ -266,29 +281,28 @@ export function watchSendRequests(
 				try {
 					const { id, app, text } = JSON.parse(line) as {
 						id?: unknown;
-						app: string;
-						text: string;
+						app?: unknown;
+						text?: unknown;
 					};
 					if (typeof app !== "string" || typeof text !== "string") continue;
+
 					const refusal = send(app, text);
-					if (typeof id === "string")
-						writeReply(
-							root,
-							sessionId,
-							"send",
-							id,
-							refusal === undefined
-								? { delivered: true }
-								: { delivered: false, reason: refusal },
-						);
+					if (typeof id !== "string") continue;
+
+					const reply: SendReply =
+						refusal === undefined
+							? { delivered: true }
+							: { delivered: false, reason: refusal };
+					writeReply(root, sessionId, "send", id, reply);
 				} catch {
 					// A torn line: the request is lost, not the run.
 				}
 			}
-			// Always: a send the run cannot deliver is answered with why.
 		},
+		// Always ready: a send the run cannot deliver is answered with why.
 		() => true,
 	);
+
 	return () => {
 		stop();
 		rmSync(repliesDir(root, sessionId, "send"), {

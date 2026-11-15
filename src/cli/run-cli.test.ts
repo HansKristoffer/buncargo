@@ -52,10 +52,6 @@ import { requestRestart } from "./restart-requests";
 import { decideSpawn, runCli, withTakenOver } from "./run-cli";
 import * as takeover from "./takeover";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// runCli + expose (stub env, mocked tunnel)
-// ═══════════════════════════════════════════════════════════════════════════
-
 // `runCli` publishes every run into `~/.buncargo/runs.json`: each test gets
 // a registry of its own, so no test sees another's runs.
 useTempHome();
@@ -92,6 +88,11 @@ async function withProcessExitTrap(fn: () => Promise<void>): Promise<number> {
 	}
 }
 
+type StubEnv = DevEnvironment<
+	Record<string, ServiceConfig>,
+	Record<string, AppConfig>
+>;
+
 /**
  * Stands in for the environment's preparation; `notify` is where the run
  * says what it reports before its output opens.
@@ -114,7 +115,7 @@ function createStubEnv(
 		}) => void | Promise<void>;
 		setPublicUrls?: (urls: Record<string, string>) => void;
 	} = {},
-): DevEnvironment<Record<string, ServiceConfig>, Record<string, AppConfig>> {
+): StubEnv {
 	const apps = options.apps ?? {
 		api: {
 			port: 3000,
@@ -133,33 +134,20 @@ function createStubEnv(
 		Object.fromEntries(
 			Object.entries(apps).map(([name, config]) => [name, config.port]),
 		);
+	const localUrls = Object.fromEntries(
+		Object.entries(ports).map(([name, port]) => [
+			name,
+			`http://localhost:${port}`,
+		]),
+	);
 	const publicUrls: Record<string, string> = {};
 	const env = {
 		services: resolveServices(services),
 		apps: resolveApps(apps),
-		ports: ports as DevEnvironment<
-			Record<string, ServiceConfig>,
-			Record<string, AppConfig>
-		>["ports"],
-		urls: Object.fromEntries(
-			Object.entries(ports).map(([name, port]) => [
-				name,
-				`http://localhost:${port}`,
-			]),
-		) as DevEnvironment<
-			Record<string, ServiceConfig>,
-			Record<string, AppConfig>
-		>["urls"],
+		ports: ports as StubEnv["ports"],
+		urls: localUrls as StubEnv["urls"],
 		publicUrls,
-		loopbackUrls: Object.fromEntries(
-			Object.entries(ports).map(([name, port]) => [
-				name,
-				`http://localhost:${port}`,
-			]),
-		) as DevEnvironment<
-			Record<string, ServiceConfig>,
-			Record<string, AppConfig>
-		>["loopbackUrls"],
+		loopbackUrls: localUrls as StubEnv["loopbackUrls"],
 		projectName: "stub-cli",
 		projectPrefix: "stub",
 		workspaceId: "0123456789abcdef",
@@ -208,19 +196,13 @@ function createStubEnv(
 		claimRun: async () => {},
 		releaseRun: async () => {},
 		ensureWatchdog: async () => {},
-		withSuffix: () =>
-			createStubEnv() as DevEnvironment<
-				Record<string, ServiceConfig>,
-				Record<string, AppConfig>
-			>,
+		withSuffix: () => createStubEnv(),
 		openPublicTunnels: async () => {
 			throw new Error("not used");
 		},
 		runSeed: async () => ({ status: "not-configured" }),
-	} as unknown as DevEnvironment<
-		Record<string, ServiceConfig>,
-		Record<string, AppConfig>
-	>;
+	} as unknown as StubEnv;
+
 	registerStubInternals(env, options.prepare);
 	return env;
 }
@@ -231,7 +213,7 @@ function createStubEnv(
  * session.
  */
 function registerStubInternals(
-	env: DevEnvironment<Record<string, ServiceConfig>, Record<string, AppConfig>>,
+	env: StubEnv,
 	prepare: StubPrepare | undefined,
 ): void {
 	let report: (message: string, problem: boolean) => void = () => {};
@@ -1128,8 +1110,9 @@ it("marks a restarted app starting in the registry until it is ready again", asy
 	const until = async (want: string) => {
 		const deadline = performance.now() + 4_000;
 		while ((await status()) !== want) {
-			if (performance.now() > deadline)
+			if (performance.now() > deadline) {
 				throw new Error(`api never became ${want}`);
+			}
 			await Bun.sleep(20);
 		}
 	};
@@ -1200,8 +1183,9 @@ setInterval(() => {}, 60_000);
 	const until = async (want: string) => {
 		const deadline = performance.now() + 8_000;
 		while ((await status()) !== want) {
-			if (performance.now() > deadline)
+			if (performance.now() > deadline) {
 				throw new Error(`jobs never became ${want}: ${await status()}`);
+			}
 			await Bun.sleep(20);
 		}
 	};
@@ -1269,10 +1253,11 @@ async function startLongRunningApp(
 			}
 		},
 		async cleanup(): Promise<void> {
-			if (
-				!(await Promise.race([exit.then(() => true), Promise.resolve(false)]))
-			)
-				process.emit("SIGTERM");
+			const exited = await Promise.race([
+				exit.then(() => true),
+				Promise.resolve(false),
+			]);
+			if (!exited) process.emit("SIGTERM");
 			await exit.catch(() => {});
 			warn.mockRestore();
 			await rm(root, { recursive: true, force: true });

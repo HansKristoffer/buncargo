@@ -187,6 +187,18 @@ function resolveIdleTimeout(args: DevArgs): number | false | undefined {
 	return undefined;
 }
 
+function seedMode(args: DevArgs): PrepareOptions["seed"] {
+	if (args.values.seed) return "force";
+	if (isOneShot(args.values)) return "skip";
+	return "auto";
+}
+
+function prepareMode(args: DevArgs): PrepareOptions["prepare"] {
+	if (args.values["up-only"]) return "containers";
+	if (args.values.migrate) return "migrate";
+	return "all";
+}
+
 function waitForShutdownSignal(signal: AbortSignal): Promise<void> {
 	return new Promise<void>((resolve) => {
 		const done = () => {
@@ -262,6 +274,7 @@ async function runDevCommand<
 	const { watchdog = true } = options;
 	const args = devArgsOf(options);
 	if (typeof args === "number") return args;
+
 	for (const warning of ignoredFlagWarnings(args.values)) log.warn(warning);
 
 	if (args.values.detach && detachedRunMode() !== undefined) {
@@ -342,8 +355,10 @@ async function runDevCommand<
 	let failure: RunFailure | undefined;
 	const failureContext: DevFailureContext = { setupHints: [] };
 	try {
-		if (!isOneShot(args.values) && !args.values.down && !args.values.reset)
+		if (!isOneShot(args.values) && !args.values.down && !args.values.reset) {
 			connect = createDevConnect();
+		}
+
 		exitCode = await runDevFlow(env, args, tunnels, {
 			watchdog,
 			connect,
@@ -360,8 +375,10 @@ async function runDevCommand<
 		exitCode = 1;
 		// The prompt re-raises SIGINT, which arrives after this.
 		if (error instanceof PromptInterruptedError) interrupts.promptInterrupted();
-		if (interrupts.exitCode() === undefined)
+		if (interrupts.exitCode() === undefined) {
 			failure = describeDevFailure(error, failureContext);
+		}
+
 		if (failure && detachedRunMode() !== undefined) {
 			const { recordDetachedReport } = await import("./dev-detach");
 			const reported = failure;
@@ -427,9 +444,12 @@ async function teardown<
 			// is withdrawn outright, there being nothing to come back for.
 			env.releaseRun(),
 		]);
-		for (const result of results)
-			if (result.status === "rejected")
+		for (const result of results) {
+			if (result.status === "rejected") {
 				log.warn(`Cleanup failed: ${String(result.reason)}`);
+			}
+		}
+
 		for (const warning of await hosts.catch(() => [])) log.warn(warning);
 	} finally {
 		restoreTerminal();
@@ -457,8 +477,8 @@ async function confirmDestructiveMode(
 			]);
 		},
 		confirm: async () => {
-			if (!(await askConfirm([`  ${what}`, "  Continue? [y/N]"])))
-				throw new CliError("Cancelled.");
+			const confirmed = await askConfirm([`  ${what}`, "  Continue? [y/N]"]);
+			if (!confirmed) throw new CliError("Cancelled.");
 		},
 	});
 }
@@ -511,8 +531,9 @@ export function decideSpawn(input: {
 }): "spawn" | "hold" | "already-running" | "refuse" {
 	if (input.startNames.length > 0) return "spawn";
 	const keepsOpen = input.pendingTunnels || input.sharing;
-	if (input.leaseSkips > 0 && input.reusedNames.length === 0 && !keepsOpen)
-		return "refuse";
+	const leaseLeftNothing =
+		input.leaseSkips > 0 && input.reusedNames.length === 0;
+	if (leaseLeftNothing && !keepsOpen) return "refuse";
 	if (input.servicesOnly || keepsOpen) return "hold";
 	return "already-running";
 }
@@ -574,7 +595,6 @@ async function runDevFlow<
 		return 0;
 	}
 
-	// ── App selection ────────────────────────────────────────────────────────
 	const selectedAppNames = selectDevApps(env, args);
 
 	const plan = planStart(env.apps, env.services, {
@@ -586,7 +606,7 @@ async function runDevFlow<
 		args,
 		appsForDev,
 		plan.requiredServiceKeys,
-		internalsOf(env).seed,
+		pipeline.seed,
 	);
 	// What `dev --detach` waits for, which only this run knows: it never
 	// loads the config itself.
@@ -603,15 +623,11 @@ async function runDevFlow<
 		wait: true,
 		// The seed overlaps the apps only in a run that spawns them.
 		startServers: !isOneShot(args.values),
-		seed: args.values.seed ? "force" : isOneShot(args.values) ? "skip" : "auto",
-		prepare: args.values["up-only"]
-			? "containers"
-			: args.values.migrate
-				? "migrate"
-				: "all",
+		seed: seedMode(args),
+		prepare: prepareMode(args),
 		onPhase: timer.record,
 		onlyApps: selectedAppNames,
-		autoStartDocker: !args.values["no-docker-autostart"] ? undefined : false,
+		autoStartDocker: args.values["no-docker-autostart"] ? false : undefined,
 		// The dev servers below run their dev commands in CI too.
 		productionBuild: false,
 		// Only the CLI knows the hold its flags ask for. Claimed whether or
@@ -662,9 +678,12 @@ async function runDevFlow<
 		);
 		signal.throwIfAborted();
 	}
+
 	connect?.plan(appsForDev, plan.requiredServiceKeys, env.services);
-	if (connect && !connect.active)
+	if (connect && !connect.active) {
 		log.info("No selected endpoints to share through frp.");
+	}
+
 	// Before the ports are allocated: a stale stack still holding them would
 	// move this checkout's block, or fail the service preflight.
 	// Removing a stack is not undone by a retry: the session first. Allocating
@@ -685,7 +704,6 @@ async function runDevFlow<
 
 	await timer.measure("secrets session", () => secretsSession);
 
-	// ── Containers ───────────────────────────────────────────────────────────
 	// Held rather than printed: a run that takes over another one activates a
 	// second time, and only that attempt describes the URLs the banner prints.
 	let hostsWarnings = isOneShot(args.values)
@@ -712,11 +730,12 @@ async function runDevFlow<
 		// `dev --detach` repeats them: the fallback to localhost:port is
 		// otherwise silent.
 		const reported = hostsWarnings;
-		if (reported.length > 0)
+		if (reported.length > 0) {
 			detached?.recordDetachedReport(env.root, (report) => ({
 				...report,
 				hostsWarnings: [...report.hostsWarnings, ...reported],
 			}));
+		}
 		hostsWarnings = [];
 	};
 	signal.throwIfAborted();
@@ -818,7 +837,6 @@ async function runDevFlow<
 		await takeOver(candidates);
 	}
 
-	// ── Expose planning ──────────────────────────────────────────────────────
 	// Never in a one-shot mode (`DevArgs.ignoredFlags`).
 	if (exposeRequested(args.values)) {
 		await tunnels.planExpose({
@@ -835,7 +853,6 @@ async function runDevFlow<
 	// the activation for them and their warnings are already final.
 	if (isOneShot(args.values)) flushHostsWarnings();
 
-	// ── One-shot modes ───────────────────────────────────────────────────────
 	if (args.values.migrate) {
 		env.logInfo(undefined, undefined, plan);
 		log.line();
@@ -860,7 +877,6 @@ async function runDevFlow<
 		return 0;
 	}
 
-	// ── Dev servers ──────────────────────────────────────────────────────────
 	const startableApps = Object.fromEntries(
 		Object.entries(classifiedApps.startApps).filter(
 			([, app]) => app.devCommand !== false,
@@ -959,10 +975,12 @@ async function runDevFlow<
 	}
 
 	if (next === "already-running") {
-		if (overlapSeed)
+		if (overlapSeed) {
 			assertSeedSucceeded(
 				await timer.measure("seed", () => env.runSeed({ signal })),
 			);
+		}
+
 		log.success("Selected apps are already running. Nothing to start.");
 		if (running.names.length > 0 && !askTakeover) {
 			log.hint("Pass --takeover to stop them and run here instead.");
@@ -977,11 +995,14 @@ async function runDevFlow<
 		tui: tuiMode(args.values),
 	});
 	failureContext.output = view.output;
+	// What preparation said before this output opened goes to the run's log and
+	// the TUI's Overview. Stream mode printed it already.
+	for (const { message, problem } of earlyReports) {
+		view.output.event("buncargo", message, problem ? "error" : undefined);
+	}
+
 	// A service container stopping under the run: in the run's log, the TUI's
 	// Overview, and on the terminal in stream mode, where events are not printed.
-	// Events are not printed in stream mode, so the early ones are not repeated.
-	for (const { message, problem } of earlyReports)
-		view.output.event("buncargo", message, problem ? "error" : undefined);
 	pipeline.notify((message, problem) => {
 		const raw = problem ? formatWarn(message) : formatStep(message);
 		const level = problem ? "error" : undefined;
@@ -1012,11 +1033,15 @@ async function runDevFlow<
 		// The TUI covers that scrollback: repeat why an app is missing, and why
 		// the URLs are `localhost:port`, in its Overview (events are not
 		// printed again in stream mode).
-		for (const warning of printedHostsWarnings)
+		for (const warning of printedHostsWarnings) {
 			view.output.event("buncargo", warning, "warn");
-		for (const skip of leaseSkips)
-			for (const line of leaseSkipLines(skip))
+		}
+		for (const skip of leaseSkips) {
+			for (const line of leaseSkipLines(skip)) {
 				view.output.event(skip.app, line, "warn");
+			}
+		}
+
 		await pipeline.spawn(claimed, {
 			signal,
 			prepare: holds
@@ -1032,8 +1057,9 @@ async function runDevFlow<
 			onReady: async () => {
 				if (!holds) timer.record("app readiness", appsElapsed());
 				timer.report();
-				if (servicesOnly)
+				if (servicesOnly) {
 					log.success("Services ready. Press Ctrl-C to end the run.");
+				}
 			},
 			attach: args.values.attach,
 			extraArgs: [...args.passthrough],
@@ -1070,7 +1096,7 @@ async function runDevFlow<
 					newFailure &&
 					failure?.kind === "not-ready" &&
 					life.standing !== "essential";
-				if (sparedFailure)
+				if (sparedFailure) {
 					detached?.recordDetachedReport(env.root, (report) => ({
 						...report,
 						failures: [
@@ -1083,6 +1109,8 @@ async function runDevFlow<
 							}),
 						],
 					}));
+				}
+
 				// A non-zero code is the app falling over, often the first
 				// sign its database was removed under it.
 				const exit = life.end?.exit;
@@ -1137,7 +1165,7 @@ function selectDevApps<TApps extends Record<string, AppConfig>>(
 
 /**
  * The apps `--profile` selects, or the `default` profile's when neither it nor
- * `--apps` is given. `undefined` means every app, as before profiles existed.
+ * `--apps` is given. `undefined` means every app.
  */
 export function selectProfileApps<TApps extends Record<string, AppConfig>>(
 	env: Pick<DevEnvironment<Record<string, ServiceConfig>, TApps>, "profiles">,

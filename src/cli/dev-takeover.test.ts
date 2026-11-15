@@ -3,15 +3,16 @@ import {
 	acceptTakeover,
 	initialTakeover,
 	shouldOfferTakeover,
-	type TakeoverDecision,
 	takesOver,
 } from "./dev-takeover";
 
 describe("the takeover decision", () => {
 	it("covers every app with --takeover and only the accepted ones without", () => {
 		expect(takesOver(initialTakeover(true), "api")).toBe(true);
+
 		const none = initialTakeover(false);
 		expect(takesOver(none, "api")).toBe(false);
+
 		const accepted = acceptTakeover(none, ["api"]);
 		expect(takesOver(accepted, "api")).toBe(true);
 		expect(takesOver(accepted, "web")).toBe(false);
@@ -22,7 +23,7 @@ describe("the takeover decision", () => {
 		overrides: Partial<Parameters<typeof shouldOfferTakeover>[0]> = {},
 	) =>
 		shouldOfferTakeover({
-			decision: { kind: "none" } as TakeoverDecision,
+			decision: { kind: "none" },
 			nothingToSpawn: true,
 			candidates: 1,
 			pendingTunnels: false,
