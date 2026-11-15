@@ -4,26 +4,38 @@ import pc from "picocolors";
 import type { AppState, OutputLine } from "../../core/process/run-output";
 import { colorizeName } from "../../core/style";
 
-/**
- * Pure pieces of the TUI's frame: every function returns rows of exactly the
- * width asked for, so the frame can be diffed row by row.
- */
+// Pure pieces of the TUI's frame: every function returns rows of exactly the
+// width asked for, so the frame can be diffed row by row.
 
 /** `text` (ANSI allowed) cut or padded to exactly `width` columns. */
 export function fit(text: string, width: number): string {
 	if (width <= 0) return "";
+
 	const cut =
 		Bun.stringWidth(text) > width ? Bun.sliceAnsi(text, 0, width, "…") : text;
 	const pad = width - Bun.stringWidth(cut);
+
 	return `${cut}\u001b[0m${" ".repeat(Math.max(0, pad))}`;
 }
 
+/**
+ * The SGR parameters for one xterm color, or `undefined` for the default color.
+ * `base` is 30 for a foreground and 40 for a background.
+ */
 function color(code: number, rgb: boolean, palette: boolean, base: number) {
-	if (rgb)
-		return `${base + 8};2;${(code >> 16) & 255};${(code >> 8) & 255};${code & 255}`;
+	if (rgb) {
+		const red = (code >> 16) & 255;
+		const green = (code >> 8) & 255;
+		const blue = code & 255;
+		return `${base + 8};2;${red};${green};${blue}`;
+	}
+
 	if (!palette) return undefined;
+
+	// The 16 ANSI colors have their own codes; 90-97 and 100-107 are the bright ones.
 	if (code < 8) return `${base + code}`;
 	if (code < 16) return `${base + 60 + code - 8}`;
+
 	return `${base + 8};5;${code}`;
 }
 
@@ -49,23 +61,31 @@ export function renderScreenRow(
 	cell: IBufferCell,
 ): string {
 	if (!line) return " ".repeat(width);
+
 	let out = "";
 	let style = "";
 	let used = 0;
+
 	for (let x = 0; x < line.length && used < width; x++) {
 		const current = line.getCell(x, cell);
 		if (!current) break;
+
+		// The second half of a wide character.
 		const cellWidth = current.getWidth();
 		if (cellWidth === 0) continue;
 		if (used + cellWidth > width) break;
+
+		// Reset and re-set the style only where it changes.
 		const next = cellStyle(current);
 		if (next !== style) {
 			out += `\u001b[0${next ? `;${next}` : ""}m`;
 			style = next;
 		}
+
 		out += current.getChars() || " ";
 		used += cellWidth;
 	}
+
 	return `${out}\u001b[0m${" ".repeat(width - used)}`;
 }
 
@@ -94,25 +114,27 @@ export function renderSidebar(
 	const rows: string[] = [];
 	const row = (text: string, active: boolean) =>
 		rows.push(active ? `\u001b[7m${fit(text, width)}` : fit(text, width));
+
 	row(` ${selected === 0 ? "▶" : " "} Overview`, selected === 0);
 	rows.push(pc.dim("─".repeat(width)));
+
 	entries.forEach((entry, index) => {
 		const active = selected === index + 1;
 		const state = entry.state ?? "starting";
-		const label =
-			(state === "stopped" || state === "failed") && entry.detail
-				? entry.detail
-				: state;
+		const hasExited = state === "stopped" || state === "failed";
+		const label = hasExited && entry.detail ? entry.detail : state;
 		const mark = entry.unread ? pc.red("!") : " ";
 		const name = active ? entry.name : colorizeName(entry.name);
 		const left = ` ${GLYPH[state]} ${name}`;
 		const right = `${pc.dim(label)}${mark}`;
 		const gap = width - Bun.stringWidth(left) - Bun.stringWidth(right);
+
 		row(
 			gap > 0 ? `${left}${" ".repeat(gap)}${right}` : `${left} ${right}`,
 			active,
 		);
 	});
+
 	while (rows.length < height) rows.push(" ".repeat(width));
 	return rows.slice(0, height);
 }
@@ -150,9 +172,12 @@ export function wrapJoint(
 	const lastWord = /\S*$/.exec(text)?.[0] ?? "";
 	const firstWord = /^\S*/.exec(next.replace(ROW_START, ""))?.[0] ?? "";
 	if (!lastWord || !firstWord) return undefined;
+
 	const edge = cols - EDGE_INSET;
 	const word = Math.min(Bun.stringWidth(firstWord), MAX_WORD);
-	if (Bun.stringWidth(text) + 1 + word <= edge) return undefined;
+	const nextWordFits = Bun.stringWidth(text) + 1 + word <= edge;
+	if (nextWordFits) return undefined;
+
 	return Bun.stringWidth(lastWord + firstWord) > edge ? "" : " ";
 }
 
@@ -177,10 +202,10 @@ export function highlightColumns(
 		/\u001b\[[0-9;]*m/g,
 		"$&\u001b[7m",
 	);
-	return fit(
-		`${Bun.sliceAnsi(row, 0, from)}\u001b[7m${selected}\u001b[27m${Bun.sliceAnsi(row, to)}`,
-		width,
-	);
+	const before = Bun.sliceAnsi(row, 0, from);
+	const after = Bun.sliceAnsi(row, to);
+
+	return fit(`${before}\u001b[7m${selected}\u001b[27m${after}`, width);
 }
 
 /** Overview rows: every app's lines, interleaved by time, newest at the bottom. */
@@ -190,9 +215,13 @@ export function renderOverview(
 ): string[] {
 	const end = Math.max(0, lines.length - options.scroll);
 	const visible = lines.slice(Math.max(0, end - options.height), end);
+
 	const rows = visible.map((line) => {
 		const time = pc.dim(line.time.toTimeString().slice(0, 8));
-		const name = `${colorizeName(line.app)}${" ".repeat(Math.max(0, options.nameWidth - line.app.length))}`;
+		const namePad = " ".repeat(
+			Math.max(0, options.nameWidth - line.app.length),
+		);
+		const name = `${colorizeName(line.app)}${namePad}`;
 		const text = typedSwitch(line.level ?? "output", {
 			error: () => pc.red(line.text),
 			warn: () => pc.yellow(line.text),
@@ -200,6 +229,7 @@ export function renderOverview(
 		});
 		return fit(`${time} ${name}  ${text}`, options.width);
 	});
+
 	while (rows.length < options.height) rows.unshift(" ".repeat(options.width));
 	return rows;
 }
@@ -216,6 +246,7 @@ export function renderFooter(
 		list.push(`${pc.bold(action.key)} ${action.label}`);
 		byApp.set(action.app, list);
 	}
+
 	const declared = [...byApp].map(
 		([app, list]) => `${colorizeName(app)}: ${list.join(pc.dim(" · "))}`,
 	);
