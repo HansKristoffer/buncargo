@@ -27,12 +27,14 @@ export function describeExpoApp(
 	options: ExpoAppOptions = {},
 ): ExpoAppIdentity {
 	const app = readAppJson(resolve(root, config.cwd ?? "."));
+
 	const declared = Array.isArray(app.scheme) ? app.scheme[0] : app.scheme;
 	const scheme =
 		options.scheme ??
 		(typeof declared === "string" ? declared : undefined) ??
 		(typeof app.slug === "string" ? `exp+${app.slug}` : undefined);
 	const bundleId = app.ios?.bundleIdentifier;
+
 	return {
 		...(scheme ? { scheme } : {}),
 		...(typeof bundleId === "string" ? { bundleId } : {}),

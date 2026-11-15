@@ -11,7 +11,7 @@ import type { ExpoAppIdentity } from "./app-identity";
 import { openExpoSimulator } from "./simulator";
 
 /**
- * `buncargo expo sim [<app>]` — this checkout's Expo app, in its own iOS simulator.
+ * `buncargo expo sim [<app>]`: this checkout's Expo app, in its own iOS simulator.
  *
  * Like `stop`, everything comes from the run registry: the Metro port, the
  * deep-link scheme and the source simulator were resolved when the run was
@@ -92,6 +92,7 @@ async function openSimulator(
 			return expo && (!name || app.name === name) ? [{ run, app, expo }] : [];
 		}),
 	);
+
 	if (candidates.length === 0) {
 		if (runs.length === 0) {
 			log.error(`No active buncargo run for ${root}.`);
@@ -106,13 +107,15 @@ async function openSimulator(
 		}
 		return SIM_EXIT.notFound;
 	}
+
 	if (candidates.length > 1 && !name) {
 		log.error(
 			`Several Expo apps are running: ${candidates.map((entry) => entry.app.name).join(", ")}. Name one.`,
 		);
 		return SIM_EXIT.notFound;
 	}
-	const [{ run, app, expo }] = candidates as [(typeof candidates)[number]];
+
+	const { run, app, expo } = candidates[0];
 	if (app.status === "stopped" || app.status === "failed") {
 		log.error(`${app.name} is ${app.status}; nothing is serving Metro.`);
 		return SIM_EXIT.notFound;
