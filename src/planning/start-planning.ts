@@ -129,6 +129,12 @@ function resolveRequiredServiceKeys(
 	return resolveServiceDependencies(services, resolvedServiceKeys);
 }
 
+const dependencyConditions: readonly string[] = [
+	"service_started",
+	"service_healthy",
+	"service_completed_successfully",
+];
+
 /** Normalize Compose's short and long forms before walking dependency edges. */
 function readServiceDependencies(
 	serviceName: string,
@@ -173,11 +179,7 @@ function readServiceDependencies(
 		const condition = definition?.condition;
 		if (
 			condition !== undefined &&
-			![
-				"service_started",
-				"service_healthy",
-				"service_completed_successfully",
-			].includes(String(condition))
+			!dependencyConditions.includes(String(condition))
 		) {
 			throw new Error(
 				`Service "${serviceName}" has invalid dependency condition for "${name}"`,

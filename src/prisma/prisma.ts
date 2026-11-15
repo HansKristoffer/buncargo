@@ -95,13 +95,17 @@ export function destructivePrismaAction(
 ): string | undefined {
 	const follows = (first: string, second: string) =>
 		args.some((arg, index) => arg === first && args[index + 1] === second);
-	if (follows("migrate", "reset"))
+	if (follows("migrate", "reset")) {
 		return "prisma migrate reset drops the database and every row in it";
+	}
+
 	const dataLossFlag = args.find(
 		(arg) => arg === "--force-reset" || arg === "--accept-data-loss",
 	);
-	if (follows("db", "push") && dataLossFlag)
+	if (follows("db", "push") && dataLossFlag) {
 		return `prisma db push ${dataLossFlag} can drop tables and the rows in them`;
+	}
+
 	return undefined;
 }
 
@@ -157,6 +161,7 @@ export function createPrismaRunner<
 
 	async function ensureDatabase(): Promise<void> {
 		if (readied(service)) return;
+
 		await allocate(service);
 		const composeFile = compose.ensureComposeFile();
 		const envVars = env.buildEnvVars();
@@ -199,13 +204,17 @@ export function createPrismaRunner<
 			urlEnvVars.map((name) => [name, target]),
 		);
 		const inherited = { ...(await resolveSecrets(envVars)), ...process.env };
+
 		// Only what buncargo did not set itself can point elsewhere.
-		for (const name of [
+		const setByBuncargo = [
 			...Object.keys(envVars),
 			...Object.keys(pointed),
 			...Object.keys(extraEnv),
-		])
+		];
+		for (const name of setByBuncargo) {
 			delete inherited[name];
+		}
+
 		return {
 			target,
 			foreign: foreignDatabaseUrls(inherited, target),
@@ -232,10 +241,13 @@ export function createPrismaRunner<
 		} = {},
 	): Promise<{ exitCode: number; stdout: string }> {
 		const { vars, foreign, target } = await prismaEnv(options.env ?? {});
-		for (const { name, server } of foreign)
+
+		for (const { name, server } of foreign) {
 			console.error(
 				`⚠️  ${name} points at ${server}, not this checkout's database (${describeDatabaseUrl(target)}). Prisma uses it if prisma.config.ts reads it: unset it, or add it to prisma.urlEnvVar.`,
 			);
+		}
+
 		const destructive = destructivePrismaAction(args);
 		if (destructive && foreign.length > 0) {
 			console.error(
@@ -284,15 +296,19 @@ export function createPrismaRunner<
 		url: string,
 	): Promise<boolean> {
 		const migrate = args[0] === "migrate" ? args[1] : undefined;
-		if (migrate !== "deploy" && migrate !== "dev" && migrate !== "status")
+		if (migrate !== "deploy" && migrate !== "dev" && migrate !== "status") {
 			return false;
+		}
+
 		const missing = await missingAppliedMigrations(
 			url,
 			join(env.root, cwd, resolved.migrations),
 		);
 		if (!missing?.length) return false;
+
+		const plural = missing.length === 1 ? "" : "s";
 		console.error(
-			`❌ ${describeDatabaseUrl(url)} applied ${missing.length} migration${missing.length === 1 ? "" : "s"} this checkout no longer has (${missing.join(", ")}): the chain was squashed or rewritten.`,
+			`❌ ${describeDatabaseUrl(url)} applied ${missing.length} migration${plural} this checkout no longer has (${missing.join(", ")}): the chain was squashed or rewritten.`,
 		);
 		console.error(
 			"   Only recreating the database gets past it, and that drops its data: bunx buncargo dev --reset --yes. Ask before running it.",
@@ -334,6 +350,7 @@ Examples:
 
 		await ensureDatabase();
 		if (await squashedChain(args, target)) return PRISMA_SQUASHED_CHAIN_EXIT;
+
 		return (await spawnPrisma(args, { env: options.env })).exitCode;
 	}
 
@@ -358,6 +375,7 @@ Examples:
 				`Could not create the database "${database}" in service "${service}". ${purpose} needs a Postgres service with psql and createdb.`,
 			);
 		}
+
 		url.pathname = `/${database}`;
 		return url.toString();
 	}
@@ -393,6 +411,7 @@ Examples:
 		schema: string,
 		shadowUrl: string,
 	): { args: string[]; modern: boolean } {
+		// Without an installed Prisma, assume the current major.
 		const modern = (installedPrismaMajor(join(env.root, cwd)) ?? 7) >= 7;
 		const shadow =
 			!modern && from[0] === "--from-migrations"
@@ -437,10 +456,12 @@ Examples:
 		if (code === 1 && modern) console.error(PRISMA_7_SHADOW_HINT);
 
 		if (code === 0) console.error("✅ Migrations match the schema.");
-		if (code === 2)
+		if (code === 2) {
 			console.error(
 				"❌ The schema has changes no migration contains. Create one with `bunx buncargo prisma migration new <name>`.",
 			);
+		}
+
 		return code;
 	}
 
@@ -448,16 +469,20 @@ Examples:
 		name: string,
 		options: PrismaNewMigrationOptions = {},
 	): Promise<PrismaNewMigrationResult> {
-		if (!/^[A-Za-z0-9_]{1,200}$/.test(name))
+		if (!/^[A-Za-z0-9_]{1,200}$/.test(name)) {
 			throw new Error(
 				`A migration name is letters, digits and _ (Prisma's folder names): got "${name}".`,
 			);
+		}
+
 		await ensureDatabase();
 		const dir = join(env.root, cwd, resolved.migrations);
 		const existing = await listMigrationFolders(dir);
+
 		// Its own database, so a concurrent migrate-check's shadow is untouched.
 		const scratch = `scratch_migration_new_${process.pid}`;
 		const shadowUrl = await createServiceDatabase(scratch, "migration new");
+
 		const { args, modern } = diffArgs(
 			existing.length > 0
 				? ["--from-migrations", resolved.migrations]
@@ -465,6 +490,7 @@ Examples:
 			resolved.schema,
 			shadowUrl,
 		);
+
 		let diff: { exitCode: number; stdout: string };
 		try {
 			diff = await spawnPrisma([...args, "--script"], {
@@ -482,8 +508,9 @@ Examples:
 		}
 
 		if (diff.exitCode === 1 && modern) console.error(PRISMA_7_SHADOW_HINT);
-		if (diff.exitCode !== 0 && diff.exitCode !== 2)
+		if (diff.exitCode !== 0 && diff.exitCode !== 2) {
 			return { status: "failed", exitCode: diff.exitCode };
+		}
 		if (diff.exitCode === 0 && !options.empty) return { status: "unchanged" };
 
 		const folder = join(
@@ -496,12 +523,15 @@ Examples:
 			join(folder, "migration.sql"),
 			sql.trim() === "" ? "-- This is an empty migration.\n" : sql,
 		);
+
 		const lock = join(dir, "migration_lock.toml");
-		if (!existsSync(lock))
+		if (!existsSync(lock)) {
 			await writeFile(
 				lock,
 				'# Please do not edit this file manually\n# It should be added in your version-control system (e.g., Git)\nprovider = "postgresql"\n',
 			);
+		}
+
 		return { status: "created", path: folder };
 	}
 

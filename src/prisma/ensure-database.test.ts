@@ -23,8 +23,11 @@ beforeEach(() => {
 	delete process.env.BUNCARGO_PORT_OFFSET;
 });
 afterEach(() => {
-	if (originalOffset === undefined) delete process.env.BUNCARGO_PORT_OFFSET;
-	else process.env.BUNCARGO_PORT_OFFSET = originalOffset;
+	if (originalOffset === undefined) {
+		delete process.env.BUNCARGO_PORT_OFFSET;
+	} else {
+		process.env.BUNCARGO_PORT_OFFSET = originalOffset;
+	}
 	rmSync(scratch, { recursive: true, force: true });
 });
 
@@ -116,6 +119,8 @@ it("leaves an allocation already made where it is", async () => {
 	const { env, prisma } = checkout();
 	await env.prepareStartAsync();
 	const offset = env.portOffset;
+
+	// Rewrites the stub `docker` the environment already points at.
 	fakeDocker({ port: BASE_PORT + offset, project: "bliss-t3-ae4f38ef" });
 
 	await expect(prisma.ensureDatabase()).rejects.toThrow(

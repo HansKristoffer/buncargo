@@ -25,16 +25,20 @@ export async function listMigrationFolders(dir: string): Promise<string[]> {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
 		throw error;
 	}
+
 	const folders: string[] = [];
 	for (const entry of entries) {
+		// A symlinked folder counts: `stat` below follows it.
 		if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+
 		try {
-			if ((await stat(join(dir, entry.name, "migration.sql"))).isFile())
-				folders.push(entry.name);
+			const migrationSql = await stat(join(dir, entry.name, "migration.sql"));
+			if (migrationSql.isFile()) folders.push(entry.name);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 	}
+
 	return folders.sort();
 }
 
@@ -61,6 +65,8 @@ export function nextMigrationTimestamp(
 	const fromClock = formatTimestamp(now);
 	const newest = existing.map(timestampOf).filter(Boolean).sort().at(-1);
 	if (newest === undefined || fromClock > newest) return fromClock;
+
+	// The clock is not ahead of the chain: step one second past its newest.
 	const iso = newest.replace(
 		/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/,
 		"$1-$2-$3T$4:$5:$6Z",
@@ -80,17 +86,20 @@ export function migrationChainProblems(
 	baseRef: string,
 ): string[] {
 	const problems: string[] = [];
+
 	const byTimestamp = new Map<string, string[]>();
 	for (const folder of local) {
 		const timestamp = timestampOf(folder);
 		if (timestamp === undefined) continue;
 		byTimestamp.set(timestamp, [...(byTimestamp.get(timestamp) ?? []), folder]);
 	}
-	for (const [timestamp, folders] of byTimestamp)
-		if (folders.length > 1)
+	for (const [timestamp, folders] of byTimestamp) {
+		if (folders.length > 1) {
 			problems.push(
 				`${folders.join(" and ")} share the timestamp ${timestamp}`,
 			);
+		}
+	}
 
 	const onBase = new Set(base);
 	const newestOnBase = base
@@ -98,11 +107,15 @@ export function migrationChainProblems(
 		.sort()
 		.at(-1);
 	if (newestOnBase === undefined) return problems;
-	for (const folder of local)
-		if (!onBase.has(folder) && folder < newestOnBase)
+
+	for (const folder of local) {
+		if (!onBase.has(folder) && folder < newestOnBase) {
 			problems.push(
 				`${folder} sorts before ${newestOnBase}, the newest migration on ${baseRef}`,
 			);
+		}
+	}
+
 	return problems;
 }
 
@@ -159,8 +172,10 @@ export function defaultBaseRef(dir: string): string | undefined {
 		{ cwd: dir, stdout: "pipe", stderr: "ignore" },
 	);
 	const named = remoteHead.stdout.toString().trim();
-	if (remoteHead.exitCode === 0 && named !== "" && named !== "origin/HEAD")
+	if (remoteHead.exitCode === 0 && named !== "" && named !== "origin/HEAD") {
 		return named;
+	}
+
 	for (const ref of ["origin/main", "main"]) {
 		const exists = Bun.spawnSync(
 			["git", "rev-parse", "--verify", "--quiet", `${ref}^{commit}`],

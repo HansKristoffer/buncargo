@@ -90,13 +90,14 @@ describe("runWorkspaceTypecheck pool", () => {
 		for (const [name, peer] of [
 			["one", "two"],
 			["two", "one"],
-		] as const)
+		] as const) {
 			writeEventWorkspace(
 				root,
 				name,
 				`appendFileSync(file, "${name}-start\\n"); const deadline = Date.now() + 10_000; while (!readFileSync(file, "utf8").includes("${peer}-start") && Date.now() < deadline) await Bun.sleep(5); appendFileSync(file, "${name}-end\\n");`,
 				eventFile,
 			);
+		}
 
 		const result = await runWorkspaceTypecheck({
 			root,
@@ -113,13 +114,14 @@ describe("runWorkspaceTypecheck pool", () => {
 	it("runs one workspace at a time when concurrency is 1", async () => {
 		const root = makeFixture();
 		const eventFile = join(root, "events.jsonl");
-		for (const name of ["one", "two"])
+		for (const name of ["one", "two"]) {
 			writeEventWorkspace(
 				root,
 				name,
 				`appendFileSync(file, "${name}-start\\n"); await Bun.sleep(100); appendFileSync(file, "${name}-end\\n");`,
 				eventFile,
 			);
+		}
 
 		const result = await runWorkspaceTypecheck({
 			root,
@@ -142,13 +144,15 @@ describe("runWorkspaceTypecheck pool", () => {
 		const root = makeFixture();
 		const pidFile = join(root, "pids");
 		// Each check records itself and a child of its own, then waits on it.
-		for (const name of ["one", "two"])
+		for (const name of ["one", "two"]) {
 			writeEventWorkspace(
 				root,
 				name,
 				`const sleeper = Bun.spawn(["sleep", "60"]); appendFileSync(file, process.pid + " " + sleeper.pid + "\\n"); await sleeper.exited;`,
 				pidFile,
 			);
+		}
+
 		const readPids = () =>
 			existsSync(pidFile)
 				? readFileSync(pidFile, "utf8").trim().split(/\s+/).map(Number)
@@ -584,8 +588,9 @@ describe("typecheck include and exclude", () => {
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line) as { args: string[] });
-		for (const call of recorded)
+		for (const call of recorded) {
 			expect(call.args).toEqual(["--noEmit", "-p", "tsconfig.json"]);
+		}
 	});
 
 	it("fails an include entry that matches nothing or has nothing to check", async () => {
@@ -614,8 +619,9 @@ describe("typecheck include and exclude", () => {
 			"packages/legacy-a",
 			"packages/legacy-b",
 			"packages/keep",
-		])
+		]) {
 			writeSleepingWorkspace(root, path, 0);
+		}
 
 		const result = await runWorkspaceTypecheck({
 			root,
