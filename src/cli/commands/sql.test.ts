@@ -139,15 +139,17 @@ describe("psqlHasOwnInput", () => {
 			["--list"],
 			["-V"],
 			["--command=select 1"],
-		])
+		]) {
 			expect(psqlHasOwnInput(args)).toBe(true);
+		}
 		for (const args of [
 			["-tA"],
 			["-vclear=1"],
 			["-v", "ON_ERROR_STOP=0"],
 			["-dlocal"],
-		])
+		]) {
 			expect(psqlHasOwnInput(args)).toBe(false);
+		}
 	});
 });
 
@@ -167,10 +169,11 @@ describe("scratch databases", () => {
 	});
 
 	it("only takes names that cannot reach another database", () => {
-		for (const name of ["app; drop", "App", "", "1x"])
+		for (const name of ["app; drop", "App", "", "1x"]) {
 			expect(() => scratchCommand(credentials, name, "drop")).toThrow(
 				"Scratch database names",
 			);
+		}
 	});
 
 	it("prints a URL the host can connect to", () => {
@@ -183,8 +186,9 @@ describe("scratch databases", () => {
 describe("runSql", () => {
 	const roots: string[] = [];
 	afterEach(() => {
-		for (const root of roots.splice(0))
+		for (const root of roots.splice(0)) {
 			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	function fixture(services = "{postgres:{port:5432,database:'app'}}"): string {

@@ -13,10 +13,11 @@ describe("planJsonQuery", () => {
 		);
 		expect(withQuery.wrap).toBe(true);
 		// A trailing comment cannot swallow the closing parenthesis.
-		if (withQuery.wrap)
+		if (withQuery.wrap) {
 			expect(withQuery.statement).toEndWith(
 				"-- the q column\n) _buncargo_rows",
 			);
+		}
 	});
 
 	it("runs anything else plain", () => {
@@ -36,8 +37,9 @@ describe("planJsonQuery", () => {
 			"select 1 \\gx",
 			"select 'unterminated",
 			"select 1 /* open",
-		])
+		]) {
 			expect(planJsonQuery(sql).wrap).toBe(false);
+		}
 	});
 
 	it("does not split on semicolons inside strings, identifiers or comments", () => {
@@ -51,8 +53,9 @@ describe("planJsonQuery", () => {
 			"select 1 -- ; update\n",
 			"select /* ; /* nested ; */ update */ 1",
 			"select $1::int",
-		])
+		]) {
 			expect(planJsonQuery(sql).wrap).toBe(true);
+		}
 	});
 
 	it("ignores words that only look like keywords", () => {

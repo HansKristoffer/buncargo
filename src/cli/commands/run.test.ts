@@ -34,8 +34,9 @@ function fixture() {
 }
 
 afterEach(() => {
-	for (const root of roots.splice(0))
+	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 function buncargo(root: string, ...args: string[]) {

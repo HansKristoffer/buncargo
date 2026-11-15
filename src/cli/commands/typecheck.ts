@@ -85,18 +85,22 @@ export const typecheckCommand = defineCommand({
 				? undefined
 				: { ref: values.changed === true ? undefined : values.changed };
 		const groupName = values.group;
-		const errors: string[] = [];
-		if (only?.length === 0)
-			errors.push("--only requires at least one workspace name.");
-		if (changed && only)
-			errors.push("--changed and --only cannot be combined.");
-		if (groupName && only)
-			errors.push("--group and --only cannot be combined.");
-		if (errors.length > 0) throw argumentsError(errors, "typecheck");
 		const concurrency =
 			values.concurrency === undefined
 				? undefined
 				: Number.parseInt(values.concurrency, 10);
+
+		const errors: string[] = [];
+		if (only?.length === 0) {
+			errors.push("--only requires at least one workspace name.");
+		}
+		if (changed && only) {
+			errors.push("--changed and --only cannot be combined.");
+		}
+		if (groupName && only) {
+			errors.push("--group and --only cannot be combined.");
+		}
+		if (errors.length > 0) throw argumentsError(errors, "typecheck");
 
 		const root = (await import("../../core/ports")).findMonorepoRoot();
 		// `typecheck` in dev.config.ts: directories discovery cannot see, and ones
@@ -110,6 +114,7 @@ export const typecheckCommand = defineCommand({
 			]);
 		}
 		if (settings.warning) log.warn(settings.warning);
+
 		const groups = settings.config?.groups ?? {};
 		const group = groupName ? groups[groupName] : undefined;
 		if (groupName && !group) {
@@ -125,6 +130,7 @@ export const typecheckCommand = defineCommand({
 		const { requestedTypecheckConcurrency } =
 			await import("../../typecheck/scheduling");
 		const { changedFilesSince } = await import("../../typecheck/changed");
+
 		let changedFiles: string[] | undefined;
 		if (changed) {
 			try {

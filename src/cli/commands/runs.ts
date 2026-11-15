@@ -16,7 +16,7 @@ import type { RunsJson } from "../json-documents";
 import * as log from "../log";
 
 /**
- * `buncargo runs` — what is running on this machine.
+ * `buncargo runs`: what is running on this machine.
  *
  * The human-readable half of the run registry, and the answer to "why does the
  * menu bar not show my project": if it is not here, the app cannot see it
@@ -40,17 +40,13 @@ async function showRuns(json: boolean): Promise<void> {
 				? { ...run, idleStopsAt: new Date(idle.stopsAt).toISOString() }
 				: run;
 		});
-		log.line(
-			JSON.stringify(
-				{
-					version: REGISTRY_VERSION,
-					runs: withLimits,
-					leases,
-				} satisfies RunsJson,
-				null,
-				2,
-			),
-		);
+
+		const document = {
+			version: REGISTRY_VERSION,
+			runs: withLimits,
+			leases,
+		} satisfies RunsJson;
+		log.line(JSON.stringify(document, null, 2));
 		return;
 	}
 

@@ -8,16 +8,6 @@ import { childProcessEnv } from "../../core/child-env";
 import { BASE_EXITS, defineCommand } from "../command-spec";
 import { argumentsError } from "../errors";
 
-/**
- * `buncargo slot -- <command>`: run a command inside one of the machine-wide
- * check slots, exactly as the shell would run it.
- *
- * `exec --slot` also gives the command the checkout environment: the dev
- * stack's URLs and the config's secrets. A unit test suite that mocks Redis
- * unless `REDIS_URL` is set then behaves differently, so heavy commands that
- * need no checkout environment take their slot here.
- */
-
 async function runInSlot(command: string[]): Promise<number> {
 	return withCheckSlot(
 		command.join(" ").slice(0, 60),
@@ -29,6 +19,7 @@ async function runInSlot(command: string[]): Promise<number> {
 				stdio: ["inherit", "inherit", "inherit"],
 				env: childProcessEnv(),
 			});
+
 			const forward = (signal: NodeJS.Signals) => child.kill(signal);
 			const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 			for (const signal of signals) process.on(signal, forward);
@@ -50,6 +41,15 @@ async function runInSlot(command: string[]): Promise<number> {
 	);
 }
 
+/**
+ * `buncargo slot -- <command>`: run a command inside one of the machine-wide
+ * check slots, exactly as the shell would run it.
+ *
+ * `exec --slot` also gives the command the checkout environment: the dev
+ * stack's URLs and the config's secrets. A unit test suite that mocks Redis
+ * unless `REDIS_URL` is set then behaves differently, so heavy commands that
+ * need no checkout environment take their slot here.
+ */
 export const slotCommand = defineCommand({
 	spec: {
 		name: "slot",

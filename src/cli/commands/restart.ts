@@ -50,6 +50,7 @@ export async function restartApps(
 	const runs = (await findRunsByRoot(input.root)).filter(
 		(run) => !input.session || run.sessionId === input.session,
 	);
+
 	for (const name of input.names) {
 		const run = runs.find((entry) =>
 			entry.apps.some((app) => app.name === name && app.pid !== undefined),
@@ -62,7 +63,12 @@ export async function restartApps(
 		}
 
 		const id = requestRestart(run.root, run.sessionId, name);
-		if (!(await awaitRestartTaken(run.root, run.sessionId, timeouts.takenMs))) {
+		const taken = await awaitRestartTaken(
+			run.root,
+			run.sessionId,
+			timeouts.takenMs,
+		);
+		if (!taken) {
 			withdrawRestartRequest(run.root, run.sessionId, id);
 			log.error(
 				`The run that started ${name} (pid ${run.pid}) takes no restart requests: it is a script's \`start()\`, not \`buncargo dev\`. Nothing was restarted.`,
@@ -72,6 +78,7 @@ export async function restartApps(
 			);
 			return RESTART_EXIT.refused;
 		}
+
 		// The old process gets its stop grace before the new one spawns.
 		const answerMs =
 			timeouts.answerMs + (row.stopGraceMs ?? DEFAULT_STOP_GRACE_MS);
@@ -81,9 +88,11 @@ export async function restartApps(
 			id,
 			answerMs,
 		);
+
 		if (!reply) {
+			const waitedSeconds = Math.round(answerMs / 1000);
 			log.error(
-				`The run (pid ${run.pid}) took the request but did not answer within ${Math.round(answerMs / 1000)}s; ${name} may still restart.`,
+				`The run (pid ${run.pid}) took the request but did not answer within ${waitedSeconds}s; ${name} may still restart.`,
 			);
 			log.hint(`Check what it did: buncargo logs ${name} -f`);
 			return RESTART_EXIT.failed;
@@ -99,6 +108,7 @@ export async function restartApps(
 		}
 		log.success(`Restarted ${name}.`);
 	}
+
 	return RESTART_EXIT.ok;
 }
 
