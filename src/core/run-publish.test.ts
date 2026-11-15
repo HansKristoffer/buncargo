@@ -318,10 +318,9 @@ describe("published run ownership", () => {
 		).toBe(3);
 		expect(await readLiveRuns()).toHaveLength(1);
 	});
-	it("stops an app the spawner recorded, which it used to refuse every time", async () => {
-		// The CLI recorded a spawned app's pid without its identity, and `stop`
-		// refuses to signal an app without one — so the menu bar's Stop refused
-		// every app it was asked to stop.
+	it("stops an app the spawner recorded, with its identity", async () => {
+		// `stop` refuses to signal an app whose entry has no identity, so the
+		// spawner has to record one with the pid.
 		const env = source("session-d");
 		const run = await publishCurrentRun(env, {
 			apps: resolveApps({ web: { port: 3000, devCommand: "bun dev" } }),

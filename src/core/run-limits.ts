@@ -68,17 +68,20 @@ export function idleState(
 	activity: RunActivity,
 ): IdleState {
 	if (!run.detached || run.idleLimitMs === undefined) return { kind: "off" };
+
 	// Requests and connections are the run being used; with nothing counting
 	// either, a quiet limit would stop a run someone has open in a browser.
 	const requestsCounted =
 		run.hosts?.active === true && activity.proxy !== undefined;
-	if (!requestsCounted && activity.connections === undefined)
+	if (!requestsCounted && activity.connections === undefined) {
 		return {
 			kind: "unknown",
 			why: run.hosts?.active
 				? "the hosts daemon predates request counting and connections to its apps could not be read; `buncargo hosts install` updates the daemon"
 				: "connections to its apps could not be read",
 		};
+	}
+
 	const connections = activity.connections;
 	const connected =
 		connections !== undefined &&
@@ -91,8 +94,10 @@ export function idleState(
 		activity.proxy?.get(run.root),
 		connected ? connections.at : undefined,
 	].filter((time): time is number => time !== undefined && !Number.isNaN(time));
-	if (times.length === 0)
+	if (times.length === 0) {
 		return { kind: "unknown", why: "its start time does not parse" };
+	}
+
 	const lastActivityAt = Math.max(...times);
 	return {
 		kind: "counting",
@@ -108,12 +113,15 @@ export function idleState(
  */
 export function establishedPortsFromProcNet(text: string): number[] {
 	const ports: number[] = [];
+
 	for (const line of text.split("\n").slice(1)) {
 		const [, local, , state] = line.trim().split(/\s+/);
 		if (state !== "01" || local === undefined) continue;
+
 		const port = Number.parseInt(local.slice(local.lastIndexOf(":") + 1), 16);
 		if (Number.isInteger(port) && port > 0) ports.push(port);
 	}
+
 	return ports;
 }
 
@@ -123,13 +131,16 @@ export function establishedPortsFromProcNet(text: string): number[] {
  */
 export function establishedPortsFromNetstat(text: string): number[] {
 	const ports: number[] = [];
+
 	for (const line of text.split("\n")) {
 		const columns = line.trim().split(/\s+/);
 		if (columns.at(-1) !== "ESTABLISHED") continue;
+
 		const local = columns[3] ?? "";
 		const port = Number.parseInt(local.slice(local.lastIndexOf(".") + 1), 10);
 		if (Number.isInteger(port) && port > 0) ports.push(port);
 	}
+
 	return ports;
 }
 
@@ -160,8 +171,10 @@ async function readProcNetPorts(): Promise<number[]> {
 	const read = tables.flatMap((table) =>
 		table.status === "fulfilled" ? [table.value] : [],
 	);
-	if (read.length === 0)
+	if (read.length === 0) {
 		throw new Error("No /proc/net/tcp table could be read");
+	}
+
 	return read.flatMap(establishedPortsFromProcNet);
 }
 
@@ -244,7 +257,9 @@ export function decideRunLimit(input: {
 	now: number;
 }): RunLimitVerdict {
 	const { run, alive, checkout, deletedSince, idle, now } = input;
+
 	if (!alive || !run.detached) return { kind: "keep" };
+
 	// Stopping this run would take apps from under the other one.
 	if (input.sharedWithTerminalRun) return { kind: "keep" };
 
@@ -255,19 +270,23 @@ export function decideRunLimit(input: {
 		checkout === "deleted" && deletedSince !== undefined
 			? now - deletedSince
 			: undefined;
-	if (deletedFor !== undefined && deletedFor >= DELETED_CHECKOUT_SETTLE_MS)
+	if (deletedFor !== undefined && deletedFor >= DELETED_CHECKOUT_SETTLE_MS) {
 		return {
 			kind: "stop",
 			reason: "checkout deleted",
 			detail: `its checkout ${run.root} has been deleted for ${formatDuration(deletedFor)}`,
 		};
+	}
 
-	if (idle.kind === "counting" && now >= idle.stopsAt)
+	if (idle.kind === "counting" && now >= idle.stopsAt) {
+		const idleFor = formatDuration(now - idle.lastActivityAt);
 		return {
 			kind: "stop",
 			reason: "idle",
-			detail: `idle for ${formatDuration(now - idle.lastActivityAt)}, with no request through buncargo's proxy, no connection to its apps and no buncargo command in ${run.root} (\`dev --detach --keep\` opts out)`,
+			detail: `idle for ${idleFor}, with no request through buncargo's proxy, no connection to its apps and no buncargo command in ${run.root} (\`dev --detach --keep\` opts out)`,
 		};
+	}
+
 	return { kind: "keep" };
 }
 
@@ -328,9 +347,13 @@ export function createRunLimiter(
 		);
 		const runs = all.filter((run) => run.detached);
 		const now = deps.now();
-		for (const session of deletedSince.keys())
-			if (!runs.some((run) => run.sessionId === session))
+
+		for (const session of deletedSince.keys()) {
+			if (!runs.some((run) => run.sessionId === session)) {
 				deletedSince.delete(session);
+			}
+		}
+
 		// Without a detached run, nothing to fork `ps` for.
 		if (runs.length === 0) return { stopped: [], failures: [] };
 
@@ -342,13 +365,16 @@ export function createRunLimiter(
 		const alive = await deps.liveness([...runs, ...terminalRuns]);
 		const proxy = deps.readProxyActivity(now);
 		const connections = await deps.readConnections(now);
+
 		const due: Array<{ run: RunEntry; reason: RunStopReason; detail: string }> =
 			[];
 		for (const run of runs) {
 			const checkout = deps.checkoutPresence(run.root);
 			if (checkout !== "deleted") deletedSince.delete(run.sessionId);
-			else if (!deletedSince.has(run.sessionId))
+			else if (!deletedSince.has(run.sessionId)) {
 				deletedSince.set(run.sessionId, now);
+			}
+
 			const verdict = decideRunLimit({
 				run,
 				alive: alive(run),
@@ -369,6 +395,7 @@ export function createRunLimiter(
 
 		const pass: RunLimitPass = { stopped: [], failures: [] };
 		const records: RunStopRecord[] = [];
+
 		await Promise.all(
 			due.map(async ({ run, reason, detail }) => {
 				const what = `${run.projectName}'s detached run (${run.root}, pid ${run.pid})`;
@@ -380,11 +407,13 @@ export function createRunLimiter(
 					);
 					return;
 				}
+
 				const at = new Date(deps.now()).toISOString();
 				pass.stopped.push(`Stopped ${what}: ${detail}`);
 				records.push(runStopRecord(run, { at, reason, detail }));
 			}),
 		);
+
 		await deps.recordStops(records);
 		return pass;
 	};

@@ -159,12 +159,14 @@ function getEventLogFile(): string {
 export function invocationCommand(argv: readonly string[]): string {
 	const script = argv[1];
 	if (!script) return "buncargo";
+
 	const name = basename(script);
 	const isCli =
 		name === "buncargo" ||
 		((name === "bin.ts" || name === "bin.js") &&
 			basename(dirname(script)) === "cli");
 	if (!isCli) return `${name} (library)`;
+
 	const command = ["buncargo", ...argv.slice(2)].join(" ");
 	return truncate(command, 80);
 }
@@ -173,6 +175,7 @@ function currentUser(): string {
 	try {
 		return userInfo().username;
 	} catch {
+		// `userInfo()` throws when the uid has no passwd entry, as in some containers.
 		return process.env.USER?.trim() || process.env.LOGNAME?.trim() || "unknown";
 	}
 }
@@ -211,8 +214,10 @@ export function removalActor(
 
 function validateLog(value: unknown): LogEvent[] | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
+
 	const document = value as { version?: unknown; events?: unknown };
 	if (document.version !== EVENT_LOG_VERSION) return undefined;
+
 	return Array.isArray(document.events)
 		? document.events.filter(isLogEvent)
 		: undefined;
@@ -244,6 +249,7 @@ export function readRunStops(): RunStopRecord[] {
  */
 export async function recordEvents(events: readonly LogEvent[]): Promise<void> {
 	if (events.length === 0) return;
+
 	const file = getEventLogFile();
 	try {
 		await withFileLock(file, async () => {
@@ -289,7 +295,8 @@ function describeActor(actor: RemovalActor): string {
 
 export function describeRemoval(record: RemovalRecord): string {
 	const { verb, what } = removalAction(record);
-	return `${describeActor(record.by)} ${verb} ${record.projectName}'s ${what} at ${record.at}: ${record.reason}`;
+	const actor = describeActor(record.by);
+	return `${actor} ${verb} ${record.projectName}'s ${what} at ${record.at}: ${record.reason}`;
 }
 
 function removalAction(record: RemovalRecord): { verb: string; what: string } {
@@ -326,9 +333,10 @@ export function explainContainerLoss(input: {
 
 	const since = new Date(input.since).toISOString();
 	const until = new Date(input.now).toISOString();
+	const dockerFilter = `label=com.docker.compose.project=${input.projectName}`;
 	const events =
 		input.runtime === "docker"
-			? ` and \`docker events --since ${since} --until ${until} --filter label=com.docker.compose.project=${input.projectName}\``
+			? ` and \`docker events --since ${since} --until ${until} --filter ${dockerFilter}\``
 			: "";
 	return `${input.projectName}'s containers were removed outside this run between ${since} and ${until}, and this user's buncargo recorded no removal. Check other users' ~/.buncargo/watchdog.log${events}.`;
 }
@@ -355,10 +363,12 @@ export function explainServiceStop(input: {
 				candidate.services.includes(input.service)),
 	);
 	if (record) return describeRemoval(record);
+
 	const since = new Date(input.since).toISOString();
+	const dockerFilter = `label=com.docker.compose.project=${input.projectName}`;
 	const events =
 		input.runtime === "docker"
-			? `: \`docker events --since ${since} --filter label=com.docker.compose.project=${input.projectName}\``
+			? `: \`docker events --since ${since} --filter ${dockerFilter}\``
 			: "";
 	return `No buncargo command of this user stopped it, so the runtime or another tool did; Docker Desktop restarting stops every container. Check other users' ~/.buncargo/watchdog.log and the runtime's events${events}.`;
 }
@@ -374,6 +384,7 @@ export function recentRunStops(
 	now: number,
 ): RunStopRecord[] {
 	const newest = new Map<string, RunStopRecord>();
+
 	for (const record of records) {
 		const at = Date.parse(record.at);
 		const recent = !Number.isNaN(at) && now - at < RECENT_RUN_STOP_MS;
@@ -383,6 +394,7 @@ export function recentRunStops(
 		if (recent && !restarted) newest.set(record.root, record);
 		else if (restarted) newest.delete(record.root);
 	}
+
 	return [...newest.values()];
 }
 

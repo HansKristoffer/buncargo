@@ -21,9 +21,11 @@ export function noteCheckoutCommand(root: string): void {
 	try {
 		const file = projectStateFilePath(root, COMMAND_FILE);
 		const now = new Date();
+
 		try {
 			utimesSync(file, now, now);
 		} catch {
+			// No marker file yet: create it, but only in a checkout that has run before.
 			if (existsSync(getProjectStateDir(root))) writeFileSync(file, "");
 		}
 	} catch {
