@@ -16,6 +16,7 @@ for (const stop of ["command", "SIGINT"] as const) {
 		const probe = Bun.serve({ port: 0, fetch: () => new Response("ok") });
 		const port = Number(probe.port);
 		probe.stop(true);
+
 		const marker = join(root, "child.pid");
 		const env = {
 			...process.env,
@@ -37,7 +38,9 @@ for (const stop of ["command", "SIGINT"] as const) {
 			join(root, "dev.config.ts"),
 			`export default ${JSON.stringify({ projectPrefix: "detached-test", services: {}, apps: { app: { port, devCommand: `${process.execPath} parent.ts`, requiredServices: [] } }, options: { worktreeIsolation: false, hosts: false } })};`,
 		);
+
 		await standInForWatchdog(root);
+
 		const child = Bun.spawn([process.execPath, cli, "dev", "--no-hosts"], {
 			cwd: root,
 			env,
@@ -47,13 +50,16 @@ for (const stop of ["command", "SIGINT"] as const) {
 		const output = new Response(child.stdout).text();
 		const errors = new Response(child.stderr).text();
 		let detachedPid: number | undefined;
+
 		try {
 			const deadline = Date.now() + 10000;
 			let app:
 				{ pid: number; status: string; processIdentity: string } | undefined;
 			while (Date.now() < deadline) {
-				if (await Bun.file(marker).exists())
+				if (await Bun.file(marker).exists()) {
 					detachedPid = Number(await Bun.file(marker).text());
+				}
+
 				// A fresh read each time: a `Bun.file` stat taken before the run
 				// renames a newer registry into place reads that one cut short.
 				const registry = await readFile(
@@ -63,11 +69,15 @@ for (const stop of ["command", "SIGINT"] as const) {
 					.then(JSON.parse)
 					.catch(() => undefined);
 				app = registry?.runs?.[0]?.apps?.[0];
+
 				if (app?.pid === detachedPid && app?.status === "ready") break;
-				if (child.exitCode !== null)
+				if (child.exitCode !== null) {
 					throw new Error((await output) + (await errors));
+				}
+
 				await Bun.sleep(25);
 			}
+
 			const runs = Bun.spawn([process.execPath, cli, "runs", "--json"], {
 				cwd: root,
 				env,
@@ -81,13 +91,17 @@ for (const stop of ["command", "SIGINT"] as const) {
 			expect(listed.pid).toBe(detachedPid);
 			expect(listed.status).toBe("ready");
 			expect(listed.processIdentity).toStartWith("v2:");
+
 			if (stop === "command") {
 				const stopped = Bun.spawn(
 					[process.execPath, cli, "stop", "app", "--root", listedRun.root],
 					{ cwd: root, env, stdout: "ignore", stderr: "pipe" },
 				);
 				expect(await stopped.exited).toBe(0);
-			} else child.kill("SIGINT");
+			} else {
+				child.kill("SIGINT");
+			}
+
 			await Promise.race([
 				child.exited,
 				Bun.sleep(10000).then(() => {

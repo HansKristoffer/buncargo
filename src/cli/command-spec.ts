@@ -162,12 +162,11 @@ export function parseArgs<const S extends CommandSpec>(
 	const separator = argv.indexOf("--");
 	const own = separator === -1 ? [...argv] : argv.slice(0, separator);
 	const after = separator === -1 ? [] : argv.slice(separator + 1);
+
 	// Before the tokens: `--count --help` would read `--help` as the count.
-	if (
-		!spec.forwardUnknown &&
-		own.some((arg) => arg === "--help" || arg === "-h")
-	)
-		return { help: true };
+	const asksForHelp = own.some((arg) => arg === "--help" || arg === "-h");
+	if (!spec.forwardUnknown && asksForHelp) return { help: true };
+
 	const entries = flagEntries(spec);
 	const flags = new Map(entries);
 	const shorts = new Map(
@@ -192,8 +191,10 @@ export function parseArgs<const S extends CommandSpec>(
 	});
 
 	const values: Record<string, string | boolean | undefined> = {};
-	for (const [name, flag] of Object.entries(spec.flags))
+	for (const [name, flag] of Object.entries(spec.flags)) {
 		values[name] = flag.kind === "boolean" ? false : undefined;
+	}
+
 	const errors: string[] = [];
 	const positionals: string[] = [];
 	// `forwardUnknown`: the argv indexes handed on, which keeps a short group
@@ -208,69 +209,86 @@ export function parseArgs<const S extends CommandSpec>(
 			continue;
 		}
 		if (token.kind !== "option") continue;
+
 		const name = token.rawName.startsWith("--")
 			? token.name
 			: (shorts.get(token.name) ?? token.name);
 		const flag = flags.get(name);
+
 		if (name === "help") {
 			// Only `forwardUnknown` gets here: Prisma's own `migrate --help`.
 			if (forwarded.size > 0) forwarded.add(token.index);
 			else help = true;
 			continue;
 		}
+
 		if (!flag) {
 			if (spec.forwardUnknown) forwarded.add(token.index);
 			else errors.push(`Unknown flag: ${token.rawName}`);
 			continue;
 		}
+
 		const label = `--${name}`;
 		if (flag.kind !== "boolean" && values[name] !== undefined) {
 			errors.push(`${label} is given twice.`);
 			continue;
 		}
+
 		if (flag.kind === "boolean") {
-			if (token.inlineValue)
+			if (token.inlineValue) {
 				errors.push(
 					`${label} takes no value: pass ${label}, not ${own[token.index]}.`,
 				);
-			else values[name] = true;
+			} else {
+				values[name] = true;
+			}
 			continue;
 		}
+
 		if (flag.kind === "optional" && token.value === undefined) {
 			values[name] = true;
 			continue;
 		}
+
 		const value = token.value;
 		// `--profile --apps=x` must not read `--apps=x` as the profile.
-		if (
+		const missingValue =
 			value === undefined ||
 			value === "" ||
-			(!token.inlineValue && value.startsWith("-"))
-		) {
+			(!token.inlineValue && value.startsWith("-"));
+		if (missingValue) {
 			errors.push(
 				`${label} requires a value: ${label}=${flag.value ?? "<value>"}.`,
 			);
 			continue;
 		}
+
 		const problem = flag.validate?.(value);
 		if (problem) errors.push(problem);
 		else values[name] = value;
 	}
+
 	if (help) return { help: true };
 
 	const args = spec.args ?? [];
 	if (!spec.forwardUnknown) {
 		const variadic = args.at(-1)?.variadic === true;
 		const extra = variadic ? [] : positionals.slice(args.length);
-		if (extra.length > 0)
+		if (extra.length > 0) {
 			errors.push(`Unexpected argument: ${extra.join(" ")}`);
+		}
+
 		const missing = args.filter(
 			(arg, index) => arg.required && positionals[index] === undefined,
 		);
 		for (const arg of missing) errors.push(`Missing ${arg.name}.`);
 	}
-	if (after.length > 0 && !spec.passthrough && !spec.forwardUnknown)
+
+	const takesNothingAfter = !spec.passthrough && !spec.forwardUnknown;
+	if (after.length > 0 && takesNothingAfter) {
 		errors.push(`${spec.name} takes no arguments after --: ${after.join(" ")}`);
+	}
+
 	if (errors.length > 0) throw argumentsError(errors, spec.name);
 
 	return {
@@ -315,18 +333,22 @@ async function dispatchCommand(
 			console.log(formatCommandHelp(command));
 			return 0;
 		}
+
 		return (await command.run(parsed)) ?? 0;
 	}
+
 	const [first, ...rest] = argv;
 	const named = first !== undefined && !first.startsWith("-");
 	const subcommand = named ? command.subcommands[first] : undefined;
 	if (subcommand) return dispatchCommand(subcommand, rest);
+
 	if (first === "--help" || first === "-h") {
 		console.log(formatGroupHelp(command));
 		return 0;
 	}
+
 	const choices = Object.keys(command.subcommands).join(" | ");
-	if (named)
+	if (named) {
 		throw argumentsError(
 			[
 				`Unknown ${command.spec.name} command: ${first}`,
@@ -334,23 +356,27 @@ async function dispatchCommand(
 			],
 			command.spec.name,
 		);
-	if (!command.fallback)
+	}
+
+	if (!command.fallback) {
 		throw argumentsError(
 			[`Name a ${command.spec.name} command: ${choices}`],
 			command.spec.name,
 		);
+	}
+
 	return dispatchCommand(command.fallback, argv);
 }
 
 function flagLabel(name: string, flag: FlagSpec): string {
 	const value = flag.value ?? "<value>";
-	const suffix =
-		flag.kind === "boolean"
-			? ""
-			: flag.kind === "optional"
-				? `[=${value}]`
-				: `=${value}`;
-	return `--${name}${suffix}${flag.short ? `, -${flag.short}` : ""}`;
+
+	let suffix = `=${value}`;
+	if (flag.kind === "boolean") suffix = "";
+	else if (flag.kind === "optional") suffix = `[=${value}]`;
+
+	const short = flag.short ? `, -${flag.short}` : "";
+	return `--${name}${suffix}${short}`;
 }
 
 /** `buncargo <usage>`, built from the spec unless it names its own. */
@@ -388,7 +414,8 @@ type HelpSource = Pick<Command, "spec" | "exits" | "json">;
 function commandSections(command: HelpSource): string[] {
 	const { spec } = command;
 	const sections: string[] = [];
-	if (spec.args?.length)
+
+	if (spec.args?.length) {
 		sections.push(
 			"",
 			"Arguments:",
@@ -399,6 +426,8 @@ function commandSections(command: HelpSource): string[] {
 				})),
 			),
 		);
+	}
+
 	sections.push(
 		"",
 		"Options:",
@@ -416,9 +445,12 @@ function commandSections(command: HelpSource): string[] {
 		"Exit codes:",
 		...padRows(exitRows(command.exits)),
 	);
+
 	if (command.json) sections.push("", `JSON output: ${command.json}`);
-	if (spec.examples?.length)
+	if (spec.examples?.length) {
 		sections.push("", "Examples:", ...padRows(spec.examples));
+	}
+
 	return sections;
 }
 
@@ -469,13 +501,16 @@ function leafCommands(commands: readonly AnyCommand[]): Command[] {
 	const visit = (command: AnyCommand) => {
 		if (seen.has(command)) return;
 		seen.add(command);
+
 		if (!isGroup(command)) {
 			leaves.push(command);
 			return;
 		}
+
 		for (const sub of Object.values(command.subcommands)) visit(sub);
 		if (command.fallback) visit(command.fallback);
 	};
+
 	for (const command of commands) visit(command);
 	return leaves;
 }

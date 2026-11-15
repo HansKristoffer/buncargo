@@ -68,6 +68,13 @@ function hasNodeModules(root: string): boolean {
 	}
 }
 
+/** The config's checkout files, or none when their declaration is invalid (`doctor` reports that). */
+function declaredCheckoutFiles(env: AnyDevEnvironment) {
+	return checkoutFileErrors(env.checkoutFiles).length > 0
+		? []
+		: checkoutFileSpecs(env.checkoutFiles);
+}
+
 /**
  * What a checkout file needs and the command that fixes it, after its path
  * ("has local edits (…)"); undefined when nothing.
@@ -76,6 +83,7 @@ export function checkoutFileProblem(
 	file: CheckoutFileStatus,
 ): string | undefined {
 	if (file.refusal) return `${file.refusal}, so it is not synced`;
+
 	return typedSwitch(file.state, {
 		...typedSwitchGroup(file.state, ["in-sync", "missing"], () => undefined),
 		"local-edits": () =>
@@ -95,15 +103,14 @@ export function checkoutFileProblem(
  * serves, or at another checkout's.
  */
 export function strayLoopbackUrls(env: AnyDevEnvironment): StrayLoopbackUrl[] {
-	const files = checkoutFileErrors(env.checkoutFiles).length
-		? []
-		: checkoutFileSpecs(env.checkoutFiles).filter((file) =>
-				isDotenvPath(file.path),
-			);
+	const dotenvFiles = declaredCheckoutFiles(env).filter((file) =>
+		isDotenvPath(file.path),
+	);
+
 	return findStrayLoopbackUrls({
 		sources: [
 			{ source: "buncargo env set", values: readEnvOverrides(env.root) },
-			...files.map((file) => ({
+			...dotenvFiles.map((file) => ({
 				source: file.path,
 				values: readDotenvFile(env.root, file.path),
 			})),
@@ -188,11 +195,10 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 		});
 	}
 
-	const checkoutFiles = checkoutFileErrors(env.checkoutFiles).length
-		? []
-		: checkoutFileSpecs(env.checkoutFiles);
+	const checkoutFiles = declaredCheckoutFiles(env);
 	if (checkoutFiles.length > 0) {
 		const paths = checkoutFiles.map((file) => file.path);
+
 		// Fast because loading already synced them: `dev` reads that report
 		// rather than forking git again. `doctor` loads without syncing and
 		// inspects here.
@@ -211,6 +217,7 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 				);
 			},
 		});
+
 		checks.push({
 			name: "Checkout files are gitignored",
 			severity: "warning",
@@ -246,11 +253,11 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 		check: () => {
 			// A preview (hashed, shifted past a claim, or unallocated) is no
 			// block of this checkout's yet; its claim or BUNCARGO_PORT_OFFSET is.
-			if (
-				env.portOffsetProvenance !== "claim" &&
-				env.portOffsetProvenance !== "env"
-			)
-				return true;
+			const ownsBlock =
+				env.portOffsetProvenance === "claim" ||
+				env.portOffsetProvenance === "env";
+			if (!ownsBlock) return true;
+
 			const stray = strayLoopbackUrls(env);
 			return (
 				stray.length === 0 || {
@@ -310,7 +317,9 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 			},
 			fix: async () => {
 				const code = await prisma.generate();
-				if (code !== 0) throw new Error(`prisma generate exited with ${code}`);
+				if (code !== 0) {
+					throw new Error(`prisma generate exited with ${code}`);
+				}
 			},
 			fixDescription: `run \`${prisma.generateCommand}\``,
 		});

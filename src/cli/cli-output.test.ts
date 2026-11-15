@@ -25,11 +25,13 @@ function run(args: string[]): string {
 		cwd,
 		env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
 	});
+
 	const clean = (text: Buffer) =>
 		text
 			.toString()
 			.replaceAll(`v${version}`, "v<version>")
 			.replaceAll(cwd, "<cwd>");
+
 	return [
 		`exit ${result.exitCode}`,
 		`--- stdout\n${clean(result.stdout)}`,

@@ -34,10 +34,14 @@ export async function runChecks(
 				detail,
 				severity: severity ?? check.severity ?? "error",
 			});
+
 			try {
 				const outcome = await check.check(ctx);
-				if (typeof outcome === "boolean")
+
+				if (typeof outcome === "boolean") {
 					return outcome ? { check, ok: true } : failed();
+				}
+
 				return outcome.ok
 					? { check, ok: true, detail: outcome.detail }
 					: failed(outcome.detail, outcome.severity);
@@ -55,8 +59,11 @@ export function isWarning(result: CheckResult): boolean {
 /** How to fix a failed check, as one line. */
 function describeFix(check: SetupCheck): string | undefined {
 	if (typeof check.fix === "string") return `run \`${check.fix}\``;
-	if (check.fix)
+
+	if (check.fix) {
 		return check.fixDescription ?? "`bunx buncargo setup` can fix it";
+	}
+
 	return undefined;
 }
 
@@ -75,10 +82,12 @@ export function describeCheckFailures(
 		const fix = describeFix(result.check);
 		const fixed = fix ? `: ${fix}` : "";
 		const details = result.detail?.split("\n") ?? [];
+
 		if (details.length > 1) {
 			const indented = details.map((line) => `${DETAIL_INDENT}${line}`);
 			return [`${result.check.name}${fixed}:`, ...indented].join("\n");
 		}
+
 		const reason = result.detail ? ` (${result.detail})` : "";
 		return `${result.check.name}${reason}${fixed}`;
 	});
@@ -90,8 +99,8 @@ export function checkFailureError(failures: readonly CheckResult[]): CliError {
 	if (failures.some((failure) => failure.check.fix)) {
 		hints.push("Or run `bunx buncargo setup` to run every fix.");
 	}
-	return new CliError(
-		`${failures.length === 1 ? "A check" : `${failures.length} checks`} failed before starting:`,
-		hints,
-	);
+
+	const subject =
+		failures.length === 1 ? "A check" : `${failures.length} checks`;
+	return new CliError(`${subject} failed before starting:`, hints);
 }

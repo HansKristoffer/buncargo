@@ -19,8 +19,9 @@ async function stopHolder(holder: LeaseEntry): Promise<boolean> {
 	// A starting app without a pid may still spawn after this check. A free
 	// port is not proof that its owner has stopped using the resource.
 	const app = run?.apps.find((entry) => entry.name === holder.app);
-	if (!run || !app || (app.status === "starting" && app.pid === undefined))
-		return false;
+	const mayStillSpawn = app?.status === "starting" && app.pid === undefined;
+	if (!run || !app || mayStillSpawn) return false;
+
 	return (await stopTarget(run, holder.app, true)) === STOP_EXIT.ok;
 }
 
@@ -64,16 +65,19 @@ export function cliLeasePolicy(options: {
 }): LeasePolicy {
 	const interactive = options.interactive ?? isInteractive();
 	const confirm = options.confirm ?? askConfirm;
+
 	return {
 		takeOver: async (skip, app) => {
 			if (takesOver(options.takeover(), skip.app)) return true;
 			if (!interactive) return false;
+
 			const optional = app.essential === false;
+			const declined = optional ? `start without ${skip.app}` : "cancel";
 			return confirm([
 				`  ${skip.key} is in use by another run, so ${skip.app} cannot start here.`,
 				...describeLeaseRefusal(skip).map((line) => `    ${line}`),
 				"",
-				`  y to stop ${skip.app} there and run it here  ·  Enter to ${optional ? `start without ${skip.app}` : "cancel"}`,
+				`  y to stop ${skip.app} there and run it here  ·  Enter to ${declined}`,
 			]);
 		},
 		stopHolder,
