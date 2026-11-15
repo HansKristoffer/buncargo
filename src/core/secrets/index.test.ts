@@ -200,7 +200,6 @@ describe("applySecretDefaults", () => {
 
 describe("session tokens", () => {
 	it("reads the organization claim", () => {
-		start();
 		expect(sessionOrganization("a.eyJvcmdhbml6YXRpb25JZCI6Im8xIn0.c")).toBe(
 			"o1",
 		);
