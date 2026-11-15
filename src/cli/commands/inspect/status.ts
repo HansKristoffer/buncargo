@@ -35,7 +35,7 @@ import * as log from "../../log";
 import { loadLiveEnv } from "../load-env";
 
 /**
- * `buncargo status` — this checkout's containers, ports, hosts, tunnels and
+ * `buncargo status` shows this checkout's containers, ports, hosts, tunnels and
  * runs. `--json` is the same snapshot as one object, so a script or an agent
  * reads it instead of hunting ports out of logs and `docker ps`.
  */
@@ -51,8 +51,10 @@ export const statusCommand = defineCommand({
 	json: "StatusJson (--json)",
 	run: async ({ values }) => {
 		const status = await readStatus();
+
 		if (values.json) log.line(JSON.stringify(status, null, 2));
 		else printStatus(status);
+
 		return 0;
 	},
 });
@@ -62,6 +64,7 @@ async function readStatus(): Promise<StatusJson> {
 	// checkout's run, rather than a read-only load that never activates them.
 	const env = await loadLiveEnv();
 	const runtime = containerRuntimeForEnv(env);
+
 	// One listing of the runtime answers both who holds each port and which
 	// containers this checkout has, where each used to be a `docker ps` of
 	// its own per port.
@@ -115,6 +118,7 @@ async function readStatus(): Promise<StatusJson> {
 	const runs = (await readLiveRuns().catch(() => [])).filter(
 		(run) => run.root === env.root,
 	);
+
 	// The public URLs the live runs publish: each run's tunnels, which close
 	// with it, and the URLs its apps printed.
 	const publicUrls = new Map(
@@ -255,8 +259,10 @@ export function appStatusLines(
 	runs: readonly Pick<RunEntry, "apps">[],
 ): string[] {
 	const apps = runs.flatMap((run) => run.apps);
-	if (apps.length === 0)
+	if (apps.length === 0) {
 		return ["apps: no live run (start one with `buncargo dev --detach`)"];
+	}
+
 	const nameWidth = Math.max(...apps.map((app) => app.name.length));
 	const statusWidth = Math.max(...apps.map((app) => app.status.length));
 	return [
@@ -271,78 +277,101 @@ export function appStatusLines(
 
 function printStatus(status: StatusJson): void {
 	for (const line of appStatusLines(status.runs)) log.line(line);
+
 	log.line();
 	log.line(`project: ${status.project}`);
 	log.line(`root: ${status.root}`);
 	log.line(`portOffset: ${status.portOffset} (${status.portOffsetProvenance})`);
-	if (status.plannedOffset)
+	if (status.plannedOffset) {
 		log.warn(
 			`The next \`buncargo dev\` moves this checkout to offset ${status.plannedOffset.offset} (${status.plannedOffset.reason}), so the ports below change by ${status.plannedOffset.offset - status.portOffset}. Start the run before testing against them.`,
 		);
+	}
 	log.line(`composeFile: ${status.composeFile}`);
 	log.line(
 		`runtime: ${status.runtime.name} (${status.runtime.running ? "running" : "not running"})`,
 	);
 	log.line();
 	log.line("ports:");
-	for (const [name, { port, owner }] of Object.entries(status.ports))
+	for (const [name, { port, owner }] of Object.entries(status.ports)) {
 		log.line(`  ${name}: ${port}  ${owner ?? "free"}`);
+	}
+
 	log.line();
 	log.line("containers:");
-	if ("error" in status.containers) log.line(`  (${status.containers.error})`);
-	else if (status.containers.length === 0) log.line("  (none)");
-	else
-		for (const item of status.containers)
+	if ("error" in status.containers) {
+		log.line(`  (${status.containers.error})`);
+	} else if (status.containers.length === 0) {
+		log.line("  (none)");
+	} else {
+		for (const item of status.containers) {
 			log.line(`  ${item.service}: ${item.status}`);
+		}
+	}
+
 	if (status.hosts) {
 		log.line();
 		log.line("hosts:");
 		log.line(`  mode: ${status.hosts.mode}`);
 		log.line(`  active: ${status.hosts.active ? "yes" : "no"}`);
 		if (status.hosts.mode === "tailscale") {
-			for (const [app, url] of Object.entries(status.hosts.tailscaleUrls))
+			for (const [app, url] of Object.entries(status.hosts.tailscaleUrls)) {
 				log.line(`  ${app}: ${url} → :${status.ports[app].port}`);
+			}
 		} else {
 			log.line(`  tld: ${status.hosts.tld}`);
-			for (const entry of status.hosts.plan)
+			for (const entry of status.hosts.plan) {
 				log.line(`  ${entry.hostname} → :${entry.targetPort}`);
+			}
 		}
 	}
+
 	if (status.tunnels.length > 0) {
 		log.line();
 		log.line("tunnels:");
-		for (const entry of status.tunnels)
+		for (const entry of status.tunnels) {
 			log.line(`  ${entry.name}: ${entry.publicUrl}`);
+		}
 	}
+
 	if (status.envOverrides.length > 0) {
 		log.line();
 		log.line(
 			`env overrides (buncargo env set): ${status.envOverrides.join(", ")}`,
 		);
 	}
+
 	const slots = status.checkSlots;
 	if (slots.enabled && (slots.holders.length > 0 || slots.waiting > 0)) {
 		log.line();
 		log.line(
 			`check slots: ${slots.holders.length} of ${slots.capacity} taken, ${slots.waiting} waiting (this user's, in ${slots.dir})`,
 		);
-		for (const holder of slots.holders)
+		for (const holder of slots.holders) {
 			log.line(`  ${formatCheckSlotHolder(holder)}`);
+		}
 	}
+
 	for (const stray of status.strayLoopbackUrls) log.warn(stray.message);
+
 	for (const run of status.runs) {
 		log.line();
+
 		const health = run.health === "degraded" ? " (degraded)" : "";
 		// Its apps are at the top.
 		log.line(`run ${run.sessionId}${health}: ${run.apps.length} apps`);
-		for (const service of run.services)
-			if (service.problem)
+		for (const service of run.services) {
+			if (service.problem) {
 				log.line(`  ${service.name}: ${service.problem.detail}`);
+			}
+		}
 	}
+
 	if (status.recentStops.length > 0) {
 		log.line();
 		log.line("recent stops and removals:");
-		for (const record of status.recentStops)
+		for (const record of status.recentStops) {
 			log.line(`  ${record.description}`);
+		}
 	}
 }

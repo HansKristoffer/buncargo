@@ -33,14 +33,8 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-/** `buncargo status --json` without blocking the daemon this process serves. */
-async function status(): Promise<StatusJson> {
-	const env: Record<string, string | undefined> = {
-		...process.env,
-		HOME: join(dir, "home"),
-	};
-	for (const name of CI_ENV_VARS) delete env[name];
-	delete env.BUNCARGO_HOSTS;
+/** `buncargo status --json` in `dir` as a child, so the daemon this process serves is not blocked. */
+async function spawnStatusJson(env: Record<string, string | undefined>) {
 	const proc = Bun.spawn([process.execPath, cli, "status", "--json"], {
 		cwd: dir,
 		env,
@@ -53,7 +47,19 @@ async function status(): Promise<StatusJson> {
 		proc.exited,
 	]);
 	if (code !== 0) throw new Error(`status exited ${code}: ${stderr}`);
-	return JSON.parse(stdout) as StatusJson;
+
+	return stdout;
+}
+
+async function status(): Promise<StatusJson> {
+	const env: Record<string, string | undefined> = {
+		...process.env,
+		HOME: join(dir, "home"),
+	};
+	for (const name of CI_ENV_VARS) delete env[name];
+	delete env.BUNCARGO_HOSTS;
+
+	return JSON.parse(await spawnStatusJson(env)) as StatusJson;
 }
 
 it("reports named hosts once a live run registered them, with their URLs", async () => {
@@ -216,18 +222,8 @@ async function statusForks(
 		...extraEnv,
 	};
 	for (const name of CI_ENV_VARS) delete env[name];
-	const proc = Bun.spawn([process.execPath, cli, "status", "--json"], {
-		cwd: dir,
-		env,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [stdout, stderr, code] = await Promise.all([
-		new Response(proc.stdout).text(),
-		new Response(proc.stderr).text(),
-		proc.exited,
-	]);
-	if (code !== 0) throw new Error(`status exited ${code}: ${stderr}`);
+	const stdout = await spawnStatusJson(env);
+
 	return {
 		result: JSON.parse(stdout) as {
 			ports: Record<string, { state: string; owner: string | null }>;

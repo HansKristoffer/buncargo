@@ -68,15 +68,18 @@ async function ls(): Promise<void> {
 			"No container runtime is running. Start Docker or Apple container and try again.",
 		);
 	}
+
 	for (const stack of result.swept) log.info(describeSwept(stack));
 	logRecentRunStops(result);
-	for (const failure of result.failed)
+	for (const failure of result.failed) {
 		log.warn(`Could not remove ${failure.projectName}: ${failure.error}`);
+	}
 
 	if (result.remaining.length === 0) {
 		log.info("No buncargo environments found.");
 		return;
 	}
+
 	const now = Date.now();
 	const proxy = readProxyActivity(now);
 	const connections = await readRunConnections(
@@ -89,6 +92,7 @@ async function ls(): Promise<void> {
 		const first = group.containers[0];
 		if (!first) continue;
 		const up = group.containers.filter(isContainerUp);
+
 		// The registry says who each stack belongs to, which the labels cannot:
 		// whether a run is still using it, or it is only being held for the next.
 		const owners = result.runs.filter(
@@ -101,6 +105,7 @@ async function ls(): Promise<void> {
 		log.line(`  root: ${group.root || "(unknown)"}`);
 		if (first.worktree) log.line(`  worktree: ${first.worktree}`);
 		if (multipleRuntimes) log.line(`  runtime: ${group.runtime}`);
+
 		if (live) {
 			const idle = describeIdleState(
 				readIdleState(live, proxy, connections),
@@ -108,20 +113,26 @@ async function ls(): Promise<void> {
 			);
 			const limit = idle ? `; ${idle}` : "";
 			log.line(`  run: active, pid ${live.pid}${limit}`);
-		} else if (newest) log.line(`  run: ${describeFinishedRun(newest, now)}`);
+		} else if (newest) {
+			log.line(`  run: ${describeFinishedRun(newest, now)}`);
+		}
+
 		const foreign = foreignStackOf(result, group);
 		if (foreign) {
 			log.line(`  owner: not this user's (${foreign.reason})`);
 			log.line(`  remove by hand: ${foreign.command}`);
 		}
+
 		log.line(`  containers: ${up.length}/${group.containers.length} up`);
 		for (const item of group.containers) {
 			log.line(
 				`    ${item.service || item.name}  ${item.status}  ${item.ports}`,
 			);
 		}
+
 		log.line();
 	}
+
 	if (result.foreign.length > 0) logForeignStacks();
 }
 
@@ -130,8 +141,10 @@ async function ls(): Promise<void> {
  * no other answer once its entry is gone.
  */
 function logRecentRunStops(result: SweepResult): void {
-	for (const record of recentRunStops(readRunStops(), result.runs, Date.now()))
+	const stops = recentRunStops(readRunStops(), result.runs, Date.now());
+	for (const record of stops) {
 		log.info(describeRunStop(record));
+	}
 }
 
 /**
