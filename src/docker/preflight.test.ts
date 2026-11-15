@@ -14,10 +14,10 @@ import { type DockerRunResult, runDocker, runDockerAsync } from "./binary";
 import {
 	DESKTOP_COLD_START_MS,
 	DockerUnavailableError,
+	dockerDaemonState,
 	dockerDaemonStateFrom,
 	ensureDockerRunning,
 	installedDockerRuntime,
-	isDockerDaemonRunning,
 	isDockerDesktopHung,
 	parseDockerDesktopPids,
 	parseElapsed,
@@ -27,8 +27,9 @@ import {
 
 const roots: string[] = [];
 afterEach(() => {
-	for (const root of roots.splice(0))
+	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 function fixture(
@@ -111,7 +112,7 @@ describe("Docker daemon preflight", () => {
 			verbose: false,
 			timeoutMs: 1000,
 		});
-		expect(isDockerDaemonRunning(binary)).toBe(true);
+		expect(dockerDaemonState(binary).state).toBe("up");
 		expect(calls()).toEqual([
 			["version", "--format", "{{.Server.Version}}"],
 			["version", "--format", "{{.Server.Version}}"],
@@ -295,7 +296,7 @@ describe("Docker daemon preflight", () => {
 
 	it("rejects an unavailable server even if the CLI prints a version", async () => {
 		const { binary } = fixture({ versionExit: 1 });
-		expect(isDockerDaemonRunning(binary)).toBe(false);
+		expect(dockerDaemonState(binary).state).not.toBe("up");
 		await expect(
 			ensureDockerRunning({
 				binary,
@@ -339,8 +340,9 @@ describe("Docker daemon preflight", () => {
 			while (
 				!(await Bun.file(pidFile).exists()) &&
 				performance.now() < deadline
-			)
+			) {
 				await Bun.sleep(20);
+			}
 			const pid = Number(readFileSync(pidFile, "utf8"));
 			controller.abort(new Error("cancel daemon probe"));
 			expect(await outcome).toMatchObject({ message: "cancel daemon probe" });

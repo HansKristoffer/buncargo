@@ -23,10 +23,11 @@ const FILTER = ["--filter", "label=com.docker.compose.project"];
 
 function rows(args: string[], binary?: string): string[][] {
 	const result = runDocker(binary, args, { timeoutMs: 30_000 });
-	if (!result.ok)
-		throw new Error(
-			`docker ${args[0]} failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`,
-		);
+	if (!result.ok) {
+		const reason = result.stderr.trim() || `exit ${result.exitCode}`;
+		throw new Error(`docker ${args[0]} failed: ${reason}`);
+	}
+
 	return result.stdout
 		.trim()
 		.split("\n")

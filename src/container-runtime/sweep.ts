@@ -130,8 +130,9 @@ export function decideSweep(
 	// A live owner keeps its stack whatever the checkout looks like: a run
 	// between `start()` and `startServers()` is using these containers.
 	if (ownerAlive) return { kind: "keep" };
-	if (checkout === "deleted")
+	if (checkout === "deleted") {
 		return { kind: "down", reason: "checkout deleted" };
+	}
 	if (!anyRunning) return { kind: "down", reason: "stopped with no owner" };
 	// Running, unowned, and nothing on record: an old CLI or a hand-started
 	// stack. Only the two rules above may touch it.
@@ -264,6 +265,10 @@ export interface SweepOptions {
 	actor?: RemovalActor;
 }
 
+function hasRecordedStacks(run: RunEntry): boolean {
+	return (run.stacks?.length ?? 0) > 0;
+}
+
 /** The run that owns a stack: a live session if there is one, else the one that ended last. */
 function runFor(
 	group: Pick<RunEntry, "projectName" | "root">,
@@ -290,8 +295,10 @@ function adapterFor(
 		(service) =>
 			service.container?.runtime === group.runtime && service.container.binary,
 	)?.container;
-	if (pinned?.binary)
+	if (pinned?.binary) {
 		return getContainerRuntimeAdapter(group.runtime, { binary: pinned.binary });
+	}
+
 	return (
 		runtimes.find((runtime) => runtime.name === group.runtime) ??
 		getContainerRuntimeAdapter(group.runtime)
@@ -303,8 +310,8 @@ function adapterFor(
  *
  * Throws when the registry cannot be read. Nothing has been touched by then,
  * and guessing would be worse than stopping: with no registry every stack on
- * the machine looks unowned. The caller decides what a failed pass means —
- * the watchdog retries on its next tick.
+ * the machine looks unowned. The caller decides what a failed pass means; the
+ * watchdog retries on its next tick.
  *
  * Each group is decided under its own project lock, so a run that is starting
  * holds the sweep off, and a lock that is busy simply means "someone is
@@ -333,7 +340,7 @@ export async function sweepOrphanedContainers(
 	const owners = new Map(
 		groups.map((group) => [group, runFor(group, runs, alive)]),
 	);
-	const stackRuns = runs.filter((run) => (run.stacks?.length ?? 0) > 0);
+	const stackRuns = runs.filter(hasRecordedStacks);
 	await stampLostOwners([...owners.values(), ...stackRuns], runs, alive, now);
 
 	const result: SweepResult = {
@@ -363,13 +370,14 @@ export async function sweepOrphanedContainers(
 		]);
 	};
 
+	const isExcepted = (stack: { projectName: string; root: string }) =>
+		options.except?.projectName === stack.projectName &&
+		options.except.root === stack.root;
+
 	for (const group of groups) {
 		const run = owners.get(group) ?? null;
-		const excepted =
-			options.except?.projectName === group.projectName &&
-			options.except.root === group.root;
 		const removed =
-			!excepted &&
+			!isExcepted(group) &&
 			(await sweepGroup(
 				group,
 				run,
@@ -384,15 +392,12 @@ export async function sweepOrphanedContainers(
 	}
 
 	for (const run of stackRuns) {
-		const excepted =
-			options.except?.projectName === run.projectName &&
-			options.except.root === run.root;
-		if (!excepted)
+		if (!isExcepted(run)) {
 			await sweepStacks(run, runs, alive, now, runtimes, result, swept);
+		}
 	}
-	result.pendingStacks = stackRuns.filter(
-		(run) => (run.stacks?.length ?? 0) > 0,
-	).length;
+	// sweepStacks clears `stacks` on the runs it brought down.
+	result.pendingStacks = stackRuns.filter(hasRecordedStacks).length;
 
 	try {
 		await settleDeletedCheckouts({
@@ -460,8 +465,10 @@ async function settleThrowawayClaims(input: {
 	// runtimes that answered: from one that is down, no volume means nothing.
 	const spent = (volumeProjects: ReadonlySet<string>) =>
 		spentThrowawayClaims({ ...input, claims, volumeProjects });
-	if (runtimes.length === 0 || Object.keys(spent(new Set())).length === 0)
+	if (runtimes.length === 0 || Object.keys(spent(new Set())).length === 0) {
 		return;
+	}
+
 	let volumes: BuncargoVolume[];
 	try {
 		volumes = (
@@ -572,8 +579,11 @@ export async function runStackDowns(
 	const cwd = existsSync(run.root) ? run.root : homedir();
 	for (const stack of run.stacks ?? []) {
 		const down = runnableDown(stack.down);
-		if (down) await execAsync(down, cwd, {}, { timeoutMs: 120_000 });
-		else await stopStackByLabel(stack, runtimes);
+		if (down) {
+			await execAsync(down, cwd, {}, { timeoutMs: 120_000 });
+		} else {
+			await stopStackByLabel(stack, runtimes);
+		}
 		await onDown(stack);
 	}
 }
@@ -603,10 +613,12 @@ async function stopStackByLabel(
 	const compose =
 		runtimes.find((runtime) => runtime.capabilities.composeProjectResources) ??
 		getContainerRuntimeAdapter("docker");
-	if (!stack.composeProject)
+	if (!stack.composeProject) {
 		throw new Error(
 			`${stack.name}'s stop command \`${stack.down[0]}\` is gone, and nothing records its containers' project`,
 		);
+	}
+
 	const ids = (await compose.listComposeProjectResources()).containers
 		.filter(
 			(container) =>
@@ -646,7 +658,7 @@ export async function withdrawStoppedRoutes(
  * A stack condemned from the pass's snapshot is decided again from a fresh
  * read, under its lock, before anything is removed. The snapshot predates the
  * lock, and a new run publishes its claim before it takes the lock to reuse
- * these containers — so without the recheck, a pass busy with other stacks
+ * these containers, so without the recheck a pass busy with other stacks
  * could tear down containers a run had claimed in the meantime.
  */
 async function sweepGroup(
@@ -713,12 +725,13 @@ async function sweepGroup(
 		);
 	} catch (error) {
 		// A run is starting or stopping there; it will be decided next pass.
-		if (!(error instanceof FileLockTimeoutError))
+		if (!(error instanceof FileLockTimeoutError)) {
 			result.failed.push({
 				projectName: group.projectName,
 				root: group.root,
 				error: getErrorMessage(error),
 			});
+		}
 		return false;
 	}
 }
@@ -838,8 +851,9 @@ export async function settleDeletedCheckouts(input: {
 		}));
 		const all = decided.flatMap(({ volumes }) => volumes);
 		// A container, a run or a recent deletion: a later pass decides.
-		if (all.some(({ decision }) => !decision.propose && decision.wait))
+		if (all.some(({ decision }) => !decision.propose && decision.wait)) {
 			continue;
+		}
 		if (!all.some(({ decision }) => decision.propose)) {
 			settled.push(key);
 			continue;
@@ -866,7 +880,7 @@ export async function settleDeletedCheckouts(input: {
 			const removed = ours.filter(
 				(name) => !refused.some((entry) => entry.name === name),
 			);
-			if (removed.length > 0)
+			if (removed.length > 0) {
 				await swept({
 					projectName,
 					root,
@@ -874,6 +888,7 @@ export async function settleDeletedCheckouts(input: {
 					reason: `checkout deleted, removed volumes ${removed.join(", ")}`,
 					volumes: removed,
 				});
+			}
 		}
 		if (!refusedAny) settled.push(key);
 	}
@@ -949,12 +964,13 @@ async function sweepStacks(
 			{ timeoutMs: 0 },
 		);
 	} catch (error) {
-		if (!(error instanceof FileLockTimeoutError))
+		if (!(error instanceof FileLockTimeoutError)) {
 			result.failed.push({
 				projectName: run.projectName,
 				root: run.root,
 				error: getErrorMessage(error),
 			});
+		}
 	}
 }
 

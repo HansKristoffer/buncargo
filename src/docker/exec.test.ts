@@ -14,8 +14,9 @@ import { dockerRuntimeAdapter } from "./adapter";
 
 const roots: string[] = [];
 afterEach(() => {
-	for (const root of roots.splice(0))
+	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 function fixture(
@@ -75,8 +76,9 @@ process.exit(9);
 		/** The exec probe's pid, once it has started. */
 		async execPid() {
 			const deadline = performance.now() + 4000;
-			while (!(await Bun.file(pid).exists()) && performance.now() < deadline)
+			while (!(await Bun.file(pid).exists()) && performance.now() < deadline) {
 				await Bun.sleep(20);
+			}
 			return Number(readFileSync(pid, "utf8"));
 		},
 	};

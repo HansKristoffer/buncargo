@@ -15,8 +15,9 @@ import { startContainers, stopContainers } from "./lifecycle";
 
 const roots: string[] = [];
 afterEach(() => {
-	for (const root of roots.splice(0))
+	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 /** A `docker` that answers every command with success and records its argv. */

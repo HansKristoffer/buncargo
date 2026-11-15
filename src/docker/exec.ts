@@ -40,6 +40,7 @@ export async function dockerInteractiveExecArgv(
 	});
 	const id = listed.ok ? uniqueContainerId(listed.stdout) : undefined;
 	if (!id) return undefined;
+
 	return [
 		binary ?? DEFAULT_DOCKER_BINARY,
 		"exec",
@@ -61,8 +62,10 @@ export async function execInDockerService(
 	binary?: string,
 ): Promise<boolean> {
 	request.signal?.throwIfAborted();
+
 	const deadline = performance.now() + (request.timeoutMs ?? 2000);
 	if (remainingTime(deadline) === 0) return false;
+
 	const listed = await runDockerAsync(binary, serviceContainerArgs(request), {
 		cwd: request.root,
 		signal: request.signal,
@@ -71,6 +74,7 @@ export async function execInDockerService(
 	const id = listed.ok ? uniqueContainerId(listed.stdout) : undefined;
 	request.signal?.throwIfAborted();
 	if (!id || remainingTime(deadline) === 0) return false;
+
 	return (
 		await runDockerAsync(binary, ["exec", id, ...request.command], {
 			cwd: request.root,

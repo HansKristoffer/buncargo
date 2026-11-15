@@ -117,7 +117,7 @@ export interface ServiceDiagnosis {
  * What a runtime knows about one of a project's service containers.
  *
  * Read in a single call for the whole project, because the questions a startup
- * asks — is everything up, and was it created from this config — used to cost
+ * asks (is everything up, and was it created from this config) used to cost
  * one runtime invocation per service each.
  */
 export interface ServiceRuntimeState {
@@ -134,7 +134,7 @@ export interface ServiceRuntimeState {
 	/**
 	 * Whether the runtime's own healthcheck currently passes.
 	 *
-	 * `undefined` where the runtime does not run one — a service with no
+	 * `undefined` where the runtime does not run one: a service with no
 	 * healthcheck, or a backend with no concept of it. Absent means "cannot
 	 * tell", never "unhealthy".
 	 */
