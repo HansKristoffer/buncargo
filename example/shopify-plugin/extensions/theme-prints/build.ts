@@ -8,5 +8,6 @@ const build = () => {
 		`// built ${Date.now()}\n`,
 	);
 };
+
 build();
 if (process.argv.includes("--watch")) setInterval(build, 60_000);

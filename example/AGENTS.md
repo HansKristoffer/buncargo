@@ -6,10 +6,10 @@ This folder is only for in-repo examples and playground conventions.
 
 ## Files
 
-- [`minimal.dev.config.ts`](minimal.dev.config.ts) — one Postgres service
-- [`platform.dev.config.ts`](platform.dev.config.ts) — API + Vite + Expo
-- [`custom-services.dev.config.ts`](custom-services.dev.config.ts) — custom Docker services
-- [`playground/`](playground/) — runnable workspace for manual CLI tests
+- [`minimal.dev.config.ts`](minimal.dev.config.ts): one Postgres service
+- [`platform.dev.config.ts`](platform.dev.config.ts): API + Vite + Expo
+- [`custom-services.dev.config.ts`](custom-services.dev.config.ts): custom Docker services
+- [`playground/`](playground/): runnable workspace for manual CLI tests
 
 ## Conventions in this repo
 

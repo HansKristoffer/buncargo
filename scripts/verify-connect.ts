@@ -41,11 +41,13 @@ const app = Bun.serve({
 		if (path === "/ws" && server.upgrade(req)) {
 			return;
 		}
+
 		if (path === "/source.js") {
 			return new Response(source, {
 				headers: { "content-type": "text/javascript" },
 			});
 		}
+
 		if (path === "/events") {
 			let timer: ReturnType<typeof setTimeout>;
 			return new Response(
@@ -64,6 +66,7 @@ const app = Bun.serve({
 				{ headers: { "content-type": "text/event-stream" } },
 			);
 		}
+
 		return new Response(payload);
 	},
 	websocket: {
@@ -94,6 +97,7 @@ const assert = (ok: unknown, message: string) => {
 
 try {
 	receiver = await request<Receiver>(origin, "/v1/receivers", undefined, {});
+
 	const run: RunInput = {
 		sessionId: crypto.randomUUID(),
 		name: "Release verification",
@@ -119,17 +123,20 @@ try {
 			},
 		],
 	};
+
 	publication = await request<PublicationLease>(
 		origin,
 		"/v1/publications",
 		undefined,
 		{ tokens: [receiver.token], credential, run },
 	);
+
 	const web = publication.assignments.find((a) => a.protocol === "http");
 	const db = publication.assignments.find((a) => a.protocol === "tcp");
 	if (!web || !db) {
 		throw new Error("Relay did not allocate both targets");
 	}
+
 	const publisher = await startFrpc({
 		relay: publication.relay,
 		user: publication.user,
@@ -153,6 +160,7 @@ try {
 		],
 	});
 	clients.push(publisher);
+
 	let confirmed: string[] = [];
 	for (let i = 0; i < 100; i++) {
 		confirmed = runningProxies(await publisher.status());
@@ -162,6 +170,7 @@ try {
 		await abortableSleep(100);
 	}
 	assert(confirmed.length === 2, "Publisher could not authenticate/register");
+
 	await request(
 		origin,
 		`/v1/publications/${publication.id}`,
@@ -169,6 +178,7 @@ try {
 		{ run, confirmed },
 		"PUT",
 	);
+
 	const directory = parseDirectory(
 		await request(origin, "/v1/receiver/runs", receiver.owner),
 		origin,
@@ -181,10 +191,12 @@ try {
 		directory.runs[0]?.targets.every((t) => t.status === "ready"),
 		"Registered proxies must appear ready in the directory",
 	);
+
 	const elapsed = startTimer();
 	const response = await fetch(target.url, {
 		signal: AbortSignal.timeout(30000),
 	});
+
 	assert(response.ok, "HTTP routing failed");
 	assert(
 		Buffer.from(await response.arrayBuffer()).equals(payload),
@@ -193,6 +205,7 @@ try {
 	console.log(
 		`20 MiB HTTPS transfer: ${(elapsed() / 1000).toFixed(2)} seconds`,
 	);
+
 	for (const encoding of ["gzip", "zstd"]) {
 		const asset = await fetch(`${target.url}source.js`, {
 			headers: { "accept-encoding": encoding },
@@ -204,6 +217,7 @@ try {
 		);
 		assert((await asset.text()) === source, "Compression changed source code");
 	}
+
 	const events = await fetch(`${target.url}events`, {
 		headers: { "accept-encoding": "gzip, zstd" },
 		signal: AbortSignal.timeout(10000),
@@ -212,8 +226,10 @@ try {
 		!events.headers.has("content-encoding"),
 		"SSE must remain uncompressed",
 	);
+
 	const reader = events.body?.getReader();
 	assert(reader, "Missing event stream");
+
 	const first = await reader?.read();
 	assert(
 		first?.value && new TextDecoder().decode(first.value).includes("first"),
@@ -224,6 +240,7 @@ try {
 		"SSE was buffered",
 	);
 	await reader?.cancel();
+
 	const ws = new WebSocket(`${target.url.replace(/^https:/, "wss:")}ws`);
 	await new Promise<void>((resolve, reject) => {
 		const timer = setTimeout(() => {
@@ -238,40 +255,48 @@ try {
 		ws.onmessage = (e) => {
 			clearTimeout(timer);
 			ws.close();
-			e.data === "release-probe"
-				? resolve()
-				: reject(new Error("WebSocket payload mismatch"));
+
+			if (e.data === "release-probe") {
+				resolve();
+			} else {
+				reject(new Error("WebSocket payload mismatch"));
+			}
 		};
 	});
-	const v = await request<VisitorLease>(
+
+	const visitor = await request<VisitorLease>(
 		origin,
 		`/v1/targets/${publication.id}.tcp/visitor`,
 		receiver.owner,
 		{},
 	);
+
 	const port = await freePort();
 	clients.push(
 		await startFrpc({
-			relay: v.relay,
-			user: v.user,
-			credential: v.credential,
+			relay: visitor.relay,
+			user: visitor.user,
+			credential: visitor.credential,
 			visitors: [
 				{
 					name: "probe",
 					type: "stcp",
-					serverName: v.proxyName,
-					serverUser: v.user,
-					secretKey: v.secretKey,
+					serverName: visitor.proxyName,
+					serverUser: visitor.user,
+					secretKey: visitor.secretKey,
 					bindAddr: "127.0.0.1",
 					bindPort: port,
 				},
 			],
 		}),
 	);
+
 	await abortableSleep(1000);
+
 	socket = connect(port, "127.0.0.1");
 	await once(socket, "connect");
 	socket.write("private-probe");
+
 	const result = await withTimeout(once(socket, "data"), 10000, {
 		message: "Private TCP timed out",
 	});
@@ -279,15 +304,18 @@ try {
 		result[0].toString() === "private-probe",
 		"Private TCP payload mismatch",
 	);
+
 	console.log(
 		"Verified directory authorization, HTTPS, streamed SSE, WebSocket echo and private TCP.",
 	);
 } finally {
+	// Best-effort cleanup: a failed revoke must not hide the error that got us here.
 	socket?.destroy();
 	await Promise.allSettled(clients.map((c) => c.close()));
 	await gate.close();
 	tcp.close();
 	app.stop(true);
+
 	if (publication) {
 		await request(
 			origin,
@@ -297,6 +325,7 @@ try {
 			"DELETE",
 		).catch(() => {});
 	}
+
 	if (receiver) {
 		await request(
 			origin,

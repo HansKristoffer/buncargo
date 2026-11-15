@@ -9,6 +9,7 @@ import { freePort } from "../src/core/connect/frpc";
 
 const binary = resolve(process.argv[2] ?? "candidate-server/caddy");
 const directory = await mkdtemp(join(tmpdir(), "bc-compression-"));
+
 const source = Buffer.from(
 	"// A readable source module; preserve whitespace and line numbers.\n" +
 		Array.from(
@@ -17,6 +18,7 @@ const source = Buffer.from(
 		).join(""),
 );
 const compressed = Bun.gzipSync(source);
+
 const types: Record<string, string> = {
 	"/module.js": "text/javascript; charset=utf-8",
 	"/module.map": "application/json",
@@ -24,11 +26,13 @@ const types: Record<string, string> = {
 	"/style.css": "text/css",
 	"/binary": "application/octet-stream",
 };
+
 const app = Bun.serve({
 	hostname: "127.0.0.1",
 	port: 0,
 	fetch(req) {
 		const path = new URL(req.url).pathname;
+
 		if (path === "/events") {
 			let timer: ReturnType<typeof setTimeout>;
 			return new Response(
@@ -47,6 +51,7 @@ const app = Bun.serve({
 				{ headers: { "content-type": "text/event-stream; charset=utf-8" } },
 			);
 		}
+
 		if (path === "/encoded") {
 			return new Response(compressed, {
 				headers: {
@@ -55,12 +60,15 @@ const app = Bun.serve({
 				},
 			});
 		}
+
 		return new Response(source, {
 			headers: { "content-type": types[path] ?? "text/plain" },
 		});
 	},
 });
+
 let child: ReturnType<typeof Bun.spawn> | undefined;
+
 try {
 	const adapt = Bun.spawn(
 		[
@@ -84,21 +92,26 @@ try {
 		adapt.exited,
 	]);
 	assert.equal(exitCode, 0, errors);
+
 	const config = JSON.parse(output);
 	const port = await freePort();
 	const server = Object.values(config.apps.http.servers)[0] as Record<
 		string,
 		unknown
 	>;
+
 	// Retain the real route/encoding handlers; replace only listeners, TLS, and fixture upstreams.
 	server.listen = [`127.0.0.1:${port}`];
 	server.automatic_https = { disable: true };
 	delete server.tls_connection_policies;
+
 	const fixture = {
 		admin: { disabled: true },
 		apps: { http: { servers: { test: server } } },
 	};
 	const path = join(directory, "caddy.json");
+
+	// 127.0.0.1:8080 is the upstream in server/deploy/Caddyfile.
 	await writeFile(
 		path,
 		JSON.stringify(fixture).replaceAll(
@@ -106,10 +119,12 @@ try {
 			`127.0.0.1:${app.port}`,
 		),
 	);
+
 	child = Bun.spawn([binary, "run", "--config", path], {
 		stdout: "ignore",
 		stderr: Bun.file(join(directory, "caddy.log")),
 	});
+
 	const headers = {
 		host: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.connect.hanskristoffer.dk",
 	};
@@ -141,14 +156,17 @@ try {
 			);
 			req.end();
 		});
+
 	await retry(() => raw("/module.js", "identity"), {
 		retries: 50,
 		delayMs: 100,
 	});
+
 	for (const encoding of ["gzip", "zstd"]) {
 		for (const path of ["/module.js", "/module.map", "/page", "/style.css"]) {
 			const response = await raw(path, encoding);
 			assert.equal(response.encoding, encoding);
+
 			const decoded =
 				encoding === "gzip"
 					? Bun.gunzipSync(Uint8Array.from(response.body))
@@ -160,6 +178,7 @@ try {
 			assert(response.body.length < source.length / 2);
 		}
 	}
+
 	for (const [path, encoding] of [
 		["/module.js", "identity"],
 		["/binary", "gzip, zstd"],
@@ -168,12 +187,14 @@ try {
 		assert.equal(response.encoding, undefined);
 		assert(response.body.equals(source));
 	}
+
 	const encoded = await raw("/encoded", "gzip, zstd");
 	assert.equal(encoded.encoding, "gzip");
 	assert(
 		encoded.body.equals(Buffer.from(compressed)),
 		"Already encoded responses must pass through",
 	);
+
 	const elapsed = startTimer();
 	const events = await fetch(`http://127.0.0.1:${port}/events`, {
 		headers: { ...headers, "accept-encoding": "gzip, zstd" },
@@ -181,6 +202,7 @@ try {
 	});
 	assert.equal(events.headers.get("content-encoding"), null);
 	assert(events.body, "Missing SSE body");
+
 	const reader = events.body.getReader();
 	try {
 		const first = await reader.read();
@@ -189,6 +211,7 @@ try {
 	} finally {
 		await reader.cancel();
 	}
+
 	console.log(
 		"Verified gzip/zstd, exact source bytes, identity/binary/precompressed responses, and immediate uncompressed SSE.",
 	);

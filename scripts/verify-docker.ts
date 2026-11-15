@@ -58,6 +58,7 @@ async function verifyContainerReuse(): Promise<void> {
 			1,
 			"Expected exactly the disposable selected service",
 		);
+
 		const id = ids[0];
 		assert(id);
 		return id;
@@ -73,6 +74,7 @@ async function verifyContainerReuse(): Promise<void> {
 		// runner's Docker behind these assertions and race them.
 		await first.start({ startServers: false, verbose: false, watchdog: false });
 		const original = containerId();
+
 		await first.start({ startServers: false, verbose: false, watchdog: false });
 		assert.equal(
 			containerId(),
@@ -84,6 +86,7 @@ async function verifyContainerReuse(): Promise<void> {
 			["container reconcile", "container reuse"],
 			"Warm start must skip the runtime up operation",
 		);
+
 		const changed = environment("two");
 		await changed.start({
 			startServers: false,
@@ -95,6 +98,7 @@ async function verifyContainerReuse(): Promise<void> {
 			original,
 			"Changed Compose environment must reconcile",
 		);
+
 		console.log("Docker start/reuse/change contract passed");
 	} finally {
 		stopObserving();
@@ -253,6 +257,7 @@ async function verifyPreparation(): Promise<void> {
 		await env.stop({ removeVolumes: true, verbose: false });
 		await env.start({ startServers: false, watchdog: false });
 		assert.equal(bootstraps, 3, "Reset volumes must run initialization again");
+
 		console.log(
 			"Disposable monorepo jobs/bootstrap/restart/reset/exec contract passed",
 		);

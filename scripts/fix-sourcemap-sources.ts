@@ -27,6 +27,7 @@ export function shippedSourceMap(
 ): SourceMap {
 	const { sourcesContent: _content, ...rest } = map;
 	if (!rest.sources) return rest;
+
 	return {
 		...rest,
 		sources: rest.sources.map((source) =>
@@ -43,6 +44,7 @@ function mapsUnder(dir: string): string[] {
 
 if (import.meta.main) {
 	const outdir = resolve(process.argv[2] ?? "dist");
+
 	for (const path of mapsUnder(outdir)) {
 		const map = JSON.parse(readFileSync(path, "utf8"));
 		writeFileSync(path, JSON.stringify(shippedSourceMap(map, path, outdir)));

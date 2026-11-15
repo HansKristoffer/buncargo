@@ -31,43 +31,50 @@ const parallel = Number(option("parallel", "1"));
 const delay = Number(option("app-delay", "120"));
 const scenario = option("scenario", "services");
 const sameCheckout = process.argv.includes("--same-checkout");
-if (sameCheckout && scenario !== "reuse")
+if (sameCheckout && scenario !== "reuse") {
 	throw new Error(
 		"--same-checkout requires --scenario=reuse (one shared app owner)",
 	);
+}
+
 const appCount = Number(option("apps", "1"));
 const maxColdP95 = Number(option("max-cold-p95", "Infinity"));
 const maxP95 = Number(option("max-p95", "Infinity"));
 const maxSubprocesses = Number(option("max-subprocesses", "Infinity"));
-for (const budget of [maxP95, maxColdP95, maxSubprocesses])
+for (const budget of [maxP95, maxColdP95, maxSubprocesses]) {
 	if (!(budget > 0)) throw new Error("Performance budgets must be positive");
-if (
-	!isOneOf(
-		[
-			"services",
-			"apps",
-			"allocation",
-			"workers",
-			"preparation",
-			"secrets",
-			"seed-serial",
-			"seed-parallel",
-			"reuse",
-			"cancel",
-		],
-		scenario,
-	)
-)
-	throw new Error(`Unknown scenario: ${scenario}`);
+}
+
+const knownScenario = isOneOf(
+	[
+		"services",
+		"apps",
+		"allocation",
+		"workers",
+		"preparation",
+		"secrets",
+		"seed-serial",
+		"seed-parallel",
+		"reuse",
+		"cancel",
+	],
+	scenario,
+);
+if (!knownScenario) throw new Error(`Unknown scenario: ${scenario}`);
+
 const legacy = process.argv.includes("--legacy");
+
 for (const [name, value] of Object.entries({
 	samples,
 	parallel,
 	delay,
 	appCount,
-}))
-	if (!Number.isInteger(value) || value < (name === "delay" ? 0 : 1))
+})) {
+	if (!Number.isInteger(value) || value < (name === "delay" ? 0 : 1)) {
 		throw new Error(`Invalid ${name}`);
+	}
+}
+
 const root = mkdtempSync(join(tmpdir(), "buncargo startup benchmark "));
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const children = new Set<ChildProcess>();
@@ -99,16 +106,19 @@ async function unusedPort(): Promise<number> {
 	for (let attempt = 0; attempt < 100; attempt++) {
 		const port = 20000 + Math.floor(Math.random() * 12000);
 		if (handedOut.has(port)) continue;
+
 		const server = createServer();
 		const free = await new Promise<boolean>((resolve) => {
 			server.once("error", () => resolve(false));
 			server.listen(port, "127.0.0.1", () => resolve(true));
 		});
 		if (!free) continue;
+
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 		handedOut.add(port);
 		return port;
 	}
+
 	throw new Error("No free port in 20000-31999");
 }
 
@@ -122,11 +132,12 @@ interface Result {
 		counters?: Record<string, number>;
 	};
 }
+
 async function prepareWorker(
 	index: number,
 ): Promise<(workerIndex: number) => Promise<Result[]>> {
 	interruption.signal.throwIfAborted();
-	const { mkdirSync } = await import("node:fs");
+
 	const project = join(root, `checkout-${index}`);
 	const infisical =
 		scenario === "secrets"
@@ -137,7 +148,9 @@ async function prepareWorker(
 		infisical.projects.frontend = { secrets: { FRONTEND_KEY: "frontend" } };
 		cleanups.push(() => infisical.stop());
 	}
+
 	mkdirSync(project);
+
 	const offset =
 		scenario === "allocation"
 			? computeBaseOffset({
@@ -147,6 +160,7 @@ async function prepareWorker(
 			: 0;
 	const port = scenario === "allocation" ? 3000 + offset : await unusedPort();
 	const servicePort = scenario === "allocation" ? 5432 : await unusedPort();
+
 	const fake = join(project, "runtime.ts");
 	const binary = join(project, "fake docker");
 	const state = join(project, "runtime-state.json");
@@ -170,11 +184,13 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 		`#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fake)} "$@"\n`,
 	);
 	chmodSync(binary, 0o700);
+
 	// Older CLIs bypassed the selected adapter in app-port lookups. Keep those probes isolated too.
 	writeFileSync(join(project, "docker"), readFileSync(binary), { mode: 0o700 });
 	writeFileSync(join(project, "container"), "#!/bin/sh\nexit 1\n", {
 		mode: 0o700,
 	});
+
 	const app = join(project, "app.ts");
 	writeFileSync(
 		app,
@@ -184,6 +200,7 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 		join(project, "package.json"),
 		JSON.stringify({ name: `benchmark-${index}`, private: true }),
 	);
+
 	const apps: Record<string, object> = {};
 	for (let appIndex = 0; appIndex < appCount; appIndex++) {
 		const name = appIndex === 0 ? "web" : `web${appIndex}`;
@@ -216,6 +233,7 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 							: {}),
 					};
 	}
+
 	writeFileSync(
 		join(project, "dev.config.ts"),
 		`export default ${JSON.stringify({
@@ -257,6 +275,7 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 			},
 		})};`,
 	);
+
 	if (scenario === "reuse") {
 		for (const appConfig of Object.values(apps)) {
 			const reused = spawn(process.execPath, [app], {
@@ -270,14 +289,20 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 			});
 			children.add(reused);
 		}
+
 		const deadline = performance.now() + 5000;
 		while (true) {
 			interruption.signal.throwIfAborted();
+
 			try {
 				if ((await fetch(`http://127.0.0.1:${port}/ready`)).ok) break;
-			} catch {}
-			if (performance.now() > deadline)
+			} catch {
+				// The fixture app is not listening yet.
+			}
+
+			if (performance.now() > deadline) {
 				throw new Error("Reuse fixture never started");
+			}
 			await promiseTimeout(10);
 		}
 	}
@@ -289,19 +314,23 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 		runner,
 		`import {loadDevEnv} from ${JSON.stringify(join(packageRoot, "dist/loader/index.js"))}; import {runCli} from ${JSON.stringify(join(packageRoot, "dist/cli/index.js"))}; import {writeFileSync} from 'node:fs'; const env=await loadDevEnv(); const wait=env.waitForServers.bind(env); env.waitForServers=async options=>{await wait(options); writeFileSync(${JSON.stringify(readyFile)}, String(performance.now()));}; await runCli(env,{args:process.argv.slice(2)});`,
 	);
+
 	return async (workerIndex) => {
 		const results: Result[] = [];
 		// The first iteration warms the generated file/runtime and is reported separately.
 		for (let sample = 0; sample <= samples; sample++) {
 			interruption.signal.throwIfAborted();
+
 			let output = "";
 			let report: Result["cli"] | undefined;
 			const ownedAppPids = new Set<number>();
 			let readyResponseMs: number | undefined;
 			let sinceCancel: (() => number) | undefined;
 			let cleanupMs: number | undefined;
+
 			rmSync(readyFile, { force: true });
 			const elapsed = startTimer();
+
 			const child = spawn(
 				process.execPath,
 				[
@@ -333,13 +362,17 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 				},
 			);
 			children.add(child);
+
 			child.on("error", (error) => {
 				output += String(error);
 			});
 			child.stdout.on("data", (data) => {
 				output += data;
-				for (const match of output.matchAll(/PID:\s*(\d+)/g))
+
+				for (const match of output.matchAll(/PID:\s*(\d+)/g)) {
 					ownedAppPids.add(Number(match[1]));
+				}
+
 				for (const line of output.split("\n")) {
 					try {
 						const value = JSON.parse(line);
@@ -352,24 +385,29 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 			child.stderr.on("data", (data) => {
 				output += data;
 			});
+
 			try {
 				while (elapsed() < 30000) {
 					interruption.signal.throwIfAborted();
-					if (
-						child.exitCode !== null &&
-						child.exitCode !== (scenario === "cancel" ? 130 : 0)
-					)
+
+					const expectedExitCode = scenario === "cancel" ? 130 : 0;
+					if (child.exitCode !== null && child.exitCode !== expectedExitCode) {
 						throw new Error(`CLI exited ${child.exitCode}: ${output}`);
-					if (
+					}
+
+					// The cancel scenario interrupts once the app is up, then times the cleanup.
+					const shouldCancel =
 						scenario === "cancel" &&
 						sinceCancel === undefined &&
-						ownedAppPids.size > 0
-					) {
+						ownedAppPids.size > 0;
+					if (shouldCancel) {
 						sinceCancel = startTimer();
 						child.kill("SIGINT");
 					}
-					if (sinceCancel !== undefined && child.exitCode !== null)
+					if (sinceCancel !== undefined && child.exitCode !== null) {
 						cleanupMs = sinceCancel();
+					}
+
 					try {
 						const claimed =
 							scenario === "allocation"
@@ -383,11 +421,13 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 							},
 						);
 						await response.text();
-						if (response.ok && readyResponseMs === undefined)
+						if (response.ok && readyResponseMs === undefined) {
 							readyResponseMs = elapsed();
+						}
 					} catch {
 						/* Still starting. */
 					}
+
 					// Legacy timing stopped before app spawn; detect its health completion via the first successful response.
 					if (legacy) {
 						try {
@@ -397,29 +437,30 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 							/* Still waiting for the CLI probe. */
 						}
 					}
-					if (
-						report &&
-						(scenario === "workers" ||
-							(scenario === "cancel"
-								? cleanupMs !== undefined
-								: readyResponseMs !== undefined))
-					)
-						break;
+
+					const milestoneReached =
+						scenario === "workers" ||
+						(scenario === "cancel"
+							? cleanupMs !== undefined
+							: readyResponseMs !== undefined);
+					if (report && milestoneReached) break;
+
 					await promiseTimeout(10);
 				}
-				if (
-					!report ||
-					(scenario !== "workers" &&
-						scenario !== "cancel" &&
-						readyResponseMs === undefined)
-				)
+
+				const needsHttpResponse =
+					scenario !== "workers" && scenario !== "cancel";
+				if (!report || (needsHttpResponse && readyResponseMs === undefined)) {
 					throw new Error(`Startup timed out: ${output}`);
+				}
+
 				const result = {
 					wallMs: elapsed(),
 					readyResponseMs,
 					cleanupMs,
 					cli: report,
 				};
+
 				if (sample === 0) {
 					cold.push(result);
 					console.error(
@@ -429,27 +470,33 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 							...result,
 						}),
 					);
-				} else results.push(result);
+				} else {
+					results.push(result);
+				}
 			} finally {
 				await terminateOwnedProcess(child, 5000);
+
 				// Baseline versions may leak detached apps when interrupted during readiness.
-				for (const pid of ownedAppPids)
+				for (const pid of ownedAppPids) {
 					await terminateOwnedProcess({ pid } as ChildProcess, 1000);
+				}
 				children.delete(child);
 			}
 		}
+
 		const runtimeCalls = (existsSync(log) ? readFileSync(log, "utf8") : "")
 			.trim()
 			.split("\n")
 			.filter(Boolean)
 			.map((line) => JSON.parse(line) as string[]);
-		if (
-			["apps", "workers", "reuse"].includes(scenario) &&
-			runtimeCalls.length > 0
-		)
+
+		const isAppOnly = ["apps", "workers", "reuse"].includes(scenario);
+		if (isAppOnly && runtimeCalls.length > 0) {
 			throw new Error(
 				`App-only scenario invoked a runtime ${runtimeCalls.length} times`,
 			);
+		}
+
 		console.error(
 			JSON.stringify({
 				worker: workerIndex,
@@ -457,6 +504,7 @@ console.log((listing?['bench1','postgres','running','Up (healthy)','',project,'F
 				reconciles: runtimeCalls.filter((args) => args.includes("up")).length,
 			}),
 		);
+
 		return results;
 	};
 }
@@ -475,9 +523,11 @@ try {
 		sentinel.once("spawn", resolve);
 		sentinel.once("error", reject);
 	});
+
 	const identity =
 		sentinel.pid === undefined ? undefined : readProcessIdentity(sentinel.pid);
 	if (!identity) throw new Error("Cannot identify benchmark watchdog sentinel");
+
 	writeFileSync(
 		join(root, ".buncargo/watchdog.pid"),
 		// The CLI's own version: an older or unversioned watchdog is replaced.
@@ -512,19 +562,24 @@ try {
 			p95: Math.round(ordered[Math.ceil((ordered.length - 1) * 0.95)]),
 		};
 	};
+
 	const cliReady = quantiles(values.map((value) => value.cli.totalMs));
 	const coldReady = quantiles(cold.map((value) => value.cli.totalMs));
-	if (coldReady.p95 > maxColdP95)
+	if (coldReady.p95 > maxColdP95) {
 		throw new Error(
 			`Cold startup budget exceeded: ${coldReady.p95}ms (max ${maxColdP95})`,
 		);
+	}
+
 	const subprocesses = Math.max(
 		...values.map((value) => value.cli.counters?.subprocesses ?? 0),
 	);
-	if (cliReady.p95 > maxP95 || subprocesses > maxSubprocesses)
+	if (cliReady.p95 > maxP95 || subprocesses > maxSubprocesses) {
 		throw new Error(
 			`Startup budget exceeded: p95=${cliReady.p95}ms (max ${maxP95}); subprocesses=${subprocesses} (max ${maxSubprocesses})`,
 		);
+	}
+
 	console.log(
 		JSON.stringify(
 			{

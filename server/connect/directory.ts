@@ -82,6 +82,7 @@ export class ConnectionDirectory {
 			ownerHash: hash(owner),
 			tokenHash: hash(token),
 		} satisfies ReceiverRecord);
+
 		return { id, owner, token, origin: this.origin };
 	}
 
@@ -96,6 +97,7 @@ export class ConnectionDirectory {
 
 	deleteReceiver(owner: string) {
 		const receiver = this.receiver(owner);
+
 		for (const publication of this.store.list<Publication>("publications")) {
 			if (publication.recipients.includes(receiver.id)) {
 				publication.revoked.push(receiver.id);
@@ -103,6 +105,7 @@ export class ConnectionDirectory {
 				this.store.set("publications", publication.id, publication);
 			}
 		}
+
 		this.store.delete("receivers", receiver.id);
 	}
 
@@ -111,6 +114,7 @@ export class ConnectionDirectory {
 		const token = newCredential("share");
 		receiver.tokenHash = hash(token);
 		this.store.set("receivers", receiver.id, receiver);
+
 		return { token };
 	}
 
@@ -119,6 +123,8 @@ export class ConnectionDirectory {
 		if (!/^bc_pub_[a-f0-9]{64}$/.test(credential)) {
 			throw new DirectoryError("Invalid publication credential");
 		}
+
+		// The same credential registering again renews its own publication.
 		const existing = this.store
 			.list<Publication>("publications")
 			.find((publication) => publication.credentialHash === hash(credential));
@@ -128,9 +134,11 @@ export class ConnectionDirectory {
 			}
 			return this.update(existing.id, credential, run);
 		}
+
 		if (!tokens.length || tokens.length > 16) {
 			throw new DirectoryError("Provide 1–16 recipient tokens");
 		}
+
 		const receivers = this.store.list<ReceiverRecord>("receivers");
 		const recipients = [
 			...new Set(
@@ -144,18 +152,21 @@ export class ConnectionDirectory {
 			),
 		];
 		requireValue(recipients.length, "No recipient tokens were accepted");
+
+		// At most 1000 publications in all, and 100 shared with any one receiver.
 		const publications = this.store.list<Publication>("publications");
-		if (
+		const overQuota =
 			publications.length >= 1000 ||
 			recipients.some(
 				(id) =>
 					publications.filter((publication) =>
 						publication.recipients.includes(id),
 					).length >= 100,
-			)
-		) {
+			);
+		if (overQuota) {
 			throw new DirectoryError("Publication quota reached", 429);
 		}
+
 		const publication: Publication = {
 			id: identifier(),
 			credential,
@@ -177,6 +188,7 @@ export class ConnectionDirectory {
 
 	private publication(id: string, credential: string) {
 		const publication = this.store.get<Publication>("publications", id);
+
 		return requireValue(
 			publication &&
 				publication.credentialHash === hash(credential) &&
@@ -197,6 +209,7 @@ export class ConnectionDirectory {
 	) {
 		const publication = this.publication(id, credential);
 		const run = parseRun(input);
+
 		if (publication.run.sessionId !== run.sessionId) {
 			throw new DirectoryError("Publication identity changed", 409);
 		}
@@ -222,12 +235,14 @@ export class ConnectionDirectory {
 			this.store.get<Publication>("publications", id),
 		);
 		requireValue(publication.recipients.includes(receiver.id));
+
 		if (!publication.revoked.includes(receiver.id)) {
 			publication.revoked.push(receiver.id);
 		}
 
 		this.reconcile(publication);
 		this.store.set("publications", id, publication);
+
 		return { pending: true, cutoffMs: LEASE_MS };
 	}
 
@@ -237,12 +252,14 @@ export class ConnectionDirectory {
 		);
 		const publicRecipient = recipients.length ? [undefined] : [];
 		const assignments: Assignment[] = [];
+
 		for (const target of publication.run.targets.filter((target) =>
 			ready(target.status),
 		)) {
 			// Public HTTP uses one route; private TCP gets a separate secret and gate per recipient.
 			const receiverIds =
 				target.protocol === "tcp" ? recipients : publicRecipient;
+
 			for (const receiverId of receiverIds) {
 				const old = publication.assignments.find(
 					(assignment) =>
@@ -250,6 +267,7 @@ export class ConnectionDirectory {
 						assignment.receiverId === receiverId &&
 						assignment.protocol === target.protocol,
 				);
+
 				const id = old?.id ?? identifier();
 				assignments.push(
 					old ?? {
@@ -264,6 +282,7 @@ export class ConnectionDirectory {
 				);
 			}
 		}
+
 		publication.assignments = assignments;
 	}
 
@@ -288,25 +307,32 @@ export class ConnectionDirectory {
 						(assignment.protocol === "http" ||
 							assignment.receiverId === receiverId),
 				);
+
 				const base = new URL(this.origin);
 				if (assignment?.subdomain) {
 					base.hostname = `${assignment.subdomain}.${base.hostname}`;
 				}
+
+				// A target keeps its own status once the publisher confirmed its proxy.
+				let status = target.status;
+				if (!assignment) {
+					status = "stopped";
+				} else if (!publication.confirmed.includes(assignment.id)) {
+					status = "starting";
+				}
+
 				// Connection credentials are returned only by the authenticated visitor endpoint.
 				return {
 					...target,
 					id: `${publication.id}.${target.id}`,
 					tablePlusUrl: undefined,
-					status: assignment
-						? publication.confirmed.includes(assignment.id)
-							? target.status
-							: "starting"
-						: "stopped",
+					status,
 					url:
 						target.protocol === "http" && assignment ? `${base.origin}/` : "",
 				};
 			})
 			.filter((target) => target.protocol !== "http" || target.url !== "");
+
 		return {
 			...publication.run,
 			sessionId: publication.id,
@@ -330,6 +356,7 @@ export class ConnectionDirectory {
 
 	list(owner: string) {
 		const receiver = this.receiver(owner);
+
 		return {
 			version: 1,
 			configured: true,
@@ -344,11 +371,14 @@ export class ConnectionDirectory {
 
 	visitor(owner: string, targetId: string): VisitorLease {
 		const receiver = this.receiver(owner);
+
+		// A target id is `<publication id>.<target id>`.
 		const dot = targetId.indexOf(".");
 		const publication = requireValue(
 			this.store.get<Publication>("publications", targetId.slice(0, dot)),
 		);
 		requireValue(this.canReceive(publication, receiver.id));
+
 		const assignment = requireValue(
 			publication.assignments.find(
 				(assignment) =>
@@ -364,14 +394,17 @@ export class ConnectionDirectory {
 					ready(target.status),
 			),
 		);
+
 		const credential = newCredential("visit");
 		const key = hash(credential);
+
 		// One active visitor identity per receiver/target avoids unbounded credential retention.
 		for (const old of this.store.list<Visitor>("visitors")) {
 			if (old.receiver === receiver.id && old.assignment === assignment.id) {
 				this.store.delete("visitors", old.credentialHash);
 			}
 		}
+
 		this.store.set("visitors", key, {
 			credentialHash: key,
 			publication: publication.id,
@@ -379,6 +412,7 @@ export class ConnectionDirectory {
 			assignment: assignment.id,
 			expires: this.now() + LEASE_MS,
 		} satisfies Visitor);
+
 		return {
 			credential,
 			user: publication.id,
@@ -395,8 +429,10 @@ export class ConnectionDirectory {
 			this.store.get<Visitor>("visitors", hash(credential)),
 		);
 		const publication = this.activeVisitor(visitor);
+
 		visitor.expires = this.now() + LEASE_MS;
 		this.store.set("visitors", visitor.credentialHash, visitor);
+
 		return {
 			remainingMs: Math.min(LEASE_MS, publication.expires - this.now()),
 		};
@@ -426,9 +462,11 @@ export class ConnectionDirectory {
 		if (publication && publication.expires > this.now()) {
 			return { role: "publisher" as const, publication };
 		}
+
 		const visitor = requireValue(
 			this.store.get<Visitor>("visitors", credentialHash),
 		);
+
 		return {
 			role: "visitor" as const,
 			publication: this.activeVisitor(visitor),
@@ -436,11 +474,13 @@ export class ConnectionDirectory {
 	}
 
 	collect() {
+		// A publication's credential is forgotten a day after its lease expired.
 		for (const publication of this.store.list<Publication>("publications")) {
 			if (publication.expires < this.now() - 86_400_000) {
 				this.store.delete("publications", publication.id);
 			}
 		}
+
 		for (const visitor of this.store.list<Visitor>("visitors")) {
 			if (visitor.expires < this.now()) {
 				this.store.delete("visitors", visitor.credentialHash);
@@ -453,6 +493,7 @@ export class ConnectionDirectory {
 			publication.expires = 0;
 			this.store.set("publications", publication.id, publication);
 		}
+
 		for (const visitor of this.store.list<Visitor>("visitors")) {
 			this.store.delete("visitors", visitor.credentialHash);
 		}

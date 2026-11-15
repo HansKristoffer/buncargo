@@ -22,12 +22,15 @@ function positiveOption(name: string): number | undefined;
 function positiveOption(name: string, fallback?: number): number | undefined {
 	const raw = option(name);
 	const value = raw === undefined ? fallback : Number(raw);
-	if (value !== undefined && (!Number.isFinite(value) || value <= 0))
+	if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
 		throw new Error(`--${name} must be a positive finite number`);
+	}
 	return value;
 }
+
 const samples = positiveOption("samples", 5);
 if (!Number.isInteger(samples)) throw new Error("--samples must be an integer");
+
 const output = resolve(option("output") ?? ".buncargo/benchmarks/startup.json");
 const scale = positiveOption("budget-scale", 1);
 const maxColdP95 = positiveOption("max-cold-p95");
@@ -44,13 +47,17 @@ const baseline = baselinePath
 			failures?: string[];
 		})
 	: undefined;
-if (
-	baseline &&
-	(baseline.platform !== process.platform ||
+
+if (baseline) {
+	const isUnusable =
+		baseline.platform !== process.platform ||
 		baseline.bun !== Bun.version ||
 		baseline.interrupted ||
 		baseline.failures?.length ||
-		!Array.isArray(baseline.results) ||
+		!Array.isArray(baseline.results);
+
+	// Only read once `results` is known to be an array.
+	const missesAFixture = () =>
 		startupFixtures.some(
 			(fixture) =>
 				!baseline.results.some(
@@ -58,11 +65,14 @@ if (
 						fixtureKey(result) ===
 						fixtureKey({ ...fixture, appCount: fixture.apps }),
 				),
-		))
-)
-	throw new Error(
-		"The baseline must be a successful complete matrix on the same platform and Bun version",
-	);
+		);
+
+	if (isUnusable || missesAFixture()) {
+		throw new Error(
+			"The baseline must be a successful complete matrix on the same platform and Bun version",
+		);
+	}
+}
 
 let interruptCode: number | undefined;
 let interruptChild: ((signal: "SIGINT" | "SIGTERM") => void) | undefined;
@@ -76,6 +86,7 @@ const onTerm = () => {
 };
 process.once("SIGINT", onInt);
 process.once("SIGTERM", onTerm);
+
 const results: unknown[] = [];
 const failures: string[] = [];
 const warnings: string[] = [];
@@ -83,11 +94,13 @@ const warnings: string[] = [];
 try {
 	for (const fixture of startupFixtures) {
 		if (interruptCode !== undefined) break;
+
 		const budget = {
 			warmP95Ms: maxP95 ?? Math.round(fixture.budget.warmP95Ms * scale),
 			coldP95Ms: maxColdP95 ?? Math.round(fixture.budget.coldP95Ms * scale),
 			cleanupP95Ms: Math.round((fixture.budget.cleanupP95Ms ?? 300) * scale),
 		};
+
 		const child = Bun.spawn(
 			[
 				process.execPath,
@@ -101,6 +114,7 @@ try {
 			],
 			{ stdout: "pipe", stderr: "pipe" },
 		);
+
 		interruptChild = (signal) => {
 			child.kill(signal);
 		};
@@ -111,12 +125,14 @@ try {
 		]);
 		interruptChild = undefined;
 		if (interruptCode !== undefined) break;
+
 		const key = fixtureKey({ ...fixture, appCount: fixture.apps });
 		if (code !== 0) {
 			results.push({ ...fixture, budget, error: stderr });
 			failures.push(`${key}: fixture exited ${code}: ${stderr}`);
 			continue;
 		}
+
 		const result = JSON.parse(stdout) as StartupResult;
 		const contract =
 			maxSubprocesses === undefined
@@ -125,19 +141,25 @@ try {
 						...fixture.contract,
 						subprocesses: { linux: maxSubprocesses, darwin: maxSubprocesses },
 					};
+
 		const violations = contractViolations(result, contract, process.platform);
 		const slow = timingWarnings(result, budget);
+
 		if (baseline) {
 			const previous = baseline.results.find(
 				(item) => fixtureKey(item) === key,
 			);
-			if (!previous) slow.push("Matching fixture is missing from the baseline");
-			else
+			if (previous) {
 				slow.push(...baselineWarnings(result, previous, maxRegressionPercent));
+			} else {
+				slow.push("Matching fixture is missing from the baseline");
+			}
 		}
+
 		results.push({ ...result, budget, contract, violations, warnings: slow });
 		failures.push(...violations.map((message) => `${key}: ${message}`));
 		warnings.push(...slow.map((message) => `${key}: ${message}`));
+
 		console.log(
 			JSON.stringify({
 				key,
@@ -157,12 +179,18 @@ try {
 		`${JSON.stringify({ bun: Bun.version, platform: process.platform, interrupted: interruptCode !== undefined, baseline: baselinePath, maxRegressionPercent, results, failures, warnings }, null, 2)}\n`,
 	);
 	console.log(`Saved ${output}`);
+
 	// Timings on a shared runner: reported, never failed on.
-	if (warnings.length)
+	if (warnings.length > 0) {
 		console.warn(`Slower than budget:\n${warnings.join("\n")}`);
+	}
+
 	process.off("SIGINT", onInt);
 	process.off("SIGTERM", onTerm);
 }
-if (interruptCode !== undefined) process.exitCode = interruptCode;
-else if (failures.length)
+
+if (interruptCode !== undefined) {
+	process.exitCode = interruptCode;
+} else if (failures.length > 0) {
 	throw new Error(`Startup regressions:\n${failures.join("\n")}`);
+}
