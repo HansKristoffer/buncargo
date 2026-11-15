@@ -88,6 +88,7 @@ function subcommandArgs<const S extends Parameters<typeof parseArgs>[0]>(
  */
 function prismaRequest(args: readonly string[]): Request | undefined {
 	const [first, second, ...rest] = args;
+
 	if (first === "migrate-check") {
 		const parsed = subcommandArgs(MIGRATE_CHECK_SPEC, args.slice(1));
 		return (
@@ -99,7 +100,9 @@ function prismaRequest(args: readonly string[]): Request | undefined {
 			}
 		);
 	}
+
 	if (first !== "migration") return { kind: "prisma", args: [...args] };
+
 	if (second === "new") {
 		const parsed = subcommandArgs(MIGRATION_NEW_SPEC, rest);
 		return (
@@ -110,10 +113,12 @@ function prismaRequest(args: readonly string[]): Request | undefined {
 			}
 		);
 	}
+
 	if (second === "check") {
 		const parsed = subcommandArgs(MIGRATION_CHECK_SPEC, rest);
 		return parsed && { kind: "migration check", base: parsed.values.base };
 	}
+
 	throw new CliError(
 		second === undefined
 			? "prisma migration needs new or check."
@@ -182,8 +187,11 @@ async function runPrisma({
 }: Parsed<typeof PRISMA_SPEC>): Promise<number> {
 	const request = prismaRequest(positionals);
 	if (!request) return 0;
-	if (request.kind.startsWith("migration") && values.db !== undefined)
+
+	if (request.kind.startsWith("migration") && values.db !== undefined) {
 		throw new CliError("--db cannot be combined with prisma migration.");
+	}
+
 	const args = request.kind === "prisma" ? request.args : [];
 	const { destructivePrismaAction } = await import("../../prisma");
 	refuseDestructivePrisma(destructivePrismaAction(args), args, {
@@ -193,6 +201,7 @@ async function runPrisma({
 		// What a scratch database holds is the caller's own throwaway.
 		scratch: values.db?.startsWith("scratch_") ?? false,
 	});
+
 	const env = await loadEnv();
 
 	if (!env.prisma) {
@@ -205,21 +214,26 @@ async function runPrisma({
 			"})",
 		]);
 	}
+
 	const { prisma } = env;
 	if (request.kind === "prisma" && args.length === 0) return prisma.run(args);
-	if (request.kind === "migration check")
+	if (request.kind === "migration check") {
 		return checkMigrationChain(env.root, prisma, request.base);
+	}
 
 	return withClaimedDatabase(env, prisma.service, async () => {
-		if (request.kind === "migrate-check")
+		if (request.kind === "migrate-check") {
 			return prisma.migrateCheck({
 				migrations: request.migrations,
 				schema: request.schema,
 				args: request.args,
 			});
-		if (request.kind === "migration new")
+		}
+		if (request.kind === "migration new") {
 			return createMigration(prisma, request.name, request.empty);
+		}
 		if (values.db === undefined) return prisma.run(args);
+
 		const { databaseExists, databaseOverrides } =
 			await import("./exec-database");
 		const overrides = await databaseOverrides(env, undefined, values.db, {
@@ -271,16 +285,21 @@ async function checkMigrationChain(
 		console.error(`✅ No migrations in ${relative(root, dir)}.`);
 		return 0;
 	}
+
 	const base = requestedBase ?? defaultBaseRef(dir);
-	if (base === undefined)
+	if (base === undefined) {
 		throw new CliError("Found no base branch to compare the migrations with.", [
 			"Name one: buncargo prisma migration check --base=<ref>",
 		]);
+	}
+
 	const onBase = migrationFoldersAtRef(dir, base);
-	if (onBase === undefined)
+	if (onBase === undefined) {
 		throw new CliError(`git cannot read ${base}.`, [
 			"Fetch it, or name another: buncargo prisma migration check --base=<ref>",
 		]);
+	}
+
 	const problems = migrationChainProblems(local, onBase, base);
 	if (problems.length === 0) {
 		console.error(
@@ -288,6 +307,7 @@ async function checkMigrationChain(
 		);
 		return 0;
 	}
+
 	for (const problem of problems) console.error(`❌ ${problem}`);
 	console.error(
 		"   Rename the folder with a timestamp after the newest on the base branch (prisma migration new picks one).",
@@ -313,6 +333,7 @@ function refuseDestructivePrisma(
 	const asked =
 		context.yes || context.interactive || context.ci || context.scratch;
 	if (action === undefined || asked) return;
+
 	throw new CliError(`${action}. Refusing without a terminal.`, [
 		`Pass --yes if that is really what you want: buncargo prisma ${args.join(" ")} --yes`,
 	]);
@@ -332,6 +353,7 @@ async function withClaimedDatabase(
 ): Promise<number> {
 	const controller = new AbortController();
 	const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
 	// The terminal's Ctrl-C reaches Prisma itself; this process only has to
 	// live long enough to release.
 	const cancel = (signal: NodeJS.Signals) =>
@@ -352,8 +374,9 @@ async function withClaimedDatabase(
 			use,
 		);
 	} catch (error) {
-		if (error instanceof CommandSignalError)
+		if (error instanceof CommandSignalError) {
 			return shellExitCode(null, error.signal);
+		}
 		throw error;
 	} finally {
 		for (const name of signals) process.off(name, cancel);
