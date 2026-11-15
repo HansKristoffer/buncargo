@@ -26,10 +26,12 @@ export function foreignDatabaseUrls(
 ): ForeignDatabaseUrl[] {
 	const own = serverOf(target);
 	const foreign: ForeignDatabaseUrl[] = [];
+
 	for (const [name, value] of Object.entries(vars)) {
 		const server = value === undefined ? undefined : serverOf(value);
 		if (server !== undefined && server !== own) foreign.push({ name, server });
 	}
+
 	return foreign.sort((a, b) => a.name.localeCompare(b.name));
 }
 

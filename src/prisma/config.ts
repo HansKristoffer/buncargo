@@ -32,6 +32,7 @@ export function resolvePrismaConfig(
 	const named = prisma?.urlEnvVar ?? "DATABASE_URL";
 	const urlEnvVars = typeof named === "string" ? [named] : named;
 	const [urlEnvVar = "DATABASE_URL"] = urlEnvVars;
+
 	return {
 		cwd: prisma?.cwd ?? "packages/prisma",
 		migrations: prisma?.migrations ?? "prisma/migrations",

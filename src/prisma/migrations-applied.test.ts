@@ -54,19 +54,24 @@ for (const scenario of [
 				);
 			}
 			if (scenario === "unreadable") await rm(dir, { recursive: true });
-			if (scenario === "custom-service")
+			if (scenario === "custom-service") {
 				input.service = resolveService("custom", {
 					port: 5432,
 					docker: { image: "postgres:16" },
 				});
+			}
+
 			const read = async () => {
-				if (scenario === "fresh")
+				if (scenario === "fresh") {
 					throw new Error('relation "_prisma_migrations" does not exist');
+				}
 				if (scenario === "failed") return [{ ...applied, finished_at: null }];
-				if (scenario === "rolled-back")
+				if (scenario === "rolled-back") {
 					return [{ ...applied, rolled_back_at: new Date() }];
+				}
 				return [applied];
 			};
+
 			const spawns: string[] = [];
 			await runMigrationsSequentially(
 				[{ name: "prisma", command: "deploy" }],
@@ -77,8 +82,9 @@ for (const scenario of [
 				async () => (await appliedMigrationCount(input, read)) !== undefined,
 			);
 			expect(spawns).toEqual(scenario === "applied" ? [] : ["deploy"]);
-			if (scenario === "applied")
+			if (scenario === "applied") {
 				expect(await appliedMigrationCount(input, read)).toBe(1);
+			}
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
@@ -91,6 +97,7 @@ it("bounds a real SQL connection failure and honours cancellation", async () => 
 		port: 0,
 		fetch: () => new Response("not postgres"),
 	});
+	// A port that was just free and now refuses connections.
 	const port = probe.port;
 	probe.stop(true);
 	input.url = `postgresql://postgres:postgres@127.0.0.1:${port}/dev`;
