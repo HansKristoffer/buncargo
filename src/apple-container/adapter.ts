@@ -26,7 +26,7 @@ import { listAppleVolumes, removeAppleVolumes } from "./volumes";
 export interface AppleContainerAdapterOptions {
 	/** Path to the `container` binary; falls back to a PATH lookup. */
 	binary?: string;
-	/** Injected for tests; the real one shells out via execSync. */
+	/** Replaces the real `container` CLI; tests inject a fake. */
 	cli?: AppleContainerCli;
 }
 
@@ -65,10 +65,12 @@ export function appleContainerRuntimeAdapter(
 		// No `system status` first: the listing fails when the system is down,
 		// which answers the same question one process sooner.
 		containers(signal) {
-			if (!isAppleContainerSupported())
+			if (!isAppleContainerSupported()) {
 				return Promise.reject(
 					new Error("Apple container is not supported on this machine"),
 				);
+			}
+
 			return appleContainers(cli, signal);
 		},
 
@@ -89,31 +91,30 @@ export function appleContainerRuntimeAdapter(
 		},
 
 		async exec(request) {
-			return (
-				await runAppleAsync(
-					cli,
-					[
-						"exec",
-						containerNameFor(request.projectName, request.serviceName),
-						...request.command,
-					],
-					{ signal: request.signal, timeoutMs: request.timeoutMs ?? 2000 },
-				)
-			).ok;
+			const container = containerNameFor(
+				request.projectName,
+				request.serviceName,
+			);
+			const result = await runAppleAsync(
+				cli,
+				["exec", container, ...request.command],
+				{ signal: request.signal, timeoutMs: request.timeoutMs ?? 2000 },
+			);
+
+			return result.ok;
 		},
 
 		async execArgv(request) {
 			// Apple names the container itself, so the lookup only confirms it
 			// runs; otherwise the caller would print Apple's own "not found".
-			if (
-				!(await isAppleServiceRunning(
-					cli,
-					request.projectName,
-					request.serviceName,
-					request.signal,
-				))
-			)
-				return undefined;
+			const isRunning = await isAppleServiceRunning(
+				cli,
+				request.projectName,
+				request.serviceName,
+				request.signal,
+			);
+			if (!isRunning) return undefined;
+
 			return [
 				options.binary ?? APPLE_CONTAINER_COMMAND,
 				"exec",

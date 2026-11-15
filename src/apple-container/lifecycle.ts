@@ -58,9 +58,9 @@ type PortOwnerLookup = (ports: number[]) => Promise<PortOwnerSnapshot>;
 
 function failed(result: AppleCliResult, action: string): never {
 	const detail = result.stderr.trim() || result.stdout.trim();
-	throw new Error(
-		`${action} failed (exit ${result.exitCode})${detail ? `: ${detail}` : ""}`,
-	);
+	const suffix = detail ? `: ${detail}` : "";
+
+	throw new Error(`${action} failed (exit ${result.exitCode})${suffix}`);
 }
 
 /**
@@ -76,17 +76,19 @@ async function translatePortError(
 	ownersOf: PortOwnerLookup,
 ): Promise<never> {
 	const message = `${result.stderr}\n${result.stdout}`;
-	if (
+	const isPortInUse =
 		/address already in use|port is already allocated|already bound/i.test(
 			message,
-		)
-	) {
+		);
+
+	if (isPortInUse) {
 		const owners = await ownersOf(publishedPorts);
 		for (const port of publishedPorts) {
 			const owner = owners.owner(port);
 			if (owner) throw new Error(formatPortOwner(port, owner));
 		}
 	}
+
 	failed(result, action);
 }
 
@@ -131,6 +133,7 @@ async function pullIfMissing(
 ): Promise<void> {
 	const present = await run(["image", "inspect", plan.image]);
 	if (present.ok) return;
+
 	console.log(formatStep(`⬇️  Pulling ${plan.image}...`));
 	const pulled = await run(
 		["image", "pull", "--platform", plan.platform, plan.image],
@@ -158,8 +161,9 @@ async function startService(
 			const runsAlready =
 				state === "unknown" && isAlreadyRunningMessage(started.stderr);
 			if (runsAlready) return;
-			if (!isMissingResourceMessage(started.stderr))
+			if (!isMissingResourceMessage(started.stderr)) {
 				failed(started, `start container ${plan.containerName}`);
+			}
 		} else {
 			// Announced even on a quiet reconcile pass: a container being thrown
 			// away and rebuilt is the one thing here worth interrupting for.
@@ -188,8 +192,10 @@ async function startService(
 	// The plan already carries interpolated values, so nothing depends on the
 	// child's own environment.
 	let result = await run(plan.runArgs);
-	if (!result.ok && isTransientRunFailure(result))
+	if (!result.ok && isTransientRunFailure(result)) {
 		result = await run(plan.runArgs);
+	}
+
 	if (!result.ok) {
 		await translatePortError(
 			result,
@@ -206,6 +212,7 @@ async function up(
 	ownersOf: PortOwnerLookup,
 ): Promise<void> {
 	const { verbose = true } = request;
+
 	const plan = buildAppleRunPlan({
 		projectName: request.projectName,
 		model: request.model,
@@ -270,23 +277,32 @@ async function down(
 		// Volumes cannot be removed without it, and a reset that silently kept
 		// them would not be.
 		const status = await run(["system", "status"]);
-		if (appleAvailabilityFromStatus(status).state !== "down")
+		if (appleAvailabilityFromStatus(status).state !== "down") {
 			failed(inventory, "read container inventory");
-		if (removeVolumes)
+		}
+
+		if (removeVolumes) {
 			throw new Error(
 				`Apple container is not running, so the volumes of ${request.projectName} were not removed. Start it with \`container system start\`, then run again.`,
 			);
-		if (verbose)
+		}
+
+		if (verbose) {
 			console.log(
 				formatStep("ℹ Apple container is not running. Nothing to stop."),
 			);
+		}
+
 		return;
 	}
+
 	// Answered, but not with JSON: nothing here says the project is empty.
 	if (!listing.listed) failed(inventory, "read container inventory");
+
 	const records = listing.records.filter(
 		(record) => record.labels[PROJECT_LABEL] === request.projectName,
 	);
+
 	if (records.length === 0 && !removeVolumes) {
 		if (verbose) console.log(formatStep("ℹ No Apple containers to stop."));
 		return;
@@ -303,6 +319,7 @@ async function down(
 	}
 
 	const ids = records.map((record) => record.id);
+
 	if (ids.length > 0) {
 		// `delete --force` kills, so everything not known to be stopped gets a
 		// graceful stop first: a container whose state Apple did not say may
@@ -316,6 +333,7 @@ async function down(
 				return !isContainerServing(state) && !isContainerStopped(state);
 			})
 			.map((record) => record.id);
+
 		// Reporting "Containers stopped" over a failed stop would send the caller
 		// away believing the ports are free.
 		if (running.length > 0) {
@@ -324,9 +342,11 @@ async function down(
 				failed(stopped, `stop containers ${running.join(", ")}`);
 			}
 		}
+
 		// Asked apart: one that was stopped already may fail the stop, and the
 		// delete below still removes it.
 		if (unsure.length > 0) await run(["stop", ...unsure]);
+
 		const removed = await run(["delete", "--force", ...ids]);
 		if (!removed.ok && !isMissingResourceMessage(removed.stderr)) {
 			failed(removed, `delete containers ${ids.join(", ")}`);
@@ -339,6 +359,7 @@ async function down(
 				"Cannot remove volumes without the compose model: their names are derived from it.",
 			);
 		}
+
 		// Every volume is tried, then the run fails: a reset that reported
 		// success over a kept volume hands the next run the old database.
 		const kept: string[] = [];
@@ -347,9 +368,11 @@ async function down(
 			request.model,
 		)) {
 			const result = await run(["volume", "delete", volume]);
-			if (!result.ok && !isMissingResourceMessage(result.stderr))
+			if (!result.ok && !isMissingResourceMessage(result.stderr)) {
 				kept.push(`${volume}: ${result.stderr.trim()}`);
+			}
 		}
+
 		if (kept.length > 0) {
 			const message = `Could not remove the volumes of ${request.projectName}:\n  ${kept.join("\n  ")}\nRemove them with \`container volume delete <name>\`, or run the reset again.`;
 			throw new Error(message);
@@ -368,6 +391,7 @@ export async function appleStopByIds(
 		inherit: true,
 		timeoutMs: 60_000,
 	});
+
 	// Same reason as in `appleDown`: reporting success over a failed stop tells
 	// the caller the ports are free when they are not.
 	if (!result.ok && !isMissingResourceMessage(result.stderr)) {
@@ -383,8 +407,10 @@ function appleRunner(
 	const deadline = performance.now() + options.timeoutMs;
 	return (args, { stream } = {}) => {
 		options.signal?.throwIfAborted();
-		if (remainingTime(deadline) === 0)
+		if (remainingTime(deadline) === 0) {
 			throw new Error("Apple container operation timed out");
+		}
+
 		return runAppleAsync(cli, args, {
 			signal: options.signal,
 			inherit: stream === true,
@@ -409,8 +435,10 @@ export function appleUp(
 		signal: request.signal,
 		timeoutMs: request.timeoutMs ?? 600000,
 	});
+
 	return up(run, request, ownersOf);
 }
+
 export function appleDown(
 	cli: AppleContainerCli,
 	request: ContainerDownRequest,

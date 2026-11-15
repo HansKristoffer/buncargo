@@ -21,9 +21,11 @@ function render(declared: Record<string, ServiceConfig>) {
 	const ports: Record<string, number> = {};
 	for (const [key, config] of Object.entries(services)) {
 		if (config.port !== undefined) ports[key] = config.port + 10;
-		if (config.secondaryPort !== undefined)
+		if (config.secondaryPort !== undefined) {
 			ports[`${key}Secondary`] = config.secondaryPort + 10;
+		}
 	}
+
 	const urls = computeUrls(services, {}, ports, "127.0.0.1");
 	const env = stringifyEnvValues(
 		buildSharedEnvValues({
@@ -34,6 +36,7 @@ function render(declared: Record<string, ServiceConfig>) {
 			publicUrls: {},
 		}),
 	);
+
 	return { model: buildComposeModel(services, undefined, IDENTITY), env };
 }
 
@@ -47,6 +50,7 @@ describe("preset Compose models", () => {
 				const services = { [key]: service[preset]() };
 				const first = render(services);
 				const second = render(services);
+
 				expect(canProveServiceInputs(first.model, key, first.env)).toBe(true);
 				expect(serviceFingerprint(second.model, key, second.env)).toBe(
 					serviceFingerprint(first.model, key, first.env),
@@ -58,6 +62,7 @@ describe("preset Compose models", () => {
 	it("binds a hyphenated key's port to a variable Compose can read", () => {
 		const { model, env } = render({ "my-db": service.postgres() });
 		const [binding] = model.services["my-db"]?.ports ?? [];
+
 		expect(interpolate(String(binding), env)).toBe("127.0.0.1:5442:5432");
 	});
 
@@ -86,14 +91,16 @@ describe("preset Compose models", () => {
 			search: service.typesense({ apiKey: "k$y" }),
 		});
 		const postgres = model.services.db;
+		const environment = postgres?.environment as Record<string, string>;
+
 		expect(postgres?.environment).toMatchObject({
 			POSTGRES_PASSWORD: "pa$$word",
 			POSTGRES_USER: "u$$er",
 		});
-		const environment = postgres?.environment as Record<string, string>;
 		expect(interpolate(environment.POSTGRES_PASSWORD ?? "", env)).toBe(
 			"pa$word",
 		);
+
 		const command = String(model.services.search?.command);
 		expect(interpolate(command, {})).toContain("--api-key=k$y ");
 	});
@@ -103,12 +110,14 @@ describe("minio and job helpers", () => {
 	it("serves MinIO on its own port 9000 whatever host port the config picks", () => {
 		const { model, env } = render({ storage: service.minio({ port: 9100 }) });
 		const [binding] = model.services.storage?.ports ?? [];
+
 		expect(interpolate(String(binding), env)).toBe("127.0.0.1:9110:9000");
 		expect(env.MINIO_URL).toBe("http://localhost:9110");
 	});
 
 	it("hands MinIO the credentials it gives the apps, with $ escaped for Compose", () => {
 		const minio = service.minio({ user: "app", password: "pa$sword" });
+
 		expect(minio.staticEnv).toEqual({
 			MINIO_ROOT_USER: "app",
 			MINIO_ROOT_PASSWORD: "pa$sword",
@@ -127,6 +136,7 @@ describe("minio and job helpers", () => {
 		expect(
 			render({ minio: service.minio() }).model.services.minio?.healthcheck,
 		).toBeDefined();
+
 		const off = render({ minio: service.minio({ healthCheck: false }) });
 		expect(off.model.services.minio?.healthcheck).toBeUndefined();
 	});
@@ -148,10 +158,12 @@ describe("minio and job helpers", () => {
 			services: { minio: service.minio(), bucket: mc(["mb", "local/app"]) },
 		});
 		const kind: "job" = config.services.bucket.kind;
+
 		expect(kind).toBe("job");
 		expect(validateConfig(config)).toEqual([]);
 
 		const { model, env } = render(config.services);
+
 		expect(model.services.bucket?.restart).toBe("no");
 		expect(canProveServiceInputs(model, "bucket", env)).toBe(true);
 
@@ -272,6 +284,7 @@ describe("service helpers", () => {
 		if (raw?.kind === "preset") {
 			throw new Error("expected a raw definition");
 		}
+
 		const image: string | undefined = raw?.image;
 		expect(image).toBe("nats:2-alpine");
 	});

@@ -7,11 +7,14 @@ import { resolveServices } from "../config/resolve";
 import type { ComposeDocument } from "../types";
 import { writeGeneratedComposeFile } from "./generated-file";
 import {
+	canProveServiceInputs,
 	canProveServiceUnchanged,
 	configHashFor,
+	normalizeComposeLabels,
 	SERVICE_HASH_LABEL,
 	serviceFingerprint,
 } from "./interpolate";
+import { buildComposeModel } from "./model";
 
 describe("resolved container artifact", () => {
 	const model: ComposeDocument = {
@@ -24,8 +27,10 @@ describe("resolved container artifact", () => {
 		},
 		volumes: { data: { driver: "local" }, unrelated: {} },
 	};
+
 	it("includes ambient interpolation and referenced volume definitions", () => {
 		const hash = serviceFingerprint(model, "db", { APP_MODE: "one" });
+
 		expect(serviceFingerprint(model, "db", { APP_MODE: "two" })).not.toBe(hash);
 		expect(
 			serviceFingerprint(
@@ -46,6 +51,7 @@ describe("resolved container artifact", () => {
 			),
 		).toBe(hash);
 	});
+
 	it("ignores only hash metadata and preserves user label changes", () => {
 		expect(
 			configHashFor({
@@ -68,8 +74,10 @@ describe("resolved container artifact", () => {
 			configHashFor({ image: "redis", labels: { team: "b" } }),
 		);
 	});
+
 	it("conservatively reconciles external build and environment inputs", () => {
 		expect(canProveServiceUnchanged({ image: "redis:7" })).toBe(true);
+
 		for (const key of [
 			"build",
 			"env_file",
@@ -77,11 +85,13 @@ describe("resolved container artifact", () => {
 			"secrets",
 			"label_file",
 			"extends",
-		])
+		]) {
 			expect(
 				canProveServiceUnchanged({ image: "redis", [key]: "external" }),
 			).toBe(false);
+		}
 	});
+
 	it("keeps unchanged YAML inode and publishes private complete content", () => {
 		const root = mkdtempSync(join(tmpdir(), "buncargo artifact "));
 		try {
@@ -92,10 +102,13 @@ describe("resolved container artifact", () => {
 			);
 			const before = statSync(path);
 			const content = readFileSync(path, "utf8");
+
 			writeGeneratedComposeFile(root, resolveServices(services));
+
 			expect(statSync(path).ino).toBe(before.ino);
 			expect(statSync(path).mtimeMs).toBe(before.mtimeMs);
 			expect(statSync(path).mode & 0o777).toBe(0o600);
+
 			writeGeneratedComposeFile(
 				root,
 				resolveServices({ postgres: { port: 6432 } }),
@@ -108,8 +121,7 @@ describe("resolved container artifact", () => {
 });
 
 describe("complete artifact proof", () => {
-	it("preserves list-form user labels when stamping runtime identity", async () => {
-		const { buildComposeModel } = await import("./model");
+	it("preserves list-form user labels when stamping runtime identity", () => {
 		const model = buildComposeModel(
 			resolveServices({
 				custom: {
@@ -123,7 +135,7 @@ describe("complete artifact proof", () => {
 			undefined,
 			{ root: "/repo", projectName: "demo" },
 		);
-		const { normalizeComposeLabels } = await import("./interpolate");
+
 		expect(normalizeComposeLabels(model.services.custom?.labels)).toMatchObject(
 			{
 				team: "platform",
@@ -134,16 +146,18 @@ describe("complete artifact proof", () => {
 		);
 		expect(Array.isArray(model.services.custom?.labels)).toBe(true);
 	});
-	it("refuses incomplete volume interpolation and unsupported nested/alternate syntax", async () => {
-		const { canProveServiceInputs } = await import("./interpolate");
+
+	it("refuses incomplete volume interpolation and unsupported nested/alternate syntax", () => {
 		const model: ComposeDocument = {
 			services: { db: { image: "postgres:16", volumes: ["data:/db"] } },
 			volumes: { data: { driver_opts: { device: "${EXTERNAL_VOLUME}" } } },
 		};
+
 		expect(canProveServiceInputs(model, "db", {})).toBe(false);
 		expect(
 			canProveServiceInputs(model, "db", { EXTERNAL_VOLUME: "/data" }),
 		).toBe(true);
+
 		for (const value of [
 			"${OUTER:+${INNER}}",
 			"${OUTER:-${INNER}}",
@@ -161,6 +175,7 @@ describe("complete artifact proof", () => {
 				),
 			).toBe(false);
 		}
+
 		expect(
 			canProveServiceInputs(
 				{ services: { db: { image: "postgres:16", command: "echo $$HOME" } } },
@@ -169,13 +184,16 @@ describe("complete artifact proof", () => {
 			),
 		).toBe(true);
 	});
+
 	it("lets the backend honor image refresh policies", () => {
 		for (const service of [
 			{ image: "redis:7", pull_policy: "always" },
 			{ image: "redis:latest" },
 			{ image: "registry:5000/redis" },
-		])
+		]) {
 			expect(canProveServiceUnchanged(service)).toBe(false);
+		}
+
 		expect(canProveServiceUnchanged({ image: "redis@sha256:abc" })).toBe(true);
 		expect(
 			canProveServiceUnchanged({ image: "redis:latest", pull_policy: "never" }),

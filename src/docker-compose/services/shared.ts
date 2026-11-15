@@ -79,6 +79,7 @@ export function portBindings(
 	preset?: DockerPresetName,
 ): PortBinding[] {
 	if (config.kind !== "container") return [];
+
 	// An IPv6 address is bracketed, so its colons do not split the entry.
 	const host = config.bind.includes(":") ? `[${config.bind}]` : config.bind;
 	const binding = (
@@ -91,10 +92,11 @@ export function portBindings(
 		claimed: `${host}:\${${getPortEnvName(portKey)}:-${hostPort}}:${containerPort}`,
 		assigned: `${host}::${containerPort}`,
 	});
+
 	const bindings = [
 		binding(serviceKey, config.port, resolveInternalPort(preset, config.port)),
 	];
-	if (config.secondaryPort !== undefined)
+	if (config.secondaryPort !== undefined) {
 		bindings.push(
 			binding(
 				`${serviceKey}Secondary`,
@@ -102,6 +104,8 @@ export function portBindings(
 				resolveSecondaryInternalPort(preset, config.secondaryPort),
 			),
 		);
+	}
+
 	return bindings;
 }
 
@@ -121,6 +125,7 @@ export function resolveHealthcheck(
 ): DockerComposeHealthcheckRaw | undefined {
 	if (healthCheck === false) return undefined;
 	if (typeof healthCheck === "function") return fallback;
+
 	return typedSwitch(healthCheck, {
 		// The image's bootstrap server accepts Unix sockets before TCP is ready.
 		pg_isready: () => ({
@@ -142,8 +147,8 @@ export function resolveHealthcheck(
 			...DEFAULT_HEALTHCHECK_SETTINGS,
 		}),
 		// A TCP connect is what buncargo's own readiness poll does from the host
-		// (`isTcpPortOpen`). There is no portable in-container equivalent - `nc`
-		// and `/dev/tcp` are both missing from common base images - so emit no
+		// (`isTcpPortOpen`). There is no portable in-container equivalent, since `nc`
+		// and `/dev/tcp` are both missing from common base images, so emit no
 		// compose healthcheck rather than the preset's, which the caller opted out of.
 		tcp: () => undefined,
 	});
