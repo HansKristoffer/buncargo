@@ -73,6 +73,7 @@ describe("warm per-service reconciliation", () => {
 		await run(model, ["db"]);
 		expect(requests).toHaveLength(2);
 	});
+
 	it("reconciles changes to labels and effective environment", async () => {
 		const { run, requests } = harness();
 		const model = {

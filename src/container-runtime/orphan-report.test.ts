@@ -8,6 +8,7 @@ import {
 	ORPHAN_VOLUME_REPORT_RETRY_MS,
 	orphanVolumeReporter,
 } from "./orphan-report";
+import type { ContainerRuntimeAdapter } from "./types";
 
 // Existing paths, so `checkoutDeleted` sees them as present.
 const PRESENT = import.meta.dir;
@@ -49,11 +50,14 @@ function setup(
 		containers?: BuncargoContainer[];
 		runs?: RunEntry[];
 		claims?: Record<string, OffsetClaim>;
+		/** Replaces the fake runtime's members, for a listing that fails. */
+		runtime?: Partial<ContainerRuntimeAdapter>;
 	} = {},
 ) {
 	const runtime = fakeRuntime({
 		containers: async () => (options.containers ?? []).map(listedAs),
 		listVolumes: async () => options.volumes ?? [],
+		...options.runtime,
 	});
 	const logged: string[] = [];
 	let clock = 0;
@@ -64,8 +68,14 @@ function setup(
 		claims: () => options.claims ?? deletedA(),
 		now: () => clock,
 	});
+
 	return {
 		logged,
+		/** Report one pass at the current time, with `answered` as the runtimes the sweep reached. */
+		report: (answered: ("docker" | "apple")[] = ["docker"]) => report(answered),
+		advance: (ms: number) => {
+			clock += ms;
+		},
 		/** Report one pass, with the clock moved past the interval first. */
 		pass: async (answered: "docker" | "none" = "docker") => {
 			clock += ORPHAN_VOLUME_REPORT_INTERVAL_MS;
@@ -121,68 +131,41 @@ describe("orphanVolumeReporter", () => {
 	});
 
 	it("waits out the interval between reports", async () => {
-		let clock = 0;
-		const runtime = fakeRuntime({
-			containers: async () => [].map(listedAs),
-			listVolumes: async () => [volume("a_db", "a")],
+		const { logged, report, advance } = setup({
+			volumes: [volume("a_db", "a")],
 		});
-		const logged: string[] = [];
-		const report = orphanVolumeReporter({
-			log: (message) => logged.push(message),
-			runtimes: () => [runtime],
-			readRuns: async () => [],
-			claims: deletedA,
-			now: () => clock,
-		});
-		await report(["docker"]);
-		clock += ORPHAN_VOLUME_REPORT_INTERVAL_MS - 1;
-		await report(["docker"]);
+		await report();
+		advance(ORPHAN_VOLUME_REPORT_INTERVAL_MS - 1);
+		await report();
 		expect(logged).toHaveLength(1);
 	});
 
 	it("tries a failed pass again after a short wait, not a whole interval", async () => {
-		let clock = 0;
 		let fail = true;
-		const runtime = fakeRuntime({
-			containers: async () => {
-				if (fail) throw new Error("docker ps failed");
-				return [];
+		const { logged, report, advance } = setup({
+			volumes: [volume("a_db", "a")],
+			runtime: {
+				containers: async () => {
+					if (fail) throw new Error("docker ps failed");
+					return [];
+				},
 			},
-			listVolumes: async () => [volume("a_db", "a")],
 		});
-		const logged: string[] = [];
-		const report = orphanVolumeReporter({
-			log: (message) => logged.push(message),
-			runtimes: () => [runtime],
-			readRuns: async () => [],
-			claims: deletedA,
-			now: () => clock,
-		});
-		await report(["docker"]);
+		await report();
 		fail = false;
-		clock += ORPHAN_VOLUME_REPORT_RETRY_MS;
-		await report(["docker"]);
+		advance(ORPHAN_VOLUME_REPORT_RETRY_MS);
+		await report();
 		expect(logged).toHaveLength(1);
 		expect(logged[0]).toContain("a_db");
 	});
 
 	it("does not start the interval on a pass no runtime answered", async () => {
-		let clock = 0;
-		const runtime = fakeRuntime({
-			containers: async () => [].map(listedAs),
-			listVolumes: async () => [volume("a_db", "a")],
-		});
-		const logged: string[] = [];
-		const report = orphanVolumeReporter({
-			log: (message) => logged.push(message),
-			runtimes: () => [runtime],
-			readRuns: async () => [],
-			claims: deletedA,
-			now: () => clock,
+		const { logged, report, advance } = setup({
+			volumes: [volume("a_db", "a")],
 		});
 		await report([]);
-		clock += 1;
-		await report(["docker"]);
+		advance(1);
+		await report();
 		expect(logged).toHaveLength(1);
 	});
 
