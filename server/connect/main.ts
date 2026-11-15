@@ -8,6 +8,7 @@ const origin = process.env.CONNECT_ORIGIN ?? CONNECT_ORIGIN;
 
 const key = process.env.CONNECT_STORAGE_KEY ?? "";
 
+// AES-256-GCM needs exactly 32 bytes, written as 64 hex characters.
 if (!/^[a-f0-9]{64}$/.test(key)) {
 	throw new Error("Set CONNECT_STORAGE_KEY to a persistent 32-byte hex key");
 }
@@ -17,16 +18,21 @@ const store = new Store(
 	Buffer.from(key, "hex"),
 );
 
+// Port 7000 is the frps bind port that smoke.sh checks.
 const directory = new ConnectionDirectory(store, origin, {
 	host: new URL(origin).hostname,
 	port: 7000,
 	serverName: new URL(origin).hostname,
 });
 
+// A restart expires every publication lease and drops visitor grants. Publishers revive
+// theirs on their next renewal.
 directory.invalidateLeases();
 
 const api = createAPI(directory);
 
+// The public API (Caddy proxies connect.* here) and the frps plugin hook below listen on
+// loopback only. The 128 KiB body limit matches MAX_REQUEST_BYTES in http.ts.
 const server = Bun.serve({
 	hostname: "127.0.0.1",
 	port: 8081,
@@ -67,5 +73,4 @@ function stop() {
 }
 
 process.once("SIGTERM", stop);
-
 process.once("SIGINT", stop);

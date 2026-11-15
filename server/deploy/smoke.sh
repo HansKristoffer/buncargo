@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Post-deploy check run by activate.sh: the public API answers and frps completes a TLS handshake.
 set -euo pipefail
 curl --fail --silent --show-error --max-time 10 https://connect.hanskristoffer.dk/healthz | python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"]'
 # Verify the handshake, then close: s_client can wait for application traffic
