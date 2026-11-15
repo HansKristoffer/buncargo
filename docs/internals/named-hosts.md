@@ -120,8 +120,8 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   `getEnvVar`, `env`, `status`, `url` and `open` all ask it through `readLiveNamedUrls`
   (`core/checkout-view.ts`), entry by entry, and name nothing from the plan alone. They do not
   also ask the daemon: all or nothing, one unserved hostname or a daemon restart printed
-  localhost for every app while the run's apps held https URLs. A route is live when it is registered for the checkout at the plan's port by an owner still
-  running. `getEnvVar` asks it from inside users' configs, synchronously, and judges owners by
+  localhost for every app while the run's apps held https URLs. A route is live when it is registered for the checkout at
+  the plan's port by an owner still running. `getEnvVar` asks it from inside users' configs, synchronously, and judges owners by
   process identity (`readLiveNamedHostsSync`), reading each pid's identity once per process
   (`readProcessIdentitiesCached`): on macOS a read is a `ps`, and a config is loaded several times
   per start and on every reload.
@@ -136,9 +136,9 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   restarts in a run serving named hosts claims its route again (`reclaimAppRoute`), or its named
   URL 404s once the run that took it over has exited. It does so in `onAppRestarting`, which the
   restart awaits before it spawns: the app's config reads its URL from the registry as it loads.
-- That answer is per plan entry, never for the plan as a whole. A takeover that ends takes one app's route with it, and when one missing route
-  turned the whole plan to `localhost:port`, every other app of the run, still served on its named
-  URL, read `localhost:port` from its own config.
+- That answer is per plan entry, never for the plan as a whole. A takeover that ends takes one
+  app's route with it, and when one missing route turned the whole plan to `localhost:port`, every
+  other app of the run, still served on its named URL, read `localhost:port` from its own config.
 - App routes record the run's process identity: a pid alone survives a reboot, and a reused one kept
   a dead run's route holding its hostname against the next run of the checkout. The CLI's writers
   (`upsertHostRoutes`, `hosts prune`) judge owners by identity (`identityRouteOwners`), asking only
@@ -193,9 +193,9 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   `DAEMON_RESTART_GRACE_MS` (2s) before falling back. The daemon is briefly down after its own
   stall exit, during another project's reinstall, and at login, and a run cannot attach later:
   its apps' environments are fixed at spawn.
-- `readProxyHealth` probes over HTTPS and validates the health body, not just the status. `ensureHostsDaemonRunning` returns early when
-  health passes and never reaches the squatter check, so accepting any 200 on `:443` would hand the
-  whole flow to whatever else is listening. Do **not** gate it on `routes > 0`: the daemon binds
+- `readProxyHealth` probes over HTTPS and validates the health body, not just the status.
+  `ensureHostsDaemonRunning` returns early when health passes and never reaches the squatter
+  check, so accepting any 200 on `:443` would hand the whole flow to whatever else is listening. Do **not** gate it on `routes > 0`: the daemon binds
   before any route exists, and a fresh machine would report itself down and fall through to the
   squatter path.
 - The listener and the reload loop fail independently, so health alone proves nothing about
@@ -203,8 +203,7 @@ onboarding. Hosts reliability is a top priority: the failure mode is silent, a r
   frozen map. `lastReloadAt` travels in the health body and advances on every reload that
   finishes, failed or not: it says the loop runs. Advanced on success alone, a registry the
   daemon could not read (corrupt, or written by a newer CLI) read as a stall, and recovery exited
-  a daemon that a restart could not help. The proxy notices a stale map **from the
-  request path** (a timer-based watchdog would die with the timers it watches), and the daemon
+  a daemon that a restart could not help. The proxy notices a stale map **from the request path** (a timer-based watchdog would die with the timers it watches), and the daemon
   reloads in-band (`createStallHandler`). Only once no reload has finished for `STALLED_EXIT_MS`
   (twice the stall window) does it `process.exit(1)` for `KeepAlive` to restart: an exit drops every
   proxied websocket on the machine, and any reload that finishes resets the age, so a stall a

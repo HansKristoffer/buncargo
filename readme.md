@@ -243,7 +243,7 @@ The data survives: it is imported from `.firebase-emulator-data` on start and ex
 
 ### Built-in service helpers
 
-All of `service.postgres()`, `redis()`, `clickhouse()`, `mailpit()`, `typesense()`, `minio()` accept `port`, `expose`, `healthCheck`, `serviceName`, and `docker`. Beyond that each takes only what it honors: `database` / `user` / `password` on `postgres` and `clickhouse` (their URLs carry credentials), `secondaryPort` on `clickhouse` and `mailpit`, `apiKey` on `typesense`, `user` / `password` on `minio` (the root credentials, `minioadmin` by default, also given to the apps as `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` beside `MINIO_URL`). Anything else is a type error - use `service.custom({ ... })` for a service that needs more.
+All of `service.postgres()`, `redis()`, `clickhouse()`, `mailpit()`, `typesense()`, `minio()` accept `port`, `expose`, `healthCheck`, `serviceName`, and `docker`. Beyond that each takes only what it honors: `database` / `user` / `password` on `postgres` and `clickhouse` (their URLs carry credentials), `secondaryPort` on `clickhouse` and `mailpit`, `apiKey` on `typesense`, `user` / `password` on `minio` (the root credentials, `minioadmin` by default, also given to the apps as `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` beside `MINIO_URL`). Anything else is a type error. Use `service.custom({ ... })` for a service that needs more.
 
 Health check defaults follow what each image can actually run: `pg_isready` on postgres, `redis-cli` on redis, in-container HTTP on clickhouse, and `tcp` on mailpit, typesense and minio, whose images ship no `wget` or `curl` to probe with. A `tcp` check emits no Compose healthcheck and is polled from the host instead; minio keeps one that bash runs, so a job can wait for it.
 

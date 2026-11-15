@@ -82,8 +82,8 @@ The sweep and volume pruning live in `container-runtime/` too; see
   the published host port. `tcp` does too unless `capabilities.hostPortProbe` is false: Apple's port
   forwarder accepts a connection on the published port whether or not anything listens inside, and
   holds it open, so a host-side connect passed the moment the VM booted. There it connects to the
-  container's own `address` and the `targetPorts` port behind the host port, from the listing. `http` needs no such help, since the forwarder resets the
-  connection once the request is written.
+  container's own `address` and the `targetPorts` port behind the host port, from the listing. `http` needs no such help, since the forwarder resets the connection once the
+  request is written.
 - `container-state.ts` is the one reading of both runtimes' state words. Paused and restarting
   containers are *live* (they hold their ports and their stack, so prune, the sweep, `ls`, claim
   states and the allocator count them) but not *serving* (reuse, readiness and the watch's "up"
@@ -96,8 +96,8 @@ The sweep and volume pruning live in `container-runtime/` too; see
   restarting on two readings in a row, the crash loop a preset's restart policy (typesense,
   mailpit) would otherwise keep up until the timeout. Matched positively, so a state neither
   backend has shown us yet keeps polling. The logs come from `diagnoseService` (the listing plus
-  `adapter.logs`), once, when the wait fails: fetching them with every reading was a `docker logs` four times a second. `logTail`
-  is enrichment: a backend that cannot produce it returns empty and the state alone still fails
+  `adapter.logs`), once, when the wait fails: fetching them with every reading was a `docker logs`
+  four times a second. `logTail` is enrichment: a backend that cannot produce it returns empty and the state alone still fails
   fast. Apple drops `restart`, so only Docker loops.
 - `ensureServicesRunning` skips `up` only when each selected service is running with a matching
   service fingerprint and every relevant input can be proven unchanged. Old unlabeled containers
@@ -111,8 +111,7 @@ The sweep and volume pruning live in `container-runtime/` too; see
   records (state, exit code, health, labels, numeric ports, and Apple's address and target ports).
   Service states, port owners, the inventory, a service's diagnosis and Apple's tcp probe are
   projections of it in `container-runtime/containers.ts`, so Docker has one `docker ps` format and
-  one parser. A
-  warm start lists once inside the project lock and takes states and port owners from that reading;
+  one parser. A warm start lists once inside the project lock and takes states and port owners from that reading;
   only a listing that fails calls `ensureRunning`, since a listing that answers proves the daemon
   is up. It used to be a `docker version` and two listings of the same containers.
 - The synchronous port-owner lookups in `core/process/port-owner.ts` (`getPortOwner`, a snapshot
@@ -176,8 +175,8 @@ command prefix.
 - `ports`, `volumes` and `environment` are read in the short forms `DockerComposeServiceRaw`
   types (string lists, a value per variable). The long forms used to be translated too, reachable
   only past the type; widen the type before adding them back. Compose's list form of `labels` is
-  normalized like the map form: it is the one a typed config can write, and it carries buncargo's own labels too:
-  dropping it left a container that `down`, `ls` and the sweep could not find by project.
+  normalized like the map form: it is the one a typed config can write, and it carries buncargo's own labels too: dropping it
+  left a container that `down`, `ls` and the sweep could not find by project.
 - Container names are capped at 63 characters, the most Apple accepts, ending in a hash of the full
   name. Volume names are not: Apple takes them longer, and renaming one would hide its data.
 - `container_name` is in the *warned* set, not the translated one. The container is always
