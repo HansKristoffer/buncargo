@@ -51,6 +51,7 @@ describe.skipIf(!isAppleContainerSupported())(
 	() => {
 		it("fails at once when the system cannot start, not after the timeout", async () => {
 			const start = performance.now();
+
 			await expect(
 				ensureAppleContainerRunning(failingCli("kernel not installed"), {
 					autoStart: true,
@@ -58,6 +59,7 @@ describe.skipIf(!isAppleContainerSupported())(
 					verbose: false,
 				}),
 			).rejects.toThrow(/system start.*Last error: kernel not installed/);
+
 			expect(performance.now() - start).toBeLessThan(1000);
 		});
 	},

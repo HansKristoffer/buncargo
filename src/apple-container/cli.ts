@@ -103,6 +103,7 @@ export function createAppleContainerCli(
 					...(timedOut ? { timedOut } : {}),
 				};
 			}
+
 			if (killed || result.status === null) {
 				return {
 					ok: false,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { resolveServices } from "../config/resolve";
+import { freePorts } from "../core/test-env.testing";
 import { buildComposeModel } from "../docker-compose";
 import { SERVICE_HASH_LABEL } from "../docker-compose/interpolate";
 import type { ComposeDocument, ServiceConfig } from "../types";
@@ -72,6 +73,17 @@ function upRequest(model: ComposeDocument, serviceNames: string[]) {
 	};
 }
 
+/** The config hash a reused postgres container has to carry. */
+function postgresConfigHash(): string {
+	const plan = buildAppleRunPlan({
+		projectName: "gey-main",
+		model: modelFor({ postgres: { port: 5432 } }),
+		root: "/repo",
+	});
+
+	return plan.services[0]?.configHash ?? "";
+}
+
 function subcommands(cli: RecordingCli): string[] {
 	return cli.calls.map((call) => call.slice(0, 2).join(" "));
 }
@@ -79,6 +91,7 @@ function subcommands(cli: RecordingCli): string[] {
 describe("appleUp", () => {
 	it("creates named volumes before running the service", async () => {
 		const cli = recordingCli();
+
 		await appleUp(
 			cli,
 			upRequest(modelFor({ postgres: { port: 5432 } }), ["postgres"]),
@@ -88,6 +101,7 @@ describe("appleUp", () => {
 			(call) => call[0] === "volume" && call[1] === "create",
 		);
 		const run = cli.calls.findIndex((call) => call[0] === "run");
+
 		expect(volumeCreate).toBeGreaterThanOrEqual(0);
 		expect(run).toBeGreaterThan(volumeCreate);
 		expect(cli.calls[volumeCreate]).toEqual([
@@ -117,12 +131,7 @@ describe("appleUp", () => {
 	});
 
 	it("leaves a running container with a matching config hash alone", async () => {
-		const plan = buildAppleRunPlan({
-			projectName: "gey-main",
-			model: modelFor({ postgres: { port: 5432 } }),
-			root: "/repo",
-		});
-		const hash = plan.services[0]?.configHash ?? "";
+		const hash = postgresConfigHash();
 		const cli = recordingCli([
 			record("gey-main-postgres", "running", { [SERVICE_HASH_LABEL]: hash }),
 		]);
@@ -137,12 +146,7 @@ describe("appleUp", () => {
 	});
 
 	it("starts a stopped container instead of recreating it", async () => {
-		const plan = buildAppleRunPlan({
-			projectName: "gey-main",
-			model: modelFor({ postgres: { port: 5432 } }),
-			root: "/repo",
-		});
-		const hash = plan.services[0]?.configHash ?? "";
+		const hash = postgresConfigHash();
 		const cli = recordingCli([
 			record("gey-main-postgres", "stopped", { [SERVICE_HASH_LABEL]: hash }),
 		]);
@@ -161,12 +165,7 @@ describe("appleUp", () => {
 	});
 
 	it("does not fail over a matching container whose state it cannot read", async () => {
-		const plan = buildAppleRunPlan({
-			projectName: "gey-main",
-			model: modelFor({ postgres: { port: 5432 } }),
-			root: "/repo",
-		});
-		const hash = plan.services[0]?.configHash ?? "";
+		const hash = postgresConfigHash();
 		const cli = recordingCli(
 			[record("gey-main-postgres", "", { [SERVICE_HASH_LABEL]: hash })],
 			{ start: "container gey-main-postgres is already running" },
@@ -182,12 +181,7 @@ describe("appleUp", () => {
 	});
 
 	it("fails a start refused for another reason over a container whose state it cannot read", async () => {
-		const plan = buildAppleRunPlan({
-			projectName: "gey-main",
-			model: modelFor({ postgres: { port: 5432 } }),
-			root: "/repo",
-		});
-		const hash = plan.services[0]?.configHash ?? "";
+		const hash = postgresConfigHash();
 		const cli = recordingCli(
 			[record("gey-main-postgres", "", { [SERVICE_HASH_LABEL]: hash })],
 			{ start: "bind(...): Address already in use (errno: 48)" },
@@ -205,12 +199,7 @@ describe("appleUp", () => {
 	});
 
 	it("fails a start that failed for its image instead of running over the container", async () => {
-		const plan = buildAppleRunPlan({
-			projectName: "gey-main",
-			model: modelFor({ postgres: { port: 5432 } }),
-			root: "/repo",
-		});
-		const hash = plan.services[0]?.configHash ?? "";
+		const hash = postgresConfigHash();
 		const cli = recordingCli(
 			[record("gey-main-postgres", "stopped", { [SERVICE_HASH_LABEL]: hash })],
 			{ start: "Error: image not found: postgres:17" },
@@ -235,6 +224,7 @@ describe("appleUp", () => {
 		const broken = recordingCli([], {
 			volume: "Error: internalError: mkfs failed: file exists in the way",
 		});
+
 		await expect(
 			appleUp(broken, upRequest(model, ["postgres"])),
 		).rejects.toThrow(/create volume gey-main-postgres_data failed/);
@@ -346,7 +336,7 @@ describe("appleUp recreating and running", () => {
 	});
 
 	it("names the Apple container holding a published port, not its forwarder", async () => {
-		const port = 47914;
+		const [port] = freePorts(1);
 		const cli = recordingCli(
 			[
 				{
@@ -380,6 +370,7 @@ describe("appleUp recreating and running", () => {
 		const pull = cli.calls.findIndex(
 			(call) => call[0] === "image" && call[1] === "pull",
 		);
+
 		expect(cli.calls[pull]).toEqual([
 			"image",
 			"pull",
@@ -390,6 +381,7 @@ describe("appleUp recreating and running", () => {
 		expect(pull).toBeLessThan(cli.calls.findIndex((call) => call[0] === "run"));
 
 		const quiet = recordingCli([], { image: "Error: image not found" });
+
 		await appleUp(
 			quiet,
 			upRequest(modelFor({ redis: { port: 6379 } }), ["redis"]),
@@ -429,6 +421,7 @@ describe("appleDown", () => {
 
 		const stop = cli.calls.find((call) => call[0] === "stop");
 		const remove = cli.calls.find((call) => call[0] === "delete");
+
 		expect(stop).toEqual(["stop", "gey-main-postgres"]);
 		expect(remove).toEqual([
 			"delete",
@@ -606,6 +599,7 @@ describe("appleDown", () => {
 
 	it("fails a reset whose volume delete failed, after trying every volume", async () => {
 		const cli = recordingCli([], { volume: "volume is in use" });
+
 		await expect(
 			appleDown(cli, {
 				root: "/repo",
@@ -622,6 +616,7 @@ describe("appleDown", () => {
 
 	it("removes the project's named volumes only with removeVolumes", async () => {
 		const withReset = recordingCli();
+
 		await appleDown(withReset, {
 			root: "/repo",
 			projectName: "gey-main",
@@ -629,6 +624,7 @@ describe("appleDown", () => {
 			removeVolumes: true,
 			verbose: false,
 		});
+
 		expect(withReset.calls).toContainEqual([
 			"volume",
 			"delete",
@@ -636,12 +632,14 @@ describe("appleDown", () => {
 		]);
 
 		const withoutReset = recordingCli();
+
 		await appleDown(withoutReset, {
 			root: "/repo",
 			projectName: "gey-main",
 			model: modelFor({ postgres: { port: 5432 } }),
 			verbose: false,
 		});
+
 		expect(withoutReset.calls.some((call) => call[0] === "volume")).toBe(false);
 	});
 });

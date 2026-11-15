@@ -50,10 +50,12 @@ function readLabels(source: Record<string, unknown>): Record<string, string> {
 		: undefined;
 	const raw = configuration?.labels ?? source.labels;
 	if (!isRecord(raw)) return {};
+
 	const labels: Record<string, string> = {};
 	for (const [key, value] of Object.entries(raw)) {
 		if (typeof value === "string") labels[key] = value;
 	}
+
 	return labels;
 }
 
@@ -83,6 +85,7 @@ function readPort(entry: unknown): PublishedPort | null {
 		const containerPort = Number.parseInt(parts.at(-1) ?? "", 10);
 		const hostPort = Number.parseInt(parts.at(-2) ?? "", 10);
 		if (!Number.isFinite(hostPort)) return null;
+
 		return {
 			hostAddress: parts.length > 2 ? parts[0] : undefined,
 			hostPort,
@@ -90,13 +93,17 @@ function readPort(entry: unknown): PublishedPort | null {
 			protocol,
 		};
 	}
+
 	if (!isRecord(entry)) return null;
+
 	const hostPort = Number(entry.hostPort ?? entry.host_port ?? entry.host);
 	if (!Number.isFinite(hostPort)) return null;
+
 	const containerPort = Number(
 		entry.containerPort ?? entry.container_port ?? entry.container,
 	);
 	const count = Number(entry.count);
+
 	return {
 		hostAddress: readString(entry.hostAddress ?? entry.host_address),
 		hostPort,
@@ -122,6 +129,7 @@ function readPorts(source: Record<string, unknown>): PublishedPort[] {
 		const ports = candidate.map(readPort).filter(isDefined);
 		if (ports.length > 0) return ports;
 	}
+
 	return [];
 }
 
@@ -143,14 +151,18 @@ function tryParseContainerRecords(
 ): AppleContainerRecord[] | undefined {
 	const trimmed = stdout.trim();
 	if (!trimmed) return [];
+
 	const parsed = safeJsonParse(trimmed);
 	if (!parsed.ok) return undefined;
+
 	return toArray(parsed.data)
 		.filter(isRecord)
 		.flatMap((entry) => {
 			const id = readId(entry);
 			if (!id) return [];
+
 			const address = readAddress(entry);
+
 			return [
 				{
 					id,
@@ -181,14 +193,18 @@ export type AppleListing =
 export const LIST_ARGS = ["ls", "--all", "--format", "json"];
 
 export function readContainerListing(result: AppleCliResult): AppleListing {
-	if (!result.ok)
+	if (!result.ok) {
 		return {
 			listed: false,
 			error: result.stderr.trim() || `container ls exited ${result.exitCode}`,
 		};
+	}
+
 	const records = tryParseContainerRecords(result.stdout);
-	if (!records)
+	if (!records) {
 		return { listed: false, error: "container ls printed something not JSON" };
+	}
+
 	return { listed: true, records };
 }
 
@@ -216,6 +232,7 @@ export function recordState(record: AppleContainerRecord): ContainerState {
 /** A record in buncargo's words, as every runtime-neutral reader takes it. */
 function toRuntimeContainer(record: AppleContainerRecord): RuntimeContainer {
 	const label = (name: string) => record.labels[name] || undefined;
+
 	const labels = {
 		// Apple has no Compose: its project label is the project both ways.
 		composeProject: label(PROJECT_LABEL),
@@ -237,6 +254,7 @@ function toRuntimeContainer(record: AppleContainerRecord): RuntimeContainer {
 	const targetPorts = published.flatMap(({ host, target }) =>
 		target === undefined || target === host ? [] : [[host, target] as const],
 	);
+
 	return {
 		id: record.id,
 		name: record.id,
@@ -262,6 +280,7 @@ export async function appleContainers(
 ): Promise<RuntimeContainer[]> {
 	const listing = await listContainerRecordsAsync(cli, signal);
 	if (!listing.listed) throw new Error(listing.error);
+
 	return listing.records.map(toRuntimeContainer);
 }
 
@@ -303,6 +322,8 @@ export async function appleContainerLogs(
 		);
 		return logs.ok ? logs.stdout.trim() : "";
 	} catch {
+		// Logs only enrich a diagnosis, so a failed read must not hide the
+		// container state the caller already has.
 		return "";
 	}
 }

@@ -53,6 +53,7 @@ export function appleContainerAvailability(
 	cli: AppleContainerCli,
 ): RuntimeAvailability {
 	if (!isAppleContainerSupported() || !cli.found) return { state: "down" };
+
 	return appleAvailabilityFromStatus(cli.run(["system", "status"]));
 }
 
@@ -65,11 +66,14 @@ export function appleAvailabilityFromStatus(
 	status: AppleCliResult,
 ): RuntimeAvailability {
 	if (status.ok) return { state: "up" };
-	if (status.timedOut)
+
+	if (status.timedOut) {
 		return {
 			state: "unreachable",
 			detail: "Apple container did not answer in time",
 		};
+	}
+
 	return { state: "down" };
 }
 
@@ -98,8 +102,11 @@ export function appleStartFailureRemediation(started: AppleCliResult): string {
 	const detail = started.stderr.trim();
 	const lastError = detail ? ` Last error: ${detail}` : "";
 	const noKernel = /kernel/i.test(`${started.stderr}\n${started.stdout}`);
-	if (noKernel)
+
+	if (noKernel) {
 		return `Apple container has no kernel installed yet. Run \`${APPLE_CONTAINER_COMMAND} system start\` once in a terminal, which asks before installing one, then try again; or set docker.runtime: "docker".${lastError}`;
+	}
+
 	return `${START_REMEDIATION}${lastError}`;
 }
 
@@ -132,13 +139,14 @@ export async function ensureAppleContainerRunning(
 
 	const { signal } = options;
 	const deadline = performance.now() + timeoutMs;
-	const running = async () =>
-		(
-			await runAppleAsync(cli, ["system", "status"], {
-				signal,
-				timeoutMs: Math.min(5000, remainingTime(deadline)),
-			})
-		).ok;
+	const running = async () => {
+		const status = await runAppleAsync(cli, ["system", "status"], {
+			signal,
+			timeoutMs: Math.min(5000, remainingTime(deadline)),
+		});
+
+		return status.ok;
+	};
 	if (await running()) return;
 
 	if (!cli.found) {
@@ -165,10 +173,12 @@ export async function ensureAppleContainerRunning(
 				formatStep("📦 Apple container is not running. Starting services..."),
 			);
 		}
+
 		started = await runAppleAsync(cli, ["system", "start", "--timeout", "30"], {
 			signal,
 			timeoutMs: Math.min(30000, remainingTime(deadline)),
 		});
+
 		// A start that failed (on a machine never set up, it stops at the
 		// kernel prompt) will not come up by waiting: say so now, not after
 		// the timeout.
@@ -186,6 +196,7 @@ export async function ensureAppleContainerRunning(
 			if (verbose) console.log(formatDone("Apple container is ready"));
 			return;
 		}
+
 		await abortableSleep(Math.min(1000, remainingTime(deadline)), signal);
 		if (verbose) {
 			const elapsed = Math.round((timeoutMs - remainingTime(deadline)) / 1000);

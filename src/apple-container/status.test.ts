@@ -81,6 +81,7 @@ async function ownerOf(cli: AppleContainerCli, port: number) {
 describe("parseContainerRecords", () => {
 	it("reads id, state, labels and ports", () => {
 		const records = parseContainerRecords(LS_JSON);
+
 		expect(records).toHaveLength(3);
 		expect(records[0]?.id).toBe("gey-main-postgres");
 		expect(records[0]?.state).toBe("running");
@@ -140,6 +141,7 @@ describe("formatPublishedPorts", () => {
 describe("Apple's buncargo containers", () => {
 	it("keeps only buncargo-labeled containers", async () => {
 		const containers = await buncargoContainersOn(listing(stubCli(LS_JSON)));
+
 		expect(containers.map((item) => item.service)).toEqual([
 			"postgres",
 			"redis",
@@ -169,6 +171,7 @@ describe("Apple's project service states", () => {
 			listing(stubCli(LS_JSON)),
 			"gey-main",
 		);
+
 		expect(states.map((state) => [state.service, state.serving])).toEqual([
 			["postgres", true],
 			["redis", false],
@@ -300,12 +303,14 @@ describe("probing a port at Apple's container address", () => {
 		});
 		const port = server.port;
 		server.stop(true);
+
 		const cli = stubCli(
 			liveRecord({
 				address: "127.0.0.1",
 				ports: [{ hostPort: 18080, containerPort: port }],
 			}),
 		);
+
 		expect(await probe(cli)).toBe(false);
 	});
 

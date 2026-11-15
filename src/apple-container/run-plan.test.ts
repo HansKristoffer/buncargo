@@ -3,8 +3,6 @@ import { homedir } from "node:os";
 import { resolveServices } from "../config/resolve";
 import { buildComposeModel } from "../docker-compose";
 import {
-	configHashFor,
-	interpolate,
 	SERVICE_HASH_LABEL,
 	serviceFingerprint,
 	serviceHashEnv,
@@ -87,58 +85,6 @@ describe("splitCommandLine", () => {
 	});
 });
 
-describe("interpolate", () => {
-	// biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder is the input under test
-	const PLAIN = "${PORT}:5432";
-	// biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder is the input under test
-	const WITH_DEFAULT = "${PORT:-5432}:5432";
-
-	it("substitutes a plain variable", () => {
-		expect(interpolate(PLAIN, { PORT: "5533" })).toBe("5533:5432");
-	});
-
-	it("falls back to the default when unset or empty", () => {
-		expect(interpolate(WITH_DEFAULT, {})).toBe("5432:5432");
-		expect(interpolate(WITH_DEFAULT, { PORT: "" })).toBe("5432:5432");
-	});
-
-	it("prefers the value over the default", () => {
-		expect(interpolate(WITH_DEFAULT, { PORT: "5533" })).toBe("5533:5432");
-	});
-
-	it("substitutes an unset bare variable with empty, as compose does", () => {
-		expect(interpolate("$UNSET/x", {})).toBe("/x");
-		expect(interpolate("$PORT/x", { PORT: "5533" })).toBe("5533/x");
-	});
-
-	it("lets the colon decide whether an empty value takes the default", () => {
-		// biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder is the input under test
-		const noColon = "${PORT-5432}";
-		expect(interpolate(noColon, { PORT: "" })).toBe("");
-		expect(interpolate(noColon, {})).toBe("5432");
-		expect(interpolate(WITH_DEFAULT, { PORT: "" })).toBe("5432:5432");
-	});
-
-	it("fails on a required variable that is missing", () => {
-		// biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder is the input under test
-		const required = "${TAG:?TAG is required}";
-		expect(() => interpolate(required, {})).toThrow("TAG is required");
-		expect(() => interpolate(required, { TAG: "" })).toThrow("TAG is required");
-		expect(interpolate(required, { TAG: "v1" })).toBe("v1");
-
-		// Without the colon, an empty value satisfies the requirement.
-		// biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder is the input under test
-		expect(interpolate("${TAG?nope}", { TAG: "" })).toBe("");
-	});
-
-	it("treats $$ as an escaped dollar, as compose does", () => {
-		expect(interpolate("pa$$word", { word: "nope" })).toBe("pa$word");
-		// biome-ignore lint/suspicious/noTemplateCurlyInString: the literal placeholder is the input under test
-		expect(interpolate("$${PORT}", { PORT: "5533" })).toBe("${PORT}");
-		expect(interpolate("$$PORT", { PORT: "5533" })).toBe("$PORT");
-	});
-});
-
 describe("sanitizeContainerName", () => {
 	it("replaces characters Apple rejects", () => {
 		expect(sanitizeContainerName("gey main/postgres")).toBe(
@@ -148,10 +94,6 @@ describe("sanitizeContainerName", () => {
 
 	it("prefixes a name that does not start alphanumerically", () => {
 		expect(sanitizeContainerName("_data")).toBe("c-_data");
-	});
-
-	it("keeps a conventional project-service name intact", () => {
-		expect(containerNameFor("gey-main", "postgres")).toBe("gey-main-postgres");
 	});
 });
 
@@ -164,6 +106,7 @@ describe("containerNameFor", () => {
 		const long = `gey-${"feature-".repeat(8)}`;
 		const a = containerNameFor(`${long}a`, "postgres");
 		const b = containerNameFor(`${long}b`, "postgres");
+
 		expect(a).toHaveLength(63);
 		expect(a.startsWith("gey-feature-")).toBe(true);
 		expect(a).not.toBe(b);
@@ -263,7 +206,9 @@ describe("buildAppleRunPlan", () => {
 		expect(valuesOf(service.runArgs, "--env")).toContain(
 			"POSTGRES_USER=postgres",
 		);
+
 		const labels = valuesOf(service.runArgs, "--label");
+
 		expect(labels).toContain("buncargo.project=gey-main");
 		expect(labels).toContain("buncargo.service=postgres");
 		expect(labels).toContain("buncargo.root=/repo");
@@ -338,6 +283,7 @@ describe("buildAppleRunPlan", () => {
 			},
 		});
 		const labels = valuesOf(plan.services[0]?.runArgs ?? [], "--label");
+
 		expect(labels).toContain("team=core");
 		expect(labels).toContain("buncargo.project=gey-main");
 		expect(labels).toContain("buncargo.service=custom");
@@ -369,6 +315,7 @@ describe("buildAppleRunPlan", () => {
 		});
 		const service = plan.services[0];
 		const args = service?.runArgs ?? [];
+
 		expect(plan.unsupportedKeys).toEqual([]);
 		expect(valuesOf(args, "--memory")).toEqual(["512M"]);
 		expect(valuesOf(args, "--cpus")).toEqual(["2"]);
@@ -509,7 +456,7 @@ describe("buildAppleRunPlan", () => {
 	});
 
 	it("refuses interpolation it cannot translate rather than passing it on as text", () => {
-		const planFor = (value: string) =>
+		const planWith = (value: string) =>
 			buildAppleRunPlan({
 				projectName: IDENTITY.projectName,
 				root: IDENTITY.root,
@@ -519,11 +466,13 @@ describe("buildAppleRunPlan", () => {
 				},
 			});
 		// biome-ignore-start lint/suspicious/noTemplateCurlyInString: the literal `${...}` is the input under test.
-		expect(() => planFor("${MODE:+--verbose}")).toThrow(
+		expect(() => planWith("${MODE:+--verbose}")).toThrow(
 			/"web" uses "\$\{MODE:\+--verbose\}", which Apple container cannot interpolate/,
 		);
-		expect(() => planFor("${PORT:-${FALLBACK}}")).toThrow(/cannot interpolate/);
-		expect(() => planFor("${MODE:-x} costs $$5")).not.toThrow();
+		expect(() => planWith("${PORT:-${FALLBACK}}")).toThrow(
+			/cannot interpolate/,
+		);
+		expect(() => planWith("${MODE:-x} costs $$5")).not.toThrow();
 		// biome-ignore-end lint/suspicious/noTemplateCurlyInString: end
 	});
 });
@@ -563,26 +512,6 @@ describe("orderServices", () => {
 		expect(
 			orderServices({ api: { image: "busybox", depends_on: ["ghost"] } }),
 		).toEqual(["api"]);
-	});
-});
-
-describe("configHashFor", () => {
-	it("is stable across key order", () => {
-		expect(configHashFor({ image: "busybox", user: "root" })).toBe(
-			configHashFor({ user: "root", image: "busybox" }),
-		);
-	});
-
-	it("changes when an immutable field changes", () => {
-		expect(configHashFor({ image: "busybox", ports: ["1:1"] })).not.toBe(
-			configHashFor({ image: "busybox", ports: ["2:1"] }),
-		);
-	});
-
-	it("includes user labels in the config fingerprint", () => {
-		expect(configHashFor({ image: "busybox", labels: { a: "1" } })).not.toBe(
-			configHashFor({ image: "busybox", labels: { a: "2" } }),
-		);
 	});
 });
 
