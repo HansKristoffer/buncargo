@@ -6,6 +6,9 @@ export const LEASE_MS = 45_000;
 
 export const HEARTBEAT_MS = 10_000;
 
+/** Publication, proxy and run-host ids: 128 random bits as lowercase hex. */
+export const HEX_ID = /^[a-f0-9]{32}$/;
+
 type TargetStatus = "starting" | "ready" | "reused" | "stopped" | "failed";
 
 export interface TargetInput {
@@ -127,6 +130,7 @@ export function parseRun(value: unknown): RunInput {
 	) {
 		throw new Error("Invalid publication");
 	}
+
 	const ids = new Set<string>();
 	for (const raw of run.targets) {
 		const target = record(raw);
@@ -146,6 +150,7 @@ export function parseRun(value: unknown): RunInput {
 			throw new Error("Invalid target");
 		}
 		ids.add(target.id);
+
 		if (target.tablePlusUrl !== undefined) {
 			if (!text(target.tablePlusUrl, 2048) || target.protocol !== "tcp") {
 				throw new Error("Invalid database address");
@@ -160,6 +165,7 @@ export function parseRun(value: unknown): RunInput {
 			}
 		}
 	}
+
 	if (
 		run.primaryApp !== undefined &&
 		(!text(run.primaryApp) ||
@@ -169,6 +175,7 @@ export function parseRun(value: unknown): RunInput {
 	) {
 		throw new Error("Invalid primary app");
 	}
+
 	// Project only contract fields; callers must never persist arbitrary request properties.
 	return {
 		sessionId: run.sessionId,
@@ -204,6 +211,7 @@ export function parseDirectory(value: unknown, origin: string): Directory {
 	) {
 		throw new Error("Invalid connection directory");
 	}
+
 	const ids = new Set<string>();
 	for (const raw of directory.runs) {
 		const run = record(raw);
@@ -212,6 +220,7 @@ export function parseDirectory(value: unknown, origin: string): Directory {
 			throw new Error("Invalid remote identity");
 		}
 		ids.add(String(run.sessionId));
+
 		for (const target of run.targets as RemoteTarget[]) {
 			if (target.protocol === "http") {
 				const url = new URL(target.url);
@@ -219,9 +228,7 @@ export function parseDirectory(value: unknown, origin: string): Directory {
 				if (
 					url.protocol !== base.protocol ||
 					url.port !== base.port ||
-					!/^[a-f0-9]{32}$/.test(
-						url.hostname.slice(0, -base.hostname.length - 1),
-					) ||
+					!HEX_ID.test(url.hostname.slice(0, -base.hostname.length - 1)) ||
 					!url.hostname.endsWith(`.${base.hostname}`) ||
 					url.username ||
 					url.password ||
@@ -236,5 +243,6 @@ export function parseDirectory(value: unknown, origin: string): Directory {
 			}
 		}
 	}
+
 	return directory as unknown as Directory;
 }
