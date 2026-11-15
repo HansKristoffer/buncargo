@@ -15,12 +15,14 @@ export async function runMigrationsSequentially(
 ): Promise<void> {
 	for (const migration of migrations) {
 		if (await skip?.(migration)) continue;
+
 		const result = await exec(migration.command, {
 			cwd: migration.cwd,
 			throwOnError: false,
 			// Undefined falls back to the config-level scope inside exec.
 			secrets: migration.secrets,
 		});
+
 		if (result.exitCode !== 0) {
 			console.error(formatFail(`Migration "${migration.name}" failed`));
 			if (result.stdout) {

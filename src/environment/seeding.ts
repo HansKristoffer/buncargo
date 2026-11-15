@@ -5,12 +5,7 @@ import { toUrlMap, type UrlMap } from "../core/ports";
 import { type ExecResult, execAsync } from "../core/process";
 import { formatDone, formatFail, formatStep, formatWarn } from "../core/style";
 import { resolvePrismaConfig } from "../prisma/config";
-import type {
-	HookContext,
-	SeedCheckContext,
-	SeedOutcome,
-	SeedRunOptions,
-} from "../types";
+import type { SeedCheckContext, SeedOutcome, SeedRunOptions } from "../types";
 import type {
 	AnyApps,
 	AnyServices,
@@ -36,7 +31,10 @@ function lastLines(text: string): string[] {
 		.slice(-SEED_TAIL_LINES);
 }
 
-export async function runSeedCommand(input: {
+/** How long the seed command, and its `seed.check`, may run before the seed fails. */
+const SEED_TIMEOUT_MS = 600_000;
+
+async function runSeedCommand(input: {
 	command: string;
 	signal?: AbortSignal;
 	root: string;
@@ -53,34 +51,23 @@ export async function runSeedCommand(input: {
 	const forceExit = input.forceExit ?? Boolean(specifier);
 	const workingDir = input.cwd ? resolve(input.root, input.cwd) : input.root;
 
+	// A seed module that leaves a handle open would never exit on its own, so a
+	// Bun script runs through a wrapper that exits once the module has settled.
+	let command: string | string[] = input.command;
 	if (forceExit && specifier) {
 		const href = pathToFileURL(resolve(workingDir, specifier)).href;
 		const wrapped = `await import(${JSON.stringify(href)}); process.exit(process.exitCode ?? 0)`;
-		return execAsync(
-			[process.execPath, "--eval", wrapped],
-			input.root,
-			input.envVars,
-			{
-				cwd: input.cwd,
-				verbose: input.verbose,
-				outputPrefix: input.prefixOutput ? "seed" : undefined,
-				onOutputLine: input.onOutputLine,
-				throwOnError: false,
-				signal: input.signal,
-				timeoutMs: 600_000,
-				unsetEnv: input.unsetEnv,
-			},
-		);
+		command = [process.execPath, "--eval", wrapped];
 	}
 
-	return execAsync(input.command, input.root, input.envVars, {
+	return execAsync(command, input.root, input.envVars, {
 		cwd: input.cwd,
 		verbose: input.verbose,
 		outputPrefix: input.prefixOutput ? "seed" : undefined,
 		onOutputLine: input.onOutputLine,
 		throwOnError: false,
 		signal: input.signal,
-		timeoutMs: 600_000,
+		timeoutMs: SEED_TIMEOUT_MS,
 		unsetEnv: input.unsetEnv,
 	});
 }
@@ -107,27 +94,20 @@ function createCheckTableHelper(
 			);
 			return true;
 		}
+
 		const checkResult = await exec(
 			`psql "${serviceUrl}" -tAc 'SELECT COUNT(*) FROM "${tableName}" LIMIT 1'`,
 			{ throwOnError: false },
 		);
+
 		const count = checkResult.stdout.trim();
 		const shouldSeed =
 			checkResult.exitCode !== 0 || count === "0" || count === "";
 		if (!shouldSeed) {
 			log(formatStep(`📊 Table "${tableName}" has ${count} rows`));
 		}
-		return shouldSeed;
-	};
-}
 
-function createSeedCheckContext(
-	baseContext: HookContext<AnyServices, AnyApps>,
-	checkTable: SeedCheckContext<AnyServices, AnyApps>["checkTable"],
-): SeedCheckContext<AnyServices, AnyApps> {
-	return {
-		...baseContext,
-		checkTable,
+		return shouldSeed;
 	};
 }
 
@@ -156,6 +136,7 @@ export async function runSeedIfNeeded(
 	if (!seed) {
 		return { status: "not-configured" };
 	}
+
 	const { verbose = true, productionBuild = false, force = false } = options;
 
 	const seedCheck = seed.check;
@@ -165,30 +146,34 @@ export async function runSeedIfNeeded(
 				const checkTable = createCheckTableHelper(
 					toUrlMap(ctx.urls),
 					(cmd, execOptions) =>
-						envVars.exec(cmd, { ...execOptions, signal, timeoutMs: 600_000 }),
+						envVars.exec(cmd, {
+							...execOptions,
+							signal,
+							timeoutMs: SEED_TIMEOUT_MS,
+						}),
 					resolvePrismaConfig(ctx.config.prisma).service,
 					ctx.output.log,
 				);
-				return seedCheck(
-					createSeedCheckContext(
-						envVars.getHookContext(signal, selection),
-						checkTable,
-					),
-				);
+				return seedCheck({
+					...envVars.getHookContext(signal, selection),
+					checkTable,
+				});
 			},
-			600_000,
+			SEED_TIMEOUT_MS,
 			options.signal,
 		);
 		if (!shouldSeed) {
-			if (verbose)
+			if (verbose) {
 				ctx.output.log(
 					formatDone("Database already has data, skipping seeders"),
 				);
+			}
 			return { status: "not-needed" };
 		}
 	}
 
 	if (verbose) ctx.output.log(formatStep("🌱 Running seeders..."));
+
 	const computed: Record<string, string> =
 		envVars.buildEnvVars(productionBuild);
 	const secrets = await envVars.resolveSecrets(seed.secrets, {
@@ -203,6 +188,7 @@ export async function runSeedIfNeeded(
 		tail.push(line);
 		if (tail.length > SEED_TAIL_LINES) tail.shift();
 	};
+
 	const toTerminal =
 		verbose &&
 		!options.prefixOutput &&
@@ -219,6 +205,7 @@ export async function runSeedIfNeeded(
 			sink(line);
 			keep(line);
 		});
+
 	const result = await runSeedCommand({
 		command: seed.command,
 		signal: options.signal,
@@ -235,13 +222,17 @@ export async function runSeedIfNeeded(
 
 	if (result.exitCode !== 0) {
 		console.error(formatFail("Seeding failed"));
+
 		// Already shown when its output was streamed.
 		const streamed =
 			verbose && (options.prefixOutput || onOutputLine !== undefined);
 		if (!streamed) console.error(result.stderr);
+
 		// Prefixed or quiet output was collected whole rather than line by line.
-		if (tail.length === 0)
+		if (tail.length === 0) {
 			tail.push(...lastLines(`${result.stdout}${result.stderr}`));
+		}
+
 		return { status: "failed", result, command: seed.command, tail };
 	}
 

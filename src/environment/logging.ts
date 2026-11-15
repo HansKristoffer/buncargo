@@ -10,17 +10,17 @@ import {
 } from "../core/style";
 import type { ResolvedService } from "../types";
 
+interface BannerTunnel {
+	kind: "service" | "app";
+	name: string;
+	publicUrl: string;
+	localUrl: string;
+}
+
 function tunnelFor(
-	tunnels:
-		| Array<{
-				kind: "service" | "app";
-				name: string;
-				publicUrl: string;
-				localUrl: string;
-		  }>
-		| undefined,
+	tunnels: BannerTunnel[] | undefined,
 	name: string,
-	kind: "service" | "app",
+	kind: BannerTunnel["kind"],
 ) {
 	return tunnels?.find((t) => t.name === name && t.kind === kind);
 }
@@ -36,12 +36,7 @@ export interface EnvironmentBannerInput {
 	urls?: Record<string, string>;
 	localIp: string;
 	portOffset: number;
-	tunnels?: Array<{
-		kind: "service" | "app";
-		name: string;
-		publicUrl: string;
-		localUrl: string;
-	}>;
+	tunnels?: BannerTunnel[];
 	/** A dim hint after an app's row, from its integrations (`bunx buncargo expo sim`). */
 	hintFor?: (app: string) => string | undefined;
 }
@@ -53,6 +48,7 @@ export function formatBannerHeader(input: {
 	portOffset: number;
 }): string {
 	const bits = [`  ${pc.cyan(pc.bold("🐳"))}`];
+
 	if (input.worktreeSuffix) {
 		bits.push(colorizeName(input.worktreeSuffix));
 		bits.push(pc.dim("·"));
@@ -60,12 +56,15 @@ export function formatBannerHeader(input: {
 	} else {
 		bits.push(pc.white(input.projectPrefix));
 	}
+
 	if (/production/i.test(input.label)) {
 		bits.push(pc.dim("production"));
 	}
+
 	if (input.portOffset > 0) {
 		bits.push(pc.dim(`+${input.portOffset}`));
 	}
+
 	return bits.join("  ");
 }
 
@@ -115,15 +114,19 @@ export function formatEnvironmentBanner(
 			lines.push(
 				`  ${pc.green("➜")}  ${paddedName(name, width)}  ${formatClickableUrl(url)}`,
 			);
+
+			// A named URL hides the port it proxies to, so show it beside the row.
 			if (named && port !== undefined && !named.includes(`:${port}`)) {
 				lines.push(`       ${pc.dim(`:${port}`)}`);
 			}
+
 			const t = tunnelFor(tunnels, name, "service");
 			if (t) {
 				lines.push(
 					`       ${pc.dim("public")}  ${formatClickableUrl(t.publicUrl)}`,
 				);
 			}
+
 			// Preset, not name: a service keyed `db` from `service.postgres()`
 			// is as much a database as one keyed `postgres`.
 			const identity = describeService({
@@ -132,6 +135,7 @@ export function formatEnvironmentBanner(
 				port,
 				projectName,
 			});
+
 			if (identity.tablePlusUrl) {
 				lines.push(
 					`       ${formatHyperlink(identity.tablePlusUrl, pc.cyan("TablePlus"))}`,
@@ -152,21 +156,26 @@ export function formatEnvironmentBanner(
 							named ?? `http://localhost:${port}`,
 							appEntryPath(apps[name]),
 						) ?? "worker");
+
 			const extras: string[] = [];
 			if (named && port !== undefined && !named.includes(`:${port}`)) {
 				extras.push(pc.dim(`:${port}`));
 			}
+
 			if (port !== undefined && localIp !== "127.0.0.1") {
 				extras.push(pc.dim(formatClickableUrl(`http://${localIp}:${port}`)));
 			}
+
 			const t = tunnelFor(tunnels, name, "app");
 			if (t) {
 				extras.push(formatClickableUrl(t.publicUrl));
 			}
+
 			const hint = input.hintFor?.(name);
 			if (hint) {
 				extras.push(pc.dim(hint));
 			}
+
 			const suffix =
 				extras.length > 0 ? `  ${extras.join(pc.dim("  ·  "))}` : "";
 			lines.push(

@@ -53,11 +53,14 @@ export function createServiceWatch(
 
 	const onChange = (changes: ServiceChange[]) => {
 		const records = readRemovals();
+
 		for (const change of changes) {
 			const { condition } = change;
-			const what = describeServiceCondition(change);
+			const isUp = condition.state === "up";
 			const lost =
 				condition.state === "stopped" || condition.state === "missing";
+			const what = describeServiceCondition(change);
+
 			const detail = lost
 				? `${what}. ${explainServiceStop({
 						projectName: ctx.projectName,
@@ -73,25 +76,18 @@ export function createServiceWatch(
 				lost
 					? `${sentence} Apps that use it fail until it is back: restart the run (\`buncargo stop --all\`, then \`buncargo dev\`).`
 					: detail,
-				condition.state !== "up",
+				!isUp,
 			);
-			if (condition.state === "up") upSince.set(change.service, Date.now());
+
+			if (isUp) upSince.set(change.service, Date.now());
+
 			const name = watched.get(change.service) ?? change.service;
-			void patchRun(sessionId, {
-				services: [
-					{
-						name,
-						problem:
-							condition.state === "up"
-								? undefined
-								: {
-										state: condition.state,
-										detail,
-										since: new Date().toISOString(),
-									},
-					},
-				],
-			}).catch(() => {});
+			const problem = isUp
+				? undefined
+				: { state: condition.state, detail, since: new Date().toISOString() };
+			void patchRun(sessionId, { services: [{ name, problem }] }).catch(() => {
+				// The line above already said it; the row only misses its `problem`.
+			});
 		}
 	};
 
@@ -100,11 +96,15 @@ export function createServiceWatch(
 			for (const key of serviceKeys) {
 				const service = ctx.services[key];
 				// A job exits when it is done, and a stack's containers are its CLI's.
-				if (!service || service.kind === "job" || service.kind === "external")
-					continue;
+				const isWatchable =
+					service && service.kind !== "job" && service.kind !== "external";
+				if (!isWatchable) continue;
+
 				watched.set(getComposeServiceName(ctx.services, key), key);
 			}
+
 			if (stopWatching || watched.size === 0) return;
+
 			watchedSince = Date.now();
 			upSince.clear();
 			stopWatching = watchServiceContainers({

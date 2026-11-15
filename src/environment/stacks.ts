@@ -12,10 +12,9 @@ interface StackSource {
 }
 
 /**
- * Integration stacks (see `BuncargoIntegration.stacks`): services a CLI
+ * An integration stack (see `BuncargoIntegration.stacks`): services a CLI
  * starts and stops itself, which buncargo gives ports, URLs and env.
  */
-
 export interface ResolvedStack {
 	name: string;
 	stack: IntegrationStack;

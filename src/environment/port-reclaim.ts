@@ -38,14 +38,19 @@ export async function allocateReclaiming<T>(
 			return allocate();
 		} catch (error) {
 			if (!(error instanceof PortBlockExhaustedError)) throw error;
+
 			const states = await readClaimStates(error.claims).catch(() => undefined);
-			if (!states)
+			if (!states) {
 				throw new PortBlockExhaustedError(error, { reclaim: "unreadable" });
-			if (reclaims >= MAX_PORT_RECLAIMS)
+			}
+
+			if (reclaims >= MAX_PORT_RECLAIMS) {
 				throw new PortBlockExhaustedError(error, {
 					reclaim: "taken-meanwhile",
 					states,
 				});
+			}
+
 			await reclaimPortBlock(error, states);
 			signal?.throwIfAborted();
 		}
@@ -58,8 +63,9 @@ async function reclaimPortBlock(
 ): Promise<void> {
 	const now = Date.now();
 	const choice = chooseReclaim(error.blocked, error.claims, states, now);
-	if (!choice)
+	if (!choice) {
 		throw new PortBlockExhaustedError(error, { reclaim: "none-idle", states });
+	}
 
 	// A claim a run used since the scan read it keeps its block; the next
 	// attempt reads the claims afresh, and that run's claim is too recent to
@@ -68,6 +74,7 @@ async function reclaimPortBlock(
 		pick(error.claims, choice.keys),
 		new Date(now).toISOString(),
 	);
+
 	for (const key of marked) {
 		const claim = error.claims[key];
 		console.warn(

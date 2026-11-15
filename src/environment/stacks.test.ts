@@ -217,11 +217,12 @@ appendFileSync(log, held ? "down locked\\n" : "down free\\n");
 								await failed;
 								// Each probe is a real round of file operations, which is
 								// what releasing the lock takes.
-								for (let probe = 0; probe < 20; probe++)
+								for (let probe = 0; probe < 20; probe++) {
 									if (await lockFree(ctx)) {
 										lockWhileSlowCameUp = "free";
 										return;
 									}
+								}
 								lockWhileSlowCameUp = "held";
 							},
 							down: () => ["true"],
