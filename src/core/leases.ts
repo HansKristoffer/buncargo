@@ -126,10 +126,13 @@ export async function acquireLease(
 				async () => {
 					const live = await liveOnly(await registry.read(path));
 					const holder = live.find((entry) => entry.key === request.key);
-					if (holder)
+
+					if (holder) {
 						return holder.sessionId === request.sessionId
 							? { ok: true }
 							: { ok: false, holder };
+					}
+
 					options.signal?.throwIfAborted();
 					await writeLease(path, live, request);
 					return { ok: true };
@@ -168,18 +171,25 @@ export async function transferLease(
 					),
 				options,
 			);
-			if (!holder || !sameHolder(holder, expected))
+
+			if (!holder || !sameHolder(holder, expected)) {
 				return { ok: false, reason: "changed", holder };
+			}
 			options.signal?.throwIfAborted();
-			if (!(await stop(holder)))
+
+			if (!(await stop(holder))) {
 				return { ok: false, reason: "stop-refused", holder };
+			}
+
 			return withFileLock(
 				path,
 				async () => {
 					const live = await liveOnly(await registry.read(path));
 					const current = live.find((entry) => entry.key === request.key);
-					if (current && !sameHolder(current, expected))
+
+					if (current && !sameHolder(current, expected)) {
 						return { ok: false, reason: "changed", holder: current };
+					}
 					options.signal?.throwIfAborted();
 					await writeLease(path, live, request);
 					return { ok: true };
@@ -199,8 +209,11 @@ export async function releaseLeases(
 	const path = getLeasesPath();
 	const keys = options.keys && new Set(options.keys);
 	if (keys?.size === 0) return;
+
 	await withFileLock(path, async () => {
 		const entries = await registry.read(path);
+
+		// Dropping dead holders on the way keeps the file from growing.
 		const kept = (await liveOnly(entries)).filter(
 			(entry) =>
 				entry.sessionId !== sessionId ||

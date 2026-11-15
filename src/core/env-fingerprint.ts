@@ -20,16 +20,24 @@ export function portableEnvFingerprint(
 	const names = specific.names
 		.filter(Boolean)
 		.sort((a, b) => b.length - a.length);
+
 	const portable = (value: string) => {
 		let out = value;
 		for (const name of names) out = out.replaceAll(name, "<name>");
 		out = out.replace(IPV4, "<ip>");
-		for (const port of specific.ports)
+		for (const port of specific.ports) {
 			out = out.replace(new RegExp(`\\b${port}\\b`, "g"), "<port>");
+		}
 		return out;
 	};
+
+	// Code-unit order, not `localeCompare`: the digest must match on every machine.
 	const entries = Object.entries(vars)
 		.map(([key, value]) => [key, portable(value)] as const)
-		.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+		.sort(([a], [b]) => {
+			if (a === b) return 0;
+			return a < b ? -1 : 1;
+		});
+
 	return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
 }

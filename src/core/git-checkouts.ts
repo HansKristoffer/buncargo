@@ -30,10 +30,12 @@ export interface GitCheckout {
 
 function git(cwd: string, args: string[]): string {
 	const result = spawnSync("git", args, { cwd, encoding: "utf-8" });
-	if (result.error || result.status !== 0)
-		throw new Error(
-			`git ${args.join(" ")} failed in ${cwd}: ${(result.stderr || result.error?.message || "").trim()}`,
-		);
+
+	if (result.error || result.status !== 0) {
+		const reason = (result.stderr || result.error?.message || "").trim();
+		throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${reason}`);
+	}
+
 	return result.stdout.trim();
 }
 
@@ -50,6 +52,7 @@ export function listGitCheckouts(root: string): GitCheckout[] {
 	const top = git(root, ["rev-parse", "--show-toplevel"]);
 	const inside = relative(realpathSync(top), realpathSync(root));
 	const commonDir = resolve(root, git(root, ["rev-parse", "--git-common-dir"]));
+
 	const at = (checkoutTop: string, worktree: string | null): GitCheckout => {
 		const checkoutRoot = join(checkoutTop, inside);
 		// Real, as the loader records a root in its labels and lock names.
@@ -65,19 +68,19 @@ export function listGitCheckouts(root: string): GitCheckout[] {
 	// A bare repository has no main checkout, only worktrees.
 	const checkouts =
 		basename(commonDir) === ".git" ? [at(dirname(commonDir), null)] : [];
+
 	const admin = join(commonDir, "worktrees");
 	if (!existsSync(admin)) return checkouts;
+
 	for (const name of readdirSync(admin)) {
 		const gitdirFile = join(admin, name, "gitdir");
 		if (!existsSync(gitdirFile)) continue;
+
 		// `gitdir` names the checkout's `.git` file.
 		const gitdir = readFileSync(gitdirFile, "utf-8").trim();
-		checkouts.push(
-			at(
-				dirname(isAbsolute(gitdir) ? gitdir : resolve(admin, name, gitdir)),
-				name,
-			),
-		);
+		const dotGit = isAbsolute(gitdir) ? gitdir : resolve(admin, name, gitdir);
+		checkouts.push(at(dirname(dotGit), name));
 	}
+
 	return checkouts;
 }

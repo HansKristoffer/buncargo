@@ -47,12 +47,14 @@ export function loadEnvInput(
 	}
 
 	Object.assign(declared, overrides);
-	const merged: Record<string, string> = { ...declared };
+
 	// Shell values override file defaults without changing process.env.
+	const merged: Record<string, string> = { ...declared };
 	for (const [name, value] of Object.entries(inherited)) {
 		if (value === undefined) continue;
 		merged[name] = value;
 		if (name in declared) declared[name] = value;
 	}
+
 	return { declared: Object.freeze(declared), merged: Object.freeze(merged) };
 }

@@ -19,8 +19,6 @@ import {
 	type UrlMap,
 } from "./ports";
 
-export type SharedEnvValues = EnvValues;
-
 function getServiceEnvValue(
 	serviceKey: string,
 	source: ServiceEnvValueSource,
@@ -52,7 +50,7 @@ export function buildSharedEnvValues<
 	loopbackUrls?: Readonly<Record<string, string>>;
 	/** Only iterated, so the widest read-only shape a caller can hold is enough. */
 	publicUrls: Readonly<Record<string, string | undefined>>;
-}): SharedEnvValues {
+}): EnvValues {
 	const {
 		projectName,
 		production = false,
@@ -63,16 +61,19 @@ export function buildSharedEnvValues<
 		publicUrls,
 	} = input;
 
-	const sharedEnv: SharedEnvValues = {
+	const portMap = toPortMap(ports);
+	const urlMap = toUrlMap(urls);
+
+	const sharedEnv: EnvValues = {
 		COMPOSE_PROJECT_NAME: projectName,
 		NODE_ENV: production ? "production" : "development",
 	};
 
-	for (const [name, port] of Object.entries(toPortMap(ports))) {
+	for (const [name, port] of Object.entries(portMap)) {
 		sharedEnv[`${envName(name)}_PORT`] = port;
 	}
 
-	for (const [name, url] of Object.entries(toUrlMap(urls))) {
+	for (const [name, url] of Object.entries(urlMap)) {
 		sharedEnv[`${envName(name)}_URL`] = url;
 	}
 
@@ -91,17 +92,13 @@ export function buildSharedEnvValues<
 	for (const [serviceKey, service] of Object.entries<ResolvedService>(
 		services,
 	)) {
-		for (const [envName, source] of Object.entries(service.env)) {
-			const value = getServiceEnvValue(
-				serviceKey,
-				source,
-				toPortMap(ports),
-				toUrlMap(urls),
-			);
+		for (const [varName, source] of Object.entries(service.env)) {
+			const value = getServiceEnvValue(serviceKey, source, portMap, urlMap);
 			if (value !== undefined) {
-				sharedEnv[envName] = value;
+				sharedEnv[varName] = value;
 			}
 		}
+
 		if (service.staticEnv) {
 			Object.assign(sharedEnv, service.staticEnv);
 		}
@@ -114,15 +111,16 @@ export function mergeSharedEnvWithOverlay<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 >(
-	shared: SharedEnvValues,
+	shared: EnvValues,
 	overlay: EnvVarsBuilder<TServices, TApps> | undefined,
 	ports: ComputedPorts<TServices, TApps>,
 	urls: ComputedUrls<TServices, TApps>,
 	ctx: EnvVarsContext<TServices, TApps>,
-): SharedEnvValues {
+): EnvValues {
 	if (!overlay) {
 		return shared;
 	}
+
 	return {
 		...shared,
 		...overlay(ports, urls, ctx),
@@ -139,6 +137,7 @@ export function stringifyEnvValues(
 	envValues: EnvValues,
 ): Record<string, string> {
 	const result: Record<string, string> = {};
+
 	for (const [key, value] of Object.entries(envValues)) {
 		if (value !== undefined) {
 			result[key] = String(value);

@@ -40,8 +40,9 @@ function holder(target: string, body: string) {
 async function waitForFile(path: string) {
 	const deadline = performance.now() + 5000;
 	while (!existsSync(path)) {
-		if (performance.now() >= deadline)
+		if (performance.now() >= deadline) {
 			throw new Error(`No child marker at ${path}`);
+		}
 		await Bun.sleep(10);
 	}
 }
@@ -51,8 +52,9 @@ afterEach(async () => {
 		if (child.exitCode === null) child.kill("SIGKILL");
 		await child.exited;
 	}
-	for (const dir of dirs.splice(0))
+	for (const dir of dirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 describe("withFileLock", () => {

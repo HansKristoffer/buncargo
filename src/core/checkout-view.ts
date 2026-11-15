@@ -182,7 +182,9 @@ export function readLiveNamedUrls(
 			? { tailscaleUrls }
 			: undefined;
 	}
+
 	if (mode === "off") return undefined;
+
 	const hostnames = readLiveNamedHostsSync(root, plan).map(
 		(entry) => entry.hostname,
 	);
@@ -221,6 +223,7 @@ export function namedUrls(
 	const urls = { ...plainUrls };
 	if (!hosts?.active) return urls;
 	if (hosts.mode === "tailscale") return { ...urls, ...hosts.tailscaleUrls };
+
 	const plan = served
 		? hosts.plan.filter((entry) => served.has(entry.hostname))
 		: hosts.plan;
@@ -314,13 +317,15 @@ export function sharedEnv<
 	Object.assign(shared, capturedEnv(apps, extras.captured));
 	shared.BUNCARGO_WORKSPACE_ID = source.workspaceId;
 	if (hosts?.active && hosts.caPath) shared.NODE_EXTRA_CA_CERTS = hosts.caPath;
+
 	// Vite answers 403 to a Host it does not know. Comma-separated: the
 	// buncargo Vite plugin splits the list.
 	const allowedHosts = [
 		...new Set([...namedAllowedHosts(hosts), urlHostOverride()]),
 	].filter(isDefined);
-	if (allowedHosts.length > 0)
+	if (allowedHosts.length > 0) {
 		shared.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = allowedHosts.join(",");
+	}
 
 	const merged = mergeSharedEnvWithOverlay(
 		{ ...source.inputEnv.declared, ...shared },

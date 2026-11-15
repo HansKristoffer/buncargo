@@ -47,16 +47,16 @@ export function appLeaseRequest(
 function formatSince(acquiredAt: string, now: Date): string | undefined {
 	const at = new Date(acquiredAt);
 	if (Number.isNaN(at.getTime())) return undefined;
+
 	const minutes = Math.max(
 		0,
 		Math.round((now.getTime() - at.getTime()) / 60_000),
 	);
-	const ago =
-		minutes < 1
-			? "just now"
-			: minutes < 120
-				? `${minutes} min ago`
-				: `${Math.round(minutes / 60)} h ago`;
+
+	let ago = `${Math.round(minutes / 60)} h ago`;
+	if (minutes < 1) ago = "just now";
+	else if (minutes < 120) ago = `${minutes} min ago`;
+
 	// Local HH:MM, the same whatever the locale.
 	return `${at.toTimeString().slice(0, 5)} (${ago})`;
 }
@@ -72,6 +72,7 @@ export function describeLeaseRefusal(
 ): string[] {
 	const { holder } = skip;
 	const since = formatSince(holder.acquiredAt, options.now ?? new Date());
+
 	return [
 		`Held by:  ${describeLeaseHolder(holder)}`,
 		`Checkout: ${holder.root}`,
