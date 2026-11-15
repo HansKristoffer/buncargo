@@ -24,6 +24,7 @@ export function supabaseChecks(state: {
 						detail: `${relative(root, project.path)}: ${project.error}`,
 					};
 				}
+
 				return (
 					project.exists || {
 						ok: false,
@@ -41,7 +42,9 @@ export function supabaseChecks(state: {
 						env: childProcessEnv(),
 					},
 				);
-				if (result.exitCode !== 0) throw new Error("supabase init failed");
+				if (result.exitCode !== 0) {
+					throw new Error("supabase init failed");
+				}
 			},
 			fixDescription: "Run `supabase init`",
 		},
@@ -62,8 +65,10 @@ export function supabaseChecks(state: {
 			severity: "warning",
 			check: ({ root }) => {
 				const version = supabaseCli.version(supabaseCli.resolve([root]), root);
-				if (!version)
+				if (!version) {
 					return { ok: false, detail: "`supabase --version` failed" };
+				}
+
 				return (
 					supabaseCli.isTested(version) || {
 						ok: false,

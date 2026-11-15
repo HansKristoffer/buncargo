@@ -109,6 +109,7 @@ function redirectUrls(
 	const origins = appNames.flatMap((name) =>
 		[urls[name], loopback[name], publicUrls[name]].filter(isDefined),
 	);
+
 	return [
 		...new Set([
 			...configured,
@@ -128,6 +129,7 @@ function supabaseServices(
 	const runs = (component: keyof typeof SERVICE_CONTAINERS) =>
 		project[component].enabled &&
 		!exclude.includes(SERVICE_CONTAINERS[component]);
+
 	return {
 		...(runs("api")
 			? {
@@ -172,22 +174,31 @@ function withNamedServices(
 	names: readonly string[],
 ): boolean | HostsOptionsLike | undefined {
 	if (!hosts) return hosts;
+
 	const base = hosts === true ? {} : hosts;
 	if (base.services) return hosts;
+
 	return { ...base, services: [...DEFAULT_HTTP_SERVICE_NAMES, ...names] };
 }
 
 /** Changes whenever the generated types could: migrations, schemas, options. */
 function typesFingerprint(workdir: string, schemas: readonly string[]): string {
 	const hash = createHash("sha256").update(JSON.stringify(schemas));
+
 	const walk = (dir: string) => {
 		if (!existsSync(dir)) return;
+
+		// Sorted, so the same files hash the same on every filesystem.
 		for (const name of readdirSync(dir).sort()) {
 			const path = join(dir, name);
-			if (statSync(path).isDirectory()) walk(path);
-			else hash.update(relative(workdir, path)).update(readFileSync(path));
+			if (statSync(path).isDirectory()) {
+				walk(path);
+			} else {
+				hash.update(relative(workdir, path)).update(readFileSync(path));
+			}
 		}
 	};
+
 	walk(join(workdir, "supabase", "migrations"));
 	walk(join(workdir, "supabase", "schemas"));
 	return hash.digest("hex");
@@ -212,6 +223,7 @@ function readTypesStamp(stamp: string): TypesStamp | undefined {
 	try {
 		const recorded: unknown = JSON.parse(readFileSync(stamp, "utf8"));
 		if (!isRecord(recorded)) return undefined;
+
 		const { inputs, written } = recorded;
 		return typeof inputs === "string" && typeof written === "string"
 			? { inputs, written }
@@ -224,8 +236,10 @@ function readTypesStamp(stamp: string): TypesStamp | undefined {
 /** Whether `output` is what was generated for these inputs, untouched since. */
 function typesUpToDate(output: string, stamp: string, inputs: string): boolean {
 	const recorded = readTypesStamp(stamp);
-	if (!recorded || recorded.inputs !== inputs || !existsSync(output))
+	if (!recorded || recorded.inputs !== inputs || !existsSync(output)) {
 		return false;
+	}
+
 	return contentHash(readFileSync(output, "utf8")) === recorded.written;
 }
 
@@ -242,6 +256,7 @@ export function supabase<TFunctions extends boolean = false>(
 }> {
 	const workdirOption = options.workdir;
 	const workdirOf = (root: string) => resolve(root, workdirOption ?? ".");
+
 	// Set in `config()`, which runs before anything below is called.
 	let bin = "supabase";
 	let exclude: readonly string[] = [];
@@ -266,6 +281,7 @@ export function supabase<TFunctions extends boolean = false>(
 			if (siteApp && !apps[siteApp]) {
 				throw new Error(`supabase(): "${siteApp}" is not a configured app`);
 			}
+
 			const serverApps = Object.entries(apps)
 				.filter(([, app]) => app.port !== undefined)
 				.map(([name]) => name);
@@ -301,6 +317,7 @@ export function supabase<TFunctions extends boolean = false>(
 						}
 					: {};
 				const siteUrl = siteApp ? urls[siteApp] : undefined;
+
 				return {
 					// What the CLI reads in place of `config.toml`.
 					SUPABASE_PROJECT_ID: externalStackProjectName(ctx.projectName),
@@ -402,8 +419,9 @@ export function supabase<TFunctions extends boolean = false>(
 			// After migrations, so the types describe the schema just applied.
 			async afterContainersReady(ctx) {
 				const types = options.types;
-				if (!types || !ctx.selectedServices?.includes(SUPABASE_SERVICES.db))
-					return;
+				const dbSelected = ctx.selectedServices?.includes(SUPABASE_SERVICES.db);
+				if (!types || !dbSelected) return;
+
 				const workdir = workdirOf(ctx.root);
 				const output = resolve(ctx.root, types.output);
 				const stamp = projectStateFilePath(ctx.root, "supabase-types.json");
@@ -422,8 +440,11 @@ export function supabase<TFunctions extends boolean = false>(
 					],
 					{ cwd: workdirOption, secrets: false, signal: ctx.signal },
 				);
-				if (writeIfChanged(output, stdout))
+
+				if (writeIfChanged(output, stdout)) {
 					console.log(formatDone(`Generated ${relative(ctx.root, output)}`));
+				}
+
 				const recorded: TypesStamp = {
 					inputs: fingerprint,
 					written: contentHash(stdout),

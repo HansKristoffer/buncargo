@@ -120,7 +120,9 @@ export function parseSupabaseConfig(
 export function readSupabaseProject(workdir: string): SupabaseProject {
 	const path = join(workdir, "supabase", "config.toml");
 	const { exists: _, ...defaults } = parseSupabaseConfig("", path);
+
 	if (!existsSync(path)) return { ...defaults, exists: false };
+
 	try {
 		return parseSupabaseConfig(readFileSync(path, "utf8"), path);
 	} catch (error) {
