@@ -31,13 +31,13 @@ import * as log from "./log";
  * The rules are the named-hosts first-run prompt's rules, because two
  * onboarding questions that behave differently feel like two products: needs a
  * TTY, never in CI, "skip" is not remembered, "no" is a marker file, and at
- * most one first-run question per run — `claimFirstRunPrompt` is what enforces
- * the last one, so a fresh machine that just set up named hosts is not asked
- * about this too.
+ * most one first-run question per run. `claimFirstRunPrompt` enforces the last
+ * one, so a fresh machine that just set up named hosts is not asked about this
+ * too.
  *
- * Cheap by construction. On the overwhelmingly common path — the app is
- * installed, or was declined once — this costs one or two `existsSync` calls
- * and returns. `buncargo dev` runs constantly; nothing here may cost more.
+ * Cheap by construction. When the app is installed or was declined once, which
+ * is nearly every run, this costs one or two `existsSync` calls and returns.
+ * `buncargo dev` runs constantly; nothing here may cost more.
  */
 export async function offerMenuBarApp(signal: AbortSignal): Promise<void> {
 	if (!isBarSupported()) return;
@@ -93,8 +93,8 @@ export async function offerMenuBarApp(signal: AbortSignal): Promise<void> {
  *
  * Runs after the run is published rather than during startup, and every path
  * out of it is swallowed: this is an optional app, and a GitHub outage must not
- * colour a dev run. The common case — app current, cache fresh — is one small
- * JSON read and one `Info.plist` read, no network at all.
+ * colour a dev run. With the app current and the cache fresh (the common case)
+ * it is one small JSON read and one `Info.plist` read, no network at all.
  *
  * Disabled by the same `BUNCARGO_BAR=0` and CI checks as the offer, because a
  * user who turned the app off should not have it downloading in the background.
@@ -144,7 +144,7 @@ async function applyDecision(
 		none: () => {},
 		hint: (hint) => {
 			log.hint(
-				`${BAR_APP_NAME} ${hint.version} is available — \`buncargo bar update\``,
+				`${BAR_APP_NAME} ${hint.version} is available. Run \`buncargo bar update\``,
 			);
 			// Remembered even though nothing was installed: the point of the hint
 			// is to be seen once, not on every run until it is acted on.
@@ -157,12 +157,12 @@ async function applyDecision(
 		},
 		update: async () => {
 			// The installed app cannot read this CLI's registry, so its menu is
-			// empty right now. Not a question — the user already said yes to the
+			// empty right now. Not a question: the user already said yes to the
 			// app.
 			const label = installedVersion
 				? `${BAR_APP_NAME} ${installedVersion}`
 				: BAR_APP_NAME;
-			log.info(`${label} cannot read this buncargo's runs.json — updating…`);
+			log.info(`${label} cannot read this buncargo's runs.json, updating…`);
 			try {
 				const result = await installBar({
 					signal,

@@ -251,24 +251,28 @@ export function timingRequested(values: DevValues): boolean {
 export function ignoredFlagWarnings(values: DevValues): string[] {
 	const mode = oneShotMode(values);
 	if (mode === undefined) return [];
+
 	const ignored: string[] = [];
-	if (values.expose !== undefined)
+	if (values.expose !== undefined) {
 		ignored.push(
 			`--expose is ignored with ${mode}: its tunnels would close as the command exits. Share a running app with \`buncargo dev --detach --expose\`.`,
 		);
-	if (values.takeover)
+	}
+	if (values.takeover) {
 		ignored.push(
 			`--takeover is ignored with ${mode}: it starts no app to take over.`,
 		);
+	}
+
 	return ignored;
 }
 
 /** The apps named as arguments or with `--apps`, or undefined for none. */
 export function requestedApps(args: DevArgs): string[] | undefined {
 	if (args.positionals.length > 0) return [...args.positionals];
-	return args.values.apps === undefined
-		? undefined
-		: commaList(args.values.apps);
+	if (args.values.apps === undefined) return undefined;
+
+	return commaList(args.values.apps);
 }
 
 /** Throw for combinations of flags that are each valid alone. */
@@ -282,36 +286,49 @@ export function assertDevArgs(args: DevArgs): void {
 		values.down,
 		values.reset,
 	];
-	if (modes.filter(Boolean).length > 1)
+
+	if (modes.filter(Boolean).length > 1) {
 		errors.push(
 			"Choose only one of --migrate, --seed, --up-only, --down, or --reset.",
 		);
+	}
 	if (values.all && !values.down) errors.push("--all requires --down.");
-	if (values["replace-stale"] && (values.down || values.reset))
+	if (values["replace-stale"] && (values.down || values.reset)) {
 		errors.push(
 			"--replace-stale clears the way for a start; it cannot be combined with --down or --reset.",
 		);
-	if (values.tui && values["no-tui"])
+	}
+	if (values.tui && values["no-tui"]) {
 		errors.push("Choose either --tui or --no-tui, not both.");
-	if (values.keep && !values.detach)
+	}
+	if (values.keep && !values.detach) {
 		errors.push(
 			"--keep only applies to --detach: a run in a terminal never stops for idling.",
 		);
-	if (values.json && !values.detach)
+	}
+	if (values.json && !values.detach) {
 		errors.push(
 			"--json only applies to --detach; a run in a terminal prints its own output.",
 		);
+	}
+
 	const named = args.positionals.length > 0;
-	if (named && values.apps !== undefined)
+	if (named && values.apps !== undefined) {
 		errors.push("Name the apps as arguments or with --apps, not both.");
-	if ((named || values.apps !== undefined) && values.profile !== undefined)
+	}
+	if ((named || values.apps !== undefined) && values.profile !== undefined) {
 		errors.push("Choose either apps or --profile, not both.");
-	if (values.apps !== undefined && commaList(values.apps).length === 0)
+	}
+	if (values.apps !== undefined && commaList(values.apps).length === 0) {
 		errors.push("--apps requires at least one app name.");
-	if (values.detach && (modes.some(Boolean) || values.tui || values.attach))
+	}
+
+	if (values.detach && (modes.some(Boolean) || values.tui || values.attach)) {
 		errors.push(
 			"--detach runs the dev servers in the background; it cannot be combined with --tui, --attach or a one-shot mode.",
 		);
+	}
+
 	if (errors.length > 0) throw argumentsError(errors, "dev");
 }
 
@@ -325,6 +342,7 @@ export function parseDevArgs(
 ): ParseResult<typeof DEV_SPEC> {
 	const parsed = parseArgs(DEV_SPEC, argv);
 	if (!parsed.help) assertDevArgs(parsed);
+
 	return parsed;
 }
 

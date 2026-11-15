@@ -464,20 +464,26 @@ export const AGENTS_GUIDE_TOPICS: readonly string[] = TOPICS.map(
  */
 export function agentsGuide(topic?: string, exitCodes?: string): string {
 	if (topic === undefined) return AGENTS_GUIDE;
-	if (topic === "all")
+
+	if (topic === "all") {
 		return [
 			AGENTS_GUIDE,
 			...TOPICS.map((entry) => entry.body),
 			...(exitCodes ? [exitCodes] : []),
 		].join("\n\n");
+	}
+
 	if (topic === EXITS_TOPIC && exitCodes) return exitCodes;
+
 	const found = TOPICS.find(
 		(entry) => entry.name === topic || entry.aliases?.includes(topic),
 	);
-	if (!found)
+	if (!found) {
 		throw new CliError(`No agents guide topic named "${topic}".`, [
 			`Topics: ${[...AGENTS_GUIDE_TOPICS, EXITS_TOPIC, "all"].join(", ")}.`,
 		]);
+	}
+
 	return found.body;
 }
 
@@ -508,9 +514,15 @@ ${BLOCK_END}`;
 export function upsertAgentsBlock(content: string): string {
 	const start = content.indexOf(BLOCK_START);
 	const end = content.indexOf(BLOCK_END);
-	if (start !== -1 && end > start)
-		return `${content.slice(0, start)}${AGENTS_BLOCK}${content.slice(end + BLOCK_END.length)}`;
+
+	if (start !== -1 && end > start) {
+		const before = content.slice(0, start);
+		const after = content.slice(end + BLOCK_END.length);
+		return `${before}${AGENTS_BLOCK}${after}`;
+	}
+
 	if (!content.trim()) return `${AGENTS_BLOCK}\n`;
+
 	return `${content.trimEnd()}\n\n${AGENTS_BLOCK}\n`;
 }
 

@@ -36,11 +36,12 @@ function failWith(error: unknown): never {
  */
 async function dispatch(args: readonly string[]): Promise<number> {
 	const [first = "help", ...rest] = args;
-	const name = HELP_ALIASES.has(first)
-		? "help"
-		: VERSION_ALIASES.has(first)
-			? "version"
-			: first;
+
+	let name = first;
+	if (HELP_ALIASES.has(first)) name = "help";
+	else if (VERSION_ALIASES.has(first)) name = "version";
+
+	// `--help x` is `help` with no arguments: the flag was the command.
 	const command = loadCommand(name);
 	if (command) return runCommand(await command, name === first ? rest : []);
 
@@ -51,13 +52,14 @@ async function dispatch(args: readonly string[]): Promise<number> {
 		);
 		return dispatch([alias, ...rest]);
 	}
+
 	// A name that is no command may be an integration's namespace (`buncargo shopify env`).
-	const code = first.startsWith("-")
-		? undefined
-		: await (
-				await import("./integration-commands")
-			).runIntegrationCommand(first, rest);
-	if (code !== undefined) return code;
+	if (!first.startsWith("-")) {
+		const { runIntegrationCommand } = await import("./integration-commands");
+		const code = await runIntegrationCommand(first, rest);
+		if (code !== undefined) return code;
+	}
+
 	log.fail(`Unknown command: ${first}`, [
 		'Run "bunx buncargo help" for available commands.',
 	]);
@@ -66,10 +68,11 @@ async function dispatch(args: readonly string[]): Promise<number> {
 async function main(): Promise<void> {
 	// The file locks, process groups and port lookups are POSIX-only, so fail
 	// here once instead of deep inside a command.
-	if (process.platform === "win32")
+	if (process.platform === "win32") {
 		log.fail("buncargo runs on macOS and Linux.", [
 			"On Windows, run buncargo in WSL.",
 		]);
+	}
 
 	// `<package>/src/cli` from source, `<package>/dist/cli` when installed.
 	const cliDir = dirname(fileURLToPath(import.meta.url));
@@ -89,6 +92,7 @@ async function main(): Promise<void> {
 	if (root !== undefined) noteCheckoutCommand(root);
 
 	const code = await dispatch(args);
+
 	// Exit now on failure: the code means something to the caller, and a
 	// handle left open must not keep the process alive past it.
 	if (code !== 0) process.exit(code);
