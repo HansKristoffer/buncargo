@@ -36,8 +36,9 @@ function extensionApiVersions(root: string): Map<string, string> {
 			const raw = Bun.TOML.parse(readFileSync(join(root, path), "utf8")) as {
 				api_version?: unknown;
 			};
-			if (typeof raw.api_version === "string")
+			if (typeof raw.api_version === "string") {
 				versions.set(path, raw.api_version);
+			}
 		} catch {
 			// An unreadable extension toml is Shopify CLI's to report.
 		}
@@ -61,6 +62,7 @@ function proxyKey(config: ShopifyAppConfig): string | undefined {
 	// The dev toml names a path and the prod one an absolute URL on its host;
 	// what has to agree is the path on the app server, prefix and subpath.
 	let path = config.appProxy.url;
+
 	try {
 		path = new URL(path).pathname;
 	} catch {
@@ -72,6 +74,7 @@ function proxyKey(config: ShopifyAppConfig): string | undefined {
 function differences(label: string, a: string[], b: string[]): string[] {
 	const onlyA = a.filter((entry) => !b.includes(entry));
 	const onlyB = b.filter((entry) => !a.includes(entry));
+
 	return [
 		...onlyA.map((entry) => `${label} ${entry} only in the first`),
 		...onlyB.map((entry) => `${label} ${entry} only in the second`),
@@ -108,6 +111,7 @@ export function shopifyChecks(input: { config: string }): SetupCheck[] {
 			check: () => {
 				const session = readShopifySession();
 				if (!session) return failed("no stored Shopify CLI session");
+
 				// An expired token is often refreshed by the CLI itself; `dev`
 				// makes sure before it starts (its login preflight).
 				return isShopifySessionExpired(session)
@@ -148,8 +152,10 @@ export function shopifyChecks(input: { config: string }): SetupCheck[] {
 				const config = read(root);
 				if (!isClientId(config.clientId)) return true;
 				if (isShopifyAppLinked(root, config.clientId)) return true;
+
 				const info = shopifyAppInfo(root, input.config);
 				if (info.ok) return true;
+
 				return failed(
 					info.timedOut
 						? "`shopify app info` did not answer in time; check the network and run `buncargo doctor` again"
@@ -206,6 +212,7 @@ export function shopifyChecks(input: { config: string }): SetupCheck[] {
 				for (const [file, version] of extensionApiVersions(root)) {
 					versions.set(file, version);
 				}
+
 				const distinct = new Set(versions.values());
 				return (
 					distinct.size <= 1 ||
@@ -228,6 +235,7 @@ export function shopifyChecks(input: { config: string }): SetupCheck[] {
 				);
 				const [first, ...rest] = configs;
 				if (!first) return true;
+
 				const problems = rest.flatMap((other) =>
 					[
 						...differences(
@@ -245,6 +253,7 @@ export function shopifyChecks(input: { config: string }): SetupCheck[] {
 							: []),
 					].map((problem) => `${first.name} vs ${other.name}: ${problem}`),
 				);
+
 				return problems.length === 0 || failed(problems.join("; "));
 			},
 		},

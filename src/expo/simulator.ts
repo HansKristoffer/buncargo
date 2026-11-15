@@ -86,12 +86,14 @@ export function pickSourceDevice(
 ): SimulatorDevice {
 	if (input.simulator) {
 		const named = devices.find((device) => device.name === input.simulator);
-		if (!named)
+		if (!named) {
 			throw new Error(
 				`No simulator named "${input.simulator}". Run \`xcrun simctl list devices available\` to see them.`,
 			);
+		}
 		return named;
 	}
+
 	const lastUsed = devices.find((device) => device.udid === input.lastUsed);
 	const fallback =
 		lastUsed ??
@@ -103,7 +105,7 @@ function installedApps(udid: string): Set<string> {
 	const matches = simctl(["listapps", udid]).matchAll(
 		/CFBundleIdentifier = "([^"]+)"/g,
 	);
-	return new Set(Array.from(matches, (match) => match[1] as string));
+	return new Set(Array.from(matches, (match) => match[1]));
 }
 
 export interface OpenSimulatorInput {
@@ -125,6 +127,7 @@ export async function openExpoSimulator(
 		lastUsed: lastUsedDeviceUdid(),
 	});
 	const name = simulatorDeviceName(input.label, source.name);
+
 	let device = devices.find((entry) => entry.name === name);
 	if (!device) {
 		log(`Cloning "${source.name}" as "${name}"`);
@@ -133,6 +136,7 @@ export async function openExpoSimulator(
 	}
 
 	if (device.state !== "Booted") log(`Booting "${name}"`);
+
 	// `-b` boots when needed and returns once the device is usable.
 	simctl(["bootstatus", device.udid, "-b"]);
 	execFileSync(
@@ -148,8 +152,9 @@ export async function openExpoSimulator(
 			log(`Waiting for Metro on :${input.port}`);
 			announced = true;
 		}
-		if (Date.now() > deadline)
+		if (Date.now() > deadline) {
 			throw new Error(`Metro did not start listening on :${input.port}.`);
+		}
 		await promiseTimeout(500);
 	}
 
@@ -158,12 +163,14 @@ export async function openExpoSimulator(
 		expo: input.expo,
 		installed: installedApps(device.udid),
 	});
+
 	if (!url) {
 		throw new Error(
 			`Neither Expo Go nor the development build${input.expo.bundleId ? ` (${input.expo.bundleId})` : ""} is installed on "${name}".\n` +
 				`   Install one: press shift+i in the Expo terminal and pick "${name}", or run \`npx expo run:ios --device "${name}"\`.`,
 		);
 	}
+
 	simctl(["openurl", device.udid, url]);
 	return { url, device: name };
 }

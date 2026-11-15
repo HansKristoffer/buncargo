@@ -137,7 +137,9 @@ export function withBuncargo<T extends object>(
 	return async (phase, context) => {
 		const resolved =
 			typeof config === "function" ? await config(phase, context) : config;
+
 		if (phase !== DEVELOPMENT_PHASE) return resolved;
+
 		// Read on each call, not at import: a restarted dev server should see
 		// the current tunnel URLs.
 		const env = options.env ?? process.env;

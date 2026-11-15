@@ -22,29 +22,39 @@ export function ensureShopifyLogin(input: {
 	/** The toml has a real client_id: `app info` would otherwise ask to link. */
 	linked: boolean;
 	interactive: boolean;
-	sessionFile?: string;
-	env?: Record<string, string | undefined>;
+	sessionFile: string;
+	env: Record<string, string | undefined>;
 }): void {
 	// Token authentication (CI, automation) has no stored session to check:
 	// the CLI uses the token itself.
-	if ((input.env ?? process.env).SHOPIFY_CLI_PARTNERS_TOKEN) return;
+	if (input.env.SHOPIFY_CLI_PARTNERS_TOKEN) return;
+
 	const session = readShopifySession(input.sessionFile);
+
 	// Trusted only with an expiry that is known and ahead; any other session
 	// is asked about below.
 	if (session && isShopifySessionCurrent(session)) return;
-	if (
+
+	const appInfoAnswers =
 		session &&
 		input.linked &&
-		shopifyAppInfo(input.root, input.config, { terminal: input.interactive }).ok
-	)
-		return;
+		shopifyAppInfo(input.root, input.config, { terminal: input.interactive })
+			.ok;
+	if (appInfoAnswers) return;
+
 	if (!input.interactive) {
-		const state = !session
-			? "not logged in to the Shopify CLI."
-			: session.expiresAt
-				? "the Shopify CLI session has expired and cannot be renewed without a terminal."
-				: "the Shopify CLI session could not be confirmed (its expiry is unreadable) and cannot be renewed without a terminal.";
+		let state: string;
+		if (!session) {
+			state = "not logged in to the Shopify CLI.";
+		} else if (session.expiresAt) {
+			state =
+				"the Shopify CLI session has expired and cannot be renewed without a terminal.";
+		} else {
+			state =
+				"the Shopify CLI session could not be confirmed (its expiry is unreadable) and cannot be renewed without a terminal.";
+		}
 		throw new Error(`${state} Run \`buncargo shopify login\`.`);
 	}
+
 	shopifyLogin(input.root);
 }

@@ -36,12 +36,14 @@ export function firebaseChecks(state: {
 						detail: `${relative(root, project.path)}: ${project.error}`,
 					};
 				}
+
 				if (!project.exists) {
 					return {
 						ok: false,
 						detail: `No ${relative(root, project.path)}; run \`firebase init emulators\``,
 					};
 				}
+
 				return (
 					state.emulators(root).length > 0 || {
 						ok: false,
@@ -69,6 +71,7 @@ export function firebaseChecks(state: {
 			check: ({ root }) => {
 				const dir = state.dataDir(root);
 				if (!dir) return true;
+
 				return (
 					isGitIgnored(root, dir) || {
 						ok: false,
@@ -91,8 +94,10 @@ export function firebaseChecks(state: {
 					firebaseCli.resolve([state.workdir(root), root]),
 					root,
 				);
-				if (!version)
+				if (!version) {
 					return { ok: false, detail: "`firebase --version` failed" };
+				}
+
 				return (
 					firebaseCli.isTested(version) || {
 						ok: false,

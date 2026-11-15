@@ -47,7 +47,7 @@ export function shopifyCommands(state: {
 		env: {
 			summary: "Print the app toml as JSON (client_id, scopes, URLs)",
 			usage: "env [--config=<name>]",
-			run: async ({ args, root }) => {
+			run: ({ args, root }) => {
 				const { raw: _raw, ...config } = readShopifyAppConfig(
 					configArg(args),
 					root,

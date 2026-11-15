@@ -89,6 +89,7 @@ export function selectEmulators(
 	only?: readonly FirebaseEmulator[],
 ): FirebaseEmulator[] {
 	if (only) return FIREBASE_EMULATORS.filter((name) => only.includes(name));
+
 	const block = emulatorsBlock(raw);
 	return FIREBASE_EMULATORS.filter(
 		(name) =>
@@ -132,11 +133,12 @@ export interface FirebaseEmulatorPorts {
  * `localhost` (which can resolve to `::1` alone) becomes `127.0.0.1`.
  */
 function dialHost(host: unknown): string {
-	return typeof host === "string" &&
-		host &&
-		!["0.0.0.0", "::", "localhost"].includes(host)
-		? host
-		: "127.0.0.1";
+	const isDialable =
+		typeof host === "string" &&
+		host !== "" &&
+		!["0.0.0.0", "::", "localhost"].includes(host);
+
+	return isDialable ? host : "127.0.0.1";
 }
 
 /** Every port of the selected emulators, moved by this checkout's offset. */
@@ -225,14 +227,17 @@ export function generatedFirebaseConfig(
 	listen("ui", ports.ui);
 	listen("eventarc", ports.eventarc);
 	listen("tasks", ports.tasks);
-	if (ports.firestoreWebsocket !== undefined)
+
+	if (ports.firestoreWebsocket !== undefined) {
 		listen("firestore", ports.port.firestore, {
 			websocketPort: ports.firestoreWebsocket,
 		});
-	if (ports.dataconnectPostgres !== undefined)
+	}
+	if (ports.dataconnectPostgres !== undefined) {
 		listen("dataconnect", ports.port.dataconnect, {
 			postgresPort: ports.dataconnectPostgres,
 		});
+	}
 
 	return { ...raw, emulators };
 }
@@ -251,6 +256,7 @@ export function emulatorEnv(
 	const address = (name: FirebaseEmulator) =>
 		`${ports.host[name]}:${ports.port[name]}`;
 	const has = (name: FirebaseEmulator) => selected.includes(name);
+
 	return {
 		FIREBASE_PROJECT_ID: projectId,
 		GCLOUD_PROJECT: projectId,
