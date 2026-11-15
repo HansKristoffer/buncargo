@@ -4,10 +4,6 @@ import type { DevEnvironment } from "./environment";
 import type { ExecResult, HookContext } from "./hooks";
 import type { ServiceConfig } from "./service";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Prisma Configuration
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * Configuration for Prisma integration.
  */
@@ -136,10 +132,6 @@ export type PrismaNewMigrationResult =
 	| { status: "unchanged" }
 	| { status: "failed"; exitCode: number };
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Migrations Configuration
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * Configuration for a migration command to run after containers are ready.
  */
@@ -155,10 +147,6 @@ export interface MigrationConfig {
 	/** Infisical scope for this command. Default: the config-level `secrets`. `false`: none. */
 	secrets?: SecretsScopeConfig | false;
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Seed Configuration
-// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * Helper functions available in the seed check function.
@@ -183,7 +171,7 @@ export interface SeedCheckHelpers<
 	 */
 	// Method syntax, not a function-typed property: `service` is keyed on the
 	// config, so under `strictFunctionTypes` a property would make this helper
-	// invariant in `TServices` — and a `check` callback written inside a
+	// invariant in `TServices`, and a `check` callback written inside a
 	// conditional spread is contextually typed against the widened default
 	// instantiation before `TServices` is inferred. Bivariant parameters keep
 	// the two mutually assignable.
@@ -251,7 +239,7 @@ export interface SeedRunOptions {
 	signal?: AbortSignal;
 	verbose?: boolean;
 	productionBuild?: boolean;
-	/** Skip `seed.check` — the caller asked for a seed explicitly. */
+	/** Skip `seed.check`: the caller asked for a seed explicitly. */
 	force?: boolean;
 }
 

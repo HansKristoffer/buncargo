@@ -6,10 +6,6 @@ import type { DevHooks, HookContext } from "./hooks";
 import type { ResolvedApp } from "./resolved";
 import type { ServiceConfig } from "./service";
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Integrations
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
  * The app and service keys an integration adds to a config, as string literal
  * unions: `{ apps: "firebase" }`, `{ services: "supabase" | "supabaseDb" }`.
