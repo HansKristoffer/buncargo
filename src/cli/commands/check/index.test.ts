@@ -22,8 +22,9 @@ import type { CheckPlanJson } from "../../json-documents";
 const BIN = join(import.meta.dir, "..", "..", "bin.ts");
 const roots: string[] = [];
 afterEach(() => {
-	for (const root of roots.splice(0))
+	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 function git(root: string, ...args: string[]) {

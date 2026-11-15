@@ -50,26 +50,31 @@ async function loadCheckoutFiles(): Promise<{
 	specs: CheckoutFileSpec[];
 }> {
 	const found = findConfigFile(process.cwd());
-	if (!found)
+	if (!found) {
 		throw new CliError(
 			"No config file found. Run this inside a checkout with a dev.config.ts.",
 		);
+	}
+
 	const configPath = realpathSync(found);
 	const root = realpathSync(findMonorepoRoot(dirname(configPath)));
 	const mod = (await import(configPath)) as {
 		default?: { options?: { checkoutFiles?: unknown } };
 	};
 	const raw = mod.default?.options?.checkoutFiles;
+
 	const errors = checkoutFileErrors(raw);
 	if (errors.length > 0) throw new CliError(errors[0] ?? "", errors.slice(1));
+
 	return { root, specs: checkoutFileSpecs(raw) };
 }
 
 function requireSpecs(specs: readonly CheckoutFileSpec[]): void {
-	if (specs.length === 0)
+	if (specs.length === 0) {
 		throw new CliError("dev.config.ts lists no checkout files.", [
 			"Add them: options: { checkoutFiles: ['.env.local'] }",
 		]);
+	}
 }
 
 const STATE_LABELS = {
@@ -100,16 +105,21 @@ function mergeAnswers(
 ): Map<string, MergeSide> {
 	const errors: string[] = [];
 	const take = new Map<string, MergeSide>();
-	for (const [side, keys] of [
+	const answers = [
 		["checkout", checkout],
 		["store", store],
-	] as const)
+	] as const;
+
+	for (const [side, keys] of answers) {
 		for (const key of commaList(keys ?? "")) {
-			if (take.has(key) && take.get(key) !== side)
+			if (take.has(key) && take.get(key) !== side) {
 				errors.push(`${key} is in both --checkout and --store.`);
+			}
 			take.set(key, side);
 		}
+	}
 	if (errors.length > 0) throw argumentsError(errors, "files merge");
+
 	return take;
 }
 
@@ -302,14 +312,17 @@ function status(
 		);
 		return 0;
 	}
+
 	log.line(`File store: ${storeDir(report.repoKey)}`);
 	if (report.files.length === 0) log.line("No checkout files configured.");
+
 	const width = Math.max(0, ...report.files.map((file) => file.path.length));
 	for (const file of report.files) {
 		const state = checkoutFileProblem(file) ?? STATE_LABELS[file.state];
 		const machine = file.machine ? " (this machine only)" : "";
 		log.line(`  ${file.path.padEnd(width)}  ${state}${machine}`);
 	}
+
 	return 0;
 }
 
@@ -320,10 +333,14 @@ async function save(
 ): Promise<number> {
 	requireSpecs(specs);
 	const { failed } = await saveCheckoutFiles(root, specs, { paths });
-	if (failed.length === 0)
+	if (failed.length === 0) {
 		log.done("The file store has this checkout's copies.");
-	for (const warning of portBoundSharedValues(root, specs, paths))
+	}
+
+	for (const warning of portBoundSharedValues(root, specs, paths)) {
 		log.warn(warning);
+	}
+
 	return failed.length === 0 ? 0 : 1;
 }
 
@@ -333,28 +350,28 @@ async function save(
  * anyway, since the store is the developer's; said, because the failure it
  * causes elsewhere is silent.
  */
-export function portBoundSharedValues(
+function portBoundSharedValues(
 	root: string,
 	specs: readonly CheckoutFileSpec[],
 	paths: readonly string[] | undefined,
 ): string[] {
-	return specs
-		.filter(
-			(spec) =>
-				!spec.machine &&
-				isDotenvPath(spec.path) &&
-				(!paths || paths.includes(spec.path)),
-		)
-		.flatMap((spec) => {
-			const keys = Object.entries(readDotenvFile(root, spec.path))
-				.filter(([, value]) => loopbackUrlPort(value) !== undefined)
-				.map(([key]) => key);
-			return keys.length === 0
-				? []
-				: [
-						`${spec.path} shares loopback URLs with a fixed port (${keys.join(", ")}): every checkout that pulls it connects to this checkout's ports. Let buncargo inject them (\`env\` in dev.config.ts), or set them per checkout with \`buncargo env set\`.`,
-					];
-		});
+	const shared = specs.filter(
+		(spec) =>
+			!spec.machine &&
+			isDotenvPath(spec.path) &&
+			(!paths || paths.includes(spec.path)),
+	);
+
+	return shared.flatMap((spec) => {
+		const keys = Object.entries(readDotenvFile(root, spec.path))
+			.filter(([, value]) => loopbackUrlPort(value) !== undefined)
+			.map(([key]) => key);
+		if (keys.length === 0) return [];
+
+		return [
+			`${spec.path} shares loopback URLs with a fixed port (${keys.join(", ")}): every checkout that pulls it connects to this checkout's ports. Let buncargo inject them (\`env\` in dev.config.ts), or set them per checkout with \`buncargo env set\`.`,
+		];
+	});
 }
 
 async function pull(
@@ -365,19 +382,25 @@ async function pull(
 ): Promise<number> {
 	requireSpecs(specs);
 	const report = await syncCheckoutFiles(root, specs, { paths, force });
+
 	// Exit 1 unless every file now matches the store (or neither has it).
 	const behind = report.files.filter(
 		(file) =>
 			file.refusal || (file.state !== "in-sync" && file.state !== "missing"),
 	);
 	for (const file of behind) {
-		log.warn(
-			!file.refusal && file.state === "local-edits"
-				? `${file.path} has local edits, so it was not pulled. \`buncargo files pull --force ${file.path}\` replaces them (backed up first).`
-				: `${file.path} ${checkoutFileProblem(file) ?? "was not pulled"}`,
-		);
+		const hasOnlyLocalEdits = !file.refusal && file.state === "local-edits";
+		if (hasOnlyLocalEdits) {
+			log.warn(
+				`${file.path} has local edits, so it was not pulled. \`buncargo files pull --force ${file.path}\` replaces them (backed up first).`,
+			);
+		} else {
+			log.warn(`${file.path} ${checkoutFileProblem(file) ?? "was not pulled"}`);
+		}
 	}
+
 	if (behind.length === 0) log.done("Checkout files match the file store.");
+
 	return behind.length === 0 ? 0 : 1;
 }
 
@@ -396,16 +419,21 @@ async function merge(
 			take,
 			answered,
 		});
+
 		const stale = answered !== undefined && answered.inputs !== result.inputs;
-		if (stale && result.conflicts.length > 0)
+		if (stale && result.conflicts.length > 0) {
 			log.warn(
 				`${path} changed in this checkout or the file store while you chose; asking again.`,
 			);
+		}
 		if (stale) answered = undefined;
-		if (!result.base && first)
+
+		if (!result.base && first) {
 			log.warn(
 				`There is no copy of ${path} as it was last synced (an older buncargo synced it), so a key removed on one side is kept from the other.`,
 			);
+		}
+
 		if (result.conflicts.length === 0) {
 			if (!result.merged) log.done(`${path} already matches the file store.`);
 			return 0;
@@ -455,31 +483,37 @@ function diff(
 ): number {
 	requireSpecs(specs);
 	const opened = openCheckoutFiles(root, selectSpecs(specs, paths));
+
 	for (const view of opened.views) {
 		const path = view.spec.path;
 		const local = view.local.data;
 		const store = view.store?.kind === "ok" ? view.store.data : undefined;
+
 		if (!local || !store) {
-			const where = local
-				? "only in this checkout"
-				: store
-					? "only in the file store"
-					: "in neither";
+			let where = "in neither";
+			if (local) where = "only in this checkout";
+			else if (store) where = "only in the file store";
+
 			log.line(`${path}: ${where}`);
 			continue;
 		}
+
 		if (view.localHash === view.store?.hash) {
 			log.line(`${path}: same`);
 			continue;
 		}
+
 		const { added, removed, changed } = dotenvKeyDiff(local, store);
 		log.line(`${path}: checkout vs file store`);
 		for (const key of added) log.line(`  + ${key}  (only in this checkout)`);
 		for (const key of removed) log.line(`  - ${key}  (only in the file store)`);
 		for (const key of changed) log.line(`  ~ ${key}  (different values)`);
-		if (added.length + removed.length + changed.length === 0)
+
+		if (added.length + removed.length + changed.length === 0) {
 			log.line("  differs only in comments, order or formatting");
+		}
 	}
+
 	return 0;
 }
 
@@ -490,12 +524,15 @@ async function exportFiles(
 ): Promise<number> {
 	// A checkout that has never been synced still has files worth exporting.
 	if (specs.length > 0) await syncCheckoutFiles(root, specs);
+
 	const repoKey = resolveRepoKey(root);
 	if (!repoKey) throw new CliError(`${root} is not in a git repository.`);
+
 	const bundle = await exportBundle(storeDir(repoKey), repoKey, {
 		includeMachine,
 	});
 	console.log(JSON.stringify(bundle));
+
 	const count = bundle.files.length;
 	log.hint(
 		`Exported ${count} file${count === 1 ? "" : "s"}; the output holds their values.`,
@@ -513,21 +550,27 @@ async function importFiles(
 			? await Bun.stdin.text()
 			: readFileSync(source, "utf8");
 	const bundle = parseBundle(text);
+
 	const repoKey = resolveRepoKey(root);
 	if (!repoKey) throw new CliError(`${root} is not in a git repository.`);
+
 	// A `local/` key is per machine, so it cannot match across machines.
-	if (
+	const isForOtherRepository =
 		bundle.repoKey !== repoKey &&
 		!bundle.repoKey.startsWith("local/") &&
-		!repoKey.startsWith("local/")
-	)
+		!repoKey.startsWith("local/");
+	if (isForOtherRepository) {
 		throw new CliError(
 			`The bundle is for ${bundle.repoKey}, and this checkout is ${repoKey}.`,
 			["Export it from a checkout of the same repository."],
 		);
+	}
+
 	await importBundle(storeDir(repoKey), bundle);
+
 	const imported = bundle.files.map((file) => file.path).join(", ");
 	log.done(`Imported ${imported || "nothing"} into the file store.`);
+
 	if (specs.length === 0) return 0;
 	return pull(root, specs, undefined, false);
 }

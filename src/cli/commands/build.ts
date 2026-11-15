@@ -21,13 +21,13 @@ async function build(
 		]);
 	}
 
-	const selected = Object.entries(env.apps).flatMap(([name, app]) =>
-		app.buildCommand &&
-		(!only || only.includes(name)) &&
-		(!discoveredOnly || isDiscoveredApp(app))
-			? [{ name, command: app.buildCommand }]
-			: [],
-	);
+	const selected = Object.entries(env.apps).flatMap(([name, app]) => {
+		const isNamed = !only || only.includes(name);
+		const isDiscovered = !discoveredOnly || isDiscoveredApp(app);
+		if (!app.buildCommand || !isNamed || !isDiscovered) return [];
+
+		return [{ name, command: app.buildCommand }];
+	});
 	if (selected.length === 0) {
 		log.info("Nothing to build.");
 		return 0;
@@ -45,6 +45,7 @@ async function build(
 			return result.exitCode;
 		}
 	}
+
 	log.success(
 		`Built ${selected.length} app${selected.length === 1 ? "" : "s"}.`,
 	);
@@ -79,16 +80,16 @@ export const buildCommand = defineCommand({
 		1: "a build failed (its own code), or bad arguments",
 	},
 	run: ({ values, positionals }) => {
-		if (positionals.length > 0 && values.apps !== undefined)
+		if (positionals.length > 0 && values.apps !== undefined) {
 			throw new CliError(
 				"Name the apps as arguments or with --apps, not both.",
 			);
-		const only =
-			positionals.length > 0
-				? [...positionals]
-				: values.apps === undefined
-					? undefined
-					: commaList(values.apps);
+		}
+
+		let only: string[] | undefined;
+		if (positionals.length > 0) only = [...positionals];
+		else if (values.apps !== undefined) only = commaList(values.apps);
+
 		return build(only, values.discovered);
 	},
 });

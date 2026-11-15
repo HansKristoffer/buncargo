@@ -71,8 +71,9 @@ function topLevelDirectories(root: string): Set<string> {
  */
 function repoPathExists(root: string, file: string, path: string): boolean {
 	const baseDirs = ["."];
-	for (let dir = dirname(file); dir !== "."; dir = dirname(dir))
+	for (let dir = dirname(file); dir !== "."; dir = dirname(dir)) {
 		baseDirs.push(dir);
+	}
 
 	return baseDirs.some((dir) =>
 		MODULE_SUFFIXES.some((suffix) =>
@@ -81,6 +82,7 @@ function repoPathExists(root: string, file: string, path: string): boolean {
 	);
 }
 
+/** Whether `check.docs.paths.exempt` names this file and path. */
 function isExempt(
 	config: DocPathsCheckConfig,
 	file: string,
@@ -114,13 +116,16 @@ function missingPaths(
 			directories.has(firstSegment) &&
 			!PLACEHOLDER.test(path);
 		if (!looksLikeRepoPath) continue;
-		if (repoPathExists(root, file, path) || isExempt(config, file, path))
+		if (repoPathExists(root, file, path) || isExempt(config, file, path)) {
 			continue;
+		}
+
 		// Gitignored outputs (`.env`, `test-results/`) are absent from a fresh clone.
 		if (isGitIgnored(root, written)) continue;
 
 		missing.push(path);
 	}
+
 	return missing;
 }
 
@@ -134,47 +139,55 @@ export function findDocProblems(
 
 	for (const file of files) {
 		const path = join(root, file);
+
 		// Listed by the index but deleted or moved in the working tree.
 		if (!existsSync(path)) continue;
 
 		let inCodeFence = false;
-		readFileSync(path, "utf8")
-			.split("\n")
-			.forEach((text, index) => {
-				const line = index + 1;
-				if (BROKEN_COMMAND.test(text))
+		const lines = readFileSync(path, "utf8").split("\n");
+
+		for (const [index, text] of lines.entries()) {
+			const line = index + 1;
+
+			if (BROKEN_COMMAND.test(text)) {
+				problems.push({
+					file,
+					line,
+					message: "use `bun run --cwd <dir> <script>`",
+				});
+			}
+
+			if (text.trimStart().startsWith("```")) inCodeFence = !inCodeFence;
+			if (inCodeFence) continue;
+
+			if (paths) {
+				for (const missing of missingPaths(
+					root,
+					file,
+					text,
+					directories,
+					paths,
+				)) {
 					problems.push({
 						file,
 						line,
-						message: "use `bun run --cwd <dir> <script>`",
+						message: `\`${missing}\` does not exist`,
 					});
-
-				if (text.trimStart().startsWith("```")) inCodeFence = !inCodeFence;
-				if (inCodeFence) return;
-
-				if (paths)
-					for (const missing of missingPaths(
-						root,
-						file,
-						text,
-						directories,
-						paths,
-					))
-						problems.push({
-							file,
-							line,
-							message: `\`${missing}\` does not exist`,
-						});
-
-				for (const [, target = ""] of text.matchAll(MARKDOWN_LINK)) {
-					// `{{...}}` is a template placeholder filled in when the doc is rendered.
-					if (EXTERNAL_TARGET.test(target) || target.includes("{{")) continue;
-					const linked = decodedPath(target.split("#")[0] ?? "");
-					if (linked && existsSync(resolve(dirname(path), linked))) continue;
-					problems.push({ file, line, message: `broken link to ${target}` });
 				}
-			});
+			}
+
+			for (const [, target = ""] of text.matchAll(MARKDOWN_LINK)) {
+				// `{{...}}` is a template placeholder filled in when the doc is rendered.
+				if (EXTERNAL_TARGET.test(target) || target.includes("{{")) continue;
+
+				const linked = decodedPath(target.split("#")[0] ?? "");
+				if (linked && existsSync(resolve(dirname(path), linked))) continue;
+
+				problems.push({ file, line, message: `broken link to ${target}` });
+			}
+		}
 	}
+
 	return problems;
 }
 

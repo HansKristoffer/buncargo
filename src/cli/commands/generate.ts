@@ -20,11 +20,13 @@ async function generate(): Promise<number> {
 	}
 
 	await adoptLiveCaptures(env);
+
 	const changed = new Set(internalsOf(env).renderGeneratedFiles());
 	for (const file of files) {
 		if (changed.has(file.path)) log.done(`Wrote ${file.path}`);
 		else log.line(`  ${file.path} is up to date`);
 	}
+
 	return 0;
 }
 

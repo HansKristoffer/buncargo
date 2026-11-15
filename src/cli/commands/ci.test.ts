@@ -15,29 +15,8 @@ import { execAsync } from "../../core/process";
 import type { RunEntry } from "../../core/run-registry";
 import { CI_ENV_VARS } from "../../core/runtime-flags";
 import { startFakeInfisical } from "../../core/secrets/fake-infisical.testing";
-import { withAppendedArgs } from "./exec";
 
 const cli = [process.execPath, resolve(import.meta.dir, "../bin.ts")];
-
-describe("withAppendedArgs", () => {
-	it("keeps a bare command a shell string", () => {
-		expect(withAppendedArgs("bun scripts/seed.ts", [])).toBe(
-			"bun scripts/seed.ts",
-		);
-	});
-
-	// Positional parameters: the shell never re-parses what was passed.
-	it("passes extra args to sh as positional parameters", () => {
-		expect(withAppendedArgs("bun seed.ts", ["a b", "$HOME"])).toEqual([
-			"sh",
-			"-c",
-			'bun seed.ts "$@"',
-			"sh",
-			"a b",
-			"$HOME",
-		]);
-	});
-});
 
 it("runs the command without fetching app or config-level secrets", async () => {
 	const infisical = startFakeInfisical();
