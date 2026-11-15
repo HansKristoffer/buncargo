@@ -5,7 +5,18 @@ import { type ConnectionDirectory, DirectoryError } from "./directory";
 
 const MAX_REQUEST_BYTES = 128 * 1024;
 
-/** Internal callbacks are served on a separate loopback listener, never on the public API. */
+// Per client address: 300 requests per minute.
+const RATE_LIMIT_REQUESTS = 300;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+
+// Above this many tracked addresses, expired buckets are swept so the map cannot grow without bound.
+const RATE_LIMIT_SWEEP_THRESHOLD = 10000;
+
+/**
+ * Answers an frps server-plugin callback (`Login`, `NewProxy`, `Ping`, `NewWorkConn`). Internal
+ * callbacks are served on a separate loopback listener, never on the public API. Any malformed
+ * or unauthorized request is rejected, so the relay fails closed.
+ */
 export function frpHook(
 	directory: ConnectionDirectory,
 	op: string,
@@ -18,15 +29,20 @@ export function frpHook(
 		if (!text(metas.credential)) {
 			throw new Error("Missing credential");
 		}
+
 		const session = directory.session(metas.credential);
 		const publication = session.publication;
+
+		// A client may only act inside the namespace of the publication its credential belongs to.
 		if (user.user !== publication.id) {
 			throw new Error("Wrong namespace");
 		}
+
 		if (op === "NewProxy") {
 			if (session.role !== "publisher") {
 				throw new Error("Visitors cannot publish");
 			}
+
 			const assignment = publication.assignments.find(
 				(assignment) =>
 					content.proxy_name === `${publication.id}.${assignment.id}`,
@@ -38,9 +54,11 @@ export function frpHook(
 			) {
 				throw new Error("Unallocated proxy");
 			}
+
 			const target = publication.run.targets.find(
 				(t) => t.id === assignment.targetId,
 			);
+
 			// Replace routing fields, rather than trusting optional client fields we did not validate.
 			return {
 				unchange: false,
@@ -61,11 +79,13 @@ export function frpHook(
 				},
 			};
 		}
+
 		if (!["Login", "Ping", "NewWorkConn"].includes(op)) {
 			throw new Error("Unsupported callback");
 		}
 		return { unchange: true };
 	} catch {
+		// Every failure above, including a body that is not the expected shape, means no access.
 		return {
 			reject: true,
 			reject_reason: "Connection session is not authorized",
@@ -75,9 +95,11 @@ export function frpHook(
 
 export function createAPI(directory: ConnectionDirectory) {
 	const buckets = new Map<string, { count: number; reset: number }>();
+
 	return async (request: Request, ip = "unknown"): Promise<Response> => {
 		const url = new URL(request.url);
 		const path = url.pathname;
+
 		const json = (value: unknown, status = 200) =>
 			Response.json(value, {
 				status,
@@ -86,31 +108,38 @@ export function createAPI(directory: ConnectionDirectory) {
 					"x-content-type-options": "nosniff",
 				},
 			});
+
 		try {
 			if (path === "/healthz" && request.method === "GET") {
 				return json({ ok: true, version: 1 });
 			}
+
+			// Browsers are refused outright: a request carrying an Origin header came from a web page.
 			if (request.headers.has("origin")) {
 				throw new DirectoryError("Browser API access is disabled", 403);
 			}
+
 			const now = Date.now();
-			if (buckets.size > 10000) {
+			if (buckets.size > RATE_LIMIT_SWEEP_THRESHOLD) {
 				for (const [key, bucketEntry] of buckets) {
 					if (bucketEntry.reset < now) {
 						buckets.delete(key);
 					}
 				}
 			}
+
 			const bucket = buckets.get(ip);
 			if (bucket && bucket.reset > now) {
-				if (++bucket.count > 300) {
+				if (++bucket.count > RATE_LIMIT_REQUESTS) {
 					throw new DirectoryError("Rate limit exceeded", 429);
 				}
 			} else {
-				buckets.set(ip, { count: 1, reset: now + 60_000 });
+				buckets.set(ip, { count: 1, reset: now + RATE_LIMIT_WINDOW_MS });
 			}
+
 			const owner =
 				request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+
 			let body: Record<string, unknown> = {};
 			if (["POST", "PUT"].includes(request.method)) {
 				if (Number(request.headers.get("content-length")) > MAX_REQUEST_BYTES) {
@@ -123,6 +152,8 @@ export function createAPI(directory: ConnectionDirectory) {
 				);
 				body = record(JSON.parse(bytes.toString() || "{}"));
 			}
+
+			// One transaction per request, so a failed request leaves no partial writes.
 			const result = directory.store.atomic(() => {
 				if (path === "/v1/receivers" && request.method === "POST") {
 					return directory.createReceiver();
@@ -175,8 +206,10 @@ export function createAPI(directory: ConnectionDirectory) {
 				}
 				throw new DirectoryError("Not found", 404);
 			});
+
 			return json(result);
 		} catch (error) {
+			// Directory errors carry a status meant for the client; anything else, such as bad JSON, is a 400.
 			return json(
 				{
 					error:
