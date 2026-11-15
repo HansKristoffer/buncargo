@@ -197,13 +197,20 @@ export interface DevEnvContext {
  * suffix before the extension. Sharing the file let `ci` overwrite the dev
  * stack's model, and fail where it is written only when missing.
  */
+/** The key a selection is compared by: the same apps and services, in the same order. */
+function selectionKey(plan: StartPlan) {
+	return JSON.stringify([plan.appNames, plan.requiredServiceKeys]);
+}
+
 function suffixedComposeFile(
 	generatedFile: string | undefined,
 	suffix: string,
 ): string {
 	const label = suffix.replace(/[^A-Za-z0-9-]/g, "-");
-	if (generatedFile === undefined)
+	if (generatedFile === undefined) {
 		return `.buncargo/docker-compose.${label}.generated.yml`;
+	}
+
 	const extension = extname(generatedFile);
 	const stem = generatedFile.slice(0, generatedFile.length - extension.length);
 	return `${stem}.${label}${extension}`;
@@ -292,6 +299,12 @@ export function createDevEnvContext(
 			},
 		);
 
+	function clearPublicUrls() {
+		for (const key of Object.keys(publicUrls)) {
+			delete publicUrls[key];
+		}
+	}
+
 	function composeModel(): ComposeDocument {
 		model ??= buildModel();
 		return model;
@@ -316,11 +329,13 @@ export function createDevEnvContext(
 		onlyServices?: readonly string[],
 	): StartPlan {
 		const selection = JSON.stringify([onlyApps ?? null, onlyServices ?? null]);
-		if (cachedPlan?.selection !== selection)
+		if (cachedPlan?.selection !== selection) {
 			cachedPlan = {
 				selection,
 				plan: planStart(apps, services, { onlyApps, onlyServices }),
 			};
+		}
+
 		return cachedPlan.plan;
 	}
 
@@ -354,13 +369,14 @@ export function createDevEnvContext(
 		suppliedSnapshot?: PortOwnerSnapshot,
 	) {
 		const plan = getStartPlan(onlyApps, onlyServices);
-		const selection = JSON.stringify([plan.appNames, plan.requiredServiceKeys]);
+		const selection = selectionKey(plan);
 
 		// The CLI prepares before touching hosts; lifecycle.start reaches this
 		// again. Reuse that allocation rather than probing the same run twice.
 		if (selection === preparedSelection) {
 			return;
 		}
+
 		const withServices = plan.requiredServiceKeys.length > 0;
 		const selectedRuntime = withServices ? runtime() : undefined;
 
@@ -391,6 +407,7 @@ export function createDevEnvContext(
 		// Keep object identity: env callbacks may already hold these maps.
 		Object.assign(portMap, portPlan.ports, assignedHostPorts);
 		refreshPorts();
+
 		// Published only with its block: an allocation that threw (the range
 		// is full) selected nothing that a caller could read as allocated.
 		hasSelectedServices = withServices;
@@ -431,6 +448,7 @@ export function createDevEnvContext(
 		},
 		captureThrowawayClaim() {
 			if (!throwaway()) return async () => {};
+
 			const key = offsetClaimKey(root, suffix);
 			// Read before the teardown: another run of this environment that
 			// allocates during it rewrites the claim, and a read after would
@@ -441,19 +459,20 @@ export function createDevEnvContext(
 				// block, and one that starts after this check claims it again:
 				// released only if no run has used it since it was read.
 				const runs = await readAllRuns();
-				if (
-					runs.some(
-						(run) => run.projectName === projectName && run.root === root,
-					)
-				)
-					return;
+				const usedSinceRead = runs.some(
+					(run) => run.projectName === projectName && run.root === root,
+				);
+				if (usedSinceRead) return;
+
 				// The block goes; the claim stays, naming the project its
 				// volumes belong to.
-				if (read !== undefined)
+				if (read !== undefined) {
 					await markOffsetClaimsReclaimed(
 						{ [key]: read },
 						new Date().toISOString(),
 					);
+				}
+
 				// A later start() on this environment allocates and claims again,
 				// and nothing (Prisma's `allocate`) reads the released block as its
 				// own.
@@ -464,18 +483,17 @@ export function createDevEnvContext(
 		async prepareStartAsync(onlyApps, onlyServices, signal) {
 			signal?.throwIfAborted();
 			const plan = getStartPlan(onlyApps, onlyServices);
-			const selection = JSON.stringify([
-				plan.appNames,
-				plan.requiredServiceKeys,
-			]);
-			if (selection === preparedSelection) return;
+			if (selectionKey(plan) === preparedSelection) return;
+
 			const selectedRuntime =
 				plan.requiredServiceKeys.length > 0 ? runtime() : undefined;
-			if (selectedRuntime)
+			if (selectedRuntime) {
 				assertServiceCapabilities(
 					selectedRuntime,
 					pick(services, plan.requiredServiceKeys),
 				);
+			}
+
 			const candidatePorts = candidateAllocationPorts(
 				{
 					projectPrefix: config.projectPrefix,
@@ -498,6 +516,7 @@ export function createDevEnvContext(
 						})
 					: { owner: () => null, isBusy: () => false };
 			signal?.throwIfAborted();
+
 			// The synchronous `prepareStart` does not reclaim: telling an idle
 			// checkout from a running one needs the registry's liveness and a
 			// container listing, so it throws the exhaustion with the holders.
@@ -572,9 +591,7 @@ export function createDevEnvContext(
 		},
 
 		setPublicUrls(next) {
-			for (const key of Object.keys(publicUrls)) {
-				delete publicUrls[key];
-			}
+			clearPublicUrls();
 
 			for (const [key, value] of Object.entries(next)) {
 				if (value !== undefined) {
@@ -583,11 +600,7 @@ export function createDevEnvContext(
 			}
 		},
 
-		clearPublicUrls() {
-			for (const key of Object.keys(publicUrls)) {
-				delete publicUrls[key];
-			}
-		},
+		clearPublicUrls,
 
 		logInfo(
 			label = "Dev Environment",

@@ -83,9 +83,11 @@ export function registerInternals(
 /** The internals of an environment `createDevEnvironment` made. */
 export function internalsOf(env: object): EnvironmentInternals {
 	const surface = internals.get(env);
-	if (!surface)
+	if (!surface) {
 		throw new Error(
 			"This environment was not made by createDevEnvironment(); buncargo cannot drive it.",
 		);
+	}
+
 	return surface;
 }

@@ -63,8 +63,9 @@ export const libraryLeasePolicy: LeasePolicy = {
 			for (const line of [
 				...describeLeaseRefusal(skip),
 				endLeaseHolderHint(skip),
-			])
+			]) {
 				console.warn(`   ${line}`);
+			}
 		}
 	},
 	tookOver: () => {},
@@ -102,6 +103,7 @@ export async function acquireStartLeases(
 
 	for (const [name, app] of Object.entries(apps)) {
 		if (!app.exclusive) continue;
+
 		const request = appLeaseRequest(owner, name, app.exclusive);
 		const result = await acquireLease(request, { signal });
 		if (result.ok) {
@@ -110,11 +112,13 @@ export async function acquireStartLeases(
 		}
 
 		const skip = { app: name, key: app.exclusive, holder: result.holder };
-		if (!(await policy.takeOver(skip, app))) {
+		const tookOver = await policy.takeOver(skip, app);
+		if (!tookOver) {
 			if (app.essential === false) {
 				skipped.push(skip);
 				continue;
 			}
+
 			// Nothing of this start runs: what it took so far goes back.
 			await releaseLeases(owner.sessionId, { keys: acquired });
 			throw policy.refusal(skip);
@@ -129,23 +133,23 @@ export async function acquireStartLeases(
 		);
 		if (!transferred.ok) {
 			await releaseLeases(owner.sessionId, { keys: acquired });
-			throw new Error(
+
+			const message =
 				transferred.reason === "stop-refused"
 					? `Could not stop ${app.exclusive} held by ${holder}.`
-					: `${app.exclusive} ownership changed during takeover. Retry to check its current owner.`,
-			);
+					: `${app.exclusive} ownership changed during takeover. Retry to check its current owner.`;
+			throw new Error(message);
 		}
+
 		took(app.exclusive);
 		policy.tookOver(app.exclusive, holder);
 	}
 
 	if (skipped.length > 0) policy.skipped(skipped);
-	const left = new Set(skipped.map((skip) => skip.app));
-	return {
-		apps: Object.fromEntries(
-			Object.entries(apps).filter(([name]) => !left.has(name)),
-		),
-		acquired,
-		skipped,
-	};
+
+	const skippedApps = new Set(skipped.map((skip) => skip.app));
+	const startable = Object.entries(apps).filter(
+		([name]) => !skippedApps.has(name),
+	);
+	return { apps: Object.fromEntries(startable), acquired, skipped };
 }

@@ -22,8 +22,9 @@ import { internalsOf } from "./internals";
 
 const roots: string[] = [];
 afterEach(() => {
-	for (const root of roots.splice(0))
+	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 function fixture(extra: Partial<IntegrationConfig> = {}) {

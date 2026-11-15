@@ -22,13 +22,19 @@ export class LifecycleCoordinator {
 				),
 			);
 		}
+
 		return this.runStart(work, signal, retainCancellation);
 	}
 
+	/**
+	 * Run `work` as the startup. Its session, and the caller's cancellation
+	 * wired to it, stay attached after `work` resolves while
+	 * `retainCancellation` says its result still needs them, until a stop.
+	 */
 	private runStart<T>(
 		work: (signal: AbortSignal) => Promise<T>,
-		signal?: AbortSignal,
-		retainCancellation: (result: T) => boolean = () => true,
+		signal: AbortSignal | undefined,
+		retainCancellation: (result: T) => boolean,
 	): Promise<T> {
 		const controller = new AbortController();
 		const cancel = () => controller.abort(abortError(signal));
@@ -40,11 +46,14 @@ export class LifecycleCoordinator {
 			session.detach();
 			this.sessions.delete(session);
 		};
+
 		controller.signal.addEventListener("abort", release, { once: true });
 		if (signal?.aborted) cancel();
 		else signal?.addEventListener("abort", cancel, { once: true });
+
 		this.sessions.add(session);
 		this.startupController = controller;
+
 		const operation = Promise.resolve()
 			.then(() => {
 				controller.signal.throwIfAborted();
@@ -62,20 +71,24 @@ export class LifecycleCoordinator {
 				this.startup = undefined;
 				this.startupController = undefined;
 			});
+
 		this.startup = operation;
 		return operation;
 	}
 
 	private schedule(work: () => Promise<void>): Promise<void> {
 		this.transitions++;
+
 		const operation = this.tail.then(work).finally(() => this.transitions--);
 		// A failed transition must not poison subsequent cleanup requests.
 		this.tail = operation.catch(() => {});
+
 		return operation;
 	}
 
 	private cancelStartup(): Promise<unknown> | undefined {
 		const startup = this.startup;
+
 		this.startupController?.abort(new Error("Startup cancelled by stop"));
 		return startup?.catch(() => {});
 	}
@@ -90,9 +103,11 @@ export class LifecycleCoordinator {
 
 	stop(work: () => Promise<void>, signal?: AbortSignal): Promise<void> {
 		if (signal?.aborted) return Promise.reject(abortError(signal));
+
 		// Cancelled, it is no restart for a later request to join.
 		this.restarting?.controller.abort(new Error("Restart cancelled by stop"));
 		this.restarting = undefined;
+
 		const startup = this.cancelStartup();
 		return this.schedule(async () => {
 			await startup;
@@ -108,6 +123,7 @@ export class LifecycleCoordinator {
 		start: (signal: AbortSignal) => Promise<unknown>,
 	): Promise<void> {
 		if (this.restarting) return this.restarting.promise;
+
 		const controller = new AbortController();
 		const startup = this.cancelStartup();
 		const promise = this.schedule(async () => {
@@ -120,6 +136,7 @@ export class LifecycleCoordinator {
 		}).finally(() => {
 			if (this.restarting === restarting) this.restarting = undefined;
 		});
+
 		const restarting = { controller, promise };
 		this.restarting = restarting;
 		return promise;
