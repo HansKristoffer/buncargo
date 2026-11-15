@@ -16,7 +16,7 @@ export interface ThrottledFailureLog {
  * or expires produces a fresh message and every one of them gets through. A
  * stale service can hold that state for hours. Throttling by time instead caps
  * the file at one line a minute and carries the suppressed count, so an ongoing
- * failure stays visible — including whether it is still changing — without the
+ * failure stays visible, including whether it is still changing, without the
  * log growing without bound.
  */
 export function createThrottledFailureLog(deps: {

@@ -51,16 +51,19 @@ export function sanitizeDnsLabel(value: string): string {
 		.replace(/^-+|-+$/g, "")
 		.slice(0, 63)
 		.replace(/-+$/g, "");
+
 	if (!sanitized || !DNS_LABEL.test(sanitized)) {
 		throw new Error(
 			`"${value}" is not a valid DNS label. Use lowercase letters, digits, and interior hyphens (max 63).`,
 		);
 	}
+
 	if (RESERVED_HOST_LABELS.has(sanitized)) {
 		throw new Error(
 			`"${sanitized}" is reserved and cannot be used as a hostname label.`,
 		);
 	}
+
 	return sanitized;
 }
 
@@ -69,6 +72,7 @@ export function sanitizeTld(tld: string): string {
 	if (!normalized) {
 		throw new Error("hosts.tld must be a non-empty DNS name");
 	}
+
 	const labels = normalized.split(".");
 	for (const label of labels) {
 		if (!DNS_LABEL.test(label)) {
@@ -77,9 +81,11 @@ export function sanitizeTld(tld: string): string {
 			);
 		}
 	}
+
 	if (normalized.length > MAX_HOSTNAME) {
 		throw new Error(`hosts.tld "${tld}" exceeds the 253-character DNS limit.`);
 	}
+
 	return normalized;
 }
 
@@ -89,6 +95,7 @@ function resolveHostsOptions(
 	primaryApp?: string,
 ): ResolvedHostsOptions | null {
 	if (!hosts) return null;
+
 	const options = hosts === true ? {} : hosts;
 	return {
 		tld: sanitizeTld(options.tld ?? "localhost"),
@@ -111,6 +118,7 @@ function selectNamedServiceKeys(
 			.filter(([, service]) => isHttpService(service))
 			.map(([name]) => name);
 	}
+
 	return selection.filter((name) => services[name] !== undefined);
 }
 
@@ -121,6 +129,7 @@ function joinHostname(labels: string[]): string {
 			`Hostname "${hostname}" exceeds the 253-character DNS limit.`,
 		);
 	}
+
 	return hostname;
 }
 
@@ -143,9 +152,27 @@ export function planNamedHosts(input: {
 	const tldLabels = options.tld.split(".");
 	const plan: NamedHost[] = [];
 
+	// The worktree's hostname is the base one with its label in front.
+	const namedHost = (
+		kind: NamedHost["kind"],
+		name: string,
+		baseLabels: string[],
+		targetPort: number,
+	): NamedHost => ({
+		kind,
+		name,
+		hostname: joinHostname([
+			...(worktreeLabel ? [worktreeLabel] : []),
+			...baseLabels,
+		]),
+		baseHostname: joinHostname(baseLabels),
+		targetPort,
+	});
+
 	for (const name of Object.keys(input.apps)) {
 		const port = input.ports[name];
 		if (port === undefined) continue;
+
 		const appLabel =
 			options.primaryApp === name ? undefined : sanitizeDnsLabel(name);
 		const baseLabels = [
@@ -153,16 +180,7 @@ export function planNamedHosts(input: {
 			projectLabel,
 			...tldLabels,
 		];
-		plan.push({
-			kind: "app",
-			name,
-			hostname: joinHostname([
-				...(worktreeLabel ? [worktreeLabel] : []),
-				...baseLabels,
-			]),
-			baseHostname: joinHostname(baseLabels),
-			targetPort: port,
-		});
+		plan.push(namedHost("app", name, baseLabels, port));
 	}
 
 	for (const name of selectNamedServiceKeys(input.services, options.services)) {
@@ -170,17 +188,9 @@ export function planNamedHosts(input: {
 		if (port === undefined) continue;
 		const service = input.services[name];
 		if (!service || !isHttpService(service)) continue;
+
 		const baseLabels = [sanitizeDnsLabel(name), projectLabel, ...tldLabels];
-		plan.push({
-			kind: "service",
-			name,
-			hostname: joinHostname([
-				...(worktreeLabel ? [worktreeLabel] : []),
-				...baseLabels,
-			]),
-			baseHostname: joinHostname(baseLabels),
-			targetPort: port,
-		});
+		plan.push(namedHost("service", name, baseLabels, port));
 	}
 
 	return plan;
@@ -202,13 +212,13 @@ export function applyHostPlanToUrls(
  * A worktree adds a label in front (`fix-ui.api.myapp.localhost`), so each new
  * checkout produced a hostname no existing certificate covered, forcing a
  * remint. That is the expensive event: minting rebinds the daemon's listener,
- * which drops every proxied websocket on the machine — including HMR sockets
+ * which drops every proxied websocket on the machine, including HMR sockets
  * belonging to projects that had nothing to do with the new worktree. With
  * agents creating worktrees routinely, that was happening several times a day.
  *
  * A wildcard covers exactly one label, so both directions are needed: `*.<h>`
  * for a worktree of this hostname, and one per ancestor for a worktree of a
- * sibling. The chain stops above the TLD — `*.localhost` is both far too broad
+ * sibling. The chain stops above the TLD. `*.localhost` is both far too broad
  * and rejected by browsers, and it would let any project serve any other
  * project's name.
  */
@@ -220,7 +230,7 @@ export function certificateHostnames(plan: NamedHost[], tld: string): string[] {
 		// Everything here comes from the *base* name, never the worktree's own
 		// hostname, so every checkout of a project asks for exactly the same
 		// set. Asking for `t3code-a.api.myapp.localhost` and its wildcards
-		// would put a name on the request that no leaf has yet — and a missing
+		// would put a name on the request that no leaf has yet, and a missing
 		// name is a remint, which is the churn this exists to remove. The
 		// worktree's hostname needs no entry of its own: `*.<base>` covers it.
 		const base = entry.baseHostname || entry.hostname;
@@ -240,8 +250,8 @@ export function certificateHostnames(plan: NamedHost[], tld: string): string[] {
 /**
  * Whether a certificate's SAN list covers `hostname`.
  *
- * A wildcard matches exactly one label, and only at the front — the rule
- * browsers apply — so this cannot be a substring check.
+ * A wildcard matches exactly one label, and only at the front, the rule
+ * browsers apply, so this cannot be a substring check.
  */
 export function certificateCovers(
 	covered: Iterable<string>,
@@ -249,7 +259,9 @@ export function certificateCovers(
 ): boolean {
 	const names = covered instanceof Set ? covered : new Set(covered);
 	if (names.has(hostname)) return true;
+
 	const dot = hostname.indexOf(".");
 	if (dot === -1) return false;
+
 	return names.has(`*.${hostname.slice(dot + 1)}`);
 }

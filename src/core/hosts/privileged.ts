@@ -92,6 +92,7 @@ export function createPrivilegedRunner(deps: {
 				dirname(path),
 				`.${basename(path)}.buncargo-${process.pid}.tmp`,
 			);
+
 			if (isRoot()) {
 				try {
 					writeFileSync(sibling, contents, { mode: 0o644 });
@@ -102,6 +103,7 @@ export function createPrivilegedRunner(deps: {
 				}
 				return;
 			}
+
 			// Stage inside a 0700 directory. A predictable path in a shared /tmp
 			// would let a local user plant a symlink and steer what root copies
 			// into a file it later executes. The sibling sits in a root-owned
@@ -131,8 +133,10 @@ export function createPrivilegedRunner(deps: {
 			try {
 				return readFileSync(path, "utf-8");
 			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code === "ENOENT")
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 					return undefined;
+				}
+
 				throw error;
 			}
 		},

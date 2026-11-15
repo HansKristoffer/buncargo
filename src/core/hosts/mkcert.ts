@@ -21,6 +21,7 @@ import { certificateCovers } from "./plan";
 
 const MKCERT_RELEASE_BASE = "https://github.com/FiloSottile/mkcert/releases/";
 
+/** A leaf with less than this left is reminted on the next `buncargo dev`. */
 const RENEW_BEFORE_MS = 1000 * 60 * 60 * 24 * 30;
 
 function cachedMkcertBinPath(version = mkcertVersion()): string {
@@ -44,8 +45,10 @@ export function resolvedMkcertPath(): string | undefined {
 }
 
 function mkcertAssetName(version: string): string {
-	if (process.arch !== "arm64" && process.arch !== "x64")
+	if (process.arch !== "arm64" && process.arch !== "x64") {
 		throw new Error(`mkcert download is not supported on ${process.arch}`);
+	}
+
 	const os = typedSwitch(
 		process.platform,
 		{ darwin: () => "darwin", linux: () => "linux" },
@@ -53,6 +56,7 @@ function mkcertAssetName(version: string): string {
 			throw new Error(`mkcert download is not supported on ${platform}`);
 		},
 	);
+
 	const arch = process.arch === "arm64" ? "arm64" : "amd64";
 	return `mkcert-${version}-${os}-${arch}`;
 }
@@ -84,8 +88,11 @@ export async function ensureMkcert(): Promise<string> {
 			? candidate.path
 			: cachedMkcertBinPath(version);
 	const asset = mkcertAssetName(version);
+
+	// Loaded on demand: most runs find mkcert installed and never download.
 	const { installTool } = await import("../tool-install");
 	const escaped = escapeRegExp(version);
+
 	return installTool({
 		to: dest,
 		url: `${MKCERT_RELEASE_BASE}download/${version}/${asset}`,
@@ -110,12 +117,13 @@ const CA_FILENAME = "rootCA.pem";
  *
  * `$CAROOT` wins, then the per-platform data directory. Every `buncargo dev`
  * with named hosts on needs this path, and `mkcert -CAROOT` is a fork that
- * answers the same question — one this can answer from the environment for
+ * answers the same question, one this can answer from the environment for
  * every machine that has not moved it.
  */
 function caRootCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
 	const explicit = env.CAROOT?.trim();
 	if (explicit) return [explicit];
+
 	const home = resolveUserHome(env);
 
 	return typedSwitch(
@@ -137,6 +145,7 @@ function caRootCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
 function caRootFromBinary(mkcertPath?: string): string | undefined {
 	const bin = mkcertPath ?? resolvedMkcertPath();
 	if (!bin) return undefined;
+
 	try {
 		return execFileSync(bin, ["-CAROOT"], {
 			encoding: "utf-8",
@@ -151,6 +160,7 @@ function getCaRoot(mkcertPath?: string): string | undefined {
 	for (const candidate of caRootCandidates()) {
 		if (existsSync(join(candidate, CA_FILENAME))) return candidate;
 	}
+
 	// Nothing where it should be: either the CA has never been installed, or
 	// this machine moved it. Only now is the fork worth it.
 	return caRootFromBinary(mkcertPath);
@@ -159,6 +169,7 @@ function getCaRoot(mkcertPath?: string): string | undefined {
 export function getCaPath(mkcertPath?: string): string | undefined {
 	const root = getCaRoot(mkcertPath);
 	if (!root) return undefined;
+
 	const pem = join(root, CA_FILENAME);
 	return existsSync(pem) ? pem : undefined;
 }
@@ -222,8 +233,10 @@ function readCaTrust(caPath: string): CaTrust {
 				} catch {
 					return "unknown";
 				}
+
 				const anchor = linuxTrustAnchorPath(serial, existsSync);
 				if (!anchor) return "unknown";
+
 				return existsSync(anchor) ? "trusted" : "untrusted";
 			},
 			darwin: (): CaTrust => {
@@ -296,14 +309,16 @@ export function certificateShortfall(
 ): CertificateShortfall | undefined {
 	// Wildcard-aware: a leaf carrying `*.myapp.localhost` already serves a
 	// new worktree's hostname, and treating that as a gap would remint on
-	// every fresh checkout — the churn wildcards exist to avoid.
+	// every fresh checkout, the churn wildcards exist to avoid.
 	const uncovered = hostnames.filter(
 		(hostname) => !certificateCovers(leaf.names, hostname),
 	);
 	if (uncovered.length > 0) return { kind: "uncovered", hostnames: uncovered };
+
 	if (!Number.isFinite(leaf.validTo) || leaf.validTo - now < RENEW_BEFORE_MS) {
 		return { kind: "expiring", validTo: leaf.validTo };
 	}
+
 	return undefined;
 }
 
@@ -313,6 +328,7 @@ export function certNeedsRenewal(
 	now = Date.now(),
 ): boolean {
 	if (hostnames.length === 0) return true;
+
 	const leaf = readCertificateLeaf(certPath);
 	return !leaf || certificateShortfall(leaf, hostnames, now) !== undefined;
 }
@@ -331,10 +347,12 @@ export function mintCert(
 	if (!certNeedsRenewal(certPath, unique)) {
 		return { certPath, keyPath, minted: false };
 	}
+
 	const { mkcertPath } = options;
 	if (!mkcertPath) {
 		throw new Error("mkcert is not available. Run buncargo hosts install.");
 	}
+
 	mkdirSync(dirname(certPath), { recursive: true });
 	mkdirSync(dirname(keyPath), { recursive: true });
 
@@ -344,6 +362,7 @@ export function mintCert(
 	const stamp = `${process.pid}.${Date.now()}`;
 	const pendingCert = `${certPath}.${stamp}.tmp`;
 	const pendingKey = `${keyPath}.${stamp}.tmp`;
+
 	try {
 		execFileSync(
 			mkcertPath,
@@ -366,6 +385,7 @@ export function mintCert(
 
 	chownToInvokingUser(certPath);
 	chownToInvokingUser(keyPath);
+
 	return { certPath, keyPath, minted: true };
 }
 

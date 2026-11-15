@@ -117,6 +117,7 @@ export function createStallHandler(input: {
 }): (ageMs: number) => void {
 	return (ageMs) => {
 		const seconds = Math.round(ageMs / 1000);
+
 		if (ageMs > STALLED_EXIT_MS) {
 			input.log(
 				`[buncargo hosts] route map has not refreshed in ${seconds}s despite in-band reloads; exiting so the service restarts`,
@@ -124,12 +125,16 @@ export function createStallHandler(input: {
 			input.exit(1);
 			return;
 		}
+
 		input.log(
 			`[buncargo hosts] route map has not refreshed in ${seconds}s; reloading`,
 		);
 		input.reload();
 	};
 }
+
+/** Above this, the log is more noise than history. */
+const MAX_SERVICE_LOG_BYTES = 5_000_000;
 
 /**
  * Keep the service log from growing without bound.
@@ -158,9 +163,6 @@ export function truncateOversizedLog(
 		// Not our log to manage (no such file, not permitted): leave it.
 	}
 }
-
-/** Above this, the log is more noise than history. */
-const MAX_SERVICE_LOG_BYTES = 5_000_000;
 
 /** Every way the daemon ends on purpose: leave no state naming this process. */
 function exitDaemon(code: number): never {
@@ -268,6 +270,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		if (route) deps.onRequest(route.root);
 		return route?.port;
 	};
+
 	// `hostnames` is a getter: every proxied request reads this view, and only
 	// health and a 404 read the list.
 	const routes = (): ProxyRoutesView => {
@@ -289,6 +292,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	function reportHostsFileFailure(action: string, error: unknown): void {
 		const message = getErrorMessage(error);
 		if (message === lastHostsFileFailure) return;
+
 		lastHostsFileFailure = message;
 		deps.log(`[buncargo hosts] could not ${action} /etc/hosts: ${message}`);
 	}
@@ -322,11 +326,13 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 			.filter((route) => !servable.includes(route))
 			.map((route) => JSON.stringify(route.hostname))
 			.join(", ");
+
 		if (invalid !== "" && invalid !== lastInvalidHostnames) {
 			deps.log(
 				`[buncargo hosts] ignoring routes whose hostname is not a DNS name: ${invalid}. Remove them from ${getRoutesPath()}.`,
 			);
 		}
+
 		lastInvalidHostnames = invalid;
 		return servable;
 	}
@@ -340,12 +346,15 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		// and clearing first would 404 every named URL on the machine.
 		const loaded = servableRoutes(await deps.pruneRoutes());
 		if (stopped) return;
+
 		routeMap.clear();
 		for (const route of loaded) {
 			routeMap.set(route.hostname, { port: route.port, root: route.root });
 		}
+
 		const hostnames = [...routeMap.keys()].sort();
 		const hostKey = hostnames.join(",");
+
 		if (hostnames.length === 0) {
 			// Explicitly against undefined: a zero timestamp is a real reading,
 			// and treating it as "not idle yet" restarts the clock every tick.
@@ -416,8 +425,8 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		// the port at once under SO_REUSEPORT and the kernel hands new
 		// connections to the new one, so there is no instant where nothing
 		// answers on :443. Stopping first left exactly that window, and a CLI
-		// health probe landing in it — which the remint for a new worktree's
-		// hostnames makes likely — reported the daemon as down.
+		// health probe landing in it, which the remint for a new worktree's
+		// hostnames makes likely, reported the daemon as down.
 		//
 		// A throw here therefore leaves the previous listener serving, and
 		// `lastCertKey` unadvanced so the next reload retries.
@@ -427,15 +436,18 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 			cert,
 			key,
 		});
+
 		if (stopped) {
 			next.stop();
 			return;
 		}
+
 		const previous = proxy;
 		proxy = next;
 		previous?.stop();
 		lastCertKey = certKey;
 		reportRedirectError(next.redirectError);
+
 		const leafServes = deps.certificateServes(cert);
 		// The listener took it, so it serves something: list the route map
 		// rather than nothing, which would put every run on `localhost:port`.
@@ -444,6 +456,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 			const message = `[buncargo hosts] could not read the names or expiry of the certificate the listener bound (${getCertPath()}); health lists every route. If named URLs fail TLS, run \`buncargo hosts install\`.`;
 			deps.log(message);
 		}
+
 		serves = leafServes ?? (() => true);
 		// Only a bind that succeeded clears it: a pass that found a mint in
 		// progress bound nothing, and the failure it would hide still stands.
@@ -456,8 +469,10 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	 */
 	function reportRedirectError(error: string | undefined): void {
 		if (error === lastRedirectError) return;
+
 		lastRedirectError = error;
 		if (error === undefined) return;
+
 		deps.log(
 			`[buncargo hosts] serving https without the http:// redirect: ${error}`,
 		);
@@ -480,6 +495,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	function refresh(): Promise<void> {
 		const running = inFlight;
 		if (!running) return reload("refresh");
+
 		queuedRefresh ??= running
 			.catch(() => {})
 			.then(() => {
@@ -610,6 +626,7 @@ export async function runHostsDaemon(
 
 	await reloadOrReport(() => reloader.reload("startup"));
 	await activity.flush();
+
 	for (;;) {
 		// The poll picks up what nobody asked about: routes whose owner died,
 		// which no write announces, and registrations by anything that does not
