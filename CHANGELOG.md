@@ -1,5 +1,12 @@
 # Changelog
 
+## [16.1.0](https://github.com/HansKristoffer/buncargo/compare/v16.0.0...v16.1.0) (2026-11-22)
+
+
+### Features
+
+* **cli:** speed up startup and add MinIO bucket setup ([#148](https://github.com/HansKristoffer/buncargo/issues/148)) ([ed9d119](https://github.com/HansKristoffer/buncargo/commit/ed9d11968115c8c93651dd5b478ff857431598bb))
+
 ## [16.0.0](https://github.com/HansKristoffer/buncargo/compare/v15.1.0...v16.0.0) (2026-11-14)
 
 
