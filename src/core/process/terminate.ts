@@ -1,3 +1,4 @@
+import type { EventEmitter } from "node:events";
 import { typedSwitch } from "hanzio";
 import { abortableSleep } from "../deadline";
 import {
@@ -143,14 +144,40 @@ function signalGroup(
 	}
 }
 
-/** Polls until nothing of `child` runs, or `ms` has passed. */
+/**
+ * Waits until nothing of `child` runs, or `ms` has passed.
+ *
+ * Wakes immediately when a direct child emits `exit` instead of sleeping a
+ * full poll tick first, then uses a short progressive poll if other members of
+ * its process group outlive the leader (or for an adopted `DetachedApp`).
+ */
 async function waitUntilGone(
 	child: AppChild | DetachedApp,
 	ms: number,
 ): Promise<void> {
 	const deadline = performance.now() + ms;
-	while (ownedProcessAlive(child) && performance.now() < deadline) {
-		await abortableSleep(25);
+	let delayMs = 4;
+
+	while (ownedProcessAlive(child)) {
+		const remaining = deadline - performance.now();
+		if (remaining <= 0) break;
+
+		const waitMs = Math.min(delayMs, remaining);
+		delayMs = Math.min(25, delayMs * 2);
+
+		if (!(child instanceof DetachedApp) && !exitSeen(child)) {
+			const emitter: EventEmitter = child;
+			const wake = new AbortController();
+			const onExit = () => wake.abort();
+			emitter.once("exit", onExit);
+			try {
+				await abortableSleep(waitMs, wake.signal).catch(() => {});
+			} finally {
+				emitter.off("exit", onExit);
+			}
+		} else {
+			await abortableSleep(waitMs);
+		}
 	}
 }
 

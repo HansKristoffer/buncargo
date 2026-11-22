@@ -141,6 +141,107 @@ describe("minio and job helpers", () => {
 		expect(off.model.services.minio?.healthcheck).toBeUndefined();
 	});
 
+	it("accepts and normalizes minio buckets with optional policies", () => {
+		const config = defineDevConfig({
+			projectPrefix: "storage",
+			services: {
+				minio: service.minio({
+					buckets: ["brain", { name: "uploads", policy: "download" }],
+				}),
+			},
+		});
+		expect(validateConfig(config)).toEqual([]);
+		const resolved = resolveServices(config.services);
+		expect(resolved.minio.buckets).toEqual([
+			{ name: "brain" },
+			{ name: "uploads", policy: "download" },
+		]);
+
+		const invalidShape = validateConfig({
+			projectPrefix: "storage",
+			services: {
+				minio: {
+					...service.minio(),
+					buckets: [
+						{ name: "", policy: "invalid" as never },
+						{ policy: "download" } as never,
+					],
+				},
+			},
+		});
+		expect(invalidShape).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("buckets[0].name"),
+				expect.stringContaining("buckets[0].policy"),
+				expect.stringContaining("buckets[1].name is required"),
+			]),
+		);
+
+		const wrongService = validateConfig({
+			projectPrefix: "storage",
+			services: {
+				postgres: {
+					...service.postgres(),
+					buckets: ["oops"],
+				},
+			},
+		});
+		expect(wrongService).toEqual([
+			expect.stringContaining('Service "postgres" sets buckets'),
+		]);
+	});
+
+	it("sets subdirectory PGDATA automatically for Postgres 18+ images while leaving pg16/17 intact", () => {
+		const pg16 = render({ postgres: service.postgres() });
+		expect(
+			(pg16.model.services.postgres?.environment as Record<string, string>)
+				.PGDATA,
+		).toBeUndefined();
+
+		const pg17 = render({
+			postgres: service.postgres({ docker: { image: "postgres:17-alpine" } }),
+		});
+		expect(
+			(pg17.model.services.postgres?.environment as Record<string, string>)
+				.PGDATA,
+		).toBeUndefined();
+
+		const pg18 = render({
+			postgres: service.postgres({ docker: { image: "postgres:18" } }),
+		});
+		expect(
+			(pg18.model.services.postgres?.environment as Record<string, string>)
+				.PGDATA,
+		).toBe("/var/lib/postgresql/data/pgdata");
+
+		const pgvector18 = render({
+			postgres: service.postgres({
+				docker: { image: "pgvector/pgvector:pg18" },
+			}),
+		});
+		expect(
+			(
+				pgvector18.model.services.postgres?.environment as Record<
+					string,
+					string
+				>
+			).PGDATA,
+		).toBe("/var/lib/postgresql/data/pgdata");
+
+		const explicit = render({
+			postgres: service.postgres({
+				docker: {
+					image: "postgres:18",
+					environment: { PGDATA: "/custom/pgdata" },
+				},
+			}),
+		});
+		expect(
+			(explicit.model.services.postgres?.environment as Record<string, string>)
+				.PGDATA,
+		).toBe("/custom/pgdata");
+	});
+
 	it("builds a job a config accepts and a warm start can prove unchanged", () => {
 		// A helper function returning a job is where hand-written ones needed
 		// `as const`: the literal widened to `kind: string`.

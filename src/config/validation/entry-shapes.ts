@@ -187,6 +187,48 @@ function validateServiceEntry(
 		if (entry.docker.kind === "preset" && entry.docker.service !== undefined)
 			record(entry.docker.service, `${path}.docker.service`);
 	}
+
+	if (entry.buckets !== undefined) {
+		if (!Array.isArray(entry.buckets)) {
+			checks.errors.push(
+				`${path}.buckets must be an array of bucket names or { name, policy? } objects`,
+			);
+		} else {
+			entry.buckets.forEach((bucket, index) => {
+				const bucketPath = `${path}.buckets[${index}]`;
+				if (typeof bucket === "string") {
+					check(
+						bucket,
+						bucketPath,
+						bucket.trim().length > 0,
+						"a nonempty string",
+					);
+					return;
+				}
+				if (!record(bucket, bucketPath)) return;
+				checks.errors.push(
+					...unknownKeyErrors(bucket, bucketPath, ["name", "policy"]),
+				);
+				if (bucket.name === undefined) {
+					checks.errors.push(`${bucketPath}.name is required`);
+				} else {
+					check(
+						bucket.name,
+						`${bucketPath}.name`,
+						typeof bucket.name === "string" && bucket.name.trim().length > 0,
+						"a nonempty string",
+					);
+				}
+				check(
+					bucket.policy,
+					`${bucketPath}.policy`,
+					typeof bucket.policy === "string" &&
+						["none", "download", "upload", "public"].includes(bucket.policy),
+					'"none", "download", "upload", or "public"',
+				);
+			});
+		}
+	}
 }
 
 export function validateEntryShapes(

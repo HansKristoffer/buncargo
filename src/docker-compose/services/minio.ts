@@ -1,4 +1,4 @@
-import type { ServiceConfig } from "../../types";
+import type { MinioBucketConfig, ServiceConfig } from "../../types";
 import {
 	defineDockerService,
 	type PresetServiceSharedOptions,
@@ -10,6 +10,13 @@ export type MinioServiceOptions = PresetServiceSharedOptions & {
 	user?: string;
 	/** Root password, the S3 secret key; MinIO wants 8 characters or more (default: `minioadmin`) */
 	password?: string;
+	/**
+	 * Buckets to create idempotently once MinIO is ready, with an optional
+	 * anonymous access policy (`"none" | "download" | "upload" | "public"`).
+	 * Runs over MinIO's S3 API after readiness, so it needs no init container
+	 * and works on both Docker and Apple `container`.
+	 */
+	buckets?: readonly MinioBucketConfig[];
 };
 
 export type MinioServiceConfig = ServiceConfig<
@@ -56,6 +63,7 @@ export const minioDockerService = defineDockerService<
 	url: ({ host, port }) => `http://${host}:${port}`,
 	enhanceServiceConfig: (base, options): MinioServiceConfig => ({
 		...base,
+		...(options?.buckets ? { buckets: options.buckets } : {}),
 		staticEnv: {
 			MINIO_ROOT_USER: options?.user ?? DEFAULT_CREDENTIAL,
 			MINIO_ROOT_PASSWORD: options?.password ?? DEFAULT_CREDENTIAL,

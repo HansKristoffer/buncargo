@@ -239,7 +239,7 @@ function registerStubInternals(
 		unsetEnv: undefined,
 		runtime: () => containerRuntimeForEnv(env),
 		appEnv: (name) => env.buildAppEnvVars(name),
-		runHook: async () => {},
+		runHook: async () => false,
 		waitForHealth: (apps, _production, signal) =>
 			env.waitForServers({ onlyApps: Object.keys(apps), signal }),
 		recordCapture: async () => [],
@@ -829,7 +829,9 @@ describe("an app port held by a server failing its health check", () => {
 			process.execPath,
 			[
 				"-e",
-				'const s = Bun.serve({port: 0, fetch: () => new Response("broken", {status: 500})}); console.log(s.port)',
+				// Print as a string so `FORCE_COLOR` (set by `bun test --parallel`
+				// under a TTY) does not wrap the port number in ANSI escapes.
+				'const s = Bun.serve({port: 0, fetch: () => new Response("broken", {status: 500})}); console.log(String(s.port))',
 			],
 			{ cwd: root, detached: true, stdio: ["ignore", "pipe", "ignore"] },
 		);

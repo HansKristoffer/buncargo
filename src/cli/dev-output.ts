@@ -11,7 +11,7 @@ import {
 	watchRestartRequests,
 	watchSendRequests,
 } from "./restart-requests";
-import { RunTui, type TuiAction } from "./tui/run-tui";
+import type { RunTui, TuiAction } from "./tui/run-tui";
 
 /** What `runDevFlow` needs of the environment to show a run's output. */
 export interface DevOutputSource {
@@ -30,15 +30,15 @@ export interface DevOutputSource {
  * two writers on one screen is the garbling the TUI exists to end. Both write
  * the log files and answer `buncargo restart`.
  */
-export function openDevOutput(
+export async function openDevOutput(
 	env: DevOutputSource,
 	apps: Record<string, ResolvedApp>,
 	options: { tui: "auto" | "on" | "off" },
-): {
+): Promise<{
 	output: RunOutput;
 	start(): void;
 	stop(): Promise<void>;
-} {
+}> {
 	let logs: AppLogs | undefined;
 	try {
 		logs = new AppLogs(env.root, env.sessionId);
@@ -56,17 +56,21 @@ export function openDevOutput(
 	const useTui = options.tui !== "off" && terminal && names.length > 0;
 
 	// In the TUI every app gets a terminal of its own, sized to its pane.
+	// Load the TUI modules only when a terminal actually draws it, so detached,
+	// CI and stream runs skip parsing them.
 	const output = new RunOutput({ terminals: useTui ? "pty" : "pipe", logs });
-	const tui = useTui
-		? new RunTui({
-				output,
-				apps: names,
-				urlFor: (app) => environmentOpenUrl(env, app),
-				actions,
-				logPath: (app) => (app ? logs?.file(app) : logs?.dir),
-				quit: () => process.kill(process.pid, "SIGINT"),
-			})
-		: undefined;
+	let tui: RunTui | undefined;
+	if (useTui) {
+		const { RunTui: RunTuiClass } = await import("./tui/run-tui");
+		tui = new RunTuiClass({
+			output,
+			apps: names,
+			urlFor: (app) => environmentOpenUrl(env, app),
+			actions,
+			logPath: (app) => (app ? logs?.file(app) : logs?.dir),
+			quit: () => process.kill(process.pid, "SIGINT"),
+		});
+	}
 
 	const stopPrinting = tui
 		? undefined
@@ -126,9 +130,11 @@ export function openDevOutput(
 		start: () => tui?.start(),
 		stop: async () => {
 			// Before either view goes: what the apps left on screen reaches it,
-			// as it does the log files.
+			// as it does the log files. Dispose virtual terminals after the TUI
+			// releases its markers.
 			await output.close();
 			tui?.stop();
+			output.dispose();
 			stopStream();
 			stopWatching();
 		},

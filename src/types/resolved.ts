@@ -5,6 +5,7 @@ import type {
 	DockerComposeServiceRaw,
 	DockerPresetName,
 	HealthCheckFn,
+	ResolvedMinioBucket,
 	ServiceConfig,
 	ServiceEnvValueSource,
 	UrlBuilderFn,
@@ -113,6 +114,8 @@ interface ResolvedServiceBase {
 	/** The env vars it derives, the preset's and its own `env`, by name. */
 	env: Readonly<Record<string, ServiceEnvValueSource>>;
 	staticEnv?: EnvValues;
+	/** Buckets created idempotently once MinIO is ready. */
+	buckets?: readonly ResolvedMinioBucket[];
 }
 
 interface ResolvedServiceEndpoint {

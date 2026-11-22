@@ -1,5 +1,5 @@
-import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { promiseTimeout, typedSwitch } from "hanzio";
 import { containerPortOwners } from "../../container-runtime/containers";
@@ -18,11 +18,16 @@ import {
 	readProcessIdentitiesAsync,
 } from "../process-identity";
 import {
+	emptyListenerSnapshot,
 	type ListenerSnapshot,
+	type ListeningInodesByPort,
+	readLinuxListeningInodes,
+	readLinuxListeningInodesAsync,
 	readListenerSnapshot,
 	readListenerSnapshotAsync,
 	readProcessCwds,
 	readProcessCwdsAsync,
+	resolveLinuxInodeOwners,
 } from "./port-snapshot";
 
 /**
@@ -135,11 +140,18 @@ function parsePids(output: string): number[] {
 }
 
 function getListeningPids(port: number): number[] {
+	if (process.platform === "linux") {
+		return readListenerSnapshot([port]).pidsByPort.get(port) ?? [];
+	}
 	try {
-		const output = execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`, {
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-		});
+		const output = execFileSync(
+			"lsof",
+			["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"],
+			{
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+			},
+		);
 		return parsePids(output);
 	} catch {
 		return [];
@@ -217,17 +229,38 @@ export interface PortOwnerSnapshot {
 
 interface SnapshotOptions {
 	/**
-	 * Ports this snapshot will be asked about.
+	 * Exhaustive list of ports this snapshot will be asked about.
 	 *
-	 * Only used to batch the working-directory lookup, which is the one
-	 * question that still needs a call per group of processes. Leaving it
-	 * out is correct, just one extra `lsof` per distinct owner.
+	 * When supplied and every port is already covered by `containers`, host
+	 * listener lookup is skipped completely. Callers that may probe ports
+	 * beyond an initial set (port allocation, `status` planning) pass
+	 * `cwdPorts` instead and leave `ports` unset.
 	 */
 	ports?: number[];
+	/**
+	 * Ports whose working directories should be pre-batched up front. Defaults
+	 * to `ports`; any other port resolves lazily if queried.
+	 */
+	cwdPorts?: number[];
 	includeCwd?: boolean;
 	listeners?: ListenerSnapshot;
 	containers?: Map<number, PortContainerOwner>;
 	cwds?: Map<number, string | undefined>;
+	/**
+	 * Linux-only lazy listening inodes from `/proc/net/tcp{,6}`. When supplied,
+	 * `/proc/<pid>/fd` is scanned only if a queried port actually listens.
+	 */
+	linuxInodes?: ListeningInodesByPort;
+}
+
+/** Ports in `ports` not already explained by `containers`. */
+function uncoveredPorts(
+	ports: readonly number[] | undefined,
+	containers: ReadonlyMap<number, PortContainerOwner> | undefined,
+): number[] | undefined {
+	if (!ports) return undefined;
+	if (!containers || containers.size === 0) return [...ports];
+	return ports.filter((port) => !containers.has(port));
 }
 
 /**
@@ -241,19 +274,53 @@ export function createPortOwnerSnapshot(
 	if (options.ports?.length === 0 && !options.listeners && !options.containers)
 		return { owner: () => null, isBusy: () => false };
 
-	const listeners = options.listeners ?? readListenerSnapshot();
 	const containers =
 		options.containers ??
 		(options.skipContainers ? new Map() : dockerContainerPortOwners());
-	const cwds = options.cwds ?? new Map<number, string | undefined>();
+	const neededPorts = uncoveredPorts(options.ports, containers);
 
-	let pendingBatch: number[] | undefined = options.ports
-		? [
-				...new Set(
-					options.ports.flatMap((port) => listeners.pidsByPort.get(port) ?? []),
-				),
-			]
-		: undefined;
+	let linuxInodes = options.linuxInodes;
+	const listeners: ListenerSnapshot = (() => {
+		if (options.listeners) return options.listeners;
+		if (neededPorts?.length === 0) return emptyListenerSnapshot();
+		if (linuxInodes !== undefined) return emptyListenerSnapshot();
+		// Read `/proc/net/tcp{,6}` unfiltered (<0.1ms) so probing any port
+		// works accurately; `/proc/<pid>/fd` stays lazy until a busy port hits.
+		linuxInodes = readLinuxListeningInodes();
+		return linuxInodes !== undefined
+			? emptyListenerSnapshot()
+			: readListenerSnapshot(neededPorts);
+	})();
+
+	const resolvedPorts = new Set<number>();
+	function ensurePortResolved(port: number): void {
+		if (!linuxInodes || resolvedPorts.has(port)) return;
+		resolvedPorts.add(port);
+		const inodes = linuxInodes.get(port);
+		if (!inodes || inodes.length === 0) return;
+		// Resolve every listening inode on the first busy hit so multiple busy
+		// ports across the snapshot still cost at most one `/proc/<pid>/fd` scan.
+		const resolved = resolveLinuxInodeOwners(linuxInodes);
+		for (const [p, pids] of resolved.pidsByPort) {
+			listeners.pidsByPort.set(p, pids);
+		}
+		for (const [pid, cmd] of resolved.commandByPid) {
+			listeners.commandByPid.set(pid, cmd);
+		}
+		linuxInodes = undefined;
+	}
+
+	const cwds = options.cwds ?? new Map<number, string | undefined>();
+	const batchSource = options.cwdPorts ?? options.ports;
+
+	let pendingBatch: number[] | undefined =
+		batchSource && !linuxInodes
+			? [
+					...new Set(
+						batchSource.flatMap((port) => listeners.pidsByPort.get(port) ?? []),
+					),
+				]
+			: undefined;
 
 	function cwdFor(pid: number): string | undefined {
 		if (cwds.has(pid)) return cwds.get(pid);
@@ -271,10 +338,11 @@ export function createPortOwnerSnapshot(
 	}
 
 	function owner(port: number): PortOwner | null {
-		const pids = listeners.pidsByPort.get(port) ?? [];
-
 		const container = containers.get(port);
 		if (container) return { kind: "container", container };
+
+		ensurePortResolved(port);
+		const pids = listeners.pidsByPort.get(port) ?? [];
 
 		const primaryPid = pids[0];
 		if (primaryPid === undefined) return null;
@@ -289,8 +357,11 @@ export function createPortOwnerSnapshot(
 
 	return {
 		owner,
-		isBusy: (port) =>
-			(listeners.pidsByPort.get(port)?.length ?? 0) > 0 || containers.has(port),
+		isBusy: (port) => {
+			if (containers.has(port)) return true;
+			ensurePortResolved(port);
+			return (listeners.pidsByPort.get(port)?.length ?? 0) > 0;
+		},
 	};
 }
 
@@ -325,15 +396,65 @@ export async function createPortOwnerSnapshotAsync(
 			}),
 		);
 	};
+
+	// When the caller already listed containers and every asked port is owned
+	// by one, no host-listener reading is needed at all.
+	const neededPorts = uncoveredPorts(options.ports, options.containers);
+	const skipListeners =
+		options.listeners === undefined &&
+		options.containers !== undefined &&
+		neededPorts?.length === 0;
+
+	if (skipListeners) {
+		return createPortOwnerSnapshot({
+			...options,
+			listeners: emptyListenerSnapshot(),
+			containers: options.containers,
+			cwds: options.cwds ?? new Map(),
+		});
+	}
+
+	// On Linux, read `/proc/net/tcp{,6}` unfiltered in parallel with containers
+	// and keep `/proc/<pid>/fd` scanning lazy so free ports pay 0 fd scans and
+	// 0 forks while any probed port stays accurate.
+	if (!options.listeners && process.platform === "linux") {
+		const [linuxInodes, containers] = await Promise.all([
+			readLinuxListeningInodesAsync(options.signal),
+			readContainers(),
+		]);
+		if (linuxInodes !== undefined) {
+			return createPortOwnerSnapshot({
+				...options,
+				containers,
+				linuxInodes,
+			});
+		}
+		// `/proc/net` unavailable: fall back to `lsof`.
+		const listeners = await readListenerSnapshotAsync(
+			options.signal,
+			neededPorts,
+		);
+		return finishAsyncSnapshot(options, listeners, containers);
+	}
+
 	const [listeners, containers] = await Promise.all([
-		options.listeners ?? readListenerSnapshotAsync(options.signal),
+		options.listeners ?? readListenerSnapshotAsync(options.signal, neededPorts),
 		readContainers(),
 	]);
 
+	return finishAsyncSnapshot(options, listeners, containers);
+}
+
+async function finishAsyncSnapshot(
+	options: PortOwnerLookupOptions & SnapshotOptions & { signal?: AbortSignal },
+	listeners: ListenerSnapshot,
+	containers: Map<number, PortContainerOwner>,
+): Promise<PortOwnerSnapshot> {
 	// A container holds its port itself, so only process holders need a cwd.
+	const cwdScope = options.cwdPorts ?? options.ports;
 	const pids = [
 		...new Set(
-			(options.ports ?? [...listeners.pidsByPort.keys()]).flatMap((port) =>
+			(cwdScope ?? [...listeners.pidsByPort.keys()]).flatMap((port) =>
 				containers.has(port) ? [] : (listeners.pidsByPort.get(port) ?? []),
 			),
 		),
@@ -375,7 +496,7 @@ export async function getPortOwnerAsync(
 	port: number,
 	options: PortOwnerLookupOptions & { signal?: AbortSignal } = {},
 ): Promise<PortOwner | null> {
-	const listeners = await readListenerSnapshotAsync(options.signal);
+	const listeners = await readListenerSnapshotAsync(options.signal, [port]);
 	const snapshot = await createPortOwnerSnapshotAsync({
 		...options,
 		ports: [port],
@@ -390,7 +511,7 @@ export function getPortOwner(
 	port: number,
 	options: SyncPortOwnerOptions = {},
 ): PortOwner | null {
-	const listeners = readListenerSnapshot();
+	const listeners = readListenerSnapshot([port]);
 
 	return createPortOwnerSnapshot({
 		...options,
@@ -420,6 +541,31 @@ export function isPortInUse(
 	return getPortOwner(port, options) !== null;
 }
 
+/** Direct child pids of `pid` from Linux `/proc`, or `undefined` when unavailable. */
+function linuxChildPids(pid: number): number[] | undefined {
+	if (process.platform !== "linux") return undefined;
+	try {
+		const tasks = readdirSync(`/proc/${pid}/task`);
+		const children: number[] = [];
+		let readAny = false;
+		for (const tid of tasks) {
+			try {
+				const raw = readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8");
+				readAny = true;
+				for (const token of raw.trim().split(/\s+/)) {
+					const child = Number.parseInt(token, 10);
+					if (Number.isInteger(child) && child > 0) children.push(child);
+				}
+			} catch {
+				// Task exited mid-read, or kernel lacks CONFIG_PROC_CHILDREN.
+			}
+		}
+		return readAny ? children : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export function collectProcessTree(pid: number): number[] {
 	const seen = new Set<number>();
 	const stack = [pid];
@@ -429,8 +575,14 @@ export function collectProcessTree(pid: number): number[] {
 		if (current === undefined || seen.has(current)) continue;
 		seen.add(current);
 
+		const linuxChildren = linuxChildPids(current);
+		if (linuxChildren !== undefined) {
+			for (const child of linuxChildren) stack.push(child);
+			continue;
+		}
+
 		try {
-			const output = execSync(`pgrep -P ${current}`, {
+			const output = execFileSync("pgrep", ["-P", String(current)], {
 				encoding: "utf-8",
 				stdio: ["pipe", "pipe", "pipe"],
 			});
@@ -529,15 +681,22 @@ export async function killPortOwnerFoundBy(
 		signalProcessTree(pid, "SIGTERM");
 	}
 
-	const startTime = Date.now();
-	while (Date.now() - startTime < timeout) {
-		await promiseTimeout(100);
-		// Only the listeners: a full owner lookup also asks the container
-		// runtime and blocks the event loop ten times a second.
-		if (getListeningPids(port).length === 0) {
-			if (verbose) console.log(`   ✓ Port ${port} released`);
-			return true;
+	const waitReleased = async (budgetMs: number): Promise<boolean> => {
+		if (budgetMs <= 0) return getListeningPids(port).length === 0;
+		const deadline = Date.now() + budgetMs;
+		let delayMs = 10;
+		for (;;) {
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) return getListeningPids(port).length === 0;
+			await promiseTimeout(Math.min(delayMs, remaining));
+			if (getListeningPids(port).length === 0) return true;
+			delayMs = Math.min(100, delayMs * 2);
 		}
+	};
+
+	if (await waitReleased(timeout)) {
+		if (verbose) console.log(`   ✓ Port ${port} released`);
+		return true;
 	}
 
 	if (verbose) {
@@ -553,8 +712,7 @@ export async function killPortOwnerFoundBy(
 		if (isSameProcess) signalProcessTree(pid, "SIGKILL");
 	}
 
-	await promiseTimeout(500);
-	const released = getListeningPids(port).length === 0;
+	const released = await waitReleased(500);
 	if (verbose) {
 		console.log(
 			released

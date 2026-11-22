@@ -620,7 +620,9 @@ function parseProxyHealth(value: unknown): ProxyHealth | undefined {
 		typeof body.protocol !== "number" ||
 		body.protocol < MIN_HOSTS_PROTOCOL ||
 		!Array.isArray(body.hostnames) ||
-		!body.hostnames.every((entry) => typeof entry === "string") ||
+		!body.hostnames.every(
+			(entry): entry is string => typeof entry === "string",
+		) ||
 		typeof body.lastReloadAt !== "number"
 	) {
 		return { outdated: true };
@@ -629,7 +631,7 @@ function parseProxyHealth(value: unknown): ProxyHealth | undefined {
 	return {
 		protocol: body.protocol,
 		routeCount: typeof body.routes === "number" ? body.routes : 0,
-		hostnames: body.hostnames as string[],
+		hostnames: body.hostnames,
 		lastReloadAt: body.lastReloadAt,
 		...(typeof body.bindError === "string"
 			? { bindError: body.bindError }

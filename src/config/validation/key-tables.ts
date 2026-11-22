@@ -107,6 +107,7 @@ export const SERVICE_KEYS = {
 	password: "string",
 	env: "shape",
 	staticEnv: "shape",
+	buckets: "shape",
 	afterPreparation: "boolean",
 	docker: "shape",
 	external: "shape",

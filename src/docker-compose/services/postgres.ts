@@ -15,6 +15,23 @@ export type PostgresServiceConfig = ServiceConfig<{
 	DATABASE_URL: "url";
 }> & { port: number };
 
+/**
+ * Postgres 18+ images changed upstream `VOLUME` from `/var/lib/postgresql/data`
+ * to `/var/lib/postgresql` and expect `PGDATA` inside a subdirectory when a
+ * volume is mounted at `/var/lib/postgresql/data`. Existing pg16/pg17 volumes
+ * keep their layout untouched so nothing hides an existing database.
+ */
+function needsPostgres18Pgdata(image: string | undefined): boolean {
+	if (!image) return false;
+	const [withoutDigest] = image.split("@");
+	const slash = withoutDigest.lastIndexOf("/");
+	const colon = withoutDigest.indexOf(":", slash + 1);
+	if (colon === -1) return false;
+	const tag = withoutDigest.slice(colon + 1);
+	const match = /^(?:pg)?(\d+)(?:$|[.-])/.exec(tag);
+	return match !== null && Number.parseInt(match[1], 10) >= 18;
+}
+
 export const postgresDockerService = defineDockerService<
 	PostgresServiceOptions,
 	PostgresServiceConfig
@@ -47,6 +64,13 @@ export const postgresDockerService = defineDockerService<
 			retries: 20,
 		};
 
+		const overrideImage =
+			config.docker.kind === "preset"
+				? config.docker.override?.image
+				: undefined;
+		const needsSubdirPgdata =
+			runtime === "apple" || needsPostgres18Pgdata(overrideImage);
+
 		return {
 			service: {
 				image: "pgvector/pgvector:pg16",
@@ -58,10 +82,10 @@ export const postgresDockerService = defineDockerService<
 					POSTGRES_DB: database,
 					// Apple's named volumes are formatted block devices, so the
 					// mount root already holds a `lost+found` and `initdb`
-					// refuses a non-empty data directory. Docker's are plain
-					// directories, and moving them to a subdirectory would hide
-					// every existing project's database behind an empty one.
-					...(runtime === "apple"
+					// refuses a non-empty data directory; Postgres 18+ images
+					// also require PGDATA in a subdirectory. Docker on pg16/17
+					// keeps the root directory so existing databases stay intact.
+					...(needsSubdirPgdata
 						? { PGDATA: "/var/lib/postgresql/data/pgdata" }
 						: {}),
 				},

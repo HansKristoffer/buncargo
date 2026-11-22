@@ -16,21 +16,48 @@ import { formatWarn } from "../style";
  */
 
 const DEFAULT_IGNORE = ["**/node_modules/**", "**/.git/**", "**/.buncargo/**"];
-const DEFAULT_DEBOUNCE_MS = 150;
+const DEFAULT_DEBOUNCE_MS = 50;
+
+/** Compile ignore globs once so each fs event matches without allocating. */
+function compileIgnoreMatcher(
+	ignore: readonly string[] = [],
+): (path: string) => boolean {
+	const globs: Bun.Glob[] = [];
+	const seen = new Set<string>();
+	const add = (pattern: string) => {
+		if (seen.has(pattern)) return;
+		seen.add(pattern);
+		globs.push(new Bun.Glob(pattern));
+	};
+
+	for (const pattern of [...DEFAULT_IGNORE, ...ignore]) {
+		add(pattern);
+		// `dist/**` should also catch `dist` itself.
+		const bare = pattern.replace(/\/\*\*$/, "");
+		if (bare !== pattern) add(bare);
+	}
+
+	return (path: string) => {
+		const normalized = path.split("\\").join("/");
+		return globs.some((glob) => glob.match(normalized));
+	};
+}
+
+// Lazy so importing `buncargo/api` under Node (where `Bun` is absent) does not
+// touch `Bun.Glob` at module evaluation time.
+let cachedDefaultIgnoreMatcher: ((path: string) => boolean) | undefined;
+function getDefaultIgnoreMatcher(): (path: string) => boolean {
+	cachedDefaultIgnoreMatcher ??= compileIgnoreMatcher();
+	return cachedDefaultIgnoreMatcher;
+}
 
 /** Whether a changed path, relative to the app's directory, is ignored. */
 export function isIgnoredChange(
 	path: string,
 	ignore: readonly string[] = [],
 ): boolean {
-	const normalized = path.split("\\").join("/");
-
-	return [...DEFAULT_IGNORE, ...ignore].some(
-		(pattern) =>
-			new Bun.Glob(pattern).match(normalized) ||
-			// `dist/**` should also catch `dist` itself.
-			new Bun.Glob(pattern.replace(/\/\*\*$/, "")).match(normalized),
-	);
+	if (ignore.length === 0) return getDefaultIgnoreMatcher()(path);
+	return compileIgnoreMatcher(ignore)(path);
 }
 
 /**
@@ -47,6 +74,9 @@ export function watchApp(input: {
 }): void {
 	const { dir, config, signal } = input;
 	const watchers: FSWatcher[] = [];
+	const ignored = config.ignore?.length
+		? compileIgnoreMatcher(config.ignore)
+		: getDefaultIgnoreMatcher();
 	let changed: string | undefined;
 
 	// Names the first file of the burst, not the last.
@@ -57,7 +87,7 @@ export function watchApp(input: {
 	}, config.debounceMs ?? DEFAULT_DEBOUNCE_MS);
 
 	const schedule = (path: string) => {
-		if (signal.aborted || isIgnoredChange(path, config.ignore)) return;
+		if (signal.aborted || ignored(path)) return;
 		changed ??= path;
 		fire();
 	};

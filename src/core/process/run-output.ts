@@ -316,6 +316,19 @@ export class RunOutput {
 		this.logs?.flush();
 	}
 
+	/**
+	 * Release every virtual terminal and listener once views have detached.
+	 * Separate from {@link close} so a view (the TUI) can dispose its own
+	 * markers before the underlying `@xterm/headless` terminals are freed;
+	 * `tails` stays readable so failure reporting after `stop()` still sees
+	 * each app's last lines.
+	 */
+	dispose(): void {
+		for (const screen of this.screens.values()) screen.dispose();
+		this.screens.clear();
+		this.listeners.clear();
+	}
+
 	private emit(line: OutputLine): void {
 		if (!line.event) {
 			const tail = this.tails.get(line.app) ?? [];

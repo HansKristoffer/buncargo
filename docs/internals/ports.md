@@ -142,17 +142,19 @@ per port.
 
 ## Who holds a port
 
-- `process/port-snapshot.ts` is one reading of every TCP listener (`lsof -Fpcn`), and
+- `process/port-snapshot.ts` reads TCP listeners (`/proc/net/tcp{,6}` with lazy `/proc/<pid>/fd`
+  and `/proc/<pid>/cwd` on Linux, zero subprocesses; `lsof -Fpcn` on macOS), and
   `createPortOwnerSnapshot` in `port-owner.ts` answers "who holds this port" for many ports from
-  it. A dev run asks that question in four places (the allocator, the service preflight,
-  `classifyCliApps` and the spawner) and each answer used to cost an `lsof`, a container listing, a
-  `ps` and a second `lsof`, so a small config forked about thirty times before the first server
-  started. `status`, `doctor` and `ports pin` read one async snapshot for all their ports too: per
-  port, `status --json` used to fork six `lsof` and seven `docker ps`. The snapshot is created per
-  phase and thrown away; anything that changes ownership on purpose (`killPortOwner`, the
-  takeover) takes a fresh reading, and `getPortOwner` is that fresh reading for one port, built on
-  the same snapshot. The spawner takes one **per
-  wave**, because wave 2 runs after wave-1 servers have bound their ports.
+  it. When a caller already listed containers and they cover every asked port (the warm container
+  path), the host listener read is skipped altogether. A dev run asks that question in four places
+  (the allocator, the service preflight, `classifyCliApps` and the spawner) and each answer used to
+  cost an `lsof`, a container listing, a `ps` and a second `lsof`, so a small config forked about
+  thirty times before the first server started. `status`, `doctor` and `ports pin` read one async
+  snapshot for all their ports too: per port, `status --json` used to fork six `lsof` and seven
+  `docker ps`. The snapshot is created per phase and thrown away; `classifyCliApps` hands its fresh
+  snapshot directly to wave 1 when no takeover, prompt, expose or `beforeServers` hook intervened,
+  while later layers, wave 2, `killPortOwner` and takeovers take a fresh reading (`getPortOwner` is
+  that fresh reading for one port, built on the same snapshot).
 - `withBindProbe` (`process/port-owner.ts`) wraps the allocator's owner lookup: a port the lookup
   reports free but that will not bind on `127.0.0.1`, `0.0.0.0` or `::` is held by something `lsof`
   cannot show this user (a root macOS service) and is foreign. Every address is tried because they

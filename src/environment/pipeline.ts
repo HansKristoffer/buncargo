@@ -91,8 +91,8 @@ export interface AppPipelineDeps {
 	readonly unsetEnv: readonly string[] | undefined;
 	runtime(): ContainerRuntimeAdapter;
 	appEnv(name: string, production: boolean): Record<string, string>;
-	/** `beforeServers`/`afterServers`, told the prepared selection. */
-	runHook(phase: "before" | "after", signal?: AbortSignal): Promise<void>;
+	/** `beforeServers`/`afterServers`, told the prepared selection. Returns whether a hook ran. */
+	runHook(phase: "before" | "after", signal?: AbortSignal): Promise<boolean>;
 	waitForHealth(
 		apps: Record<string, ResolvedApp>,
 		production: boolean,

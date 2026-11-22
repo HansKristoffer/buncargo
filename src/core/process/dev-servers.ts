@@ -137,6 +137,12 @@ export interface StartDevServersOptions {
 	 * starts (see `port-drift.ts`). `false` turns it off. Default: the system.
 	 */
 	portDrift?: DriftProbe | false;
+	/**
+	 * A port-owner snapshot taken immediately before spawning wave 1 (by
+	 * `classifyCliApps`, when nothing was stopped or prompted since). Consumed
+	 * once by the first layer; later layers and wave 2 read fresh.
+	 */
+	initialPortOwners?: PortOwnerSnapshot;
 }
 
 function resolveAppEnv(
@@ -347,6 +353,7 @@ export async function startDevServers(
 	const closeOwnOutput = async () => {
 		if (options.output) return;
 		await output.close();
+		output.dispose();
 		stopPrinting?.();
 	};
 
@@ -458,6 +465,7 @@ export async function startDevServers(
 	/** Spared if it goes down now: `essential: false`, on probation, or parked. */
 	const spared = (name: string) =>
 		supervisor.life(name).standing !== "essential";
+	let pendingWave1Owners = options.initialPortOwners;
 
 	async function spawnWave(
 		wave: Record<string, ResolvedApp>,
@@ -468,15 +476,19 @@ export async function startDevServers(
 		// the first wave would be describing a machine that has since changed.
 		supervisor.signal.throwIfAborted();
 
-		const portOwners = await createPortOwnerSnapshotAsync({
-			signal: supervisor.signal,
-			runtime: options.runtime,
-			skipContainers: options.skipContainers,
-			ports: Object.keys(wave).flatMap((name) => {
-				const port = ports[name];
-				return port === undefined ? [] : [port];
-			}),
-		});
+		const suppliedOwners = pendingWave1Owners;
+		pendingWave1Owners = undefined;
+		const portOwners =
+			suppliedOwners ??
+			(await createPortOwnerSnapshotAsync({
+				signal: supervisor.signal,
+				runtime: options.runtime,
+				skipContainers: options.skipContainers,
+				ports: Object.keys(wave).flatMap((name) => {
+					const port = ports[name];
+					return port === undefined ? [] : [port];
+				}),
+			}));
 
 		const toStart: [string, ResolvedApp][] = [];
 		for (const [name, config] of Object.entries(wave)) {

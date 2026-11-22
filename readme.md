@@ -243,21 +243,20 @@ The data survives: it is imported from `.firebase-emulator-data` on start and ex
 
 ### Built-in service helpers
 
-All of `service.postgres()`, `redis()`, `clickhouse()`, `mailpit()`, `typesense()`, `minio()` accept `port`, `expose`, `healthCheck`, `serviceName`, and `docker`. Beyond that each takes only what it honors: `database` / `user` / `password` on `postgres` and `clickhouse` (their URLs carry credentials), `secondaryPort` on `clickhouse` and `mailpit`, `apiKey` on `typesense`, `user` / `password` on `minio` (the root credentials, `minioadmin` by default, also given to the apps as `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` beside `MINIO_URL`). Anything else is a type error. Use `service.custom({ ... })` for a service that needs more.
+All of `service.postgres()`, `redis()`, `clickhouse()`, `mailpit()`, `typesense()`, `minio()` accept `port`, `expose`, `healthCheck`, `serviceName`, and `docker`. Beyond that each takes only what it honors: `database` / `user` / `password` on `postgres` and `clickhouse` (their URLs carry credentials), `secondaryPort` on `clickhouse` and `mailpit`, `apiKey` on `typesense`, `user` / `password` / `buckets` on `minio` (the root credentials, `minioadmin` by default, also given to the apps as `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` beside `MINIO_URL`, and optional buckets created idempotently over MinIO's S3 API once it is ready, with an optional anonymous policy `"none" | "download" | "upload" | "public"`). Anything else is a type error. Use `service.custom({ ... })` for a service that needs more.
 
-Health check defaults follow what each image can actually run: `pg_isready` on postgres, `redis-cli` on redis, in-container HTTP on clickhouse, and `tcp` on mailpit, typesense and minio, whose images ship no `wget` or `curl` to probe with. A `tcp` check emits no Compose healthcheck and is polled from the host instead; minio keeps one that bash runs, so a job can wait for it.
+Health check defaults follow what each image can actually run: `pg_isready` on postgres, `redis-cli` on redis, in-container HTTP on clickhouse, and `tcp` on mailpit, typesense and minio, whose images ship no `wget` or `curl` to probe with. A `tcp` check emits no Compose healthcheck and is polled from the host instead; minio keeps one that bash runs, so a job can wait for it. Passing `buckets: ["app"]` (or `buckets: [{ name: "uploads", policy: "download" }]`) to `service.minio()` creates buckets directly without an extra init container, on both Docker and Apple `container`.
 
-`service.job({ docker })` is a container that runs to completion on every start, such as one that creates MinIO's bucket:
+`service.job({ docker })` is a container that runs to completion on every start, for any custom one-shot container init task:
 
 ```typescript
-minio: service.minio({ user: "app", password: "app-minio-dev" }),
-minioBucket: service.job({
+redis: service.redis(),
+redisInit: service.job({
 	docker: {
 		// A digest, not `latest`, so a warm start can skip `compose up`.
-		image: "cgr.dev/chainguard/minio-client@sha256:799a60aa839c0d79b53f1dccdddc974d0fe94282cca712fbfbad3b196f88d0ee",
-		command: ["mb", "--ignore-existing", "local/app"],
-		environment: { MC_HOST_local: "http://app:app-minio-dev@minio:9000" },
-		depends_on: { minio: { condition: "service_healthy" } },
+		image: "redis@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		command: ["redis-cli", "-h", "redis", "CONFIG", "SET", "notify-keyspace-events", "Ex"],
+		depends_on: { redis: { condition: "service_healthy" } },
 	},
 }),
 ```

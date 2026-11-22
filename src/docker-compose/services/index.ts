@@ -20,7 +20,7 @@ import {
 	clickhouseDockerService,
 } from "./clickhouse";
 import { type MailpitServiceOptions, mailpitDockerService } from "./mailpit";
-import { minioDockerService } from "./minio";
+import { type MinioServiceOptions, minioDockerService } from "./minio";
 import { type PostgresServiceOptions, postgresDockerService } from "./postgres";
 import { type RedisServiceOptions, redisDockerService } from "./redis";
 import {
@@ -40,6 +40,7 @@ const PRESET_SERVICES = {
 export type {
 	ClickhouseServiceOptions,
 	MailpitServiceOptions,
+	MinioServiceOptions,
 	PostgresServiceOptions,
 	RedisServiceOptions,
 	TypesenseServiceOptions,

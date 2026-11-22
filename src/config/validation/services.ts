@@ -124,6 +124,19 @@ export function validateServices(
 			);
 		}
 
+		if (service.buckets !== undefined) {
+			const resolvedService = resolved.get(name);
+			const isMinio =
+				!service.external &&
+				resolvedService?.kind === "container" &&
+				resolvedService.preset === "minio";
+			if (!isMinio) {
+				errors.push(
+					`Service "${name}" sets buckets, which only service.minio() supports.`,
+				);
+			}
+		}
+
 		const serviceEnvSources = resolved.get(name)?.env ?? {};
 		for (const [envName, source] of Object.entries(serviceEnvSources)) {
 			if (service.port === undefined && source !== "secondaryPort") {

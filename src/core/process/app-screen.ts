@@ -57,8 +57,10 @@ export class AppScreen {
 	/** Rows above the cursor held back as live. */
 	private live = 0;
 	private calm = 0;
-	/** What each recent row was sent as, so a redraw of the same text is not repeated. */
+	/** What each recent row was sent as, keyed by monotonic `lineBase + row`. */
 	private sent = new Map<number, string>();
+	/** Cumulative rows shifted off the top of the normal buffer. */
+	private lineBase = 0;
 	/** Scrollback rows `ESC[3J` removed since the last commit. */
 	private cleared = 0;
 	/**
@@ -204,9 +206,7 @@ export class AppScreen {
 		if (shift > 0) {
 			this.emitted = Math.max(0, this.emitted - shift);
 			this.low -= shift;
-			this.sent = new Map(
-				[...this.sent].map(([row, text]) => [row - shift, text]),
-			);
+			this.lineBase += shift;
 		}
 
 		this.cleared = 0;
@@ -243,8 +243,12 @@ export class AppScreen {
 			}
 		}
 
-		for (const row of this.sent.keys())
-			if (row < this.emitted - 500) this.sent.delete(row);
+		if (this.sent.size > 512) {
+			const cutoff = this.lineBase + this.emitted - 500;
+			for (const row of this.sent.keys()) {
+				if (row < cutoff) this.sent.delete(row);
+			}
+		}
 
 		this.low = Number.POSITIVE_INFINITY;
 		this.reach = 0;
@@ -266,8 +270,10 @@ export class AppScreen {
 		let pending: { row: number; text: string } | undefined;
 
 		const send = () => {
-			if (!pending || this.sent.get(pending.row) === pending.text) return;
-			this.sent.set(pending.row, pending.text);
+			if (!pending) return;
+			const key = this.lineBase + pending.row;
+			if (this.sent.get(key) === pending.text) return;
+			this.sent.set(key, pending.text);
 			this.onLine(pending.text);
 		};
 

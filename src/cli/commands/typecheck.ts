@@ -143,7 +143,7 @@ export const typecheckCommand = defineCommand({
 		const { withCheckSlot, formatCheckSlotWait, processCheckSlot } =
 			await import("../../core/check-slots");
 		const { withSignal } = await import("../../core/deadline");
-		const { runForwardingSignals } = await import("./exec");
+		const { runForwardingSignals } = await import("../signal-forward");
 		// Each check runs in its own process group, which the terminal's
 		// Ctrl-C does not reach: the signal is forwarded, or every `tsc` would
 		// outlive this process.

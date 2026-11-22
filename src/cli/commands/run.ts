@@ -7,7 +7,7 @@ import { BASE_EXITS, defineCommand } from "../command-spec";
 import { CliError } from "../errors";
 import * as log from "../log";
 import { commandSecretScopes } from "../secrets-scopes";
-import { runForwardingSignals, withAppendedArgs } from "./exec";
+import { runForwardingSignals, withAppendedArgs } from "../signal-forward";
 
 /** One row per task, for `buncargo run` and `buncargo help`. */
 export function formatTaskRows(

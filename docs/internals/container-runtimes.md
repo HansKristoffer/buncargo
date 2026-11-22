@@ -25,10 +25,12 @@ The sweep and volume pruning live in `container-runtime/` too; see
 - `buildComposeModel` takes the *resolved* `ContainerRuntimeName`, not the configured selection,
   because `docker.runtime` may still say `"auto"` at that point. It exists for the few places the
   runtimes genuinely differ: the postgres preset sets `PGDATA` to a subdirectory on Apple, whose
-  named volumes are formatted block devices carrying a `lost+found` that `initdb` refuses. Docker's
-  are plain directories, and moving them would hide every existing project's database behind an
-  empty one. A preset that branches on this for anything cosmetic is not worth the ambiguity it
-  adds to the generated model.
+  named volumes are formatted block devices carrying a `lost+found` that `initdb` refuses. On
+  Docker, Postgres 16/17 volumes keep the root mount so existing databases stay visible, while
+  Postgres 18+ images (whose upstream `VOLUME` moved to `/var/lib/postgresql`) also set `PGDATA`
+  to `/var/lib/postgresql/data/pgdata` unless the user set `PGDATA` explicitly. A preset that
+  branches on runtime for anything cosmetic is not worth the ambiguity it adds to the generated
+  model.
 
 ## The seam
 

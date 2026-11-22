@@ -501,7 +501,7 @@ Both backends use `dev.config.ts`, the generated Compose model, inspection comma
 - A container name longer than 63 characters, the most Apple accepts, is shortened and ends in a hash of the full name.
 - Memory and CPU default to Apple's 1 GiB and 4 CPUs per container. Set `mem_limit` and `cpus` on a service that needs more.
 
-`service.postgres()` needs no special handling: Apple's named volumes are formatted filesystems, so a fresh one already contains `lost+found` and `initdb` refuses to use it as a data directory, and on this runtime the preset points `PGDATA` at a subdirectory of the mount for you. Docker's named volumes start empty and keep the mount root, so an existing project's data stays where it is.
+`service.postgres()` needs no special handling: Apple's named volumes are formatted filesystems, so a fresh one already contains `lost+found` and `initdb` refuses to use it as a data directory, and Postgres 18+ images expect `PGDATA` in a subdirectory too; the preset points `PGDATA` at `/var/lib/postgresql/data/pgdata` automatically in both cases. Docker on Postgres 16/17 keeps the mount root, so an existing project's data stays where it is.
 
 ## Startup speed
 
@@ -844,7 +844,7 @@ process when a file under `paths` (relative to the app's `cwd`) changes: the
 supervisor sends SIGTERM, waits for the exit and spawns it again. Use it instead
 of `bun --watch`, which on macOS keeps about 3,000 file descriptors per reload
 until the machine's file table fills. `node_modules`, `.git` and `.buncargo`
-are always ignored; changes within `debounceMs` (150) restart once. Watching
+are always ignored; changes within `debounceMs` (50) restart once. Watching
 starts once the run is up. `dev --no-watch` turns it off for one run.
 
 A restarted app, by `watch`, `restartOn` or by hand, has to become ready again
@@ -1607,6 +1607,7 @@ Use the top-level `env` overlay for shared values (rewritten `WEB_URL`, `VITE_*`
 | `password` | `string` | `postgres` / `clickhouse` | The preset's password. Presets only |
 | `env` | `Record<string, "url" \| "port" \| "secondaryPort">` | preset aliases | Shared env outputs |
 | `staticEnv` | `Record<string, string>` | `{}` | Constant shared env (API keys, `SMTP_HOST`) |
+| `buckets` | `readonly (string \| { name, policy? })[]` | `undefined` | For `service.minio()`: buckets created idempotently over MinIO's S3 API once ready, with optional anonymous policy (`"none"`, `"download"`, `"upload"`, `"public"`) |
 | `docker` | preset helper or raw Compose service | the preset its key names, for a key `postgres`/`redis`/`clickhouse`/`mailpit`/`typesense`/`minio` | Image, ports, healthcheck, volumes. A raw definition is taken as written, under any key |
 | `external` | `{ stack, preset? }` | `undefined` | Provided by an integration's stack (the Supabase CLI) instead of the Compose file: allocated a port, URL and env, never written to Compose. `preset` says what it is (TablePlus link), without the preset's default env. Selecting one of a stack's services selects them all |
 
