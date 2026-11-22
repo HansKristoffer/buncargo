@@ -24,11 +24,14 @@ for (const beforeApps of [undefined, false] as const) {
 			const events = (await Bun.file(join(fixture.root, "events")).text())
 				.trim()
 				.split("\n");
-			expect(events).toEqual(
-				beforeApps === false
-					? ["seed begin", "app", "seed end"]
-					: ["seed begin", "seed end", "app"],
-			);
+			if (beforeApps === false) {
+				// Both start concurrently, so either may log its first line first;
+				// what overlap guarantees is that `app` runs before `seed end`.
+				expect(events.at(-1)).toBe("seed end");
+				expect(events.slice(0, -1).sort()).toEqual(["app", "seed begin"]);
+			} else {
+				expect(events).toEqual(["seed begin", "seed end", "app"]);
+			}
 			expect(ready).toEqual([true]);
 			expect((await fetch(`http://localhost:${fixture.port}`)).ok).toBe(true);
 		} finally {
