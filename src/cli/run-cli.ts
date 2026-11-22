@@ -105,8 +105,8 @@ import {
 import { CliError } from "./errors";
 import * as log from "./log";
 import {
+	type ClassifiedCliApps,
 	classifyCliApps,
-	type UnhealthyApp,
 	unhealthyAppMessage,
 } from "./port-reuse";
 import { runPreflight } from "./preflight";
@@ -487,14 +487,7 @@ async function confirmDestructiveMode(
 }
 
 /** How the apps a run selected divide: started here, or reused from another process. */
-export interface ClassifiedApps {
-	readonly startApps: Record<string, ResolvedApp>;
-	readonly reusedApps: Record<string, ResolvedApp>;
-	readonly startNames: string[];
-	readonly reusedNames: string[];
-	readonly inferredReuseNames: string[];
-	readonly unhealthy: UnhealthyApp[];
-}
+export type ClassifiedApps = Readonly<ClassifiedCliApps>;
 
 /** The classification once the takeover moved `taken` here: started, no longer reused. */
 export function withTakenOver(
@@ -779,10 +772,12 @@ async function runDevFlow<
 	let takeover = initialTakeover(
 		args.values.takeover && !isOneShot(args.values),
 	);
+	let wave1PortOwners = classifiedApps.portOwners;
 	async function takeOver(candidates: TakeoverCandidates) {
 		// Never begun once interrupted: it kills the other run's servers, and
 		// an interrupted run would not start them here.
 		signal.throwIfAborted();
+		wave1PortOwners = undefined;
 		takeover = acceptTakeover(takeover, candidates.names);
 		log.line();
 		await stopRunningApps(candidates.names, env.ports, {
@@ -842,6 +837,7 @@ async function runDevFlow<
 
 	// Never in a one-shot mode (`DevArgs.ignoredFlags`).
 	if (exposeRequested(args.values)) {
+		wave1PortOwners = undefined;
 		await tunnels.planExpose({
 			exposeValue: exposeTargets(args.values),
 			appsRequested: selectedAppNames !== undefined,
@@ -909,8 +905,11 @@ async function runDevFlow<
 		sharing: connect?.active === true,
 	});
 	const askTakeover = offerTakeover && isInteractive();
-	if (askTakeover && (await promptTakeover(running.names))) {
-		await takeOver(running);
+	if (askTakeover) {
+		wave1PortOwners = undefined;
+		if (await promptTakeover(running.names)) {
+			await takeOver(running);
+		}
 	}
 
 	flushHostsWarnings();
@@ -925,6 +924,15 @@ async function runDevFlow<
 	// and `env.urls` may still hold the localhost fallback from the refused
 	// first activation.
 	signal.throwIfAborted();
+	// Exclusive-lease apps may prompt the user or stop another run's app inside
+	// `claimApps`, aging the earlier port snapshot.
+	if (
+		Object.values(classifiedApps.startApps).some(
+			(app) => app.exclusive !== undefined,
+		)
+	) {
+		wave1PortOwners = undefined;
+	}
 	const claimed = await pipeline.claimApps(prepared, {
 		apps: classifiedApps.startApps,
 		reused: classifiedApps.reusedApps,
@@ -994,7 +1002,7 @@ async function runDevFlow<
 	const holds = next === "hold";
 	const appsElapsed = startTimer();
 	let firstSpawn = false;
-	const view = openDevOutput(env, classifiedApps.startApps, {
+	const view = await openDevOutput(env, classifiedApps.startApps, {
 		tui: tuiMode(args.values),
 	});
 	failureContext.output = view.output;
@@ -1047,6 +1055,7 @@ async function runDevFlow<
 
 		await pipeline.spawn(claimed, {
 			signal,
+			initialPortOwners: wave1PortOwners,
 			prepare: holds
 				? async (sessionSignal) => {
 						await tunnels.openOwnedTunnels(sessionSignal);

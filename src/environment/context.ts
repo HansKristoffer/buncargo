@@ -18,10 +18,7 @@ import {
 	offsetClaimKey,
 	readAllOffsetClaims,
 } from "../core/offset-claims";
-import {
-	allocatePortBlock,
-	candidateAllocationPorts,
-} from "../core/port-allocation";
+import { allocatePortBlock } from "../core/port-allocation";
 import {
 	computeLoopbackUrls,
 	computeUrls,
@@ -494,23 +491,14 @@ export function createDevEnvContext(
 				);
 			}
 
-			const candidatePorts = candidateAllocationPorts(
-				{
-					projectPrefix: config.projectPrefix,
-					worktreeName: worktreeSuffix,
-					suffix,
-					worktreeIsolation: config.options?.worktreeIsolation,
-					services,
-					apps,
-					probeNames: selectedRuntime ? undefined : plan.appNames,
-				},
-				portPlan.offset,
-			);
+			// Leave `ports` unset: when the 90 hashed blocks are exhausted,
+			// allocation climbs past `HASHED_OFFSET_MAX` and must still see host
+			// listeners there. Pre-batch working directories for this block only.
 			const snapshot =
 				portOffsetOverride() === undefined
 					? await createPortOwnerSnapshotAsync({
 							runtime: selectedRuntime,
-							ports: candidatePorts,
+							cwdPorts: Object.values(portPlan.ports),
 							skipContainers: !selectedRuntime,
 							signal,
 						})

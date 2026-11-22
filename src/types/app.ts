@@ -135,7 +135,7 @@ export interface AppWatchConfig {
 	 * `node_modules`, `.git` and `.buncargo`.
 	 */
 	ignore?: readonly string[];
-	/** Changes this close together restart once. Default: 150 ms. */
+	/** Changes this close together restart once. Default: 50 ms. */
 	debounceMs?: number;
 }
 

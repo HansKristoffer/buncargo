@@ -79,11 +79,13 @@ it.each([
 				expect(stripVTControlCharacters(output)).toMatch(/seed\s+seed output/);
 				// Stream mode writes the seed to the run's logs, as the TUI does.
 				expect(await seedLog(fixture.root, deadline)).toContain("seed output");
-				expect(
-					(await Bun.file(join(fixture.root, "events")).text())
-						.trim()
-						.split("\n"),
-				).toEqual(["seed begin", "app", "seed end"]);
+				// Both start concurrently, so either may log its first line first;
+				// what overlap guarantees is that `app` runs before `seed end`.
+				const events = (await Bun.file(join(fixture.root, "events")).text())
+					.trim()
+					.split("\n");
+				expect(events.at(-1)).toBe("seed end");
+				expect(events.slice(0, -1).sort()).toEqual(["app", "seed begin"]);
 				const report = JSON.parse(
 					output
 						.split("\n")

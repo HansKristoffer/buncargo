@@ -40,18 +40,30 @@ function color(code: number, rgb: boolean, palette: boolean, base: number) {
 }
 
 function cellStyle(cell: IBufferCell): string {
-	const codes: (string | undefined)[] = [
-		cell.isBold() ? "1" : undefined,
-		cell.isDim() ? "2" : undefined,
-		cell.isItalic() ? "3" : undefined,
-		cell.isUnderline() ? "4" : undefined,
-		cell.isInverse() ? "7" : undefined,
-		cell.isInvisible() ? "8" : undefined,
-		cell.isStrikethrough() ? "9" : undefined,
-		color(cell.getFgColor(), cell.isFgRGB(), cell.isFgPalette(), 30),
-		color(cell.getBgColor(), cell.isBgRGB(), cell.isBgPalette(), 40),
-	];
-	return codes.filter(Boolean).join(";");
+	// Fast path: plain unstyled cells (most of every terminal frame) allocate nothing.
+	if (cell.isAttributeDefault() && cell.isFgDefault() && cell.isBgDefault()) {
+		return "";
+	}
+
+	let out = "";
+	const add = (code: string | undefined) => {
+		if (code) out = out ? `${out};${code}` : code;
+	};
+
+	if (cell.isBold()) add("1");
+	if (cell.isDim()) add("2");
+	if (cell.isItalic()) add("3");
+	if (cell.isUnderline()) add("4");
+	if (cell.isInverse()) add("7");
+	if (cell.isInvisible()) add("8");
+	if (cell.isStrikethrough()) add("9");
+	if (!cell.isFgDefault()) {
+		add(color(cell.getFgColor(), cell.isFgRGB(), cell.isFgPalette(), 30));
+	}
+	if (!cell.isBgDefault()) {
+		add(color(cell.getBgColor(), cell.isBgRGB(), cell.isBgPalette(), 40));
+	}
+	return out;
 }
 
 /** One row of an app's virtual screen as SGR text, `width` columns wide. */

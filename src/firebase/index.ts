@@ -102,12 +102,28 @@ export interface FirebaseIntegrationOptions {
 }
 
 /**
+ * Longest Unix domain socket the Functions emulator creates inside `TMPDIR`,
+ * and macOS's `sockaddr_un.sun_path` limit (103 bytes + NUL).
+ */
+const MAX_UNIX_SOCKET_BYTES = 103;
+const FUNCTIONS_SOCKET_RESERVE = `/fire_emu_${"0".repeat(16)}.sock`.length;
+
+/**
  * The suite's temp dir, one per checkout (see `appEnv`). Short, under the
  * system's: the Functions emulator puts a Unix socket here, and a socket path
- * past 103 bytes (macOS) is cut off, which a deep worktree's root would do.
+ * past 103 bytes (macOS) is cut off, which a deep worktree's root or a long
+ * sandbox `TMPDIR` would do. Falls back to `/tmp` when `tmpdir()` leaves no
+ * room for the socket name.
  */
 export function emulatorTmpDir(root: string): string {
-	return join(tmpdir(), `bcfb-${workspaceId(root).slice(0, 8)}`);
+	const folder = `bcfb-${workspaceId(root).slice(0, 8)}`;
+	const preferred = join(tmpdir(), folder);
+	const preferredBytes =
+		Buffer.byteLength(preferred) + FUNCTIONS_SOCKET_RESERVE;
+	if (preferredBytes <= MAX_UNIX_SOCKET_BYTES || process.platform === "win32") {
+		return preferred;
+	}
+	return join("/tmp", folder);
 }
 
 /**

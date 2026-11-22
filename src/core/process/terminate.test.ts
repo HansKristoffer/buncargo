@@ -49,7 +49,11 @@ describe("terminateOwnedProcess", () => {
 			);
 			let finished = false;
 			const stopping = terminateOwnedProcess(
-				{ pid, exitCode: null, signalCode: null } as ChildProcess,
+				Object.assign(new EventEmitter(), {
+					pid,
+					exitCode: null,
+					signalCode: null,
+				}) as unknown as ChildProcess,
 				graceMs,
 			).then(() => {
 				finished = true;
@@ -86,7 +90,11 @@ describe("terminateOwnedProcess", () => {
 		try {
 			await expect(
 				terminateOwnedProcess(
-					{ pid, exitCode: null, signalCode: null } as ChildProcess,
+					Object.assign(new EventEmitter(), {
+						pid,
+						exitCode: null,
+						signalCode: null,
+					}) as unknown as ChildProcess,
 					0,
 				),
 			).rejects.toThrow(`Process group ${pid} did not exit after SIGKILL`);
@@ -129,7 +137,11 @@ describe("terminateOwnedProcess", () => {
 		);
 		try {
 			await terminateOwnedProcess(
-				{ pid, exitCode: 0, signalCode: null } as ChildProcess,
+				Object.assign(new EventEmitter(), {
+					pid,
+					exitCode: 0,
+					signalCode: null,
+				}) as unknown as ChildProcess,
 				0,
 			);
 			expect(signals).toEqual([[-pid, 0]]);

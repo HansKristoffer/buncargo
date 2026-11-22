@@ -69,9 +69,13 @@ async function readStatus(): Promise<StatusJson> {
 	// containers this checkout has, where each used to be a `docker ps` of
 	// its own per port.
 	const listing = await readContainerListing(runtime);
+	// `planPortOffset` probes shifted blocks beyond `env.ports` when the offset
+	// is still an unprobed hash, so only pass `ports` as exhaustive otherwise.
+	const envPorts = Object.values(env.ports as Record<string, number>);
 	const snapshot = await createPortOwnerSnapshotAsync({
 		runtime,
-		ports: Object.values(env.ports as Record<string, number>),
+		ports: env.portOffsetProvenance === "hash" ? undefined : envPorts,
+		cwdPorts: envPorts,
 		containers: "inventory" in listing ? listing.portOwners : undefined,
 	});
 	const ownerOf = withBindProbe((port) => snapshot.owner(port));

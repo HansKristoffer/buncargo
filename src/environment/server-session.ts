@@ -14,8 +14,8 @@ export interface ServerSessionSource {
 	root: string;
 	ports: Record<string, number>;
 	appEnv(name: string): Record<string, string>;
-	/** `beforeServers`/`afterServers`; bounds its own wait. */
-	runHook(phase: "before" | "after", signal?: AbortSignal): Promise<void>;
+	/** `beforeServers`/`afterServers`; bounds its own wait. Returns whether a hook ran. */
+	runHook(phase: "before" | "after", signal?: AbortSignal): Promise<boolean>;
 	/** Calls `onAppReady` as each app comes up, before the whole set is. */
 	waitForHealth(
 		apps: Record<string, ResolvedApp>,
@@ -74,7 +74,11 @@ export async function startServerSession(
 			return {};
 		}
 
-		await source.runHook("before", signal);
+		const beforeHookRan = await source.runHook("before", signal);
+		const freshPortOwners =
+			!beforeHookRan && !options.productionBuild
+				? options.initialPortOwners
+				: undefined;
 		return await startDevServers(
 			apps,
 			source.root,
@@ -82,6 +86,7 @@ export async function startServerSession(
 			source.ports,
 			{
 				...options,
+				initialPortOwners: freshPortOwners,
 				signal,
 				waitForHealth: async (wave, signal, onAppReady) => {
 					await source.waitForHealth(wave, signal, onAppReady);

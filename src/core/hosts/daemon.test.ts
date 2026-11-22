@@ -10,11 +10,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	CERTIFICATE_RECHECK_MS,
+	createCachedRoutePruner,
 	createHostsReloader,
 	createStallHandler,
+	HOSTS_RECHECK_MS,
 	type HostsReloaderDeps,
 	nextReloadDelayMs,
 	RELOAD_STALL_MS,
+	SERVICE_CHECKOUT_RECHECK_MS,
 	STALLED_EXIT_MS,
 	truncateOversizedLog,
 } from "./daemon";
@@ -716,6 +719,117 @@ describe("createHostsReloader", () => {
 
 		expect(state.syncedHostnames).toEqual([]);
 		expect(state.binds).toBe(1);
+	});
+
+	it("skips redundant /etc/hosts syncs on unchanged idle polls until recheck or route change", async () => {
+		const { state, reloader } = reloaderHarness();
+		state.routes = [route("web.demo.localhost", 5173)];
+
+		await reloader.reload("startup");
+		await reloader.reload("poll");
+		await reloader.reload("poll");
+		expect(state.syncedHostnames).toHaveLength(1);
+
+		// A refresh or periodic recheck still syncs.
+		state.clock += HOSTS_RECHECK_MS;
+		await reloader.reload("poll");
+		expect(state.syncedHostnames).toHaveLength(2);
+
+		// A route change syncs immediately.
+		state.routes = [...state.routes, route("api.demo.localhost", 3000)];
+		await reloader.reload("poll");
+		expect(state.syncedHostnames).toHaveLength(3);
+	});
+});
+
+describe("createCachedRoutePruner", () => {
+	it("skips locked prunes while routes.json is unchanged and owners stay live", async () => {
+		let stamp = "1:100:50";
+		let now = 0;
+		let alive = true;
+		let prunes = 0;
+		const pruner = createCachedRoutePruner({
+			stamp: () => stamp,
+			isAlive: () => alive,
+			now: () => now,
+			prune: async () => {
+				prunes++;
+				return [
+					{
+						kind: "app",
+						hostname: "web.demo.localhost",
+						port: 5173,
+						name: "web",
+						root: "/repo",
+						pid: 42,
+					},
+					{
+						kind: "service",
+						hostname: "mail.demo.localhost",
+						port: 8025,
+						name: "mailpit",
+						root: "/repo",
+					},
+				];
+			},
+		});
+
+		await pruner("startup");
+		expect(prunes).toBe(1);
+
+		// Unchanged idle polls skip the lock.
+		await pruner("poll");
+		await pruner("poll");
+		expect(prunes).toBe(1);
+
+		// Refresh always runs a full prune.
+		await pruner("refresh");
+		expect(prunes).toBe(2);
+
+		// File modification invalidates the cache.
+		stamp = "1:200:55";
+		await pruner("poll");
+		expect(prunes).toBe(3);
+
+		// A dead app owner invalidates the cache immediately.
+		alive = false;
+		await pruner("poll");
+		expect(prunes).toBe(4);
+
+		// Periodic static-service checkout recheck triggers after its window.
+		alive = true;
+		now += SERVICE_CHECKOUT_RECHECK_MS;
+		await pruner("poll");
+		expect(prunes).toBe(5);
+	});
+
+	it("re-prunes on the next poll when routes.json changes while a prune is in flight", async () => {
+		let stamp = "1:100:50";
+		let prunes = 0;
+		const pruner = createCachedRoutePruner({
+			stamp: () => stamp,
+			isAlive: () => true,
+			now: () => 0,
+			prune: async () => {
+				prunes++;
+				if (prunes === 1) {
+					// Simulate a concurrent CLI write after `prune()` released the lock.
+					stamp = "1:200:80";
+				}
+				return [];
+			},
+		});
+
+		await pruner("startup");
+		expect(prunes).toBe(1);
+
+		// Must not treat stamp `1:200:80` as cached from the pre-write prune.
+		await pruner("poll");
+		expect(prunes).toBe(2);
+
+		// Now that the file stayed stable across prune #2, idle polls hit cache.
+		await pruner("poll");
+		expect(prunes).toBe(2);
 	});
 });
 

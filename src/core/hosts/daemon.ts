@@ -28,11 +28,21 @@ import {
 	createProxyActivityRecorder,
 	writeProxyActivity,
 } from "./proxy-activity";
-import { pruneHostRoutes } from "./registry";
+import { type HostsRoute, pruneHostRoutes } from "./registry";
 import { HOSTS_SERVICE_LOG } from "./service-files";
 
 const IDLE_EXIT_MS = 30_000;
 const RELOAD_INTERVAL_MS = 1000;
+/**
+ * How often `/etc/hosts` is re-verified while the registered hostnames have
+ * not changed, in case an external tool edited it.
+ */
+export const HOSTS_RECHECK_MS = 60_000;
+/**
+ * How often static service routes have their checkout directories re-checked
+ * on idle poll ticks when `routes.json` has not changed on disk.
+ */
+export const SERVICE_CHECKOUT_RECHECK_MS = 10_000;
 /**
  * How often the certificate is checked again while nothing changes.
  *
@@ -174,14 +184,15 @@ function exitDaemon(code: number): never {
 	process.exit(code);
 }
 
-type HostsReloadReason = "startup" | "poll" | "refresh" | "recovery" | "manual";
+export type HostsReloadReason =
+	"startup" | "poll" | "refresh" | "recovery" | "manual";
 
 export interface HostsReloaderDeps {
 	/** Optional diagnostics; never printed on the ordinary reload path. */
 	onReload?: (event: { reason: HostsReloadReason; count: number }) => void;
-	pruneRoutes: () => Promise<
-		Array<{ hostname: string; port: number; root: string }>
-	>;
+	pruneRoutes: (
+		reason?: HostsReloadReason,
+	) => Promise<Array<{ hostname: string; port: number; root: string }>>;
 	/**
 	 * A request was proxied to a route of this checkout: what a detached
 	 * run's idle limit counts (`proxy-activity.ts`).
@@ -247,6 +258,8 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	let stopped = false;
 	let reloadCount = 0;
 	let lastHostKey = "";
+	let lastSyncedHostKey: string | undefined;
+	let lastHostsSyncAt = Number.NEGATIVE_INFINITY;
 	let lastCertKey = "";
 	let idleSince: number | undefined;
 	let lastHostsFileFailure: string | undefined;
@@ -344,7 +357,7 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		// Load before clearing, so a registry that could not be read leaves the
 		// previous map serving. An unreadable file is not a file with no routes,
 		// and clearing first would 404 every named URL on the machine.
-		const loaded = servableRoutes(await deps.pruneRoutes());
+		const loaded = servableRoutes(await deps.pruneRoutes(reason));
 		if (stopped) return;
 
 		routeMap.clear();
@@ -373,11 +386,24 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 			idleSince = undefined;
 		}
 
-		try {
-			deps.syncHostsFile?.(hostnames);
-			lastHostsFileFailure = undefined;
-		} catch (error) {
-			reportHostsFileFailure("update", error);
+		// Only read/rewrite `/etc/hosts` when the hostname set changed, a
+		// refresh was asked, the previous write failed, or the periodic recheck
+		// window elapsed: reading `/etc/hosts` every second while idle wastes
+		// 86,400 reads/day.
+		const hostsSyncDue =
+			hostKey !== lastSyncedHostKey ||
+			lastHostsFileFailure !== undefined ||
+			reason === "refresh" ||
+			deps.now() - lastHostsSyncAt >= HOSTS_RECHECK_MS;
+		if (hostsSyncDue && deps.syncHostsFile) {
+			try {
+				deps.syncHostsFile(hostnames);
+				lastSyncedHostKey = hostKey;
+				lastHostsSyncAt = deps.now();
+				lastHostsFileFailure = undefined;
+			} catch (error) {
+				reportHostsFileFailure("update", error);
+			}
 		}
 
 		// Only the TLS material is baked into the listener; `lookup` reads the
@@ -518,6 +544,70 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	};
 }
 
+/** File fingerprint for `routes.json`, or `"missing"` when absent. */
+function routesFileStamp(path: string): string | undefined {
+	try {
+		const stat = statSync(path);
+		return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT"
+			? "missing"
+			: undefined;
+	}
+}
+
+/**
+ * Skips the registry lock and JSON parse on idle 1-second `"poll"` ticks when
+ * `routes.json` has not changed on disk, every cached app pid is still alive,
+ * and static service routes were checked recently. `"startup"`, `"refresh"`,
+ * `"recovery"` and `"manual"` always run a full locked prune.
+ */
+export function createCachedRoutePruner(deps: {
+	stamp: () => string | undefined;
+	prune: () => Promise<HostsRoute[]>;
+	isAlive: (pid: number) => boolean;
+	now: () => number;
+}): (reason?: HostsReloadReason) => Promise<HostsRoute[]> {
+	let lastStamp: string | undefined;
+	let cached: HostsRoute[] | undefined;
+	let lastServiceCheckAt = Number.NEGATIVE_INFINITY;
+
+	return async (reason) => {
+		const now = deps.now();
+		const currentStamp = deps.stamp();
+		if (
+			reason === "poll" &&
+			cached !== undefined &&
+			currentStamp !== undefined &&
+			currentStamp === lastStamp
+		) {
+			const hasService = cached.some((route) => route.kind === "service");
+			const serviceCheckDue =
+				hasService && now - lastServiceCheckAt >= SERVICE_CHECKOUT_RECHECK_MS;
+			const allAppsAlive = cached.every(
+				(route) => route.kind !== "app" || deps.isAlive(route.pid),
+			);
+			if (!serviceCheckDue && allAppsAlive) {
+				return cached;
+			}
+		}
+
+		const beforeStamp = deps.stamp();
+		const routes = await deps.prune();
+		const afterStamp = deps.stamp();
+		cached = routes;
+		// Only cache this stamp when the file stayed untouched across `prune()`.
+		// A concurrent CLI write after `prune()` released the file lock changes
+		// `afterStamp`, so leaving `lastStamp` unset forces the next poll to read it.
+		lastStamp =
+			beforeStamp !== undefined && afterStamp === beforeStamp
+				? beforeStamp
+				: undefined;
+		lastServiceCheckAt = deps.now();
+		return routes;
+	};
+}
+
 export async function runHostsDaemon(
 	options: { service?: boolean } = {},
 ): Promise<void> {
@@ -590,10 +680,16 @@ export async function runHostsDaemon(
 		log: logDaemonError,
 		exit: exitDaemon,
 	});
-	const reloader: HostsReloader = createHostsReloader({
+	const pruneRoutes = createCachedRoutePruner({
+		stamp: () => routesFileStamp(getRoutesPath()),
 		// Strict: an unreadable registry must reach the reloader as a failure,
 		// not as an empty list it would serve as "no routes".
-		pruneRoutes: () => pruneHostRoutes({ strict: true }),
+		prune: () => pruneHostRoutes({ strict: true }),
+		isAlive: isProcessAlive,
+		now: Date.now,
+	});
+	const reloader: HostsReloader = createHostsReloader({
+		pruneRoutes,
 		certificateFingerprint,
 		describeCertificateGap,
 		readCertificatePair,

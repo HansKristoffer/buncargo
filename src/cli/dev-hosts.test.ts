@@ -115,6 +115,15 @@ describe("reclaimAppRoute", () => {
 		await reclaimAppRoute({ root, hosts: null }, "web");
 		expect(await loadHostRoutes()).toEqual([]);
 	});
+
+	it("skips rewriting routes.json when this process already owns the intact route", async () => {
+		await reclaimAppRoute({ root, hosts: hosts(true) }, "web");
+		const before = statSync(getRoutesPath()).mtimeMs;
+
+		const warning = await reclaimAppRoute({ root, hosts: hosts(true) }, "web");
+		expect(warning).toBeUndefined();
+		expect(statSync(getRoutesPath()).mtimeMs).toBe(before);
+	});
 });
 
 /** A machine whose daemon is ready and serves whatever it is asked to. */

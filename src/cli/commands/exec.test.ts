@@ -12,7 +12,7 @@ import { join, resolve } from "node:path";
 import { offsetClaimsOf } from "../../core/offset-claims";
 import { execAsync } from "../../core/process";
 import { loadDevEnv } from "../../loader";
-import { withAppendedArgs } from "./exec";
+import { withAppendedArgs } from "../signal-forward";
 
 const cli = resolve(import.meta.dir, "../bin.ts");
 const roots: string[] = [];

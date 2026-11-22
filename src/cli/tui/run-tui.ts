@@ -63,6 +63,8 @@ const SIDEBAR_MIN = 18;
 const SIDEBAR_MAX = 32;
 const FRAME_MS = 33;
 const OVERVIEW_LINES = 10_000;
+/** Slack before trimming Overview lines, avoiding O(N) `shift()` per line. */
+const OVERVIEW_TRIM_SLACK = 500;
 /**
  * Leaving interact mode: Esc on its own, or Ctrl-] (what Turborepo and telnet
  * use, but out of reach on layouts where `]` needs Option). Arrow keys, Alt
@@ -230,6 +232,7 @@ export class RunTui {
 	private restoreOutput?: () => void;
 	private readonly stdin: NodeJS.ReadStream;
 	private readonly stdout: NodeJS.WriteStream;
+	private readonly appSet: ReadonlySet<string>;
 	private readonly onInput = (data: Buffer | string) =>
 		this.input(String(data));
 	private readonly onResize = () => this.layout(true);
@@ -247,6 +250,7 @@ export class RunTui {
 	constructor(private readonly options: RunTuiOptions) {
 		this.stdin = options.stdin ?? process.stdin;
 		this.stdout = options.stdout ?? process.stdout;
+		this.appSet = new Set(options.apps);
 	}
 
 	/** Pane size every app's terminal gets. */
@@ -269,13 +273,15 @@ export class RunTui {
 		this.unsubscribe = output.subscribe({
 			line: (line) => {
 				this.lines.push(line);
-				if (this.lines.length > OVERVIEW_LINES) this.lines.shift();
+				if (this.lines.length >= OVERVIEW_LINES + OVERVIEW_TRIM_SLACK) {
+					this.lines = this.lines.slice(-OVERVIEW_LINES);
+				}
 
 				// Only an app has a sidebar row to mark; buncargo's own lines do not.
 				const unread =
 					line.level === "error" &&
 					this.selectedApp() !== line.app &&
-					this.options.apps.includes(line.app);
+					this.appSet.has(line.app);
 				if (unread) this.unread.add(line.app);
 
 				// Keep a scrolled-back view where it is.

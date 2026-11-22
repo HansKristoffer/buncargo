@@ -12,7 +12,7 @@ function source(
 		root: import.meta.dir,
 		ports: {},
 		appEnv: () => ({}),
-		runHook: async () => {},
+		runHook: async () => false,
 		waitForHealth: async () => {},
 		recordCapture: async () => [],
 		...overrides,
@@ -134,6 +134,7 @@ it("refuses a missing required secret before preparing or running beforeServers"
 				},
 				runHook: async (phase) => {
 					events.push(phase);
+					return true;
 				},
 			}),
 			resolveApps({

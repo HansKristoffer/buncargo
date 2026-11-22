@@ -56,17 +56,18 @@ export function assertAppWorkingDirectories(
 export function createServerHookRunner(
 	ctx: { readonly config: Pick<DevEnvContext["config"], "hooks"> },
 	envVars: DevEnvVarsApi,
-): (phase: "before" | "after", signal?: AbortSignal) => Promise<void> {
+): (phase: "before" | "after", signal?: AbortSignal) => Promise<boolean> {
 	return async (phase, signal) => {
 		const hook =
 			ctx.config.hooks?.[phase === "before" ? "beforeServers" : "afterServers"];
-		if (!hook) return;
+		if (!hook) return false;
 
 		await withDeadline(
 			(hookSignal) => hook(envVars.getHookContext(hookSignal)),
 			600_000,
 			signal,
 		);
+		return true;
 	};
 }
 

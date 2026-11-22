@@ -25,7 +25,7 @@ it("closes the output before the TUI lets go of it", async () => {
 		},
 	);
 	try {
-		const view = openDevOutput(
+		const view = await openDevOutput(
 			{
 				root,
 				sessionId: "dev-output-test",

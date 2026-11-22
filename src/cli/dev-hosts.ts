@@ -1,6 +1,7 @@
 import {
 	ensureHostsReady,
 	identityRouteOwners,
+	loadHostRoutes,
 	machineMkcert,
 	removeHostRoutes,
 	routesFromPlan,
@@ -13,7 +14,7 @@ import {
 import type { DaemonRouteCheck } from "../core/hosts/daemon-client";
 import type { HostsEnableResult } from "../core/hosts/onboarding";
 import { certificateHostnames } from "../core/hosts/plan";
-import type { RouteOwners } from "../core/hosts/registry";
+import type { HostsRoute, RouteOwners } from "../core/hosts/registry";
 import {
 	activateTailscaleServe,
 	releaseTailscaleServe,
@@ -235,13 +236,29 @@ async function activateTailscaleHosts(
  *
  * A run that took this app over moved its route to itself, and that run's
  * exit deleted it; restarted here, the app would serve a named URL that 404s.
- * A route another live run of this checkout holds stays that run's. One locked
- * file write, no fork.
+ * A route another live run of this checkout holds stays that run's. Skips the
+ * lock when every target route is already intact for this process; otherwise
+ * one locked file write, no fork.
  *
  * Returns why the route could not be claimed, for the app's output: the
  * restart goes ahead on its named URL either way, and a silent failure here
  * is a URL that 404s with nothing saying why.
  */
+function routeOwnedByThisRun(
+	existing: HostsRoute,
+	wanted: HostsRoute,
+): boolean {
+	if (existing.kind !== "app" || wanted.kind !== "app") return false;
+	return (
+		existing.hostname === wanted.hostname &&
+		existing.port === wanted.port &&
+		existing.name === wanted.name &&
+		existing.root === wanted.root &&
+		existing.pid === wanted.pid &&
+		existing.processIdentity === wanted.processIdentity
+	);
+}
+
 export async function reclaimAppRoute(
 	env: { root: string; hosts: HostsRuntime | null },
 	name: string,
@@ -260,6 +277,15 @@ export async function reclaimAppRoute(
 	if (routes.length === 0) return undefined;
 
 	try {
+		// Fast path for the common case (file-watch restart with no takeover):
+		// if every target route is already registered for this exact run, skip
+		// the registry lock and full prune pass.
+		const current = await loadHostRoutes({ strict: true });
+		const intact = routes.every((wanted) =>
+			current.some((existing) => routeOwnedByThisRun(existing, wanted)),
+		);
+		if (intact) return undefined;
+
 		const [conflict] = await upsertHostRoutes(routes, {
 			owners: identityRouteOwners,
 		});

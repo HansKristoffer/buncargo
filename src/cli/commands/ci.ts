@@ -21,7 +21,7 @@ import {
 } from "../command-spec";
 import { CliError } from "../errors";
 import * as log from "../log";
-import { runForwardingSignals } from "./exec";
+import { runForwardingSignals } from "../signal-forward";
 
 const SCHEMA_MODES = ["migrate", "push"] as const;
 

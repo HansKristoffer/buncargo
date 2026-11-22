@@ -2,13 +2,15 @@ import { randomUUID } from "node:crypto";
 import {
 	appendFileSync,
 	existsSync,
+	type FSWatcher,
 	mkdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
+	watch,
 	writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promiseTimeout } from "hanzio";
 import { getProjectStateDir } from "../core/state-paths";
 
@@ -17,12 +19,19 @@ import { getProjectStateDir } from "../core/state-paths";
  * `buncargo restart <app>` and `buncargo send <app> <keys>`.
  *
  * A request is a JSON line in `.buncargo/<kind>/<session>` that the run
- * polls, with an id; the run answers it in `<session>.replies/<id>`.
+ * watches for via `fs.watch` (with a low-frequency fallback poll), with an id;
+ * the run answers it in `<session>.replies/<id>`.
  * Not a signal: SIGUSR2 to a run from an older buncargo, which has no
  * handler, would kill it.
  */
 
-const POLL_MS = 500;
+/** Fallback cadence in case the platform watcher drops an event or cannot attach. */
+const FALLBACK_POLL_MS = 2000;
+/** Retry cadence only while a request file arrived before `ready()` became true. */
+const UNREADY_RETRY_MS = 50;
+/** Starting backoff for client waits (`awaitRestartTaken`, `awaitReply`). */
+const CLIENT_POLL_BASE_MS = 4;
+const CLIENT_POLL_MAX_MS = 50;
 
 type RequestKind = "restart" | "send";
 
@@ -66,9 +75,27 @@ function watchRequests(
 	ready: () => boolean,
 ): () => void {
 	const file = requestFile(root, sessionId, kind);
+	const dir = dirname(file);
 	const taken = `${file}.taken`;
-	const timer = setInterval(() => {
-		if (!existsSync(file) || !ready()) return;
+	let stopped = false;
+	let unreadyTimer: ReturnType<typeof setTimeout> | undefined;
+	let watcher: FSWatcher | undefined;
+
+	const scheduleUnreadyRetry = () => {
+		if (stopped || unreadyTimer) return;
+		unreadyTimer = setTimeout(() => {
+			unreadyTimer = undefined;
+			drain();
+		}, UNREADY_RETRY_MS);
+		unreadyTimer.unref?.();
+	};
+
+	const drain = () => {
+		if (stopped || !existsSync(file)) return;
+		if (!ready()) {
+			scheduleUnreadyRetry();
+			return;
+		}
 
 		let lines: string[];
 		try {
@@ -78,11 +105,34 @@ function watchRequests(
 		}
 
 		handle(lines);
-	}, POLL_MS);
-	timer.unref?.();
+		// A request appended while `handle` ran (or just after rename) lands in a
+		// fresh `file`; drain it right away instead of waiting for another event.
+		if (!stopped && existsSync(file)) queueMicrotask(drain);
+	};
+
+	try {
+		mkdirSync(dir, { recursive: true });
+		watcher = watch(dir, { persistent: false }, (_event, filename) => {
+			if (!filename || String(filename) === sessionId) drain();
+		});
+		watcher.on("error", () => {
+			// Fallback timer below keeps working if the OS watcher errors out.
+			watcher?.close();
+			watcher = undefined;
+		});
+	} catch {
+		// Unwatchable filesystem: the fallback interval below still delivers requests.
+	}
+
+	const fallback = setInterval(drain, FALLBACK_POLL_MS);
+	fallback.unref?.();
+	queueMicrotask(drain);
 
 	return () => {
-		clearInterval(timer);
+		stopped = true;
+		clearInterval(fallback);
+		if (unreadyTimer) clearTimeout(unreadyTimer);
+		watcher?.close();
 		rmSync(file, { force: true });
 	};
 }
@@ -111,9 +161,12 @@ export async function awaitRestartTaken(
 ): Promise<boolean> {
 	const file = requestFile(root, sessionId, "restart");
 	const deadline = Date.now() + timeoutMs;
+	let delayMs = CLIENT_POLL_BASE_MS;
 	while (existsSync(file)) {
-		if (Date.now() >= deadline) return false;
-		await promiseTimeout(50);
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) return false;
+		await promiseTimeout(Math.min(delayMs, remaining));
+		delayMs = Math.min(CLIENT_POLL_MAX_MS, delayMs * 2);
 	}
 	return true;
 }
@@ -331,6 +384,7 @@ async function awaitReply<T>(
 ): Promise<T | undefined> {
 	const path = join(repliesDir(root, sessionId, kind), id);
 	const deadline = Date.now() + timeoutMs;
+	let delayMs = CLIENT_POLL_BASE_MS;
 	for (;;) {
 		try {
 			const reply = JSON.parse(readFileSync(path, "utf8")) as T;
@@ -339,7 +393,9 @@ async function awaitReply<T>(
 		} catch {
 			// Not answered yet.
 		}
-		if (Date.now() >= deadline) return undefined;
-		await promiseTimeout(50);
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) return undefined;
+		await promiseTimeout(Math.min(delayMs, remaining));
+		delayMs = Math.min(CLIENT_POLL_MAX_MS, delayMs * 2);
 	}
 }

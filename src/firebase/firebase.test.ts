@@ -189,7 +189,21 @@ describe("firebase()", () => {
 			emulatorTmpDir(join(root, ".claude", "worktrees", "x".repeat(80))),
 			`fire_emu_${"0".repeat(16)}.sock`,
 		);
-		expect(socket.length).toBeLessThan(104);
+		expect(Buffer.byteLength(socket)).toBeLessThan(104);
+
+		// When TMPDIR itself is too long to leave room for the socket, fall back to /tmp.
+		const prevTmpdir = process.env.TMPDIR;
+		process.env.TMPDIR = `/tmp/${"sandbox-".repeat(12)}`;
+		try {
+			const fallbackDir = emulatorTmpDir(root);
+			expect(fallbackDir.startsWith("/tmp/bcfb-")).toBe(true);
+			expect(
+				Buffer.byteLength(join(fallbackDir, `fire_emu_${"0".repeat(16)}.sock`)),
+			).toBeLessThan(104);
+		} finally {
+			if (prevTmpdir === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = prevTmpdir;
+		}
 	});
 
 	it("removes a hub locator a killed suite left, and keeps a live one's", async () => {

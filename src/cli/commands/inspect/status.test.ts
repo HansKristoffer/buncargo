@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -232,11 +233,17 @@ async function statusForks(
 			checkSlots: { capacity: number; enabled: boolean; holders: unknown[] };
 		},
 		dockerCommands: docker.calls().map((args) => args[0]),
-		lsofCalls: readFileSync(lsofCalls, "utf8").trim().split("\n").length,
+		lsofCalls: existsSync(lsofCalls)
+			? readFileSync(lsofCalls, "utf8").trim().split("\n").length
+			: 0,
 	};
 }
 
-it("reads six ports with one lsof and one docker ps, and reports the check slots", async () => {
+// On Linux, listeners come from `/proc/net/tcp{,6}` with zero `lsof` forks; on
+// macOS, one `lsof` answers every port at once.
+const expectedLsofCalls = process.platform === "linux" ? 0 : 1;
+
+it("reads six ports with at most one lsof and one docker ps, and reports the check slots", async () => {
 	const docker = fakeDocker({
 		ps: {
 			stdout: `${dockerListLine({
@@ -262,7 +269,7 @@ it("reads six ports with one lsof and one docker ps, and reports the check slots
 			holders: [],
 		});
 		expect(dockerCommands).toEqual(["ps"]);
-		expect(lsofCalls).toBe(1);
+		expect(lsofCalls).toBe(expectedLsofCalls);
 	} finally {
 		docker.remove();
 	}
@@ -275,7 +282,7 @@ it("plans an unclaimed hash block from the same reading, without a probe of its 
 
 		expect(result.portOffsetProvenance).toBe("hash");
 		expect(dockerCommands).toEqual(["ps"]);
-		expect(lsofCalls).toBe(1);
+		expect(lsofCalls).toBe(expectedLsofCalls);
 	} finally {
 		docker.remove();
 	}

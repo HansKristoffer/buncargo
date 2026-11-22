@@ -162,10 +162,14 @@ export function resolveService(
 	const docker = resolveDocker(service);
 	const preset = docker.kind === "preset" ? docker.preset : undefined;
 	const credentials = credentialsFor(preset, service);
+	const buckets = service.buckets?.map((entry) =>
+		typeof entry === "string" ? { name: entry } : entry,
+	);
 	const base = {
 		serviceName,
 		preset,
 		staticEnv: service.staticEnv,
+		...(buckets?.length ? { buckets } : {}),
 		credentials,
 		docker,
 		afterPreparation: service.afterPreparation ?? false,

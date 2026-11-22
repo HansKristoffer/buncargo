@@ -13,6 +13,7 @@ import {
 	serviceContainerOf,
 	serviceStatesOf,
 } from "./containers";
+import { initializeReadyServices } from "./minio-buckets";
 import { waitForAllServices } from "./readiness";
 import { assertServicePortsClaimable } from "./service-ports";
 import type {
@@ -333,22 +334,22 @@ export async function ensureServicesRunning(
 	);
 
 	if (waiting) {
-		await waitForAllServices(
-			waitFor,
-			{ ...ports, ...assignedHostPorts },
-			{
-				signal: request.signal,
-				runtime,
-				projectName,
-				verbose,
-				root,
-				healthyServices: new Set(
-					serviceStatesOf(listing, projectName)
-						.filter((state) => state.serving && state.healthy === true)
-						.map((state) => state.service),
-				),
-			},
-		);
+		const effectivePorts = { ...ports, ...assignedHostPorts };
+		await waitForAllServices(waitFor, effectivePorts, {
+			signal: request.signal,
+			runtime,
+			projectName,
+			verbose,
+			root,
+			healthyServices: new Set(
+				serviceStatesOf(listing, projectName)
+					.filter((state) => state.serving && state.healthy === true)
+					.map((state) => state.service),
+			),
+		});
+		await initializeReadyServices(waitFor, effectivePorts, {
+			signal: request.signal,
+		});
 	}
 
 	// Not `!alreadyRunning`: a config change recreates containers that were

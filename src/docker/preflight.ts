@@ -471,12 +471,16 @@ export async function ensureDockerRunning(
 		throw socketPermissionError(runtime);
 	}
 
-	// CI never starts Docker itself, but a runner's daemon is often still
-	// coming up when the job starts: keep asking until the deadline. Locally,
-	// `--no-docker-autostart` wants the answer now, not in 90 seconds, and so
-	// does a runtime nothing here can start (the Linux engine): no daemon is
-	// coming while we wait.
-	const waitOnly = !autoStart && ci;
+	// In CI, `autoStart` defaults to false so a run waits for a runner's daemon
+	// that is still coming up or transiently busy. When a config sets
+	// `docker.autoStart: true` for local macOS developers, a Linux `docker-engine`
+	// CI runner has no start command, so it also waits rather than failing at
+	// once. Locally, `--no-docker-autostart` wants the answer now, not in 90
+	// seconds, and so does a runtime nothing here can start (the Linux engine).
+	const waitOnly =
+		ci &&
+		(!autoStart ||
+			(runtimeStartCommand(runtime) === undefined && !options.startCommand));
 
 	// Docker Desktop's processes alive with no daemon answering: still
 	// starting, or hung. `open -a Docker` cannot help a hung one.

@@ -29,6 +29,12 @@ export interface ClassifiedCliApps {
 	 * health check. The caller replaces them through the takeover or refuses.
 	 */
 	unhealthy: UnhealthyApp[];
+	/**
+	 * The port snapshot taken during classification, when every app in
+	 * `startApps` was free and nothing was stopped since: wave 1 can reuse it
+	 * instead of scanning ports a second time milliseconds later.
+	 */
+	portOwners?: PortOwnerSnapshot;
 }
 
 export interface UnhealthyApp {
@@ -210,6 +216,7 @@ export async function classifyCliApps(
 	const reusedNames: string[] = [];
 	const inferredReuseNames: string[] = [];
 	const unhealthy: UnhealthyApp[] = [];
+	let stoppedLeftover = false;
 
 	const decisions = await Promise.all(
 		Object.entries(apps).map(async ([name, config]): Promise<AppDecision> => {
@@ -249,6 +256,7 @@ export async function classifyCliApps(
 				} catch {
 					const holder = await inspectHolder(name, port);
 					if (holder === "stopped") {
+						stoppedLeftover = true;
 						return { name, config, reuse: false, inferred: false };
 					}
 
@@ -292,5 +300,6 @@ export async function classifyCliApps(
 		reusedNames,
 		inferredReuseNames,
 		unhealthy,
+		portOwners: !options.isPortBusy && !stoppedLeftover ? snapshot : undefined,
 	};
 }

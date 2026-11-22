@@ -171,40 +171,6 @@ function portOwnerName(key: string): string {
 	return key.split("#")[0] ?? key;
 }
 
-/**
- * Ports an allocation can inspect, for one scoped asynchronous cwd reading.
- * Only the hashed range's blocks: the search goes higher only when every one
- * of them is taken, and a block there costs one lookup of its own then,
- * rather than every run reading the processes on every port up to 32767.
- */
-export function candidateAllocationPorts(
-	input: Pick<
-		AllocatePortBlockInput,
-		| "projectPrefix"
-		| "worktreeName"
-		| "suffix"
-		| "worktreeIsolation"
-		| "services"
-		| "apps"
-		| "probeNames"
-	>,
-	currentOffset: number,
-): number[] {
-	const base = buildPortMap(input.services, input.apps);
-	const block = { ...base, ...extraPortMap(input.apps, base, base) };
-	const offsets = new Set([
-		currentOffset,
-		...candidateOffsets(computeBaseOffset(input), HASHED_OFFSET_MAX),
-	]);
-	return Object.entries(block)
-		.filter(
-			([name]) =>
-				!input.probeNames || input.probeNames.includes(portOwnerName(name)),
-		)
-		.flatMap(([, base]) => [...offsets].map((offset) => base + offset))
-		.filter((port) => port > 0 && port <= 65535);
-}
-
 function shiftPorts(
 	basePorts: Record<string, number>,
 	offset: number,
@@ -255,7 +221,9 @@ function findForeignConflict(
 function snapshotOwnerLookup(
 	basePorts: Record<string, number>,
 ): (port: number) => PortOwner | null {
-	const snapshot = createPortOwnerSnapshot({ ports: Object.values(basePorts) });
+	const snapshot = createPortOwnerSnapshot({
+		cwdPorts: Object.values(basePorts),
+	});
 	return (port) => snapshot.owner(port);
 }
 

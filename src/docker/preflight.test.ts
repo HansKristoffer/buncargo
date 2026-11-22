@@ -103,6 +103,24 @@ describe("Docker daemon preflight", () => {
 		).toBeGreaterThanOrEqual(3);
 	}, 15_000);
 
+	it.skipIf(process.platform !== "linux")(
+		"still waits for docker-engine in CI even when dev.config.ts sets autoStart: true",
+		async () => {
+			const { binary, calls } = fixture({ downFor: 2 });
+			await ensureDockerRunning({
+				binary,
+				ci: true,
+				autoStart: true,
+				verbose: false,
+				timeoutMs: 10_000,
+			});
+			expect(
+				calls().filter((args) => args[0] === "version").length,
+			).toBeGreaterThanOrEqual(3);
+		},
+		15_000,
+	);
+
 	it("checks the server without collecting slow CLI plugin metadata", async () => {
 		const { binary, calls } = fixture();
 		await ensureDockerRunning({

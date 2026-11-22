@@ -281,6 +281,23 @@ export interface DockerComposeGenerationOptions {
 	startCommand?: string;
 }
 
+/** Anonymous access policy applied to a MinIO bucket created by buncargo. */
+export type MinioBucketPolicy = "none" | "download" | "upload" | "public";
+
+/** Bucket to ensure exists when MinIO starts: a name, or name plus policy. */
+export type MinioBucketConfig =
+	| string
+	| {
+			name: string;
+			policy?: MinioBucketPolicy;
+	  };
+
+/** Normalized bucket entry carried on a resolved service. */
+export interface ResolvedMinioBucket {
+	name: string;
+	policy?: MinioBucketPolicy;
+}
+
 /**
  * Configuration for a Docker Compose service (e.g., postgres, redis).
  */
@@ -324,6 +341,8 @@ export interface ServiceConfigBase<
 	env?: TEnv;
 	/** Constant values merged into the shared env (e.g. SMTP_HOST, API keys) */
 	staticEnv?: TStatic;
+	/** Buckets to create idempotently once MinIO is ready (`service.minio({ buckets })`) */
+	buckets?: readonly MinioBucketConfig[];
 	/** Start after database preparation/seed. Its Compose dependencies must be ready first. */
 	afterPreparation?: boolean;
 	/** Docker Compose service definition (preset helper or raw escape hatch) */
