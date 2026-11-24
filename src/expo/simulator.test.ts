@@ -1,13 +1,25 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeTempDir } from "../core/test-env.testing";
 import { describeExpoApp, isExpoApp } from "./app-identity";
 import {
 	chooseLaunchUrl,
 	pickSourceDevice,
 	simulatorDeviceName,
 } from "./simulator";
+
+const dirs: string[] = [];
+afterEach(() => {
+	for (const dir of dirs.splice(0)) removeTempDir(dir);
+});
+
+function tempRoot(): string {
+	const root = mkdtempSync(join(tmpdir(), "buncargo-expo-"));
+	dirs.push(root);
+	return root;
+}
 
 describe("isExpoApp", () => {
 	it("infers from the dev command", () => {
@@ -19,7 +31,7 @@ describe("isExpoApp", () => {
 
 describe("describeExpoApp", () => {
 	it("reads scheme and bundle id from app.json, config scheme winning", () => {
-		const root = mkdtempSync(join(tmpdir(), "buncargo-expo-"));
+		const root = tempRoot();
 		writeFileSync(
 			join(root, "app.json"),
 			JSON.stringify({
@@ -48,7 +60,7 @@ describe("describeExpoApp", () => {
 	});
 
 	it("falls back to exp+slug, and to nothing without app.json", () => {
-		const root = mkdtempSync(join(tmpdir(), "buncargo-expo-"));
+		const root = tempRoot();
 		writeFileSync(
 			join(root, "app.json"),
 			JSON.stringify({ expo: { slug: "x" } }),

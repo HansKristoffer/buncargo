@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import {
 	existsSync,
 	mkdtempSync,
@@ -17,6 +17,18 @@ import {
 	writeJsonDocument,
 	writeJsonDocumentSync,
 } from "./registry-file";
+import { removeTempDir } from "./test-env.testing";
+
+const dirs: string[] = [];
+afterEach(() => {
+	for (const dir of dirs.splice(0)) removeTempDir(dir);
+});
+
+function tempDir(): string {
+	const dir = mkdtempSync(join(tmpdir(), "buncargo-registry-"));
+	dirs.push(dir);
+	return dir;
+}
 
 interface Entry {
 	name: string;
@@ -36,7 +48,7 @@ const registry = defineListRegistry<Entry>({
 });
 
 function tempFile(name = "state.json"): string {
-	return join(mkdtempSync(join(tmpdir(), "buncargo-registry-")), name);
+	return join(tempDir(), name);
 }
 
 describe("readJsonDocumentSync", () => {
@@ -62,12 +74,7 @@ describe("readJsonDocumentSync", () => {
 	});
 
 	it("creates parent directories on write", () => {
-		const path = join(
-			mkdtempSync(join(tmpdir(), "buncargo-registry-")),
-			"nested",
-			"deep",
-			"state.json",
-		);
+		const path = join(tempDir(), "nested", "deep", "state.json");
 		writeJsonDocumentSync(path, { ok: true });
 		expect(readJsonDocumentSync(path, (value) => value)).toEqual({ ok: true });
 	});
@@ -199,7 +206,7 @@ describe("defineListRegistry", () => {
 		});
 
 		it("surfaces an unreadable directory rather than an empty list", async () => {
-			const dir = mkdtempSync(join(tmpdir(), "buncargo-registry-"));
+			const dir = tempDir();
 			// A directory in place of the file: readFile fails with EISDIR, the
 			// stand-in here for the EACCES a root-written state file produces.
 			await expect(registry.read(dir, { strict: true })).rejects.toThrow(

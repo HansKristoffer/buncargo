@@ -24,6 +24,12 @@ import {
 	type StrayLoopbackUrl,
 } from "../core/loopback-env";
 import { canBindPort } from "../core/process";
+import { isInteractive } from "../core/prompt";
+import { isCI } from "../core/runtime-flags";
+import {
+	InfisicalLoginError,
+	infisicalLoginCommand,
+} from "../core/secrets/errors";
 import { describeSecretsError, fetchScopeSecrets } from "../core/secrets/index";
 import {
 	prismaSchemaHash,
@@ -172,7 +178,10 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 	}
 
 	const scopes = configSecretScopes(env).map(({ scope }) => scope);
-	if (scopes.length > 0) {
+	const [firstScope] = scopes;
+	if (firstScope) {
+		const { siteUrl } = firstScope;
+		const login = infisicalLoginCommand(siteUrl);
 		checks.push({
 			name: "Infisical secrets are readable",
 			fast: false,
@@ -191,7 +200,24 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 					failures.length === 0 || { ok: false, detail: failures.join("; ") }
 				);
 			},
-			fix: `infisical login --domain=${scopes[0]?.siteUrl}`,
+			fix: async (ctx) => {
+				if (!isInteractive() || isCI()) {
+					throw new InfisicalLoginError(
+						`The Infisical session for ${siteUrl} is missing or expired and cannot run an interactive login in a headless/CI shell.`,
+						siteUrl,
+					);
+				}
+				// `secrets: false` keeps `exec` from prefetching the expired scope before logging in.
+				const result = await ctx.env.exec(login, {
+					verbose: true,
+					throwOnError: false,
+					secrets: false,
+				});
+				if (result.exitCode !== 0) {
+					throw new Error(`exited with code ${result.exitCode}`);
+				}
+			},
+			fixDescription: `run \`${login}\``,
 		});
 	}
 

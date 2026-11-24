@@ -87,7 +87,8 @@ async function main(): Promise<void> {
 		first !== undefined &&
 		!first.startsWith("-") &&
 		first !== "help" &&
-		first !== "version";
+		first !== "version" &&
+		first !== "gc";
 	const root = usesCheckout ? findCheckoutRoot(process.cwd()) : undefined;
 	if (root !== undefined) noteCheckoutCommand(root);
 

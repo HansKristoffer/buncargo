@@ -25,6 +25,7 @@ export class SecretsError extends Error {
  * prints only that; the CLI shows `reason` and `login` on two lines.
  */
 export class InfisicalLoginError extends SecretsError {
+	readonly code = "INFISICAL_AUTH_EXPIRED";
 	readonly login: string;
 
 	constructor(
@@ -32,7 +33,9 @@ export class InfisicalLoginError extends SecretsError {
 		readonly siteUrl: string,
 	) {
 		const login = infisicalLoginCommand(siteUrl);
-		super(`${reason} Run \`${login}\`.`);
+		super(
+			`INFISICAL_AUTH_EXPIRED: ${reason} Run \`${login}\` or configure a Machine Identity.`,
+		);
 		this.name = "InfisicalLoginError";
 		this.login = login;
 	}

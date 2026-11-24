@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeTempDir } from "../test-env.testing";
 import {
 	applyHostsBlock,
 	buildHostsBlock,
@@ -145,8 +146,7 @@ describe("cleanHostsFileAsRoot", () => {
 	const dirs: string[] = [];
 	afterEach(() => {
 		for (const dir of dirs.splice(0)) {
-			chmodSync(dir, 0o755);
-			rmSync(dir, { recursive: true, force: true });
+			removeTempDir(dir);
 		}
 	});
 

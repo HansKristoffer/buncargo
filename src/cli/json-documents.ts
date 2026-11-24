@@ -133,3 +133,31 @@ export interface CheckPlanJson {
 	steps: { name: string; label: string; command: string }[];
 	deferredTests: DeferredTests | null;
 }
+
+/** `buncargo gc --json`: orphaned stacks, volumes and stale port claims cleaned or planned. */
+export interface GcJson {
+	dryRun: boolean;
+	stacks: {
+		projectName: string;
+		root: string;
+		runtime: string;
+		reason: string;
+	}[];
+	volumes: {
+		name: string;
+		project: string;
+		runtime: string;
+		root: string;
+		reason: string;
+		removed: boolean;
+	}[];
+	claims: {
+		key: string;
+		root: string;
+		projectName: string;
+		offset: number;
+		reason: string;
+	}[];
+	skippedVolumes: number;
+	failed: { target: string; error: string }[];
+}

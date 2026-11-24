@@ -19,6 +19,10 @@ import {
 	checkoutPresence,
 } from "../core/checkout-presence";
 import { FileLockTimeoutError } from "../core/file-lock";
+import {
+	type ProxyActivity,
+	readProxyActivity,
+} from "../core/hosts/proxy-activity";
 import { loadHostRoutes, withdrawHostRoutes } from "../core/hosts/registry";
 import {
 	dropDeletedOffsetClaims,
@@ -40,6 +44,7 @@ import {
 	removalActor,
 	removalOwner,
 } from "../core/removal-log";
+import { lastCheckoutCommandAt } from "../core/run-activity";
 import {
 	clearRunStacks,
 	findCheckoutRuns,
@@ -58,6 +63,7 @@ import { pruneDeletedCheckoutVolumes } from "../core/runtime-flags";
 import { lookupOnPath } from "../core/tool-binary";
 import {
 	DELETED_CHECKOUT_SETTLE_MS,
+	DETACHED_IDLE_LIMIT_MS,
 	WATCHDOG_OWNER_DEAD_GRACE_MS,
 } from "../core/watchdog-constants";
 import type {
@@ -102,6 +108,13 @@ export interface SweepInput {
 	/** The run that owns them, or null when nothing on disk claims them. */
 	run: RunEntry | null;
 	ownerAlive: boolean;
+	/**
+	 * When the stack's checkout was last used (port claim `usedAt`, last
+	 * buncargo command, or last proxied request). Used only when no `runs.json`
+	 * entry owns a running known stack (a detached stack that outlived
+	 * `runs.json`).
+	 */
+	lastActivityAt?: number;
 	now: number;
 }
 
@@ -121,8 +134,9 @@ function seconds(ms: number): string {
  */
 export function decideSweep(
 	input: SweepInput,
-	limits: { ownerDeadGraceMs: number } = {
+	limits: { ownerDeadGraceMs: number; unownedIdleLimitMs: number } = {
 		ownerDeadGraceMs: WATCHDOG_OWNER_DEAD_GRACE_MS,
+		unownedIdleLimitMs: DETACHED_IDLE_LIMIT_MS,
 	},
 ): SweepVerdict {
 	const { known, checkout, anyRunning, run, ownerAlive, now } = input;
@@ -134,9 +148,26 @@ export function decideSweep(
 		return { kind: "down", reason: "checkout deleted" };
 	}
 	if (!anyRunning) return { kind: "down", reason: "stopped with no owner" };
-	// Running, unowned, and nothing on record: an old CLI or a hand-started
-	// stack. Only the two rules above may touch it.
-	if (!run) return { kind: "keep" };
+	// Running, known by its port claim, and nothing in `runs.json`: a detached
+	// stack that outlived the registry (crash, upgrade, or recovery). Reap it
+	// once its checkout has been idle past the detached idle limit, keeping
+	// its volumes intact. Unreadable (`unknown`) checkouts are never touched.
+	if (!run) {
+		const { lastActivityAt } = input;
+		const hasActivity =
+			lastActivityAt !== undefined && !Number.isNaN(lastActivityAt);
+		if (
+			checkout === "present" &&
+			hasActivity &&
+			now - lastActivityAt >= limits.unownedIdleLimitMs
+		) {
+			return {
+				kind: "down",
+				reason: `no run in runs.json and idle for ${seconds(now - lastActivityAt)}`,
+			};
+		}
+		return { kind: "keep" };
+	}
 
 	// A hold of the checkout keeps the stack however the run ended:
 	// `--keep-containers`, a one-shot mode, or a script that brought a stack
@@ -255,6 +286,30 @@ export interface SweepResult {
 	liveSessions: ReadonlySet<string>;
 }
 
+/**
+ * When a known stack with no `runs.json` entry was last used: the newest of
+ * its matching port claim's `usedAt`, the last buncargo command in its
+ * checkout, and the last proxied request. Undefined when none is on record.
+ */
+export function stackLastActivityAt(
+	stack: { projectName: string; root: string },
+	claims: Record<string, OffsetClaim>,
+	proxy: ProxyActivity | undefined,
+	commandAt: number | undefined,
+): number | undefined {
+	const claimTimes = Object.entries(claims)
+		.filter(
+			([key, claim]) =>
+				claim.projectName === stack.projectName &&
+				offsetClaimRoot(key, claim) === stack.root,
+		)
+		.map(([, claim]) => Date.parse(claim.usedAt));
+	const times = [...claimTimes, commandAt, proxy?.get(stack.root)].filter(
+		(time): time is number => time !== undefined && !Number.isNaN(time),
+	);
+	return times.length > 0 ? Math.max(...times) : undefined;
+}
+
 export interface SweepOptions {
 	/** The project the caller itself is running; never touched. */
 	except?: { projectName: string; root: string };
@@ -263,6 +318,11 @@ export interface SweepOptions {
 	now?: number;
 	/** Who is sweeping, for the removal log; defaults to this process's command. */
 	actor?: RemovalActor;
+	/**
+	 * How long a running known stack with no `runs.json` entry must be idle
+	 * before it is torn down. Defaults to {@link DETACHED_IDLE_LIMIT_MS}.
+	 */
+	unownedIdleLimitMs?: number;
 }
 
 function hasRecordedStacks(run: RunEntry): boolean {
@@ -270,9 +330,9 @@ function hasRecordedStacks(run: RunEntry): boolean {
 }
 
 /** The run that owns a stack: a live session if there is one, else the one that ended last. */
-function runFor(
+export function runFor(
 	group: Pick<RunEntry, "projectName" | "root">,
-	runs: RunEntry[],
+	runs: readonly RunEntry[],
 	alive: (run: RunEntry) => boolean,
 ): RunEntry | null {
 	const candidates = runs
@@ -336,6 +396,9 @@ export async function sweepOrphanedContainers(
 	const claims = readAllOffsetClaims();
 	const alive = await runLivenessAsync(runs);
 	const now = options.now ?? Date.now();
+	const proxyActivity = readProxyActivity(now);
+	const unownedIdleLimitMs =
+		options.unownedIdleLimitMs ?? DETACHED_IDLE_LIMIT_MS;
 	const groups = groupBuncargoContainers(containers);
 	const owners = new Map(
 		groups.map((group) => [group, runFor(group, runs, alive)]),
@@ -384,6 +447,8 @@ export async function sweepOrphanedContainers(
 				claims,
 				alive,
 				now,
+				proxyActivity,
+				unownedIdleLimitMs,
 				runtimes,
 				result,
 				swept,
@@ -667,6 +732,8 @@ async function sweepGroup(
 	claims: Record<string, OffsetClaim>,
 	alive: (run: RunEntry) => boolean,
 	now: number,
+	proxyActivity: ProxyActivity | undefined,
+	unownedIdleLimitMs: number,
 	runtimes: ContainerRuntimeAdapter[],
 	result: SweepResult,
 	swept: NoteSwept,
@@ -676,17 +743,32 @@ async function sweepGroup(
 		isAlive: (run: RunEntry) => boolean,
 		claims: Record<string, OffsetClaim>,
 	) =>
-		decideSweep({
-			// `runFor` finds an owner exactly when a run on record names the stack.
-			known: owner !== null || isKnownStack(group, [], claims),
-			checkout: checkoutPresence(group.root),
-			anyRunning: group.containers.some((container) =>
-				keepsUnownedStack(parseContainerState(container.state)),
-			),
-			run: owner,
-			ownerAlive: owner !== null && isAlive(owner),
-			now,
-		});
+		decideSweep(
+			{
+				// `runFor` finds an owner exactly when a run on record names the stack.
+				known: owner !== null || isKnownStack(group, [], claims),
+				checkout: checkoutPresence(group.root),
+				anyRunning: group.containers.some((container) =>
+					keepsUnownedStack(parseContainerState(container.state)),
+				),
+				run: owner,
+				ownerAlive: owner !== null && isAlive(owner),
+				lastActivityAt:
+					owner === null
+						? stackLastActivityAt(
+								group,
+								claims,
+								proxyActivity,
+								lastCheckoutCommandAt(group.root),
+							)
+						: undefined,
+				now,
+			},
+			{
+				ownerDeadGraceMs: WATCHDOG_OWNER_DEAD_GRACE_MS,
+				unownedIdleLimitMs,
+			},
+		);
 	const verdict = decide(run, alive, claims);
 	if (verdict.kind === "foreign") {
 		result.foreign.push(foreignStack(group, verdict.reason));

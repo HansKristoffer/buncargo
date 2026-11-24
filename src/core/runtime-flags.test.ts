@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +20,7 @@ import {
 	typecheckConcurrencyOverride,
 	watchdogParent,
 } from "./runtime-flags";
+import { removeTempDir } from "./test-env.testing";
 
 describe("Connection credentials", () => {
 	it("parses multiple tokens and deduplicates", () => {
@@ -99,8 +100,14 @@ describe("shouldSyncHostsFile", () => {
 });
 
 describe("tool binary overrides", () => {
+	const dirs: string[] = [];
+	afterEach(() => {
+		for (const dir of dirs.splice(0)) removeTempDir(dir);
+	});
+
 	it("returns the override when it exists", () => {
 		const dir = mkdtempSync(join(tmpdir(), "buncargo-flags-"));
+		dirs.push(dir);
 		const bin = join(dir, "tool");
 		writeFileSync(bin, "");
 

@@ -148,16 +148,21 @@ no config load, no Docker unless a service is the target.
 `src/container-runtime/sweep.ts` is the one cleanup policy.
 
 - `decideSweep` is pure: a stack nobody owns comes down when its checkout is gone, when every
-  container is stopped, when its run released it longer ago than its idle hold, or when its owner
-  has been gone for longer than the grace. A live owner keeps its stack before the checkout is
-  even looked at: a run between `start()` and `startServers()` is using it. "Stopped" means no
-  container keeps the stack up (`keepsUnownedStack` in `container-state.ts`): live in
+  container is stopped, when its run released it longer ago than its idle hold, when its owner
+  has been gone for longer than the grace, or when it has no `runs.json` entry (a detached stack
+  that outlived the registry) and its checkout is `present` and has been idle for at least
+  `DETACHED_IDLE_LIMIT_MS` (measured from the newest of its port claim's `usedAt`, last checkout
+  command and last proxied request; volumes stay intact). A live owner keeps its stack before the
+  checkout is even looked at: a run between `start()` and `startServers()` is using it. "Stopped"
+  means no container keeps the stack up (`keepsUnownedStack` in `container-state.ts`): live in
   `isContainerLive`'s sense, except `restarting`. A crash-looping stack known only by its claim
   has no owner to stop it and serves nothing, and counting it as up kept it for good; an
-  `unknown` state still keeps a stack, since misreading a live database is the costly
-  mistake. A detached owner of a
-  deleted checkout is ended by the watchdog instead ([below](#detached-runs-that-end)), and its
-  stack then follows the ordinary rule. A running stack with only a claim is left alone.
+  `unknown` state still keeps a stack, since misreading a live database is the costly mistake. A
+  detached owner of a deleted checkout is ended by the watchdog instead ([below](#detached-runs-that-end)),
+  and its stack then follows the ordinary rule. A recently used or undated running stack with only
+  a claim is left alone. `buncargo gc` (`container-runtime/gc.ts`, `cli/commands/gc.ts`) composes
+  `decideSweep`, `planVolumePrune` (`decideVolume`) and `staleDeletedClaims` into one command (with
+  `--dry-run`, `--yes`, `--idle`, `--json`) for server hygiene and cron jobs.
 - Only a stack this `HOME`'s state names is a candidate (`isKnownStack`): a `runs.json` entry
   (any session, live or not) or an `offsets.json` claim with its project and root. Several users
   can share one daemon, and from another account a live run's stack has no entry and a checkout

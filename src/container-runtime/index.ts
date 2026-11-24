@@ -8,6 +8,12 @@ export {
 export { ensureServicesRunning } from "./ensure-services";
 export { foreignStackOf } from "./foreign-stack";
 export {
+	type GcClaimItem,
+	type GcStackItem,
+	planGc,
+	staleDeletedClaims,
+} from "./gc";
+export {
 	groupBuncargoContainers,
 	isContainerUp,
 	listBuncargoContainers,
@@ -47,6 +53,7 @@ export { replaceStaleStacksOn } from "./stale-stacks";
 export {
 	isKnownStack,
 	type SweepResult,
+	stackLastActivityAt,
 	sweepOrphanedContainers,
 } from "./sweep";
 export {

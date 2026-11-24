@@ -196,3 +196,101 @@ describe("loopback URLs check", () => {
 		expect(await loopbackWarning("hash")).toEqual([]);
 	});
 });
+
+describe("infisical setup check fix", () => {
+	it("fails fast with INFISICAL_AUTH_EXPIRED instead of spawning infisical login in CI/headless shells", async () => {
+		const { allChecks } = await import("./core-checks");
+		const { InfisicalLoginError } = await import("../core/secrets/errors");
+		const execCalls: Array<{ cmd: string; opts: unknown }> = [];
+		const env = {
+			root: "/repo",
+			services: {},
+			apps: {},
+			secrets: { projectId: "p1", siteUrl: "https://eu.infisical.com" },
+			exec: async (cmd: string, opts?: unknown) => {
+				execCalls.push({ cmd, opts });
+				return { exitCode: 0 };
+			},
+		} as unknown as AnyDevEnvironment;
+		const check = allChecks(env, undefined).find(
+			(item) => item.name === "Infisical secrets are readable",
+		);
+		expect(check).toBeDefined();
+		expect(typeof check?.fix).toBe("function");
+
+		const savedCi = process.env.CI;
+		process.env.CI = "true";
+		try {
+			const failure = await Promise.resolve()
+				.then(() =>
+					typeof check?.fix === "function"
+						? check.fix({ root: "/repo", env })
+						: undefined,
+				)
+				.catch((error: unknown) => error);
+			expect(failure).toBeInstanceOf(InfisicalLoginError);
+			expect((failure as { message: string }).message).toContain(
+				"INFISICAL_AUTH_EXPIRED:",
+			);
+			expect((failure as { message: string }).message).toContain(
+				"configure a Machine Identity",
+			);
+			expect(execCalls).toEqual([]);
+		} finally {
+			if (savedCi === undefined) delete process.env.CI;
+			else process.env.CI = savedCi;
+		}
+	});
+
+	it("passes secrets: false when running infisical login interactively so exec does not fail prefetching", async () => {
+		const { allChecks } = await import("./core-checks");
+		const { CI_ENV_VARS } = await import("../core/runtime-flags");
+		const execCalls: Array<{ cmd: string; opts: unknown }> = [];
+		const env = {
+			root: "/repo",
+			services: {},
+			apps: {},
+			secrets: { projectId: "p1", siteUrl: "https://eu.infisical.com" },
+			exec: async (cmd: string, opts?: unknown) => {
+				execCalls.push({ cmd, opts });
+				return { exitCode: 0 };
+			},
+		} as unknown as AnyDevEnvironment;
+		const check = allChecks(env, undefined).find(
+			(item) => item.name === "Infisical secrets are readable",
+		);
+		const savedCi = CI_ENV_VARS.map((k) => [k, process.env[k]] as const);
+		for (const k of CI_ENV_VARS) delete process.env[k];
+		const stdinDesc = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+		const stdoutDesc = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+		Object.defineProperty(process.stdin, "isTTY", {
+			value: true,
+			configurable: true,
+		});
+		Object.defineProperty(process.stdout, "isTTY", {
+			value: true,
+			configurable: true,
+		});
+		try {
+			if (typeof check?.fix === "function") {
+				await check.fix({ root: "/repo", env });
+			}
+			expect(execCalls).toEqual([
+				{
+					cmd: "infisical login --domain=https://eu.infisical.com",
+					opts: { verbose: true, throwOnError: false, secrets: false },
+				},
+			]);
+		} finally {
+			for (const [k, v] of savedCi) {
+				if (v === undefined) delete process.env[k];
+				else process.env[k] = v;
+			}
+			if (stdinDesc) Object.defineProperty(process.stdin, "isTTY", stdinDesc);
+			else delete (process.stdin as { isTTY?: boolean }).isTTY;
+			if (stdoutDesc)
+				Object.defineProperty(process.stdout, "isTTY", stdoutDesc);
+			else delete (process.stdout as { isTTY?: boolean }).isTTY;
+		}
+	});
+});
