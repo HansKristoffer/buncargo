@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { resolveApps } from "../config/resolve";
+import { fakeRuntime } from "../container-runtime/fake-runtime.testing";
 import { classifyCliApps, type UnhealthyHolder } from "./port-reuse";
 
 describe("classifyCliApps", () => {
@@ -137,5 +138,28 @@ describe("classifyCliApps", () => {
 		expect(result.startNames).toEqual([]);
 		expect(result.reusedNames).toEqual(["api"]);
 		expect(result.inferredReuseNames).toEqual(["api"]);
+	});
+
+	it("skips the live port/container snapshot when predicates are injected", async () => {
+		let containerReads = 0;
+		const result = await classifyCliApps(
+			resolveApps({
+				api: { port: 3000, devCommand: "bun run api" },
+			}),
+			{ api: 3000 },
+			{
+				isPortBusy: () => false,
+				runtime: fakeRuntime({
+					containers: async () => {
+						containerReads += 1;
+						return [];
+					},
+				}),
+			},
+		);
+
+		expect(containerReads).toBe(0);
+		expect(result.startNames).toEqual(["api"]);
+		expect(result.portOwners).toBeUndefined();
 	});
 });

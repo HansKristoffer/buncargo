@@ -206,13 +206,16 @@ and `dev-tunnels.ts` hold the pieces it orchestrates.
 ## Check and predeploy
 
 `commands/check/` is `buncargo check`. `planCheck` (`plan.ts`) is a pure function from the config,
-the files and the mode to a list of named steps; the command reads the files and the repository
-first, then filters the list (`--only`, `--skip`), prints it (`--list`) or runs it (`runner.ts`).
-Step names are the filter's contract, so a chunked step (`biome --write (200 files)`) keeps one
-name, and validation refuses a gate named like a built-in step or an earlier gate. `docs.ts` is
-also `check docs`. Deferred tests (`check.testDeferred`) are a pass with a count by default:
-a non-zero default fails every check in every repo with database tests. They used to run with no
-database, every test skipped, and `check` printed `PASS`.
+the files, the mode and `CheckRun` (`keepGoing`, `reuse`, `write`) to a list of named steps; the
+command reads the files and the repository first, then filters the list (`--only`, `--skip`),
+prints it (`--list`) or runs it (`runner.ts`). `check` is strictly read-only by default (`bun fmt
+--check`, `biome check`, no gate `fix`): it writes only when `--fix` (or its alias `--write`) is
+passed, and refuses `--fix`/`--write` with `--staged`. Step names are the filter's contract, so a
+chunked step (`biome (200 files)`) keeps one name, and validation refuses a gate named like a
+built-in step or an earlier gate. `docs.ts` is also `check docs`. Deferred tests
+(`check.testDeferred`) are a pass with a count by default: a non-zero default fails every check in
+every repo with database tests. They used to run with no database, every test skipped, and `check`
+printed `PASS`.
 
 Steps run one at a time with their output buffered: the point is one line per step and the tail of the failure, not a live log. A run stops at its first
 failing step unless `--keep-going`: agents read the output when the process ends, so a formatting
@@ -233,8 +236,9 @@ typecheck three times: on its own, in `check`, and in the hook's `check --staged
   included and the staging letters left out. Every step reads the files on disk, never the index,
   so the tree `check` passed on is the tree its pre-commit hook sees after `git add`.
 - A pass is keyed by the command's words and working directory. `check` and `check --staged` share
-  a gate's command but not the formatter's or Biome's (write against check, different file lists),
-  which is why those two still run in the hook.
+  a gate's command (and, when both run read-only on identical file lists, the formatter and Biome
+  too); `--fix` / `--write` runs a distinct command key so a writing pass is never confused with a
+  read-only check.
 - The typecheck step is never reused as a step: which workspaces `--changed` selects depends on
   the merge base, which the tree does not hold. `buncargo typecheck` reuses per workspace job
   instead, so `check` always spawns it and repeats the `N of M reused (…)` part of its last line.

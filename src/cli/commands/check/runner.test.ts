@@ -1,8 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { passKey, type RecordedPasses } from "../../../core/check-passes";
+import { removeTempDir } from "../../../core/test-env.testing";
 import type { CommandStep } from "./plan";
 import {
 	bunTestFailures,
@@ -10,6 +11,17 @@ import {
 	rerunCommand,
 	stepRunner,
 } from "./runner";
+
+const dirs: string[] = [];
+afterEach(() => {
+	for (const dir of dirs.splice(0)) removeTempDir(dir);
+});
+
+function tempDir(): string {
+	const dir = mkdtempSync(join(tmpdir(), "buncargo-runner-"));
+	dirs.push(dir);
+	return dir;
+}
 
 function step(name: string, script: string, extra: Partial<CommandStep> = {}) {
 	return {
@@ -130,7 +142,7 @@ describe("a step that passed on this exact tree", () => {
 	};
 
 	it("is not run again, and its line names the run it passed in", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "buncargo-runner-"));
+		const dir = tempDir();
 		const { printed, steps } = reusing(recorded(gate(dir), "t1"), () => "t1");
 
 		expect(await steps.run(gate(dir))).toBe(0);
@@ -145,7 +157,7 @@ describe("a step that passed on this exact tree", () => {
 
 	it("runs on another tree, and when the tree cannot be told", async () => {
 		for (const tree of ["t2", undefined]) {
-			const dir = mkdtempSync(join(tmpdir(), "buncargo-runner-"));
+			const dir = tempDir();
 			const { steps } = reusing(recorded(gate(dir), "t1"), () => tree);
 			await steps.run(gate(dir));
 			expect(existsSync(join(dir, "ran"))).toBe(true);
@@ -153,7 +165,7 @@ describe("a step that passed on this exact tree", () => {
 	});
 
 	it("records a pass only for a step that left the tree as it found it", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "buncargo-runner-"));
+		const dir = tempDir();
 		const treeFile = join(dir, "tree");
 		writeFileSync(treeFile, "t1");
 		const { steps } = reusing({}, () => readFileSync(treeFile, "utf8"));
@@ -174,7 +186,7 @@ describe("a step that passed on this exact tree", () => {
 	});
 
 	it("always runs a step that opts out, and records no pass for it", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "buncargo-runner-"));
+		const dir = tempDir();
 		const drift = { ...gate(dir), reuse: false as const };
 		const { printed, steps } = reusing(recorded(drift, "t1"), () => "t1");
 

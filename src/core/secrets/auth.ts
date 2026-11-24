@@ -8,7 +8,6 @@ import {
 	infisicalMachineCredentials,
 	infisicalPathOverride,
 	infisicalUniversalAuthFile,
-	isCI,
 } from "../runtime-flags";
 import { recordStartupMetric } from "../startup-metrics";
 import { resolveUserHome, stateFilePath } from "../state-paths";
@@ -306,6 +305,7 @@ async function runCliSessionToken(
 				stderr: "pipe",
 				env: {
 					...env,
+					BROWSER: "false",
 					INFISICAL_DISABLE_UPDATE_CHECK: "true",
 					INFISICAL_DISABLE_MIGRATION_NOTICES: "true",
 				},
@@ -379,7 +379,11 @@ function startsLoginFlow(output: string): boolean {
 		.split("\n")
 		.some(
 			(line) =>
-				line.includes(" ") && /login|log in|email|browser|expired/i.test(line),
+				(line.includes(" ") &&
+					/login|log in|sign in|authenticate|email|browser|expired/i.test(
+						line,
+					)) ||
+				/https?:\/\/localhost[:/]/.test(line),
 		);
 }
 
@@ -456,19 +460,17 @@ function signsInWithCli(env: NodeJS.ProcessEnv, siteUrl: string): boolean {
 }
 
 /**
- * Whether `error` stops a run rather than warning: a missing CLI session on a
- * developer's machine. In CI nobody can log in, and a shell that exports its
- * own token hands it to the apps' loaders, so both keep warning as before.
+ * Whether `error` stops a run rather than warning: a missing or expired CLI
+ * session, unless the shell exports its own token for apps' loaders. Applies
+ * in headless/non-TTY shells and CI too, so expired auth fails fast with
+ * `INFISICAL_AUTH_EXPIRED` instead of letting apps spawn a hanging browser
+ * login.
  */
 export function stopsTheRun(
 	error: unknown,
 	env: NodeJS.ProcessEnv = process.env,
 ): error is InfisicalLoginError {
-	return (
-		error instanceof InfisicalLoginError &&
-		!isCI(env) &&
-		!infisicalExportedToken(env)
-	);
+	return error instanceof InfisicalLoginError && !infisicalExportedToken(env);
 }
 
 /**

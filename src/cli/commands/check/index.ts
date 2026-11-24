@@ -164,6 +164,15 @@ const CHECK_SPEC = {
 			description:
 				"Run every step past a failure, for the full report (default: stop at the first)",
 		},
+		fix: {
+			kind: "boolean",
+			description:
+				"Apply formatter, Biome and gate fixes in place (default: read-only)",
+		},
+		write: {
+			kind: "boolean",
+			description: "Alias for --fix",
+		},
 		"no-reuse": {
 			kind: "boolean",
 			description:
@@ -182,7 +191,11 @@ const CHECK_SPEC = {
 		{
 			command: "buncargo check",
 			description:
-				"Biome, typecheck, gates and nearby tests for this branch's changes",
+				"Read-only check: format, Biome, typecheck, gates and nearby tests",
+		},
+		{
+			command: "buncargo check --fix",
+			description: "Apply formatter, Biome and gate fixes in place",
 		},
 		{
 			command: "buncargo check --staged",
@@ -220,12 +233,16 @@ async function loadConfig(root: string): Promise<CheckConfig> {
 }
 
 async function check({
-	values: { base, staged, all, list, json, ...values },
+	values: { base, staged, all, list, json, fix, write, ...values },
 }: Parsed<typeof CHECK_SPEC>): Promise<number> {
 	const errors: string[] = [];
 	const only = stepList("only", values.only, errors);
 	const skip = stepList("skip", values.skip, errors);
+	const shouldWrite = fix || write;
 	if (staged && all) errors.push("--staged and --all cannot be combined.");
+	if (shouldWrite && staged) {
+		errors.push("--fix and --write cannot be combined with --staged.");
+	}
 	if (base !== undefined && (staged || all)) {
 		errors.push("--base only applies to the default changed-files mode.");
 	}
@@ -237,6 +254,7 @@ async function check({
 	const run: CheckRun = {
 		keepGoing: values["keep-going"],
 		reuse: !values["no-reuse"] && !isCI(),
+		write: shouldWrite,
 	};
 
 	const root = findMonorepoRoot();

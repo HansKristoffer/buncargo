@@ -340,6 +340,8 @@ Options:
   --only=<steps>  Run only these steps (comma-separated names from --list)
   --skip=<steps>  Leave these steps out (comma-separated names from --list)
   --keep-going    Run every step past a failure, for the full report (default: stop at the first)
+  --fix           Apply formatter, Biome and gate fixes in place (default: read-only)
+  --write         Alias for --fix
   --no-reuse      Run every step again, even one that passed on this exact working tree
   --list          Print the steps this change would run, and run nothing
   --json          With --list: one JSON document on stdout
@@ -352,7 +354,8 @@ Exit codes:
 JSON output: CheckPlanJson (--list --json)
 
 Examples:
-  buncargo check                      Biome, typecheck, gates and nearby tests for this branch's changes
+  buncargo check                      Read-only check: format, Biome, typecheck, gates and nearby tests
+  buncargo check --fix                Apply formatter, Biome and gate fixes in place
   buncargo check --staged             The pre-commit hook: staged files, no writes
   buncargo check --all                Every check but the tests, e.g. as \`bun run lint\`
   buncargo check --all --list --json  Every step's name and command, e.g. for a CI matrix
@@ -809,6 +812,36 @@ Examples:
 "
 `;
 
+exports[`buncargo CLI output gc --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo gc [options]
+
+Stop orphaned stacks, prune deleted checkouts' volumes and drop stale port claims
+
+Options:
+  --dry-run          List what would be stopped or removed and stop
+  --yes              Remove deleted checkouts' volumes without prompting (for scripts and cron)
+  --idle=<duration>  Stop unowned stacks idle at least this long, e.g. 2h, 30m, 1d (default: 2h)
+  --json             One JSON document on stdout
+  --help, -h         Show this help message
+
+Exit codes:
+  0  cleaned, listed (--dry-run), or nothing to clean
+  1  a removal failed, offsets.json or runs.json is unreadable, or bad arguments
+
+JSON output: GcJson (--json)
+
+Examples:
+  bunx buncargo gc --dry-run  Preview orphaned stacks, deleted-checkout volumes and stale claims
+  bunx buncargo gc --yes      Stop orphaned stacks, remove deleted checkouts' volumes and prune stale claims (for cron)
+
+
+--- stderr
+"
+`;
+
 exports[`buncargo CLI output ls --help 1`] = `
 "exit 0
 --- stdout
@@ -966,6 +999,7 @@ COMMANDS:
   sql [<service>] [options] [-- <args>]     Open the database's own client in this checkout's container
   status [options]                          Show this project's containers, ports, and tunnels
   prune [options]                           Remove volumes whose project is gone (destroys their data)
+  gc [options]                              Stop orphaned stacks, prune deleted checkouts' volumes and drop stale port claims
   doctor [options]                          Check Docker, port owners, lockfile, hosts, and orphans
   hosts <command>                           Named .localhost URLs (install | status | sync | prune | uninstall | daemon)
   bar <command>                             The BuncargoBar menu bar app (install | update | status | open | uninstall | reset)
@@ -1042,6 +1076,7 @@ COMMANDS:
   sql [<service>] [options] [-- <args>]     Open the database's own client in this checkout's container
   status [options]                          Show this project's containers, ports, and tunnels
   prune [options]                           Remove volumes whose project is gone (destroys their data)
+  gc [options]                              Stop orphaned stacks, prune deleted checkouts' volumes and drop stale port claims
   doctor [options]                          Check Docker, port owners, lockfile, hosts, and orphans
   hosts <command>                           Named .localhost URLs (install | status | sync | prune | uninstall | daemon)
   bar <command>                             The BuncargoBar menu bar app (install | update | status | open | uninstall | reset)
@@ -1118,6 +1153,7 @@ COMMANDS:
   sql [<service>] [options] [-- <args>]     Open the database's own client in this checkout's container
   status [options]                          Show this project's containers, ports, and tunnels
   prune [options]                           Remove volumes whose project is gone (destroys their data)
+  gc [options]                              Stop orphaned stacks, prune deleted checkouts' volumes and drop stale port claims
   doctor [options]                          Check Docker, port owners, lockfile, hosts, and orphans
   hosts <command>                           Named .localhost URLs (install | status | sync | prune | uninstall | daemon)
   bar <command>                             The BuncargoBar menu bar app (install | update | status | open | uninstall | reset)
@@ -1194,6 +1230,7 @@ COMMANDS:
   sql [<service>] [options] [-- <args>]     Open the database's own client in this checkout's container
   status [options]                          Show this project's containers, ports, and tunnels
   prune [options]                           Remove volumes whose project is gone (destroys their data)
+  gc [options]                              Stop orphaned stacks, prune deleted checkouts' volumes and drop stale port claims
   doctor [options]                          Check Docker, port owners, lockfile, hosts, and orphans
   hosts <command>                           Named .localhost URLs (install | status | sync | prune | uninstall | daemon)
   bar <command>                             The BuncargoBar menu bar app (install | update | status | open | uninstall | reset)
@@ -1313,6 +1350,7 @@ JSON documents, by the type that describes each:
   env             EnvJson
   runs            RunsJson (--json)
   status          StatusJson (--json)
+  gc              GcJson (--json)
 
 --- stderr
 "
@@ -1404,6 +1442,7 @@ COMMANDS:
   sql [<service>] [options] [-- <args>]     Open the database's own client in this checkout's container
   status [options]                          Show this project's containers, ports, and tunnels
   prune [options]                           Remove volumes whose project is gone (destroys their data)
+  gc [options]                              Stop orphaned stacks, prune deleted checkouts' volumes and drop stale port claims
   doctor [options]                          Check Docker, port owners, lockfile, hosts, and orphans
   hosts <command>                           Named .localhost URLs (install | status | sync | prune | uninstall | daemon)
   bar <command>                             The BuncargoBar menu bar app (install | update | status | open | uninstall | reset)

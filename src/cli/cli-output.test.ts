@@ -67,6 +67,7 @@ const HELP_COMMANDS = [
 	["ports"],
 	["sql"],
 	["prune"],
+	["gc"],
 	// Commands that had no spec: `doctor --help` ran the sweep.
 	["ls"],
 	["status"],

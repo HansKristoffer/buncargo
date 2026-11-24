@@ -96,7 +96,10 @@ describe("decideSweep", () => {
 		ownerAlive: false,
 		now: NOW,
 	};
-	const limits = { ownerDeadGraceMs: 15_000 };
+	const limits = {
+		ownerDeadGraceMs: 15_000,
+		unownedIdleLimitMs: 2 * 60 * 60_000,
+	};
 
 	it("removes a stack whose checkout is gone once no live run owns it", () => {
 		const held = entry({
@@ -146,8 +149,24 @@ describe("decideSweep", () => {
 		});
 	});
 
-	it("leaves a running stack with no entry alone", () => {
+	it("leaves a running stack with no entry alone when activity is unknown or recent, and reaps it once idle past the limit", () => {
+		const twoHours = limits.unownedIdleLimitMs;
 		expect(decideSweep(base, limits)).toEqual({ kind: "keep" });
+		expect(
+			decideSweep({ ...base, lastActivityAt: NOW - 60_000 }, limits),
+		).toEqual({ kind: "keep" });
+		expect(
+			decideSweep(
+				{ ...base, checkout: "unknown", lastActivityAt: NOW - twoHours },
+				limits,
+			),
+		).toEqual({ kind: "keep" });
+		expect(
+			decideSweep({ ...base, lastActivityAt: NOW - twoHours }, limits),
+		).toEqual({
+			kind: "down",
+			reason: "no run in runs.json and idle for 7200s",
+		});
 	});
 
 	it("holds a released stack for its idle timeout, then removes it", () => {
@@ -303,6 +322,42 @@ describe("sweepOrphanedContainers", () => {
 			"stopped",
 		]);
 		expect(downs[0]).toMatchObject({ root: gone, verbose: false });
+	});
+
+	it("reaps a running detached stack that outlived runs.json once its checkout has been idle past the limit", async () => {
+		const active = join(checkout, "active-wt");
+		const idle = join(checkout, "idle-wt");
+		mkdirSync(active, { recursive: true });
+		mkdirSync(idle, { recursive: true });
+		claim("active-stack", active);
+		claim("idle-stack", idle);
+		const now = Date.now();
+		const { runtime, downs } = stubRuntime([
+			container("active-stack", active, "running"),
+			container("idle-stack", idle, "running"),
+		]);
+
+		// Within the 2h limit: neither is touched.
+		const early = await sweepOrphanedContainers({
+			runtimes: [runtime],
+			now: now + 60_000,
+		});
+		expect(early.swept).toEqual([]);
+		expect(downs).toEqual([]);
+
+		// Past the 2h limit: unowned running stacks are torn down without
+		// touching volumes.
+		const later = await sweepOrphanedContainers({
+			runtimes: [runtime],
+			now: now + 3 * 3_600_000,
+		});
+		expect(later.swept.map((stack) => stack.projectName).sort()).toEqual([
+			"active-stack",
+			"idle-stack",
+		]);
+		expect(later.swept.every((stack) => stack.volumes === undefined)).toBe(
+			true,
+		);
 	});
 
 	it("downs a crash-looping stack nobody owns, and keeps one whose state it cannot read", async () => {

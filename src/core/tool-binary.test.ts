@@ -1,18 +1,30 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveUserHome } from "./state-paths";
+import { removeTempDir } from "./test-env.testing";
 import { lookupOnPath, resolveToolBinary, toolCachePath } from "./tool-binary";
 
+const dirs: string[] = [];
+afterEach(() => {
+	for (const dir of dirs.splice(0)) removeTempDir(dir);
+});
+
+function tempDir(prefix: string): string {
+	const dir = mkdtempSync(join(tmpdir(), prefix));
+	dirs.push(dir);
+	return dir;
+}
+
 function tempBinary(name = "tool"): string {
-	const path = join(mkdtempSync(join(tmpdir(), "buncargo-tool-")), name);
+	const path = join(tempDir("buncargo-tool-"), name);
 	writeFileSync(path, "");
 	return path;
 }
 
 function tempExecutable(name = "tool"): { dir: string; path: string } {
-	const dir = mkdtempSync(join(tmpdir(), "buncargo-bin-"));
+	const dir = tempDir("buncargo-bin-");
 	const path = join(dir, name);
 	writeFileSync(path, "#!/bin/sh\n", { mode: 0o755 });
 	return { dir, path };
@@ -95,7 +107,7 @@ describe("lookupOnPath", () => {
 
 	// A file that happens to share the name but cannot be run is not the tool.
 	it("skips a non-executable file with the right name", () => {
-		const dir = mkdtempSync(join(tmpdir(), "buncargo-bin-"));
+		const dir = tempDir("buncargo-bin-");
 		writeFileSync(join(dir, "buncargo-not-exec"), "", { mode: 0o644 });
 		expect(
 			lookupOnPath("buncargo-not-exec", { PATH: dir } as NodeJS.ProcessEnv),

@@ -1,11 +1,18 @@
-import { expect, it } from "bun:test";
+import { afterEach, expect, it } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeTempDir } from "../test-env.testing";
 import { inOwnUserScope } from "./user-scope";
+
+const dirs: string[] = [];
+afterEach(() => {
+	for (const dir of dirs.splice(0)) removeTempDir(dir);
+});
 
 function userManager() {
 	const dir = mkdtempSync(join(tmpdir(), "buncargo-user-scope-"));
+	dirs.push(dir);
 	mkdirSync(join(dir, "run", "systemd"), { recursive: true });
 	writeFileSync(join(dir, "run", "systemd", "private"), "");
 	mkdirSync(join(dir, "bin"));

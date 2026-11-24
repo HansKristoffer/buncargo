@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { readProcessIdentity } from "../src/core/process-identity";
+import { removeTempDir } from "../src/core/test-env.testing";
 import { stopWatchdog } from "../src/core/watchdog.testing";
 
 /**
@@ -68,7 +69,7 @@ if (!REAL_MACHINE_SUITES.some((name) => process.env[name])) {
 		await stopWatchdog();
 		// Bun writes its transpiler cache under HOME as it exits, after this.
 		process.env.HOME = realHome;
-		rmSync(home, { recursive: true, force: true });
+		removeTempDir(home);
 	});
 }
 

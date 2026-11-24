@@ -76,6 +76,35 @@ only on purpose.
   last. `exec` uses the existing argv execution path and persisted ports, without startup or
   probes.
 
+## Where code lives
+
+All library source lives under `src/`; tests sit beside the module they test.
+
+- `index.ts`: `buncargo`, what a `dev.config.ts` imports; every config load pays for its graph.
+  `api/`: `buncargo/api`, the environment, loader and CLI for code. Add new public exports to one
+  of the two on purpose.
+- `cli/`: the CLI (`bin.ts` executable, `run-cli.ts` dev flow, `commands/` one module per command,
+  `tui/` the TUI).
+- `config/`: `defineDevConfig`, validation and integration application (kept separate).
+- `environment/`: `createDevEnvironment()`, composed from focused modules built on `context.ts`.
+- `planning/`: pure start planning, app and service selection. No I/O.
+- `docker-compose/`: Compose model generation and service presets. No runtime calls.
+- `container-runtime/`: runtime-neutral adapter port, readiness, inventory, sweep, gc and volume
+  pruning. Everything outside the backends imports runtimes from here.
+- `docker/`, `apple-container/`: the two container runtime backends.
+- `core/`: shared runtime (`process/`, `hosts/`, `secrets/`, `connect/`, run registry, port
+  allocation, locks and state files).
+- `loader/`, `typecheck/`, `prisma/`, `types/`: config loading, workspace typecheck pool, Prisma
+  integration, public type surface.
+- `expo/`, `shopify/`, `supabase/`, `firebase/`: integrations, published as subpaths.
+- `vite/`, `next/`, `client/`, `runtime/`: small entry points loaded inside users' apps; keep their
+  import graphs tiny.
+- `menubar/` (Swift), `server/` (connect relay), `example/` (configs and playground), `scripts/`
+  (CI, benchmarks, package verification).
+
+Import a directory through its `index.ts` (`./config/index`, `./environment/index`); never add thin
+top-level files that only re-export another module.
+
 ## Topics
 
 - [Glossary](./glossary.md)

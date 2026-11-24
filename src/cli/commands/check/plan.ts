@@ -94,35 +94,38 @@ export interface CheckRepo {
 	base?: string;
 }
 
-/** How this run goes about the plan: `--keep-going` and `--no-reuse`. */
+/** How this run goes about the plan: `--keep-going`, `--no-reuse` and `--fix`/`--write`. */
 export interface CheckRun {
 	/** Run every step, and every workspace's typecheck, past a failure. */
 	keepGoing: boolean;
 	/** Skip what passed on this exact working tree. */
 	reuse: boolean;
+	/** Apply formatter, Biome and gate fixes in place (default: read-only). */
+	write: boolean;
 }
 
 /**
- * The `bun fmt` runs for `check.format`: write the changed files, check the
- * staged ones, check the whole repo with `--all`. `files` are the ones that
- * still exist. `--no-script` keeps a repo `fmt` script from running instead;
- * the ignore flags let a list hold files bun fmt cannot format.
+ * The `bun fmt` runs for `check.format`: check only by default, and write in
+ * place only when `write` (`--fix` / `--write`) is set. `files` are the ones
+ * that still exist. `--no-script` keeps a repo `fmt` script from running
+ * instead; the ignore flags let a list hold files bun fmt cannot format.
  */
 export function formatCommands(
 	format: true | readonly string[],
 	files: readonly string[],
 	mode: CheckMode,
+	write: boolean,
 ): { label: string; command: string[] }[] {
 	const globs = format === true ? [] : format;
 	const flags = [
 		"bun",
 		"fmt",
 		"--no-script",
-		...(mode === "changed" ? [] : ["--check"]),
+		...(write ? [] : ["--check"]),
 		"--ignore-unknown",
 		"--no-error-on-unmatched-pattern",
 	];
-	const label = mode === "changed" ? "bun fmt" : "bun fmt --check";
+	const label = write ? "bun fmt" : "bun fmt --check";
 	if (mode === "all") return [{ label, command: [...flags, ...globs] }];
 
 	const matchers = globs.map((glob) => new Bun.Glob(glob));
@@ -176,20 +179,23 @@ export function selectGates(
 	);
 }
 
-function biomeSteps(existing: readonly string[], mode: CheckMode): Step[] {
+function biomeSteps(
+	existing: readonly string[],
+	mode: CheckMode,
+	write: boolean,
+): Step[] {
+	const writeFlag = write ? ["--write"] : [];
+	const label = write ? "biome --write" : "biome";
 	if (mode === "all") {
 		return [
 			{
 				kind: "command",
 				name: "biome",
-				label: "biome",
-				command: ["bunx", "biome", "check"],
+				label,
+				command: ["bunx", "biome", "check", ...writeFlag],
 			},
 		];
 	}
-
-	const write = mode === "staged" ? [] : ["--write"];
-	const label = mode === "staged" ? "biome" : "biome --write";
 
 	return chunkArray([...existing], FILE_CHUNK).map((chunk) => ({
 		kind: "command",
@@ -199,7 +205,7 @@ function biomeSteps(existing: readonly string[], mode: CheckMode): Step[] {
 			"bunx",
 			"biome",
 			"check",
-			...write,
+			...writeFlag,
 			"--files-ignore-unknown=true",
 			"--no-errors-on-unmatched",
 			...chunk,
@@ -281,13 +287,18 @@ export function planCheck(
 	// Formatting before Biome, so the lint sees the formatted files. From the
 	// root: bun fmt skips `.prettierignore` entries only there.
 	if (config.format) {
-		const formats = formatCommands(config.format, files.existing, mode);
+		const formats = formatCommands(
+			config.format,
+			files.existing,
+			mode,
+			run.write,
+		);
 		for (const { label, command } of formats) {
 			steps.push({ kind: "command", name: "format", label, command });
 		}
 	}
 
-	if (repo.biome) steps.push(...biomeSteps(files.existing, mode));
+	if (repo.biome) steps.push(...biomeSteps(files.existing, mode, run.write));
 
 	const checksDocs =
 		config.docs !== false && touches(files.changed, ["**/*.md", "*.md"], mode);
@@ -327,8 +338,8 @@ export function planCheck(
 			label: gate.name,
 			command: ["sh", "-c", gate.command],
 			cwd: gate.cwd,
-			// Only the default mode writes: --staged and --all report.
-			fix: gate.fix && mode === "changed" ? ["sh", "-c", gate.fix] : undefined,
+			// Read-only unless `--fix` or `--write` was passed.
+			fix: gate.fix && run.write ? ["sh", "-c", gate.fix] : undefined,
 			...(gate.reuse === false ? { reuse: false as const } : {}),
 		});
 	}

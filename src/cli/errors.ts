@@ -22,7 +22,9 @@ export function toCliError(error: unknown): CliError {
 	}
 	// The fix is the point: an expired Infisical session names its login.
 	if (error instanceof InfisicalLoginError) {
-		return new CliError(error.reason, [`Fix: ${error.login}`]);
+		return new CliError(`INFISICAL_AUTH_EXPIRED: ${error.reason}`, [
+			`Fix: ${error.login} (or configure a Machine Identity)`,
+		]);
 	}
 	if (error instanceof SecretsError) {
 		return new CliError(error.message, error.fix ? [`Fix: ${error.fix}`] : []);

@@ -1,6 +1,7 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { removeTempDir } from "./test-env.testing";
 
 /**
  * A checkout this user cannot see into: `root` sits in a directory with mode
@@ -17,8 +18,7 @@ export function unreadableCheckout():
 	return {
 		root,
 		cleanup: () => {
-			chmodSync(parent, 0o700);
-			rmSync(parent, { recursive: true, force: true });
+			removeTempDir(parent);
 		},
 	};
 }

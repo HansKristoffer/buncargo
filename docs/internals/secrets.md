@@ -46,19 +46,23 @@ context. `secrets ls` prints key names, `secrets check` key counts.
 - A 403 is never a login problem. In one project the scope lacked `organizationId`; the old
   `infisical login` advice was wrong, and every app's loader then went to the CLI at once. The
   error names the project and the token's organization and points at `secrets.organizationId`.
-- An `InfisicalLoginError` stops the run instead of warning (`stopsTheRun`): every app's own
-  loader and every command would wait on the same login. Not in CI, where nobody can log in, and
-  not when the shell exports its own Infisical token, which the apps' loaders use while
-  buncargo's CLI call strips it: both warned before this existed and still do. Its message
-  carries the login command, for a library caller that prints only the message; the CLI prints
-  `reason` and `login` on two lines. `ensureSecretsSession` awaits the token for each CLI
-  site among a set of scopes; it is the token the fetches use (cached per site), so it costs no
-  extra process. `start()` awaits it for the scopes it prefetches, before the claim; `dev` fires
-  it for the selected apps' and the config-level scopes right after selection and awaits it
-  before named hosts, so it overlaps the checks and preflight; `run` awaits it before a task's services. `exec` and a task
-  without services need nothing extra: their own first fetch throws the same error just as fast.
-  `loadAppSecrets` and `resolveSecrets` rethrow it rather than warn. `toCliError` turns any
-  `SecretsError` into its message and `Fix:` line, which is why `errors.ts` imports nothing.
+- An `InfisicalLoginError` (`code: "INFISICAL_AUTH_EXPIRED"`) stops the run instead of warning
+  (`stopsTheRun`), including in headless/non-TTY shells and CI, so expired auth fails fast with
+  the login command and Machine Identity guidance instead of letting apps spawn a hanging browser
+  login. Only a shell that exports its own Infisical token (`INFISICAL_TOKEN` /
+  `INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN`), which apps' loaders use while buncargo's CLI call
+  strips it, keeps warning. `setup`'s Infisical check fix likewise throws `InfisicalLoginError`
+  instead of running `infisical login` when `!isInteractive() || isCI()`. Its message carries
+  `INFISICAL_AUTH_EXPIRED`, the login command and Machine Identity advice, for library callers;
+  the CLI prints `INFISICAL_AUTH_EXPIRED: <reason>` and the `Fix:` line. `ensureSecretsSession`
+  awaits the token for each CLI site among a set of scopes; it is the token the fetches use
+  (cached per site), so it costs no extra process. `start()` awaits it for the scopes it
+  prefetches, before the claim; `dev` fires it for the selected apps' and the config-level scopes
+  right after selection and awaits it before named hosts, so it overlaps the checks and preflight;
+  `run` awaits it before a task's services. `exec` and a task without services need nothing extra:
+  their own first fetch throws the same error just as fast. `loadAppSecrets` and `resolveSecrets`
+  rethrow it rather than warn. `toCliError` turns any `SecretsError` into its message and `Fix:`
+  line, which is why `errors.ts` imports nothing.
 - The secrets are listed over HTTP (v4, imports beneath the folder's own values).
 - A universal-auth identity (`infisicalMachineCredentials` in `runtime-flags.ts`, else the
   identity file) replaces the CLI for apps and commands alike, sharing the per-scope cache.

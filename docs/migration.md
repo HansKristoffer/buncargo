@@ -2,6 +2,11 @@
 
 Each section lists what a consumer of `buncargo` has to change when crossing one major version, newest first. Breaking changes that shipped inside a minor release are listed under the major you cross when you pick them up. If you are several majors behind, work through the sections from the bottom up.
 
+## 16.x → 17.0
+
+- **`buncargo check` is strictly read-only by default.** It runs `bun fmt --check`, `biome check` (without `--write`), and skips gate `fix` commands unless `--fix` (or its alias `--write`) is explicitly passed. Workflows or scripts that relied on `buncargo check` mutating files in place should pass `buncargo check --fix`.
+- **Expired or missing Infisical CLI sessions now fail fast in CI too.** When the Infisical CLI is installed and a config declares `secrets` without a Machine Identity or exported `INFISICAL_TOKEN` / `INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN`, `dev`, `run`, `exec` and library `start()` fail immediately with `INFISICAL_AUTH_EXPIRED` instead of warning and letting apps hang on an interactive login. Configure a Machine Identity (`INFISICAL_CLIENT_ID` / `INFISICAL_CLIENT_SECRET` or `~/.infisical/universal-auth.json`), export `INFISICAL_TOKEN`, or set `secrets: false` for offline CI configs.
+
 ## 15.x → 16.0
 
 ### Upgrading a machine

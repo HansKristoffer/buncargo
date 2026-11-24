@@ -35,6 +35,7 @@ const COMMANDS = {
 	sql: async () => (await import("./sql")).sqlCommand,
 	status: async () => (await import("./inspect/status")).statusCommand,
 	prune: async () => (await import("./prune")).pruneCommand,
+	gc: async () => (await import("./gc")).gcCommand,
 	doctor: async () => (await import("./inspect/doctor")).doctorCommand,
 	hosts: async () => (await import("./hosts")).hostsCommand,
 	bar: async () => (await import("./bar")).barCommand,

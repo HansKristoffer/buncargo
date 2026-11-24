@@ -8,6 +8,7 @@ export type {
 	DetachedResultJson,
 	EnvJson,
 	FilesStatusJson,
+	GcJson,
 	RunsJson,
 	SecretsCheckJson,
 	StatusJson,

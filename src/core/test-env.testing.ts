@@ -1,8 +1,49 @@
 import { afterAll, afterEach, beforeAll, beforeEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+	chmodSync,
+	lstatSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CI_ENV_VARS } from "./runtime-flags";
+
+/**
+ * Remove a temporary directory and everything inside it, restoring `0o700` on
+ * directories first so unreadable or read-only fixtures (`0o000`, `0o555`) are
+ * deleted instead of leaking under `tmpdir()`.
+ */
+export function removeTempDir(dir: string): void {
+	if (!dir) return;
+	makeRemovable(dir);
+	rmSync(dir, { recursive: true, force: true });
+}
+
+function makeRemovable(path: string): void {
+	let stats: ReturnType<typeof lstatSync>;
+	try {
+		stats = lstatSync(path);
+	} catch {
+		return;
+	}
+	if (stats.isSymbolicLink() || !stats.isDirectory()) return;
+	try {
+		chmodSync(path, 0o700);
+	} catch {
+		return;
+	}
+	let entries: string[];
+	try {
+		entries = readdirSync(path);
+	} catch {
+		return;
+	}
+	for (const entry of entries) {
+		makeRemovable(join(path, entry));
+	}
+}
 
 /**
  * Run `body` with every CI signal cleared, then put the environment back.
@@ -73,7 +114,7 @@ export function useTempHome(scope: "each" | "all" = "each"): () => string {
 	(scope === "each" ? afterEach : afterAll)(() => {
 		if (saved === undefined) delete process.env.HOME;
 		else process.env.HOME = saved;
-		rmSync(home, { recursive: true, force: true });
+		removeTempDir(home);
 	});
 	return () => home;
 }

@@ -163,11 +163,12 @@ const TOPICS: readonly Topic[] = [
   containers about 15 seconds after the watchdog notices.
 - The watchdog is one background process per machine. Every 30 seconds it
   removes containers that nothing holds any more: a deleted checkout's, a run's
-  whose hold ran out, a crashed run's. It never touches a live run's
+  whose hold ran out, a crashed run's, or a detached stack that outlived
+  \`runs.json\` and sat idle for 2 hours. It never touches a live run's
   containers and never removes a volume, so a database survives every stop;
-  only \`dev --reset\` and \`buncargo prune\` delete data. The one exception
-  is a machine that set \`BUNCARGO_PRUNE_DELETED_CHECKOUTS=1\`: there it also
-  removes the volumes of a checkout deleted at least 10 minutes ago.
+  only \`dev --reset\`, \`buncargo prune\` and \`buncargo gc\` delete data. The one
+  exception is a machine that set \`BUNCARGO_PRUNE_DELETED_CHECKOUTS=1\`: there
+  it also removes the volumes of a checkout deleted at least 10 minutes ago.
 - A warning that names who removed this checkout's containers (a watchdog,
   \`stop\`, \`dev --down\`) explains a refused database connection: the
   stack is gone, not broken. Start the run again; report the remover to the
@@ -307,11 +308,12 @@ const TOPICS: readonly Topic[] = [
 		name: "check",
 		body: `## Checks
 
-- \`bunx buncargo check\` is the check for your change: \`bun fmt\` (when the
-  config sets \`check.format\`) and Biome on the changed files, writing their
-  fixes, \`typecheck --changed\`, the project's gates and the tests next to
-  the changed files. \`--staged\` is the pre-commit hook and writes nothing;
-  \`--all\` checks everything.
+- \`bunx buncargo check\` is the read-only check for your change: \`bun fmt --check\`
+  (when the config sets \`check.format\`) and Biome on the changed files,
+  \`typecheck --changed\`, the project's gates and the tests next to the changed
+  files. Pass \`--fix\` (or \`--write\`) to apply formatter, Biome and gate fixes
+  in place. \`--staged\` is the pre-commit hook and writes nothing; \`--all\`
+  checks everything.
 - The last line of its output is the verdict, exactly \`PASS\` or
   \`FAIL: <step names>\`, and the exit code is 0 or 1 to match: read
   \`bunx buncargo check | tail -1\`, never grep for other words. The lines
@@ -406,10 +408,11 @@ const TOPICS: readonly Topic[] = [
 - \`bunx buncargo secrets check --json\` before tests or a run that needs
   secrets: exit 0 when every Infisical scope is readable, 2 when the session is
   missing or expired (the user runs the \`infisical login --domain=…\` it
-  prints), 3 when a scope cannot be read: Infisical unreachable, or a 403
-  (set \`secrets.organizationId\`); \`error\` says which. \`dev\`, \`run\`
-  and \`exec\` stop within seconds on an expired session instead of hanging,
-  and only warn when Infisical is unreachable.
+  prints, or configures a Machine Identity), 3 when a scope cannot be read:
+  Infisical unreachable, or a 403 (set \`secrets.organizationId\`); \`error\` says
+  which. \`dev\`, \`run\` and \`exec\` fail fast with \`INFISICAL_AUTH_EXPIRED\`
+  (including in headless/CI shells) instead of hanging, and only warn when
+  Infisical is unreachable.
 - A browser page of another checkout failing with \`ERR_NETWORK_CHANGED\`
   while a run starts or stops: Docker creating or removing a stack's network
   makes Chrome drop its requests. It is a known buncargo issue, not the app;
@@ -419,11 +422,13 @@ const TOPICS: readonly Topic[] = [
 - After upgrading buncargo, \`node_modules/buncargo/CHANGELOG.md\` lists what
   changed in each version and \`node_modules/buncargo/docs/migration.md\` what
   a project has to change for a major one.
-- Docker out of disk, or hanging: \`bunx buncargo prune --dry-run\` lists the
-  volumes of deleted checkouts on the machine (\`--older-than=7d\` for those
-  deleted a week ago or longer), and \`bunx buncargo prune --project --dry-run\`
+- Docker out of disk, or hanging: \`bunx buncargo gc --dry-run\` previews
+  orphaned stacks, deleted checkouts' volumes and stale port claims
+  (\`buncargo gc --yes\` cleans them in scripts/cron); \`bunx buncargo prune --dry-run\`
+  lists the volumes of deleted checkouts on the machine (\`--older-than=7d\` for
+  those deleted a week ago or longer), and \`bunx buncargo prune --project --dry-run\`
   this project's leftover \`ci\` stacks and deleted worktrees' stacks.
-  Removing them deletes their data: ask the user first before running either
+  Removing volumes deletes their data: ask the user first before running
   without \`--dry-run\`. Neither touches an existing checkout's dev database.
   \`doctor\` says how many such volumes there are.`,
 	},

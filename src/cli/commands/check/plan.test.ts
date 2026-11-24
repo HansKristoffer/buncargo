@@ -128,11 +128,14 @@ describe("bun fmt", () => {
 	const files = ["src/a.ts", "src/b.vue", "readme.md"];
 	const globs = ["**/*.{ts,tsx,vue}"];
 
-	it("writes the changed files and only checks the staged ones", () => {
-		expect(formatCommands(true, files, "changed")).toEqual([
+	it("checks by default and writes only when write is true", () => {
+		expect(formatCommands(true, files, "changed", false)).toEqual([
+			{ label: "bun fmt --check (3 files)", command: [...checkOnly, ...files] },
+		]);
+		expect(formatCommands(true, files, "changed", true)).toEqual([
 			{ label: "bun fmt (3 files)", command: [...base, ...files] },
 		]);
-		expect(formatCommands(globs, files, "staged")).toEqual([
+		expect(formatCommands(globs, files, "staged", false)).toEqual([
 			{
 				label: "bun fmt --check (2 files)",
 				command: [...checkOnly, "src/a.ts", "src/b.vue"],
@@ -141,23 +144,26 @@ describe("bun fmt", () => {
 	});
 
 	it("checks the whole repo, within the globs, with --all", () => {
-		expect(formatCommands(true, [], "all")).toEqual([
+		expect(formatCommands(true, [], "all", false)).toEqual([
 			{ label: "bun fmt --check", command: checkOnly },
 		]);
-		expect(formatCommands(globs, [], "all")).toEqual([
+		expect(formatCommands(globs, [], "all", false)).toEqual([
 			{ label: "bun fmt --check", command: [...checkOnly, ...globs] },
+		]);
+		expect(formatCommands(globs, [], "all", true)).toEqual([
+			{ label: "bun fmt", command: [...base, ...globs] },
 		]);
 	});
 
 	it("runs nothing when no file matches, and chunks a long list", () => {
-		expect(formatCommands(globs, ["readme.md"], "changed")).toEqual([]);
+		expect(formatCommands(globs, ["readme.md"], "changed", false)).toEqual([]);
 		const many = Array.from({ length: 450 }, (_, i) => `src/${i}.ts`);
 		expect(
-			formatCommands(true, many, "changed").map((step) => step.label),
+			formatCommands(true, many, "changed", false).map((step) => step.label),
 		).toEqual([
-			"bun fmt (200 files)",
-			"bun fmt (200 files)",
-			"bun fmt (50 files)",
+			"bun fmt --check (200 files)",
+			"bun fmt --check (200 files)",
+			"bun fmt --check (50 files)",
 		]);
 	});
 });
@@ -168,7 +174,7 @@ describe("planCheck", () => {
 		pinnedBun: "1.4.4",
 		buncargo: ["buncargo"],
 	};
-	const run = { keepGoing: false, reuse: true };
+	const run = { keepGoing: false, reuse: true, write: false };
 	const files: CheckFiles = {
 		changed: ["src/a.ts", "readme.md", "gone.ts"],
 		existing: ["src/a.ts", "readme.md"],
@@ -182,12 +188,12 @@ describe("planCheck", () => {
 		testDeferred: { files: ["**/*.database.test.ts"] },
 	} as const;
 
-	it("orders the steps and leaves the deferred tests out of the test run", () => {
+	it("orders the steps read-only by default and leaves the deferred tests out of the test run", () => {
 		const plan = planCheck(config, files, "changed", repo, run);
 		expect(plan.steps.map((step) => [step.name, step.label])).toEqual([
 			["bun-version", "bun 1.4.4 (.bun-version)"],
-			["format", "bun fmt (2 files)"],
-			["biome", "biome --write (2 files)"],
+			["format", "bun fmt --check (2 files)"],
+			["biome", "biome (2 files)"],
 			["docs", "docs"],
 			["typecheck", "typecheck"],
 			["codegen", "codegen"],
@@ -200,16 +206,33 @@ describe("planCheck", () => {
 		});
 	});
 
-	it("gives a gate its fix only in the default mode", () => {
-		const gateFix = (mode: "changed" | "staged" | "all") => {
-			const gate = planCheck(config, files, mode, repo, run).steps.find(
-				(step) => step.name === "codegen",
-			);
+	it("writes formatter, Biome and gate fixes only when write is true", () => {
+		const gateFix = (mode: "changed" | "staged" | "all", write: boolean) => {
+			const gate = planCheck(config, files, mode, repo, {
+				...run,
+				write,
+			}).steps.find((step) => step.name === "codegen");
 			return gate?.kind === "command" ? gate.fix : "missing";
 		};
-		expect(gateFix("changed")).toEqual(["sh", "-c", "bun run gen"]);
-		expect(gateFix("staged")).toBeUndefined();
-		expect(gateFix("all")).toBeUndefined();
+		expect(gateFix("changed", false)).toBeUndefined();
+		expect(gateFix("staged", false)).toBeUndefined();
+		expect(gateFix("all", false)).toBeUndefined();
+		expect(gateFix("changed", true)).toEqual(["sh", "-c", "bun run gen"]);
+		expect(gateFix("all", true)).toEqual(["sh", "-c", "bun run gen"]);
+
+		const writing = planCheck(config, files, "changed", repo, {
+			...run,
+			write: true,
+		});
+		expect(writing.steps.map((step) => [step.name, step.label])).toEqual([
+			["bun-version", "bun 1.4.4 (.bun-version)"],
+			["format", "bun fmt (2 files)"],
+			["biome", "biome --write (2 files)"],
+			["docs", "docs"],
+			["typecheck", "typecheck"],
+			["codegen", "codegen"],
+			["tests", "tests (1 files)"],
+		]);
 	});
 
 	it("drops the deferred tests with the tests step", () => {
@@ -239,12 +262,9 @@ describe("planCheck", () => {
 			"--changed=HEAD",
 			"--bail",
 		]);
-		expect(typecheck("changed", { keepGoing: true, reuse: false })).toEqual([
-			"buncargo",
-			"typecheck",
-			"--changed",
-			"--no-reuse",
-		]);
+		expect(
+			typecheck("changed", { keepGoing: true, reuse: false, write: false }),
+		).toEqual(["buncargo", "typecheck", "--changed", "--no-reuse"]);
 	});
 
 	it("marks a gate that opts out of reuse, and the typecheck, as always run", () => {

@@ -145,17 +145,44 @@ describe("check testDeferred", () => {
 	});
 });
 
-describe("check gate fix", () => {
-	it("runs a failing gate's fix and checks it again", () => {
+describe("check read-only default and --fix / --write", () => {
+	it("never mutates files or runs gate fixes unless --fix or --write is passed", () => {
+		const unformatted = "export const a=1\n";
+		const gates = [
+			{ name: "codegen", command: "test -f generated", fix: "touch generated" },
+		];
+		const root = repo({ format: true, gates }, { "src/a.ts": unformatted });
+
+		const readOnly = check(root, [
+			"--base=HEAD",
+			"--skip=typecheck",
+			"--keep-going",
+		]);
+		expect(readOnly.exitCode).toBe(1);
+		expect(existsSync(join(root, "generated"))).toBe(false);
+		expect(readFileSync(join(root, "src/a.ts"), "utf8")).toBe(unformatted);
+
+		const fixed = check(root, ["--base=HEAD", "--skip=typecheck", "--fix"]);
+		expect(fixed.exitCode).toBe(0);
+		expect(existsSync(join(root, "generated"))).toBe(true);
+		expect(readFileSync(join(root, "src/a.ts"), "utf8")).not.toBe(unformatted);
+		expect(fixed.stdout).toContain("✓ codegen");
+		expect(fixed.stdout).toEndWith("PASS\n");
+	});
+
+	it("accepts --write as an alias for --fix and rejects combining with --staged", () => {
 		const gates = [
 			{ name: "codegen", command: "test -f generated", fix: "touch generated" },
 		];
 		const root = repo({ gates }, { "src/a.ts": "" });
-		const result = check(root, ["--base=HEAD", "--skip=typecheck"]);
+
+		const staged = check(root, ["--staged", "--fix"]);
+		expect(staged.exitCode).toBe(1);
+		expect(staged.stderr).toContain("cannot be combined with --staged");
+
+		const written = check(root, ["--base=HEAD", "--skip=typecheck", "--write"]);
+		expect(written.exitCode).toBe(0);
 		expect(existsSync(join(root, "generated"))).toBe(true);
-		expect(result.stdout).toContain("✓ codegen");
-		expect(result.stdout).toEndWith("PASS\n");
-		expect(result.exitCode).toBe(0);
 	});
 });
 
