@@ -38,7 +38,8 @@ function attachedInTerminal(dir: string, devCommand: string) {
 	const module = (path: string) => JSON.stringify(join(import.meta.dir, path));
 	writeFileSync(
 		harness,
-		`import { resolveApp } from ${module("../../config/resolve")};
+		`import { renameSync } from "node:fs";
+import { resolveApp } from ${module("../../config/resolve")};
 import { spawnManagedApp } from ${module("./app-process")};
 import { AppLogs } from ${module("./app-logs")};
 import { RunOutput } from ${module("./run-output")};
@@ -48,9 +49,11 @@ output.subscribe({ line: ({ text, echoed }) => lines.push({ text, echoed }) });
 const app = spawnManagedApp("web", resolveApp({ port: 3000, devCommand: ${JSON.stringify(devCommand)} }), ${JSON.stringify(dir)}, {}, {
 	attached: true, extraArgs: [], productionBuild: false, waitForExit: true, output,
 });
-await Bun.write(${JSON.stringify(join(dir, "app.pid"))}, String(app.pid));
+await Bun.write(${JSON.stringify(join(dir, "app.pid.tmp"))}, String(app.pid));
+renameSync(${JSON.stringify(join(dir, "app.pid.tmp"))}, ${JSON.stringify(join(dir, "app.pid"))});
 app.once("exit", async () => {
-	await Bun.write(${JSON.stringify(join(dir, "result.json"))}, JSON.stringify({ lines, rawAfterExit: process.stdin.isRaw }));
+	await Bun.write(${JSON.stringify(join(dir, "result.json.tmp"))}, JSON.stringify({ lines, rawAfterExit: process.stdin.isRaw }));
+	renameSync(${JSON.stringify(join(dir, "result.json.tmp"))}, ${JSON.stringify(join(dir, "result.json"))});
 	process.exit(0);
 });
 `,
@@ -164,8 +167,9 @@ it("stops everything an attached app on a real terminal started, even what ignor
 	const dir = mkdtempSync(join(tmpdir(), "buncargo attached stop "));
 	const serverPid = join(dir, "server.pid");
 	// The shell stays as the parent, as with `bun run dev`: the server is a
-	// grandchild that only the app's process group reaches.
-	const devCommand = `sh -c 'trap "" HUP; echo $$ > server.pid; exec sleep 60'; true`;
+	// grandchild that only the app's process group reaches. Write the pid file
+	// via rename so polling never reads an empty file between open and write.
+	const devCommand = `sh -c 'trap "" HUP; echo $$ > server.pid.tmp && mv server.pid.tmp server.pid; exec sleep 60'; true`;
 	const terminal = attachedInTerminal(dir, devCommand);
 	let server: number | undefined;
 	try {
@@ -173,17 +177,26 @@ it("stops everything an attached app on a real terminal started, even what ignor
 			() => existsSync(serverPid) && existsSync(join(dir, "app.pid")),
 			"the server to start",
 		);
-		server = Number(readFileSync(serverPid, "utf8"));
-		const app = Number(readFileSync(join(dir, "app.pid"), "utf8"));
+		server = Number(readFileSync(serverPid, "utf8").trim());
+		const app = Number(readFileSync(join(dir, "app.pid"), "utf8").trim());
 		const identity = await readProcessIdentityAsync(app);
 		if (!identity) throw new Error(`no identity for pid ${app}`);
 
 		// What `buncargo stop` does with the pid the run registered.
 		expect(await terminateProcessGroup(app, identity, 1000)).toBe(true);
 
+		// On macOS, `kill(-pgid, 0)` can report the group empty a few milliseconds
+		// before launchd finishes reaping a signalled grandchild (`sleep 60` would
+		// still stay alive for the full 60s if the group signal had missed it).
+		const serverToCheck = server;
+		await until(
+			() => !isProcessAlive(serverToCheck),
+			"the server to exit",
+			2_000,
+		);
 		expect(isProcessAlive(server)).toBe(false);
 	} finally {
-		if (server !== undefined && isProcessAlive(server))
+		if (server !== undefined && server > 1 && isProcessAlive(server))
 			process.kill(server, "SIGKILL");
 		terminal.close();
 		rmSync(dir, { recursive: true, force: true });
