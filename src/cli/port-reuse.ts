@@ -75,14 +75,14 @@ export interface ClassifyCliAppsOptions {
 
 function conflictDescriber(
 	options: ClassifyCliAppsOptions,
-	snapshot: PortOwnerSnapshot,
+	snapshot: PortOwnerSnapshot | undefined,
 ): (port: number) => string | undefined {
 	if (options.describePortConflict) {
 		return options.describePortConflict;
 	}
 
 	const context = options.context;
-	if (!context) {
+	if (!context || !snapshot) {
 		return () => undefined;
 	}
 
@@ -188,20 +188,27 @@ export async function classifyCliApps(
 	ports: Record<string, number>,
 	options: ClassifyCliAppsOptions = {},
 ): Promise<ClassifiedCliApps> {
+	options.signal?.throwIfAborted();
+	const needsSnapshot =
+		!options.isPortBusy ||
+		(options.context !== undefined && !options.describePortConflict);
 	// One reading answers both questions asked of every app port (is it busy,
 	// and is a foreign container holding it), instead of an `lsof` and a
-	// container listing per app, twice over.
-	const snapshot = await createPortOwnerSnapshotAsync({
-		signal: options.signal,
-		includeCwd: false,
-		runtime: options.runtime,
-		skipContainers: options.skipContainers,
-		ports: Object.keys(apps).flatMap((name) =>
-			ports[name] === undefined ? [] : [ports[name]],
-		),
-	});
+	// container listing per app, twice over. Skip it when injected predicates
+	// answer both so tests and custom callers do not shell out to lsof/docker.
+	const snapshot = needsSnapshot
+		? await createPortOwnerSnapshotAsync({
+				signal: options.signal,
+				includeCwd: false,
+				runtime: options.runtime,
+				skipContainers: options.skipContainers,
+				ports: Object.keys(apps).flatMap((name) =>
+					ports[name] === undefined ? [] : [ports[name]],
+				),
+			})
+		: undefined;
 	const {
-		isPortBusy = (port: number) => snapshot.isBusy(port),
+		isPortBusy = (port: number) => snapshot?.isBusy(port) ?? false,
 		waitForServer,
 	} = options;
 	const describeConflict = conflictDescriber(options, snapshot);
