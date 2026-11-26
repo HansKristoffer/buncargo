@@ -86,6 +86,12 @@ export interface TaskConfig<
 	description?: string;
 	/** Use this app's env, secrets and default working directory. */
 	app?: TAppKey;
+	/**
+	 * Run behind the config's `egressGuard` (its `allow`, `allowHostsOf` and
+	 * `mode`). Default: the guard of `app` when the task borrows a guarded
+	 * app's env, else none. `false` runs unguarded even with a guarded `app`.
+	 */
+	egressGuard?: boolean;
 	/** Working directory relative to the monorepo root. Default: the app's `cwd`, else the root. */
 	cwd?: string;
 	/** Started (with their Compose dependencies) when they are not running. */

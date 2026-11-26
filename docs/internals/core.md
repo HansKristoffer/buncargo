@@ -44,7 +44,9 @@ Cross-cutting utilities in `src/core/` that most features touch.
   on non-allowlisted outbound traffic. Its allowlist grows at runtime (`allowHosts`): the
   pipeline resolves `allowHostsOf` keys (`allowedHostsOf`, pure) from each guarded app's spawn
   env, secrets included, through `startDevServers`' `onAppEnv`, because secrets load after the
-  config and after the proxy starts.
+  config and after the proxy starts. Tasks are guarded by `guardsTask` (their own
+  `egressGuard`, else their `app`'s): `env-vars.ts` `buildTaskEnv` points a reactive task at the
+  run's proxy, and `startTaskEgressGuard` gives `buncargo run` a proxy of its own.
 
 ## Persisted files and locks
 

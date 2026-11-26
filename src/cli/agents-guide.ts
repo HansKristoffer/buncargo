@@ -228,7 +228,9 @@ const TOPICS: readonly Topic[] = [
   \`bunx buncargo help\` lists them. When \`--profile\` is omitted and this
   checkout has an active run, \`exec\`, \`run\` and \`env\` inherit that active
   run's profile, live ports and URLs automatically (\`--profile=<name>\`
-  overrides it).`,
+  overrides it). A task with \`egressGuard: true\`, or one borrowing a guarded
+  app's env (\`app\`), runs behind a guard of its own with the config's
+  \`egressGuard\` rules.`,
 	},
 	{
 		name: "db",

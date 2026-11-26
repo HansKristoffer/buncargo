@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
 import {
 	createServer as createNetServer,
 	connect as netConnect,
 } from "node:net";
-import { createDevEnvironment } from "../../environment";
+import { join } from "node:path";
+import { createDevEnvironment, internalsOf } from "../../environment";
 import { startFakeInfisical } from "../secrets/fake-infisical.testing";
 import { clearScopeSecretsCache } from "../secrets/index";
 import { freePorts, useTempHome } from "../test-env.testing";
@@ -14,6 +16,7 @@ import {
 	type EgressGuardProxy,
 	egressGuardEnv,
 	guardsApp,
+	guardsTask,
 	isHostAllowed,
 	isLoopbackHost,
 	parseConnectAuthority,
@@ -72,6 +75,16 @@ describe("egressGuard rules", () => {
 				{ allowHostsOf: ["OTHER_URL"] },
 			),
 		).toMatchObject({ allowHostsOf: ["OTHER_URL"] });
+	});
+
+	it("guards a task by its own egressGuard, else by the app it borrows", () => {
+		const guard = resolveEgressGuard({ apps: ["admin"] }, undefined);
+		expect(guardsTask(guard, { egressGuard: true })).toBe(true);
+		expect(guardsTask(guard, { app: "admin" })).toBe(true);
+		expect(guardsTask(guard, { app: "admin", egressGuard: false })).toBe(false);
+		expect(guardsTask(guard, { app: "web" })).toBe(false);
+		expect(guardsTask(guard, {})).toBe(false);
+		expect(guardsTask(undefined, { egressGuard: true })).toBe(false);
 	});
 
 	it("reads allowHostsOf hosts from URL values and names the keys without one", () => {
@@ -418,5 +431,84 @@ describe("egressGuard proxy", () => {
 
 		expect(await connect("unleash.invalid")).toContain("502 Bad Gateway");
 		expect(await connect("other.invalid")).toContain("403 Forbidden");
+	});
+
+	it("gives a guarded task run outside a run a proxy of its own, with its allowHostsOf hosts", async () => {
+		const env = createDevEnvironment(
+			{
+				projectPrefix: "egress-task",
+				services: {},
+				egressGuard: { allowHostsOf: ["UNLEASH_URL"], apps: ["admin"] },
+				env: () => ({ UNLEASH_URL: "https://unleash.invalid/api" }),
+				apps: { admin: { port: 4000, devCommand: false } },
+			},
+			{ root: home() },
+		);
+		const internals = internalsOf(env);
+
+		expect(
+			await internals.startTaskEgressGuard({ command: "true" }),
+		).toBeUndefined();
+		expect(
+			await internals.startTaskEgressGuard({
+				command: "true",
+				app: "admin",
+				egressGuard: false,
+			}),
+		).toBeUndefined();
+
+		const guard = await internals.startTaskEgressGuard({
+			command: "true",
+			egressGuard: true,
+		});
+		if (!guard) throw new Error("Expected a guarded task");
+		closers.push(() => guard.close());
+		expect(guard.env.NODE_USE_ENV_PROXY).toBe("1");
+		const proxyPort = Number(new URL(guard.env.HTTPS_PROXY).port);
+		const connect = (host: string) =>
+			sendRaw(
+				proxyPort,
+				`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\n\r\n`,
+			);
+
+		expect(await connect("unleash.invalid")).toContain("502 Bad Gateway");
+		expect(await connect("other.invalid")).toContain("403 Forbidden");
+	});
+
+	it("runs a reactive task behind the run's guard when it sets egressGuard", async () => {
+		const [apiPort] = freePorts(1);
+		const root = home();
+		const stamp = join(root, "task-proxy.txt");
+		const env = createDevEnvironment(
+			{
+				projectPrefix: "egress-reactive",
+				services: {},
+				egressGuard: { apps: ["api"] },
+				apps: {
+					api: {
+						port: apiPort,
+						devCommand: `${JSON.stringify(process.execPath)} -e 'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("ok") });'`,
+						healthEndpoint: "/",
+					},
+				},
+				tasks: {
+					stamp: {
+						command: `printf '%s' "$HTTPS_PROXY" > ${JSON.stringify(stamp)}`,
+						onAppReady: ["api"],
+						egressGuard: true,
+					},
+				},
+			},
+			{ root },
+		);
+
+		await env.start({ watchdog: false, verbose: false });
+		closers.push(() => env.stop({ verbose: false }));
+
+		const deadline = performance.now() + 5000;
+		while (!existsSync(stamp) && performance.now() < deadline) {
+			await Bun.sleep(20);
+		}
+		expect(readFileSync(stamp, "utf8")).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
 	});
 });

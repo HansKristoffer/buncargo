@@ -288,6 +288,7 @@ function validateNamedEntryShapes(
 			if (typeof entry.command !== "string" || !entry.command)
 				errors.push(`${path}.command must be a nonempty string`);
 			fields(entry, `${path}.`, ["app", "cwd"], "string");
+			fields(entry, `${path}.`, ["egressGuard"], "boolean");
 			check(
 				entry.requiredServices,
 				`${path}.requiredServices`,

@@ -175,6 +175,15 @@ export function validateReferences(
 			}
 		}
 
+		// A profile may still turn the guard off; without one there is nothing to inherit.
+		const hasGuard =
+			config.egressGuard !== undefined && config.egressGuard !== false;
+		if (task.egressGuard === true && !hasGuard) {
+			errors.push(
+				`tasks.${name}.egressGuard needs a top-level egressGuard to run behind; add egressGuard: { allow: [...] } to dev.config.ts`,
+			);
+		}
+
 		const reactive =
 			(task.onAppReady !== undefined && task.onAppReady.length > 0) ||
 			task.watch !== undefined;

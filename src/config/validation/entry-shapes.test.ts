@@ -65,7 +65,7 @@ describe("nested sections", () => {
 				"apps.web.captures.token.secret must be a boolean",
 				"apps.web.watch.debounce is not an option (paths, ignore, debounceMs)",
 				"apps.web.secrets.exclude must be an array of secret names",
-				"tasks.gen.requiredService is not an option (command, description, app, cwd, requiredServices, onAppReady, watch)",
+				"tasks.gen.requiredService is not an option (command, description, app, egressGuard, cwd, requiredServices, onAppReady, watch)",
 				"profiles.full.app is not an option (apps, description, env, secrets, links, egressGuard, integrations)",
 			]),
 		);
@@ -118,5 +118,33 @@ describe("nested sections", () => {
 				'Reactive task "seed" uses a reserved log name; rename the task.',
 			]),
 		);
+	});
+
+	it("needs a top-level egressGuard for a task that runs behind it", () => {
+		const task = { command: "bun parity", egressGuard: true };
+		expect(
+			validateConfig({
+				projectPrefix: "myapp",
+				services: {},
+				tasks: { typo: { command: "x", egressGuard: "yes" } },
+			}),
+		).toEqual(["tasks.typo.egressGuard must be a boolean"]);
+		expect(
+			validateConfig({
+				projectPrefix: "myapp",
+				services: {},
+				tasks: { parity: task },
+			}),
+		).toEqual([
+			"tasks.parity.egressGuard needs a top-level egressGuard to run behind; add egressGuard: { allow: [...] } to dev.config.ts",
+		]);
+
+		const guarded = validateConfig({
+			projectPrefix: "myapp",
+			services: {},
+			egressGuard: { allow: [] },
+			tasks: { parity: task },
+		});
+		expect(guarded).toEqual([]);
 	});
 });

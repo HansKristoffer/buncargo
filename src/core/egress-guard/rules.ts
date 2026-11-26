@@ -5,7 +5,11 @@
  * environment variables, and `NODE_USE_ENV_PROXY` version checks.
  */
 
-import type { EgressGuardOption, ResolvedEgressGuardConfig } from "../../types";
+import type {
+	EgressGuardOption,
+	ResolvedEgressGuardConfig,
+	TaskConfig,
+} from "../../types";
 
 /** Merge base `egressGuard` with an optional active profile override. */
 export function resolveEgressGuard(
@@ -180,6 +184,18 @@ export function buildNoProxyList(extra: readonly string[] = []): string {
 	return [...entries].join(",");
 }
 
+/** Every variable {@link egressGuardEnv} sets, for a process opting out of an app's guard. */
+export const EGRESS_GUARD_ENV_KEYS = [
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"grpc_proxy",
+	"NO_PROXY",
+	"no_proxy",
+	"NODE_USE_ENV_PROXY",
+] as const;
+
 /** Proxy environment variables injected into guarded app processes. */
 export function egressGuardEnv(
 	proxyUrl: string,
@@ -203,6 +219,20 @@ export function guardsApp(
 	appName: string,
 ): boolean {
 	return guard.apps === undefined || guard.apps.includes(appName);
+}
+
+/**
+ * Whether a task runs behind the guard: its own `egressGuard` when set, else
+ * the guard of the app whose env it borrows (`app`). A task with neither runs
+ * unguarded, like a hook.
+ */
+export function guardsTask(
+	guard: ResolvedEgressGuardConfig | undefined,
+	task: Pick<TaskConfig, "app" | "egressGuard">,
+): boolean {
+	if (!guard) return false;
+	if (task.egressGuard !== undefined) return task.egressGuard;
+	return task.app !== undefined && guardsApp(guard, task.app);
 }
 
 /**

@@ -5,6 +5,7 @@ import {
 	allowedHostsOf,
 	type EgressGuardProxy,
 	guardsApp,
+	guardsTask,
 	startEgressGuardProxy,
 } from "../core/egress-guard";
 import { watchLinks } from "../core/link-watch";
@@ -272,7 +273,8 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 		const needsEgressProxy =
 			guard?.enabled === true &&
 			!deps.hasActiveEgressProxy?.() &&
-			Object.keys(apps).some((name) => guardsApp(guard, name));
+			(Object.keys(apps).some((name) => guardsApp(guard, name)) ||
+				Object.values(reactiveTaskMap).some((task) => guardsTask(guard, task)));
 		if (needsEgressProxy && guard) {
 			startedProxy = await startEgressGuardProxy({
 				allow: guard.allow,

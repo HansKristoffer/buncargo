@@ -208,6 +208,7 @@ export const TASK_KEYS = {
 	command: "shape",
 	description: "string",
 	app: "string",
+	egressGuard: "boolean",
 	cwd: "string",
 	requiredServices: "shape",
 	onAppReady: "shape",

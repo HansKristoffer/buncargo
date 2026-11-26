@@ -64,6 +64,16 @@ export interface EnvironmentInternals extends AppPipeline {
 	readonly linksConfig?: Readonly<Record<string, ResolvedLinkConfig>>;
 	/** Effective `egressGuard` config after active profile overrides. */
 	readonly egressGuard?: ResolvedEgressGuardConfig;
+	/**
+	 * An egress proxy of its own for a guarded task `buncargo run` runs, and
+	 * the env that points the task at it; `undefined` for an unguarded task.
+	 */
+	startTaskEgressGuard(
+		task: TaskConfig,
+		signal?: AbortSignal,
+	): Promise<
+		{ env: Record<string, string>; close(): Promise<void> } | undefined
+	>;
 	/** Set when the active profile restricts the config to a subset of apps. */
 	readonly activeApps?: ReadonlySet<string>;
 	/** Sync inspection of every configured link. */

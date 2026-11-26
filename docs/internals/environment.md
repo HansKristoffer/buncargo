@@ -9,7 +9,8 @@ services and apps (and resolves `ctx.links` live from `runs.json` + `.buncargo/l
 `env-vars.ts`, `lifecycle.ts`, `servers.ts` and `run-claim.ts` are built on it, and
 `create-dev-environment.ts` only composes them. `env-vars.ts` captures `ctx.links` once per
 `buildAppEnvVars`, `buildEnvFingerprint`, and `buildAppEnvVarsMap` call to avoid redundant reads
-and snapshot skew, injects `egressGuard` proxy variables when active, and builds `exportedEnv`
+and snapshot skew, injects `egressGuard` proxy variables when active (into guarded apps, and into
+guarded tasks through `buildTaskEnv`, beneath the task's own values), and builds `exportedEnv`
 from `exportableSharedEnv` (no `.env` passthroughs, `buncargo env set` overrides, Infisical
 secrets, or `secret: true` captures) merged over integration `exportEnv` hooks. `pipeline.ts`
 starts the `egressGuard` proxy around app supervision and arms `watchLinks` via `onReadyWatch`
