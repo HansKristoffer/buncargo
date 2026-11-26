@@ -493,7 +493,8 @@ describe("egressGuard proxy", () => {
 				},
 				tasks: {
 					stamp: {
-						command: `printf '%s' "$HTTPS_PROXY" > ${JSON.stringify(stamp)}`,
+						// Written aside and renamed, so the stamp exists only once it holds the value.
+						command: `printf '%s' "$HTTPS_PROXY" > ${JSON.stringify(`${stamp}.tmp`)} && mv ${JSON.stringify(`${stamp}.tmp`)} ${JSON.stringify(stamp)}`,
 						onAppReady: ["api"],
 						egressGuard: true,
 					},
