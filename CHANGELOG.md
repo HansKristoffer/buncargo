@@ -1,5 +1,17 @@
 # Changelog
 
+## [17.0.0](https://github.com/HansKristoffer/buncargo/compare/v16.1.0...v17.0.0) (2026-11-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `buncargo check` is now read-only by default; pass `--fix` or `--write` to auto-format or run gate fixers. Expired Infisical CLI sessions now fail fast with `INFISICAL_AUTH_EXPIRED` in CI and non-TTY environments instead of skipping or waiting on interactive login; authenticate with a Machine Identity or `INFISICAL_TOKEN` in CI.
+
+### Features
+
+* **cli:** add cross-repo links, reactive tasks and profile overrides ([#152](https://github.com/HansKristoffer/buncargo/issues/152)) ([4ac8351](https://github.com/HansKristoffer/buncargo/commit/4ac835163b38e71a4439bc56bbdc424561583689))
+* **cli:** add gc, read-only check, headless Infisical fail-fast ([#150](https://github.com/HansKristoffer/buncargo/issues/150)) ([90fd86f](https://github.com/HansKristoffer/buncargo/commit/90fd86f1dc31e6ea1e08ce0b006fc3f99b29ae2f))
+
 ## [16.1.0](https://github.com/HansKristoffer/buncargo/compare/v16.0.0...v16.1.0) (2026-11-22)
 
 
