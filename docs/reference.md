@@ -152,9 +152,13 @@ its last install (a branch switch) before a command that runs the project (`dev`
 `logs`, `predeploy` or the menu bar's buttons): the CLI prints one line, runs that package
 manager's frozen-lockfile install (the project's postinstall scripts included, its output on stderr
 so `--json` stays clean), and then runs the command. When that install fails, it stops with the
-install's output and prints the checkout's install command. A project without a lockfile whose
-`package.json` lists buncargo but has none installed stops and asks you to install it instead of
-running a version the project did not choose.
+install's output and prints the checkout's install command. A checkout whose `node_modules` lacks
+the project's buncargo (removed, or added to the lockfile since) installs the same way before a
+command that runs the project and then hands over to it; other commands stop with the install
+command. A project without a lockfile whose `package.json` lists
+buncargo but has none installed stops and asks you to install it, with the install command of the
+package manager that owns the workspace root (`pnpm install` in a pnpm monorepo, even from a
+sub-package), instead of running a version the project did not choose.
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `claim` | `env` | `shifted` | `unallocated`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
 
@@ -2068,7 +2072,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `… Refusing while DATABASE_URL_DIRECT points at another server` | A destructive Prisma command while an inherited variable holds a Postgres URL on another host or port | Unset the variable, or add it to `prisma.urlEnvVar` |
 | `… applied N migrations this checkout no longer has` (exit 4) | The database ran migrations a squash or rewrite removed from the chain | `buncargo dev --reset --yes` recreates the database and drops its data; ask first |
 | `Dependencies are installed (no node_modules)` | Fresh worktree | Run the checkout's install command (`bun install`, `pnpm install`, …), or `buncargo setup --yes` |
-| `This project's buncargo (package.json) is not installed` | `bunx buncargo` found a different buncargo than the project lists, and the project's is not installed | Run the checkout's install command (`bun install`, `pnpm install`, …) |
+| `This project's buncargo (package.json) is not installed` | `bunx buncargo` found a different buncargo than the project lists, the project's is not installed, and the checkout has no lockfile to install it from | Run the install command it names (`bun install`, `pnpm install`, …) |
 | `<pm> install --frozen-lockfile failed in <dir>` | The checkout installed itself and its lockfile does not match `package.json`, or a postinstall script failed | Fix what the install printed, then run the checkout's install command |
 | `Worker "…" is already running` | Library startup encountered an owned worker | Reuse it through the CLI or use `dev --takeover` |
 | `Apple container cannot verify finite job exit codes yet` | A job was selected with Apple | Use `--runtime=docker` |

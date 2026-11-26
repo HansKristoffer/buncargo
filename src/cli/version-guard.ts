@@ -36,7 +36,13 @@ import { lockfileHash, readInstallStamp } from "./install-stamp";
 export type VersionGuard =
 	| { kind: "run" }
 	| { kind: "reexec"; entry: string; version: string }
-	| { kind: "not-installed"; packageJson: string; reason: string };
+	| {
+			kind: "not-installed";
+			packageJson: string;
+			reason: string;
+			/** The workspace root that installs it: the nearest directory with a lockfile. */
+			lockfileDir?: string;
+	  };
 
 interface PackageJson {
 	name?: unknown;
@@ -188,6 +194,7 @@ export function decideVersionGuard(
 	running: { version: string; root: string },
 ): VersionGuard {
 	let declared: string | undefined;
+	let lockfileDir: string | undefined;
 
 	for (let dir = cwd; ; dir = dirname(dir)) {
 		const installed = join(dir, "node_modules", "buncargo");
@@ -206,6 +213,7 @@ export function decideVersionGuard(
 					kind: "not-installed",
 					packageJson: join(installed, "package.json"),
 					reason: `its CLI (${bin ?? "bin"}) is missing`,
+					...(findLockfile(dir) ? { lockfileDir: dir } : {}),
 				};
 			}
 
@@ -217,14 +225,44 @@ export function decideVersionGuard(
 		if (project && project.name !== "buncargo" && listsBuncargo(project)) {
 			declared ??= projectPackage;
 		}
+		if (declared && findLockfile(dir)) lockfileDir ??= dir;
 
 		// A project's dependencies live inside its repository.
 		if (existsSync(join(dir, ".git")) || dirname(dir) === dir) break;
 	}
 
 	return declared
-		? { kind: "not-installed", packageJson: declared, reason: "not installed" }
+		? {
+				kind: "not-installed",
+				packageJson: declared,
+				reason: "not installed",
+				...(lockfileDir ? { lockfileDir } : {}),
+			}
 		: { kind: "run" };
+}
+
+/**
+ * The error for a project buncargo that is not installed, with the install
+ * command of the package manager that installs it: the workspace root's,
+ * not a sub-package's.
+ */
+export function notInstalledError(
+	notInstalled: Extract<VersionGuard, { kind: "not-installed" }>,
+	running: { version: string; root: string },
+	cwd: string,
+): CliError {
+	const where = relative(cwd, notInstalled.packageJson);
+	const pkgDir = dirname(notInstalled.packageJson);
+	const checkoutDir =
+		basename(pkgDir) === "buncargo" &&
+		basename(dirname(pkgDir)) === "node_modules"
+			? dirname(dirname(pkgDir))
+			: pkgDir;
+	const manager = detectPackageManager(notInstalled.lockfileDir ?? checkoutDir);
+	const message = `This project's buncargo (${where}) is ${notInstalled.reason}, so buncargo ${running.version} from ${running.root} will not run in its place.`;
+	return new CliError(message, [
+		`Run \`${manager.installCommand}\`, then run the command again.`,
+	]);
 }
 
 /**
@@ -263,26 +301,32 @@ export async function guardVersion(fromSource: boolean): Promise<void> {
 		}
 	}
 
-	const decision = decideVersionGuard(process.cwd(), {
-		version: own.version,
-		root,
-	});
+	const running = { version: own.version, root };
+	const cwd = process.cwd();
+	let decision = decideVersionGuard(cwd, running);
+
+	// Installed, but without buncargo (removed, or added to the lockfile since):
+	// before a command that runs the project, install with the project's
+	// package manager and hand over as below. `stop` and `status` never install.
+	const missing = decision.kind === "not-installed" ? decision : undefined;
+	const installsMissing =
+		!isInstallingCheckout() && refreshesStaleInstall(process.argv.slice(2));
+	if (missing?.lockfileDir && installsMissing) {
+		(await import("./checkout-install")).installCheckout(
+			{
+				dir: missing.lockfileDir,
+				missing: false,
+				reason: `buncargo is ${missing.reason}`,
+			},
+			() => decideVersionGuard(cwd, running).kind === "not-installed",
+		);
+		decision = decideVersionGuard(cwd, running);
+	}
 
 	typedSwitch(decision, "kind", {
 		run: () => {},
 		"not-installed": (notInstalled) => {
-			const where = relative(process.cwd(), notInstalled.packageJson);
-			const pkgDir = dirname(notInstalled.packageJson);
-			const checkoutDir =
-				basename(pkgDir) === "buncargo" &&
-				basename(dirname(pkgDir)) === "node_modules"
-					? dirname(dirname(pkgDir))
-					: pkgDir;
-			const manager = detectPackageManager(checkoutDir);
-			const message = `This project's buncargo (${where}) is ${notInstalled.reason}, so buncargo ${own.version} from ${root} will not run in its place.`;
-			throw new CliError(message, [
-				`Run \`${manager.installCommand}\`, then run the command again.`,
-			]);
+			throw notInstalledError(notInstalled, running, cwd);
 		},
 		reexec: (reexec) => handOver(reexec.entry, reexec.version, own.version),
 	});
