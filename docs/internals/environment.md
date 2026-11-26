@@ -37,7 +37,11 @@ prerequisite apps to report ready before running `seed.check` and `seed.command`
 remaining apps (`beforeApps !== false`) or overlapping them (`beforeApps: false`) and joining before
 `afterServers` and readiness. In `buncargo dev --seed` and `buncargo ci --seed`, the CLI starts only
 the `afterApps` prerequisites (reusing healthy already-running ones untouched), runs the forced seed,
-and stops temporary apps gracefully via `stopDevServers` so `stopGraceMs` is honored. `server-session.ts`
+and stops temporary apps gracefully via `stopDevServers` so `stopGraceMs` is honored. A selection
+that leaves out an `afterApps` app (a profile's `apps`, `--apps`) gets `seedMissingApps` from
+`planPreparation`: the seed is skipped, and `prepare()` logs `seedSkippedLine` (the selection plus
+the missing apps is the command that seeds), while `dev --seed` refuses the selection up front
+(`seedSelectionError`). `server-session.ts`
 owns concurrent and post-app seed tasks, cancellation and draining, including production builds and
 empty sessions kept open for tunnels or post-app seeds, and joins the seed before `afterServers` and
 readiness. Concurrent output is prefixed by `exec`'s `outputPrefix` without an output sink; with one

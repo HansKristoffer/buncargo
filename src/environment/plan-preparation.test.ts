@@ -5,6 +5,7 @@ import {
 	PRISMA_DB_PUSH,
 	type PreparationOptions,
 	planPreparation,
+	seedSkippedLine,
 } from "./plan-preparation";
 
 const services = resolveServices({
@@ -140,6 +141,11 @@ describe("planPreparation", () => {
 		expect(withoutPrereq.seedSelected).toBe(false);
 		expect(withoutPrereq.seedAfterApps).toBeUndefined();
 		expect(withoutPrereq.secrets?.includeSeed).toBe(false);
+		expect(withoutPrereq.seedMissingApps).toEqual(["firebase"]);
+		expect(seedSkippedLine(["firebase"], ["web"])).toBe(
+			"Seed skipped: seed.afterApps waits for app firebase, which this run does not start. To seed, run `buncargo dev --seed --apps=web,firebase`, or `buncargo dev --seed` without --apps or --profile.",
+		);
+		expect(selected.seedMissingApps).toEqual([]);
 
 		// `spawn: false` skips post-app seeding (apps do not start).
 		const noSpawn = planPreparation(
@@ -150,6 +156,8 @@ describe("planPreparation", () => {
 		);
 		expect(noSpawn.seedSelected).toBe(false);
 		expect(noSpawn.seedAfterApps).toBeUndefined();
+		// Nothing left out: the apps are selected, just not spawned.
+		expect(noSpawn.seedMissingApps).toEqual([]);
 
 		// `beforeApps: false` preserves overlap after prerequisite apps are ready.
 		const overlap = planPreparation(

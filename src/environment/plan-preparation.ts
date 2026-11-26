@@ -34,6 +34,11 @@ export interface PreparationPlan {
 	readonly seedOverlaps: boolean;
 	/** Prerequisite apps that must be ready before the seed runs (`seed.afterApps`). */
 	readonly seedAfterApps: readonly string[] | undefined;
+	/**
+	 * `seed.afterApps` this selection does not start (a profile or `--apps`
+	 * left them out): the seed is skipped, and the run says so.
+	 */
+	readonly seedMissingApps: readonly string[];
 	/** When `seedAfterApps` is set, whether remaining apps wait for the seed. */
 	readonly seedBeforeOtherApps: boolean;
 	/** Up before the migrations; in containers-only mode, every selected service. */
@@ -107,9 +112,10 @@ export function planPreparation(
 			? config.seed.afterApps
 			: undefined;
 	const hasAfterApps = afterApps !== undefined;
-	const appsSatisfied = afterApps
-		? afterApps.every((name) => name in input.apps)
-		: true;
+	const seedMissingApps = (afterApps ?? []).filter(
+		(name) => !(name in input.apps),
+	);
+	const appsSatisfied = seedMissingApps.length === 0;
 	const servicesSatisfied = hasAfterApps
 		? config.seed?.requiredServices !== undefined
 			? config.seed.requiredServices.every((name) => selected.includes(name))
@@ -185,6 +191,7 @@ export function planPreparation(
 		seedSelected,
 		seedOverlaps,
 		seedAfterApps,
+		seedMissingApps,
 		seedBeforeOtherApps,
 		earlyServices,
 		lateServices,
@@ -203,4 +210,19 @@ export function planPreparation(
 					...(extraScopes.length > 0 ? { extraScopes } : {}),
 				},
 	};
+}
+
+/**
+ * The line a start prints when it skips the seed because its selection
+ * (`selectedApps`) leaves out apps `seed.afterApps` waits for: the
+ * selection with them added is the one that seeds.
+ */
+export function seedSkippedLine(
+	missingApps: readonly string[],
+	selectedApps: readonly string[],
+): string {
+	const plural = missingApps.length === 1 ? "" : "s";
+	const names = missingApps.join(", ");
+	const withMissing = [...selectedApps, ...missingApps].join(",");
+	return `Seed skipped: seed.afterApps waits for app${plural} ${names}, which this run does not start. To seed, run \`buncargo dev --seed --apps=${withMissing}\`, or \`buncargo dev --seed\` without --apps or --profile.`;
 }

@@ -828,6 +828,14 @@ A selection that skips the seed is fine for `dev`, but `dev --seed` asks for it:
 there it fails before anything starts, naming the services or `afterApps` the seed needs
 (`--seed --apps=web` when `web` does not require `postgres` or `firebase`).
 
+When a profile's `apps` or `--apps` leaves out an app `seed.afterApps` names (a lite
+profile without `admin`, with `afterApps: ["firebase", "admin"]`), `dev` and library
+`start()` skip the seed and start the rest: neither `seed.check` nor `seed.command` runs,
+and the run prints one line naming the missing apps (`Seed skipped: seed.afterApps waits
+for app admin, which this run does not start.`) and the command that seeds: `dev --seed` with
+the current `--apps` plus the missing ones, or without `--apps` and `--profile`. A forced seed in `start({ seed: "force" })`
+reports `not-needed` the same way.
+
 When `seed.afterApps` names app-hosted prerequisites (such as `afterApps: ["firebase"]`
 for the Firebase Emulator Suite), buncargo spawns those apps (and their transitive
 `startAfter` dependencies) first, waits for them to report ready, and then runs
@@ -1890,7 +1898,7 @@ Set `seed.beforeApps: false` to overlap the seed and app startup. `afterServers`
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `requiredServices` | `readonly string[]` | any selected service (optional when `afterApps` is set) | All listed services must be selected; `[]` permits app-only preparation |
-| `afterApps` | `readonly string[]` | `undefined` | Apps that must report ready before `seed.check` and `seed.command` run (for example `["firebase"]`) |
+| `afterApps` | `readonly string[]` | `undefined` | Apps that must report ready before `seed.check` and `seed.command` run (for example `["firebase"]`). A selection that leaves one out skips the seed with a log line; `dev --seed` refuses it |
 | `command` | `string` | required | Seeder command (`buncargo dev --seed` uses this) |
 | `cwd` | `string` | repo root | Working directory |
 | `check` | `(ctx) => Promise<boolean>` | always run | Return `true` to seed. `checkTable(table)` defaults its service to `prisma.service ?? "postgres"` |

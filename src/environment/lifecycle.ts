@@ -42,7 +42,11 @@ import {
 import type { LifecycleCoordinator } from "./lifecycle-coordinator";
 import { runMigrationsSequentially } from "./migrations";
 import type { AppPipeline, Prepared, PreparedSeed } from "./pipeline";
-import { type PreparationPlan, planPreparation } from "./plan-preparation";
+import {
+	type PreparationPlan,
+	planPreparation,
+	seedSkippedLine,
+} from "./plan-preparation";
 import { prefetchSecrets, startSecretScopes } from "./prefetch-secrets";
 import type { DevRunClaimApi } from "./run-claim";
 import { readRunsKeepingServices } from "./run-keep";
@@ -752,6 +756,15 @@ export function createLifecycleApi(
 					ctx.output.log(
 						formatStep(
 							"Seed will run before apps because selected services use afterPreparation.",
+						),
+					);
+				}
+
+				// `--seed` refuses this selection before it starts; an automatic seed says why it skips.
+				if (seedMode !== "skip" && plan.seedMissingApps.length > 0 && verbose) {
+					ctx.output.log(
+						formatWarn(
+							seedSkippedLine(plan.seedMissingApps, Object.keys(apps)),
 						),
 					);
 				}

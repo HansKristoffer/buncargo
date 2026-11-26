@@ -900,6 +900,38 @@ it("keeps preparation services serial when seed.beforeApps opts into overlap", a
 	}
 });
 
+it("skips a seed whose afterApps the selection leaves out, and says so", async () => {
+	const { ctx, events, lifecycle } = fixture();
+	const seed = ctx.config.seed;
+	if (!seed) throw new Error("fixture needs seed");
+	seed.afterApps = ["admin"];
+	ctx.apps.web = resolveApp({ port: 3000, devCommand: false });
+	ctx.apps.admin = resolveApp({ port: 3001, devCommand: false });
+	ctx.logInfo = () => {};
+	const log = console.log;
+	const messages: string[] = [];
+	console.log = (message) => messages.push(String(message));
+	try {
+		await lifecycle.start({
+			onlyApps: ["web"],
+			startServers: false,
+			wait: false,
+			verbose: true,
+			watchdog: false,
+		});
+		expect(events).not.toContain("seed check");
+		expect(
+			messages.filter((message) =>
+				message.includes(
+					"Seed skipped: seed.afterApps waits for app admin, which this run does not start.",
+				),
+			),
+		).toHaveLength(1);
+	} finally {
+		console.log = log;
+	}
+});
+
 // `migrate deploy` against a database that applied migrations the checkout
 // lost fails without saying why, and only a reset gets past it.
 it("names a squashed chain when the Prisma deploy fails", async () => {
