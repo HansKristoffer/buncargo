@@ -118,6 +118,12 @@ held between runs. What it depends on in `firebase-tools` (checked against 15.34
 - Adding `emulators.<name>` to the copy would make that emulator a target. Only the selected
   emulators get one, and `--only` always names them. Eventarc and Tasks are skipped by the CLI's
   target loop and only listen beside Functions, so they are safe to write whenever Functions runs.
+- A web app's own code decides whether to call `connect*Emulator`, and with no variable it falls
+  back to the SDK's default port, which another checkout's suite may hold. So for an emulator the
+  web SDK dials that the run does not select, `unselectedEmulatorEnv` (pure) sets its variable to
+  `127.0.0.1:9`, the discard port, where nothing answers. It is the default only for `demo-*`
+  projects (`unselectedEmulators`), since any other id reaches the real product for what is not
+  emulated, and a project may mean that.
 - The hub writes `hub-<project id>.json` in `os.tmpdir()`, and a second suite on the same id reads
   the first one's (the CLI only warns). Each checkout's suite gets its own `TMPDIR` rather than its
   own project id, so the id the apps' SDK config uses stays the project's. It is a short directory

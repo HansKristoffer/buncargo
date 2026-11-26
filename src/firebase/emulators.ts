@@ -332,3 +332,33 @@ export const FIREBASE_PUBLIC_ENV = [
 	"FIREBASE_STORAGE_EMULATOR_HOST",
 	"FIREBASE_FUNCTIONS_EMULATOR_HOST",
 ] as const;
+
+/**
+ * An address nothing answers on (the discard port): where a client is sent
+ * for an emulator this run does not start, so it fails at once instead of
+ * reaching another checkout's emulator on the SDK's default port.
+ */
+export const UNREACHABLE_EMULATOR_HOST = "127.0.0.1:9";
+
+/** The emulators the web SDK's `connect*Emulator` calls dial, by the variable naming each. */
+const WEB_SDK_EMULATOR_ENV: Partial<Record<FirebaseEmulator, string>> = {
+	auth: "FIREBASE_AUTH_EMULATOR_HOST",
+	firestore: "FIRESTORE_EMULATOR_HOST",
+	database: "FIREBASE_DATABASE_EMULATOR_HOST",
+	storage: "FIREBASE_STORAGE_EMULATOR_HOST",
+	functions: "FIREBASE_FUNCTIONS_EMULATOR_HOST",
+};
+
+/**
+ * {@link UNREACHABLE_EMULATOR_HOST} for each emulator the web SDK dials that
+ * `selected` leaves out, under the name {@link emulatorEnv} would give it.
+ */
+export function unselectedEmulatorEnv(
+	selected: readonly FirebaseEmulator[],
+): Record<string, string> {
+	return Object.fromEntries(
+		Object.entries(WEB_SDK_EMULATOR_ENV)
+			.filter(([name]) => !selected.includes(name as FirebaseEmulator))
+			.map(([, variable]) => [variable, UNREACHABLE_EMULATOR_HOST]),
+	);
+}

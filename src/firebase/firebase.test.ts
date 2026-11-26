@@ -227,9 +227,52 @@ describe("firebase()", () => {
 			NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST: "127.0.0.1:8180",
 			NEXT_PUBLIC_FIREBASE_PROJECT_ID: "demo-myapp",
 		});
-		// Not emulated, so the SDKs keep talking to the real service.
-		expect(vars.FIREBASE_DATABASE_EMULATOR_HOST).toBeUndefined();
+		// Not emulated: a demo project's clients are sent where nothing answers.
+		expect(vars.FIREBASE_DATABASE_EMULATOR_HOST).toBe("127.0.0.1:9");
 		expect(vars.NEXT_PUBLIC_GCLOUD_PROJECT).toBeUndefined();
+	});
+
+	it("sends clients of an emulator the run does not start where nothing answers", () => {
+		const lite = (options: Parameters<typeof firebase>[0]) =>
+			createDevEnvironment(
+				{
+					...config,
+					integrations: [
+						firebase({
+							publicEnvPrefix: "NEXT_PUBLIC_",
+							emulators: ["auth", "firestore"],
+							...options,
+						}),
+					],
+				},
+				{ root },
+			).buildEnvVars() as Record<string, string>;
+
+		const demo = lite({});
+		expect(demo).toMatchObject({
+			FIRESTORE_EMULATOR_HOST: "127.0.0.1:8180",
+			FIREBASE_FUNCTIONS_EMULATOR_HOST: "127.0.0.1:9",
+			FIREBASE_STORAGE_EMULATOR_HOST: "127.0.0.1:9",
+			FIREBASE_DATABASE_EMULATOR_HOST: "127.0.0.1:9",
+			NEXT_PUBLIC_FIREBASE_FUNCTIONS_EMULATOR_HOST: "127.0.0.1:9",
+			NEXT_PUBLIC_FIREBASE_STORAGE_EMULATOR_HOST: "127.0.0.1:9",
+		});
+		// Server-side clients that only an emulator run sets stay out.
+		expect(demo.STORAGE_EMULATOR_HOST).toBeUndefined();
+		expect(demo.PUBSUB_EMULATOR_HOST).toBeUndefined();
+
+		for (const vars of [
+			lite({ unselectedEmulators: "unset" }),
+			lite({ projectId: "my-app-dev" }),
+		]) {
+			expect(vars.FIRESTORE_EMULATOR_HOST).toBe("127.0.0.1:8180");
+			expect(vars.FIREBASE_FUNCTIONS_EMULATOR_HOST).toBeUndefined();
+			expect(vars.NEXT_PUBLIC_FIREBASE_FUNCTIONS_EMULATOR_HOST).toBeUndefined();
+		}
+		expect(
+			lite({ projectId: "my-app-dev", unselectedEmulators: "unreachable" })
+				.FIREBASE_FUNCTIONS_EMULATOR_HOST,
+		).toBe("127.0.0.1:9");
 	});
 
 	it("writes the copy of firebase.json the CLI is started on", () => {
@@ -584,8 +627,10 @@ describe("firebase()", () => {
 			"--only auth,firestore",
 		);
 		expect(fastEnv.apps.firebase?.devCommand).not.toContain("functions");
-		expect(fastEnv.buildEnvVars()).not.toHaveProperty(
+		// Not started: sent where nothing answers, never to another checkout's 5001.
+		expect(fastEnv.buildEnvVars()).toHaveProperty(
 			"FIREBASE_FUNCTIONS_EMULATOR_HOST",
+			"127.0.0.1:9",
 		);
 
 		// describe() also stays empty when activeApps excludes firebase.
