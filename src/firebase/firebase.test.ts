@@ -4,6 +4,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -1065,6 +1066,83 @@ describe("firebase checks", () => {
 		expect(await check("firebase.json exists", ["auth"]).check(context())).toBe(
 			true,
 		);
+	});
+
+	it("finds the selected emulators' downloads in the CLI's cache, and fetches the missing ones through the package manager", async () => {
+		const savedCache = process.env.FIREBASE_EMULATORS_PATH;
+		const caseRoot = mkdtempSync(join(tmpdir(), "buncargo-fb-downloads-"));
+		const cache = join(caseRoot, "emulators");
+		mkdirSync(cache);
+		process.env.FIREBASE_EMULATORS_PATH = cache;
+		// The CLI as `bunx --no-install firebase` finds it: names each download it fetched.
+		const bin = join(caseRoot, "node_modules", ".bin");
+		mkdirSync(bin, { recursive: true });
+		writeFileSync(
+			join(bin, "firebase"),
+			`#!/bin/sh\nname="\${1#setup:emulators:}"\ntouch "$FIREBASE_EMULATORS_PATH/$name-fetched"\n`,
+		);
+		chmodSync(join(bin, "firebase"), 0o755);
+		writeFileSync(join(cache, "cloud-firestore-emulator-v1.19.7.jar"), "");
+		const downloads = firebaseChecks({
+			project: () => readFirebaseProject(root),
+			workdir: () => caseRoot,
+			emulators: () => ["auth", "firestore", "pubsub", "storage"],
+			dataDir: () => undefined,
+			appName: "firebase",
+		}).find((entry) => entry.name === "Firebase emulator downloads are cached");
+		if (!downloads) throw new Error("no downloads check");
+		const guard = (apps?: string[]) => ({
+			enabled: true as const,
+			allow: [],
+			allowHostsOf: [],
+			mode: "block" as const,
+			...(apps ? { apps } : {}),
+		});
+		const open = {
+			root: caseRoot,
+			env: {} as AnyDevEnvironment,
+		} as CheckContext;
+		const guarded = { ...open, egressGuard: guard() };
+		const guardedElsewhere = { ...open, egressGuard: guard(["web"]) };
+		try {
+			expect(await downloads.check(open)).toEqual({
+				ok: false,
+				severity: "warning",
+				detail:
+					"pubsub, storage, ui not downloaded yet (the first start downloads them); run `bunx --no-install firebase setup:emulators:pubsub && bunx --no-install firebase setup:emulators:storage && bunx --no-install firebase setup:emulators:ui`",
+			});
+			// Behind the guard, the CLI could not fetch them itself.
+			expect(await downloads.check(guardedElsewhere)).toMatchObject({
+				severity: "warning",
+			});
+			expect(await downloads.check(guarded)).toMatchObject({
+				ok: false,
+				detail: expect.stringContaining("the egress guard would refuse"),
+			});
+			expect(await downloads.check(guarded)).not.toHaveProperty("severity");
+
+			const fix = downloads.fix;
+			if (typeof fix !== "function") throw new Error("no fix");
+			await fix(guarded);
+			expect(readdirSync(cache).sort()).toEqual([
+				"cloud-firestore-emulator-v1.19.7.jar",
+				"pubsub-fetched",
+				"storage-fetched",
+				"ui-fetched",
+			]);
+
+			for (const name of [
+				"pubsub-emulator-0.8.27",
+				"cloud-storage-rules-runtime-v1.1.3.jar",
+				"ui-v1.15.0.zip",
+			])
+				writeFileSync(join(cache, name), "");
+			expect(await downloads.check(guarded)).toBe(true);
+		} finally {
+			if (savedCache === undefined) delete process.env.FIREBASE_EMULATORS_PATH;
+			else process.env.FIREBASE_EMULATORS_PATH = savedCache;
+			rmSync(caseRoot, { recursive: true, force: true });
+		}
 	});
 
 	it("skips firebase checks when activeApps excludes firebase and uses package-manager fix hints", async () => {

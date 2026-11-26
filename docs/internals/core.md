@@ -35,7 +35,8 @@ Cross-cutting utilities in `src/core/` that most features touch.
 - `package-manager.ts` is the single owner for detecting a checkout's package manager (`bun`,
   `pnpm`, `yarn`, `npm`) from lockfiles (`bun.lock`, `bun.lockb`, `pnpm-lock.yaml`, `yarn.lock`,
   `package-lock.json`), `pnpm-workspace.yaml`, or `package.json#packageManager`, returning
-  frozen-install, dev-add and script-run commands so non-Bun and rootless repos work across
+  frozen-install, dev-add, script-run and binary-exec (`execArgs`, never downloading) commands so
+  non-Bun and rootless repos work across
   `version-guard`, `checkout-install`, `core-checks`, `typecheck` and integration setup checks.
 - `egress-guard/` implements the built-in local deny-by-default outbound HTTP/CONNECT proxy
   (`egressGuard`): `rules.ts` holds pure allowlist/loopback/RFC1918 matching and proxy env

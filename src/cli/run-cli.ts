@@ -691,6 +691,9 @@ async function runDevFlow<
 					...(pipeline.activeApps !== undefined
 						? { activeApps: pipeline.activeApps }
 						: {}),
+					...(pipeline.egressGuard
+						? { egressGuard: pipeline.egressGuard }
+						: {}),
 				}),
 			)
 		).filter((result) => !result.ok);

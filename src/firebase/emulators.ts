@@ -376,3 +376,42 @@ export function firebaseWebConfig(projectId: string): string {
 		storageBucket: `${projectId}.appspot.com`,
 	});
 }
+
+/** A jar or zip `firebase-tools` downloads on an emulator's first start. */
+export interface EmulatorDownload {
+	/** What `firebase setup:emulators:<name>` takes. */
+	readonly name:
+		"firestore" | "database" | "pubsub" | "storage" | "ui" | "dataconnect";
+	/** The cache entry's name up to its version (`cloud-firestore-emulator-v1.19.7.jar`). */
+	readonly prefix: string;
+}
+
+/** The emulators with a download of their own; the rest run on the CLI's Node. */
+const EMULATOR_DOWNLOADS: Partial<Record<FirebaseEmulator, EmulatorDownload>> =
+	{
+		firestore: { name: "firestore", prefix: "cloud-firestore-emulator-" },
+		database: { name: "database", prefix: "firebase-database-emulator-" },
+		pubsub: { name: "pubsub", prefix: "pubsub-emulator-" },
+		storage: { name: "storage", prefix: "cloud-storage-rules-runtime-" },
+		dataconnect: { name: "dataconnect", prefix: "dataconnect-emulator-" },
+	};
+
+const UI_DOWNLOAD: EmulatorDownload = { name: "ui", prefix: "ui-v" };
+
+/**
+ * The downloads `selected` (and the Emulator UI, when `ui`) need that the
+ * CLI's cache (`cached`, the names in `~/.cache/firebase/emulators`) lacks.
+ */
+export function missingEmulatorDownloads(
+	selected: readonly FirebaseEmulator[],
+	ui: boolean,
+	cached: readonly string[],
+): EmulatorDownload[] {
+	const needed = [
+		...selected.flatMap((name) => EMULATOR_DOWNLOADS[name] ?? []),
+		...(ui ? [UI_DOWNLOAD] : []),
+	];
+	return needed.filter(
+		(download) => !cached.some((entry) => entry.startsWith(download.prefix)),
+	);
+}

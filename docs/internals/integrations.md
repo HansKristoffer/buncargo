@@ -157,6 +157,14 @@ held between runs. What it depends on in `firebase-tools` (checked against 15.34
   (`firestore`, `database`, `storage`, `pubsub`): Java `< 11` always fails; Java `11..20` warns
   on `firebase-tools` 13.x (or unknown) and fails on 14+; Java `>= 21` passes. CLI install hints
   use the checkout's detected package manager (`detectPackageManager`).
+- The emulators' jars and zips live in the CLI's cache (`FIREBASE_EMULATORS_PATH`, else
+  `~/.cache/firebase/emulators`) and are downloaded on first start, which a guarded `firebase` app
+  cannot do: the egress guard refuses the download. `missingEmulatorDownloads` (pure) matches the
+  cache's entry names against each selected emulator's prefix (and the UI's), and the check reads
+  the run's effective guard from `CheckContext.egressGuard` (after the active profile) to fail
+  rather than warn. Its fix runs `firebase setup:emulators:<name>` through
+  `PackageManagerSpec.execArgs`, which never downloads a CLI, from the directory the CLI is
+  installed in.
 - Emulator ports are the app's `extraPorts`. They are spaced like the offset step (9099, 9199,
   9299…), so moving them by the offset alone put one checkout's Auth on the next one's Storage;
   claimed and probed with the block, a block that lands on another's emulators moves on.

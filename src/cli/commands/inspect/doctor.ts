@@ -96,6 +96,7 @@ async function checkSetupChecks(
 		...(internals.activeApps !== undefined
 			? { activeApps: internals.activeApps }
 			: {}),
+		...(internals.egressGuard ? { egressGuard: internals.egressGuard } : {}),
 	});
 
 	for (const result of results) {
