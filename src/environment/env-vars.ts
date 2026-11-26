@@ -260,7 +260,9 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 			...egressEnv,
 			...(appConfig?.staticEnv ? stringifyEnvValues(appConfig.staticEnv) : {}),
 			// A worker listens on nothing.
-			...(appConfig && appConfig.port === undefined ? {} : { HOST: "0.0.0.0" }),
+			...(appConfig && appConfig.port === undefined
+				? {}
+				: { HOST: appConfig?.host ?? "0.0.0.0" }),
 			// So a framework plugin can configure itself without the consumer
 			// repeating which app it is. Nothing else tells the child process.
 			BUNCARGO_APP_NAME: appName,

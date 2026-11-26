@@ -5,6 +5,14 @@ import type { AnyDevConfig } from "../../types";
 import type { ValidationContext } from "./context";
 
 /**
+ * The binds every way buncargo reaches an app still dials: IPv4 loopback,
+ * which the named-host daemon and Tailscale Serve forward to, or a wildcard.
+ * A LAN address or `::1` alone would break a named URL without a word.
+ */
+const LISTEN_HOSTS = ["127.0.0.1", "0.0.0.0", "::"] as const;
+const LISTEN_HOST_CHOICES = '"127.0.0.1", "0.0.0.0" or "::"';
+
+/**
  * Keys the TUI keeps for itself, besides arrows, Enter and Esc (`run-tui.ts`).
  * A declared action may not use one.
  */
@@ -24,6 +32,7 @@ export function validateApps(
 				worker: () => {
 					for (const field of [
 						"port",
+						"host",
 						"extraPorts",
 						"expose",
 						"healthEndpoint",
@@ -35,6 +44,10 @@ export function validateApps(
 				},
 				server: () => {
 					claimPort(app.port, `apps.${name}.port`);
+					if (app.host !== undefined && !isOneOf(LISTEN_HOSTS, app.host))
+						errors.push(
+							`apps.${name}.host must be ${LISTEN_HOST_CHOICES}: named URLs reach an app only on IPv4 loopback or a wildcard bind`,
+						);
 					if (app.extraPorts !== undefined && !Array.isArray(app.extraPorts))
 						errors.push(`apps.${name}.extraPorts must be an array of ports`);
 					else

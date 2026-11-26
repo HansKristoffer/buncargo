@@ -3,6 +3,7 @@ import { networkInterfaces } from "node:os";
 import { exponentialBackoff } from "hanzio";
 import type { ResolvedApp } from "../types";
 import { abortableSleep, remainingTime, withDeadline } from "./deadline";
+import { appDialAuthority } from "./ports";
 import { localIpOverride } from "./runtime-flags";
 import { recordStartupMetric } from "./startup-metrics";
 import {
@@ -152,7 +153,8 @@ export async function waitForDevServers(
 				(options.productionBuild === true && app.prodCommand !== undefined));
 		if (!waitsOnPort || app.port === undefined) continue;
 
-		const url = `http://localhost:${ports[name]}${readiness.path}`;
+		const authority = appDialAuthority(app.host) ?? "localhost";
+		const url = `http://${authority}:${ports[name]}${readiness.path}`;
 
 		promises.push(
 			waitForServer(url, {

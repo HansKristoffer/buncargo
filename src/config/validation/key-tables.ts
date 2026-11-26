@@ -69,6 +69,7 @@ export const APP_KEYS = {
 	prodCommand: "string",
 	buildCommand: "string",
 	cwd: "string",
+	host: "string",
 	healthEndpoint: "shape",
 	healthTimeout: "duration",
 	extraPorts: "shape",

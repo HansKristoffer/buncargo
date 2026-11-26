@@ -5,7 +5,7 @@ import type {
 	ServiceConfig,
 } from "../types";
 import { abortableSleep } from "./deadline";
-import { toPortMap } from "./ports";
+import { appDialAuthority, toPortMap } from "./ports";
 import { startQuickTunnel } from "./quick-tunnel";
 import { exposeTunnelStaggerMs } from "./runtime-flags";
 
@@ -13,6 +13,8 @@ export interface PublicExposeTarget {
 	kind: "service" | "app";
 	name: string;
 	port: number;
+	/** Where the tunnel dials it, for an app bound to one address (`apps.<name>.host`). */
+	authority?: string;
 }
 
 export type PublicTunnel = PublicTunnelHandle;
@@ -54,7 +56,13 @@ export function resolveExposeTargets<
 	for (const [name, config] of Object.entries(env.apps)) {
 		const port = toPortMap(env.ports)[name];
 		if (port === undefined) continue;
-		const target: PublicExposeTarget = { kind: "app", name, port };
+		const authority = appDialAuthority(config.host);
+		const target: PublicExposeTarget = {
+			kind: "app",
+			name,
+			port,
+			...(authority ? { authority } : {}),
+		};
 		knownTargets.set(name, target);
 		if (config.expose === true) {
 			enabledTargets.set(name, target);
@@ -107,7 +115,7 @@ export async function startPublicTunnels(
 			signal?.throwIfAborted();
 			if (index > 0 && staggerMs > 0) await abortableSleep(staggerMs, signal);
 
-			const localUrl = `http://localhost:${target.port}`;
+			const localUrl = `http://${target.authority ?? "localhost"}:${target.port}`;
 			// Resolves once cloudflared has printed the public URL.
 			const tunnel = await startQuickTunnel({ url: localUrl, signal });
 			tunnels.push({

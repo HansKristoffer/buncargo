@@ -5,6 +5,7 @@ import { resolveApps, resolveServices } from "../config/resolve";
 import { service } from "../docker-compose/services";
 import { applyHostPlanToUrls } from "./hosts/plan";
 import {
+	appDialAuthority,
 	checkoutProjectNames,
 	computeDevIdentity,
 	computeLoopbackUrls,
@@ -59,6 +60,34 @@ describe("computeUrls", () => {
 		);
 		expect(result.api).toBe("http://worker.ts.net:3000");
 		expect(result.postgres).toContain("@localhost:5432");
+	});
+
+	it("dials an app bound to one address there, in its URL and loopback URL", () => {
+		const apps = resolveApps({
+			admin: { port: 4000, devCommand: "next dev", host: "127.0.0.1" },
+			v6: { port: 4001, devCommand: "serve", host: "::1" },
+			all: { port: 4002, devCommand: "serve", host: "0.0.0.0" },
+		});
+		const ports = { admin: 4000, v6: 4001, all: 4002 };
+
+		const urls = computeUrls({}, apps, ports, localIp, "worker.ts.net");
+		expect(urls.admin).toBe("http://127.0.0.1:4000");
+		expect(urls.v6).toBe("http://[::1]:4001");
+		expect(urls.all).toBe("http://worker.ts.net:4002");
+		expect(computeLoopbackUrls({}, apps, ports)).toEqual({
+			admin: "http://127.0.0.1:4000",
+			v6: "http://[::1]:4001",
+			all: "http://localhost:4002",
+		});
+	});
+
+	it("keeps wildcard and localhost binds on the default host", () => {
+		expect(appDialAuthority(undefined)).toBeUndefined();
+		expect(appDialAuthority("0.0.0.0")).toBeUndefined();
+		expect(appDialAuthority("::")).toBeUndefined();
+		expect(appDialAuthority("localhost")).toBeUndefined();
+		expect(appDialAuthority("127.0.0.1")).toBe("127.0.0.1");
+		expect(appDialAuthority("::1")).toBe("[::1]");
 	});
 
 	it.each([

@@ -1239,7 +1239,7 @@ Buncargo records every Serve entry it adds in `~/.buncargo/tailscale-serve.json`
 
 ### Loopback URLs
 
-Some clients cannot follow a named HTTPS URL: Playwright does not trust the local CA, the Stripe CLI fails the HTTP→HTTPS redirect, and GUI database clients want a plain connection string. Enabling `hosts` rewrites `urls.<name>` in place, so those consumers get `loopbackUrls` instead: the same set of services and apps, always addressed as `http://localhost:<port>`.
+Some clients cannot follow a named HTTPS URL: Playwright does not trust the local CA, the Stripe CLI fails the HTTP→HTTPS redirect, and GUI database clients want a plain connection string. Enabling `hosts` rewrites `urls.<name>` in place, so those consumers get `loopbackUrls` instead: the same set of services and apps, addressed as `http://localhost:<port>`, or at the address an app listens on when it sets `host` (`http://127.0.0.1:<port>` for `host: "127.0.0.1"`), since `localhost` can resolve to `::1` first.
 
 It is available everywhere the URLs are: `env.loopbackUrls`, the `env()` and `envVars()` context, `HookContext`, the `<NAME>_LOOPBACK_URL` env var, and `buncargo env --get loopbackUrls.api` for shell scripts. There is no `<app>Local` member. That key is the LAN IP, a different address for a different purpose (mobile devices on the network).
 
@@ -1562,7 +1562,7 @@ credentials out of browser and Expo public environment mappings.
 | `NODE_ENV` | Shared env | `development` unless production build |
 | `<NAME>_PORT` | Shared env | Assigned port for each port-bearing service/app. `<NAME>` is the key upper-cased with `-` as `_`: `my-db` is `MY_DB_PORT` |
 | `<NAME>_URL` | Shared env | Local URL. Named HTTPS when hosts are active (`https://api.myapp.localhost`, or `https://<machine>.ts.net:<port>` with `BUNCARGO_HOSTS=tailscale`) |
-| `<NAME>_LOOPBACK_URL` | Shared env | Always `http://localhost:<port>`, never rewritten by named hosts |
+| `<NAME>_LOOPBACK_URL` | Shared env | `http://localhost:<port>` (an app with `host`: that address), never rewritten by named hosts |
 | `<NAME>_PUBLIC_URL` | Shared env | Tunnel URL while a tunnel is active |
 | `NODE_EXTRA_CA_CERTS` | Shared env | Path to the mkcert CA when named hosts are active |
 | `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` | Shared env | `.localhost` (or `.<tld>`), or the Tailscale name, so Vite accepts the named Host |
@@ -1571,7 +1571,7 @@ credentials out of browser and Expo public environment mappings.
 | `CLICKHOUSE_URL` | Shared env | From `service.clickhouse()` |
 | `CLICKHOUSE_NATIVE_PORT` | Shared env | ClickHouse `secondaryPort` |
 | `PORT` | Server app process | That server app's assigned port; not generated for workers |
-| `HOST` | Server app process | `0.0.0.0`; not generated for workers |
+| `HOST` | Server app process | The app's `host`, else `0.0.0.0`; not generated for workers |
 | `ASTRO_DEV_BACKGROUND` / `ASTRO_PREVIEW_BACKGROUND` | Per-app process | Default `1` keeps Astro in the foreground under buncargo supervision; override in `staticEnv` or `envVars` |
 | `BUNCARGO_APP_NAME` | Per-app process | The app's key in `apps`, so a framework plugin knows which app it is |
 | `BUNCARGO_APP_HOSTNAME` | Per-app process | That app's named host (only when loopback named hosts are active) |
@@ -1799,6 +1799,7 @@ Validation rejects a key no section takes, so a misspelt `healthEndpont` fails i
 | `prodCommand` | `string` | `devCommand` | Production start command |
 | `buildCommand` | `string` | `undefined` | Production build command |
 | `cwd` | `string` | repo root | Working directory relative to root |
+| `host` | `string` | `"0.0.0.0"` | Address the server listens on, passed as `HOST`: `"127.0.0.1"` keeps it off the network. buncargo dials it there too: `<NAME>_LOOPBACK_URL`, its localhost `<NAME>_URL`, health checks, port reuse and `--expose` tunnels. A server that reads no `HOST` takes it from its command (`next dev --hostname=$HOST`). `"127.0.0.1"`, `"0.0.0.0"` or `"::"`, the binds named URLs and Tailscale Serve still reach; not for workers |
 | `healthEndpoint` | `string \| false` | `"/"` | HTTP path to wait on. `false` skips the wait |
 | `healthTimeout` | `number` | `60000` (`120000` in CI) | App readiness timeout (ms) |
 | `readyWhen` | `RegExp` | `undefined` | Ready once the app's output matches, instead of its `healthEndpoint`. See [ready by output](#ready-by-output) |

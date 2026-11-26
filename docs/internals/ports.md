@@ -176,6 +176,11 @@ per port.
 - Tailscale mode's HTTPS ports (`companionPorts`, [named hosts](./named-hosts.md#tailscale-mode))
   are part of the block's claim but never probed: Tailscale binds them on the tailnet address,
   which fails the bind probe for the checkout's own entry.
+- An app's `host` decides where buncargo dials its port: `appDialAuthority` (`ports.ts`) turns a
+  specific bind (`127.0.0.1`) into the authority of its loopback URL, its localhost URL, the
+  readiness and port-reuse probes and `--expose` tunnels, while a wildcard bind keeps
+  `localhost`. Validation limits `host` to `127.0.0.1` and the wildcards because the named-host
+  proxy (`hosts/upstream.ts`) and Tailscale Serve forward to IPv4 loopback.
 - An app's `extraPorts` (`extraPortMap`) are claimed *and* probed, keyed `<app>#<n>` so a
   selection that names the app probes them and one that does not leaves them alone. They are not in
   the port map, so they never reach the env: the claim's offset brings them back.
