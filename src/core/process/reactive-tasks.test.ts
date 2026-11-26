@@ -329,13 +329,15 @@ unlinkSync(${JSON.stringify(activeLockFile)});
 		});
 
 		runner.arm();
+		// Let macOS FSEvents attach the recursive watch stream before writing.
+		await Bun.sleep(150);
 		writeFileSync(join(root, "schemas/ignored/skip.yaml"), "a: 1\n");
 		writeFileSync(join(root, "schemas/openapi.yaml"), "openapi: 3.1.0\n");
 
 		await until(
 			() =>
 				existsSync(countFile) && output.states.get("gen")?.state === "ready",
-			5_000,
+			10_000,
 			"watch triggered finite run",
 		);
 		expect(output.states.get("gen")?.detail).toBe("ok");
@@ -380,7 +382,7 @@ unlinkSync(${JSON.stringify(activeLockFile)});
 		expect(readFileSync(noWatchCount, "utf8").trim().split("\n")).toEqual([
 			"tick",
 		]);
-	});
+	}, 15_000);
 
 	it("aborts in-flight buildEnv on stop() without spawning a child, and resolves reused task.app cwd", async () => {
 		const root = makeTempDir("buncargo-reactive-stop-");
