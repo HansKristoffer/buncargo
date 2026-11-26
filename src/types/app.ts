@@ -204,7 +204,9 @@ export interface SecretsScopeConfig {
 	/**
 	 * Infisical organization the project belongs to. A CLI session is scoped
 	 * to it per fetch, so projects in different organizations run side by side
-	 * without `infisical switch`.
+	 * without `infisical switch`. Unset: the session's own organization, and
+	 * when that one is refused the project, whichever other organization of
+	 * the login can read it.
 	 */
 	organizationId?: string;
 	/** Environment slug. Default: `SECRETS_ENV`, else `"dev"`. */

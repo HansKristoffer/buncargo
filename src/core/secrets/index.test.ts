@@ -67,6 +67,18 @@ function app(projectId: string, extra: Partial<AppConfig> = {}): AppConfig {
 	} as AppConfig;
 }
 
+/** What `work` returns, and every warning it printed. */
+async function warningsOf(work: () => Promise<unknown>) {
+	const warnings: string[] = [];
+	const warn = console.warn;
+	console.warn = (message: unknown) => warnings.push(String(message));
+	try {
+		return { result: await work(), warnings };
+	} finally {
+		console.warn = warn;
+	}
+}
+
 beforeEach(() => clearScopeSecretsCache());
 afterEach(() => {
 	fake?.stop();
@@ -250,6 +262,81 @@ describe("loadAppSecrets", () => {
 				entry.includes("select-organization"),
 			),
 		).toHaveLength(1);
+	});
+
+	it("finds the organization that owns the project when the login spans several", async () => {
+		const infisical = start({
+			cliOrganization: "org-a",
+			organizations: ["org-a", "org-b", "org-c"],
+			projectOrganizations: { p2: "org-c" },
+		});
+		infisical.projects.p2 = { secrets: { B: "2" } };
+
+		expect(
+			await loadScopeSecrets(scopeOf("p2"), { env: noIdentity() }),
+		).toEqual({ B: "2" });
+		expect(infisical.requests).toEqual([
+			"GET /api/v4/secrets",
+			"GET /api/v1/organization",
+			"POST /api/v3/auth/select-organization",
+			"GET /api/v4/secrets",
+			"POST /api/v3/auth/select-organization",
+			"GET /api/v4/secrets",
+		]);
+
+		// The project's next scope goes to org-c straight away.
+		infisical.requests.length = 0;
+		expect(
+			await loadScopeSecrets(scopeOf("p2", { path: "/other" }), {
+				env: noIdentity(),
+			}),
+		).toEqual({ B: "2" });
+		expect(infisical.requests).toEqual([
+			"POST /api/v3/auth/select-organization",
+			"GET /api/v4/secrets",
+		]);
+	});
+
+	it("names the fix when no organization of the login can read the project", async () => {
+		const infisical = start({
+			cliOrganization: "org-a",
+			organizations: ["org-a", "org-mfa", "org-sso", "org-b"],
+			mfaOrganizations: ["org-mfa"],
+			exchangeRefusedOrganizations: ["org-sso"],
+			projectOrganizations: { p1: "org-elsewhere" },
+		});
+
+		const { warnings } = await warningsOf(() =>
+			loadAppSecrets({ api: app("p1") }, { env: noIdentity() }),
+		);
+		// The session's own refusal, then where else it looked.
+		expect(warnings[0]).toContain(
+			"Infisical refused a session in organization org-a access to project p1 (HTTP 403). The login's other organizations (Org org-mfa, Org org-sso, Org org-b) could not read it either.",
+		);
+		expect(warnings[0]).toContain(
+			`Fix: infisical login --domain=${fake?.siteUrl} and pick Org org-mfa or Org org-sso, which would not take this session (MFA, SSO or a policy), or set secrets.organizationId to the organization that owns project p1.`,
+		);
+		// A refused exchange is skipped, not the end of the search.
+		expect(
+			infisical.requests.filter((entry) => entry === "GET /api/v4/secrets"),
+		).toHaveLength(2);
+	});
+
+	it("keeps an organization the scope names, without trying the others", async () => {
+		const infisical = start({
+			cliOrganization: "org-a",
+			organizations: ["org-a", "org-b"],
+			projectOrganizations: { p1: "org-b" },
+		});
+
+		const { warnings } = await warningsOf(() =>
+			loadAppSecrets(
+				{ api: app("p1", { secrets: { organizationId: "org-a" } }) },
+				{ env: noIdentity() },
+			),
+		);
+		expect(warnings[0]).toContain("(HTTP 403)");
+		expect(infisical.requests).not.toContain("GET /api/v1/organization");
 	});
 
 	it("lets the folder's own value beat an imported one", async () => {
@@ -1222,17 +1309,6 @@ describe("an expired session", () => {
 });
 
 describe("a failure that no login fixes", () => {
-	async function warningsOf(work: () => Promise<unknown>) {
-		const warnings: string[] = [];
-		const warn = console.warn;
-		console.warn = (message: unknown) => warnings.push(String(message));
-		try {
-			return { result: await work(), warnings };
-		} finally {
-			console.warn = warn;
-		}
-	}
-
 	/** A site that refuses connections: a server that has stopped. */
 	function unreachableSite(): string {
 		const server = Bun.serve({ port: 0, fetch: () => new Response() });

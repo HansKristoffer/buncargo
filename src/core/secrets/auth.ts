@@ -16,7 +16,13 @@ import {
 	infisicalLoginCommand,
 	SecretsError,
 } from "./errors";
-import { isRefusedToken, LOAD_TIMEOUT_MS, request, tokenFrom } from "./http";
+import {
+	InfisicalRequestError,
+	isRefusedToken,
+	LOAD_TIMEOUT_MS,
+	request,
+	tokenFrom,
+} from "./http";
 import type { InfisicalScope } from "./scope";
 import { SharedRequestCache } from "./shared-request";
 
@@ -120,11 +126,20 @@ const machineTokens = new SharedRequestCache<string>();
 /** Sites the CLI could not check a session on, until when. */
 const unreachableUntil = new Map<string, number>();
 
-/** Forget every token and unreachable site. */
+/**
+ * The organization found to own a project, by site and project, for a login
+ * that spans several and a scope that names none.
+ */
+const owningOrganizations = new Map<string, string>();
+const projectKey = (scope: InfisicalScope) =>
+	`${scope.siteUrl}|${scope.projectId}`;
+
+/** Forget every token, unreachable site and owning organization. */
 export function clearAuthCache(): void {
 	sessionTokens.clear();
 	machineTokens.clear();
 	unreachableUntil.clear();
+	owningOrganizations.clear();
 }
 
 /**
@@ -144,18 +159,135 @@ export async function withScopeToken<T>(
 		credentials
 			? machineToken(scope, credentials, signal)
 			: cliSessionToken(scope, signal);
+	// Named on the scope, else the one an earlier scope found to own the project.
+	const organizationId =
+		scope.organizationId ?? owningOrganizations.get(projectKey(scope));
 	const scoped = async (raw: string) =>
-		credentials ? raw : scopedSessionToken(scope, raw, signal);
+		credentials
+			? raw
+			: scopedSessionToken({ ...scope, organizationId }, raw, signal);
+	const attempt = async (raw: string) => {
+		try {
+			return await use(await scoped(raw));
+		} catch (error) {
+			// An identity belongs to one organization; a named one is the developer's word.
+			if (credentials || organizationId || !isRefusedProject(error))
+				throw error;
+			return useInOwningOrganization(scope, raw, signal, use, error);
+		}
+	};
 	const first = await token();
 	try {
-		return await use(await scoped(first));
+		return await attempt(first);
 	} catch (error) {
 		if (!isRefusedToken(error)) throw error;
 		if (credentials)
 			machineTokens.forget(machineKey(scope, credentials), first);
 		else sessionTokens.forget(cliSessionKey(scope), first);
 	}
-	return use(await scoped(await token()));
+	return attempt(await token());
+}
+
+function isRefusedProject(error: unknown): error is InfisicalRequestError {
+	return error instanceof InfisicalRequestError && error.status === 403;
+}
+
+/** An organization of the login, as `GET /api/v1/organization` lists it. */
+interface LoginOrganization {
+	readonly id: string;
+	readonly name: string;
+}
+
+/** Every organization the session's user belongs to, whichever one the session is scoped to. */
+async function loginOrganizations(
+	scope: InfisicalScope,
+	token: string,
+	signal: AbortSignal,
+): Promise<LoginOrganization[]> {
+	const data = (await request(
+		scope,
+		"list organizations",
+		"/api/v1/organization",
+		{
+			method: "GET",
+			headers: { authorization: `Bearer ${token}` },
+			signal,
+		},
+	)) as { organizations?: { id?: unknown; name?: unknown }[] };
+	return (data?.organizations ?? []).flatMap(({ id, name }) =>
+		typeof id === "string" && id
+			? [{ id, name: typeof name === "string" && name ? name : id }]
+			: [],
+	);
+}
+
+/**
+ * `use` in the organization that owns the scope's project, when the CLI
+ * session's own organization was refused it (`refusal`) and the login spans
+ * others: each is tried in turn, and the one that answers is remembered for
+ * the project's other scopes. A login with no other organization, or a site
+ * that will not list them, gets `refusal` back unchanged.
+ */
+async function useInOwningOrganization<T>(
+	scope: InfisicalScope,
+	raw: string,
+	signal: AbortSignal,
+	use: (token: string) => Promise<T>,
+	refusal: InfisicalRequestError,
+): Promise<T> {
+	const current = sessionOrganization(raw);
+	const organizations = await loginOrganizations(scope, raw, signal).catch(
+		() => [],
+	);
+	const others = organizations.filter(({ id }) => id !== current);
+	if (others.length === 0) throw refusal;
+
+	const needMfa: string[] = [];
+	const wontExchange: string[] = [];
+	for (const organization of others) {
+		let token: string;
+		try {
+			token = await scopedSessionToken(
+				{ ...scope, organizationId: organization.id },
+				raw,
+				signal,
+			);
+		} catch (error) {
+			if (error instanceof MfaRequiredError) needMfa.push(organization.name);
+			else if (refusesExchange(error)) wontExchange.push(organization.name);
+			else throw error;
+			continue;
+		}
+
+		try {
+			const result = await use(token);
+			owningOrganizations.set(projectKey(scope), organization.id);
+			return result;
+		} catch (error) {
+			if (!isRefusedProject(error)) throw error;
+		}
+	}
+
+	// The session's own refusal says why; the rest says where else was tried.
+	const names = others.map(({ name }) => name).join(", ");
+	const message = `${refusal.message} The login's other organizations (${names}) could not read it either.`;
+	const login = infisicalLoginCommand(scope.siteUrl);
+	const blocked = [...needMfa, ...wontExchange];
+	const fix =
+		blocked.length > 0
+			? `${login} and pick ${blocked.join(" or ")}, which would not take this session (MFA, SSO or a policy), or set secrets.organizationId to the organization that owns project ${scope.projectId}.`
+			: `check that this login can read environment "${scope.environment}" and path "${scope.path}" of project ${scope.projectId}, or ask for access to it.`;
+	throw new InfisicalRequestError(message, fix, 403);
+}
+
+/** An organization that refused to exchange the session (not an expired token: that retries). */
+function refusesExchange(error: unknown): boolean {
+	return (
+		error instanceof InfisicalRequestError &&
+		error.status >= 400 &&
+		error.status < 500 &&
+		error.status !== 401
+	);
 }
 
 // ─── Universal auth ──────────────────────────────────────────────────────────
@@ -405,6 +537,9 @@ export function sessionOrganization(token: string): string | undefined {
 	}
 }
 
+/** An organization that will not exchange the session without an MFA login. */
+class MfaRequiredError extends SecretsError {}
+
 /**
  * A session token for the scope's organization. An already scoped session is
  * used as is (no second MFA challenge); the exchanged token stays in memory,
@@ -433,7 +568,7 @@ async function scopedSessionToken(
 		},
 	)) as { isMfaEnabled?: unknown };
 	if (data?.isMfaEnabled) {
-		throw new SecretsError(
+		throw new MfaRequiredError(
 			"Infisical requires MFA for this organization.",
 			`${infisicalLoginCommand(scope.siteUrl)} (and pick the organization)`,
 		);

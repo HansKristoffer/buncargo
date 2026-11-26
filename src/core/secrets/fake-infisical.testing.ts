@@ -26,6 +26,20 @@ export function sessionToken(organizationId: string, session = 0): string {
 	return `${encode({ alg: "none" })}.${encode(claims)}.sig`;
 }
 
+/** The organization a token is scoped to. */
+function organizationOf(auth: string): string | undefined {
+	try {
+		const claims = JSON.parse(
+			Buffer.from(auth.split(".")[1] ?? "", "base64url").toString(),
+		) as { organizationId?: unknown };
+		return typeof claims.organizationId === "string"
+			? claims.organizationId
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** The login a token, or an organization token exchanged from it, belongs to. */
 function sessionOf(auth: string): number {
 	try {
@@ -87,6 +101,12 @@ export function startFakeInfisical(
 		mfaOrganizations?: string[];
 		/** Projects whose secrets every session is refused (HTTP 403). */
 		forbiddenProjects?: string[];
+		/** Organizations that refuse to exchange the session (HTTP 403), as SSO enforcement does. */
+		exchangeRefusedOrganizations?: string[];
+		/** Every organization the login belongs to. Default: the CLI's own. */
+		organizations?: string[];
+		/** The organization owning a project: a session scoped to any other is refused it (HTTP 403). */
+		projectOrganizations?: Record<string, string>;
 	} = {},
 ): FakeInfisical & { cliPath: string; home: string } {
 	const dir = mkdtempSync(join(tmpdir(), "buncargo-fake-infisical-"));
@@ -140,11 +160,22 @@ export function startFakeInfisical(
 			if (url.pathname === "/api/v3/auth/select-organization") {
 				const organizationId = (body as { organizationId: string })
 					.organizationId;
+				if (options.exchangeRefusedOrganizations?.includes(organizationId)) {
+					return new Response("{}", { status: 403 });
+				}
 				if (options.mfaOrganizations?.includes(organizationId)) {
 					return Response.json({ token: "x", isMfaEnabled: true });
 				}
 				return Response.json({
 					token: sessionToken(organizationId, sessionOf(auth)),
+				});
+			}
+			if (url.pathname === "/api/v1/organization" && options.organizations) {
+				return Response.json({
+					organizations: options.organizations.map((id) => ({
+						id,
+						name: `Org ${id}`,
+					})),
 				});
 			}
 			if (url.pathname === "/api/v1/auth/universal-auth/login") {
@@ -162,6 +193,9 @@ export function startFakeInfisical(
 				const environment = url.searchParams.get("environment") ?? "";
 				const secretPath = url.searchParams.get("secretPath") ?? "/";
 				if (options.forbiddenProjects?.includes(projectId))
+					return new Response("{}", { status: 403 });
+				const owner = options.projectOrganizations?.[projectId];
+				if (owner && organizationOf(auth.replace(/^Bearer /, "")) !== owner)
 					return new Response("{}", { status: 403 });
 				const project =
 					folders[`${projectId}:${environment}:${secretPath}`] ??

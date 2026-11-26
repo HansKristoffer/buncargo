@@ -51,8 +51,19 @@ context. `secrets ls` prints key names, `secrets check` key counts.
   or a reachable site stays a login error. The site stays unreachable for 30 s, so the fetches
   after `ensureSecretsSession` fail at once instead of waiting out the CLI and the probe again.
 - A 403 is never a login problem. In one project the scope lacked `organizationId`; the old
-  `infisical login` advice was wrong, and every app's loader then went to the CLI at once. The
-  error names the project and the token's organization and points at `secrets.organizationId`.
+  `infisical login` advice was wrong, and every app's loader then went to the CLI at once. A CLI
+  session is scoped to one organization, and a login can span several, so a scope without
+  `organizationId` that gets a 403 lists the login's organizations (`GET /api/v1/organization`,
+  which reads the user, not the session's organization), exchanges the session for each other one
+  in turn and retries; the first that answers is remembered per site and project
+  (`owningOrganizations`, cleared with the auth cache). Infisical has no call that names a
+  project's organization without access to it, which is why each is tried. A scope that names
+  `organizationId`, a machine identity (one organization), a login with no other organization, or
+  a site that will not list them keeps the plain 403, which names the project and the token's
+  organization. An organization that refuses the exchange (MFA, or a 4xx such as SSO enforcement)
+  is skipped and named, never the end of the search. When every organization refuses, the error
+  keeps the session's own 403 (which may be an environment or path permission inside the right
+  organization), adds the organizations tried, and names the fix.
 - An `InfisicalLoginError` (`code: "INFISICAL_AUTH_EXPIRED"`) stops the run instead of warning
   (`stopsTheRun`), including in headless/non-TTY shells and CI, so expired auth fails fast with
   the login command and Machine Identity guidance instead of letting apps spawn a hanging browser
