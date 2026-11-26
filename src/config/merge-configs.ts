@@ -1,9 +1,12 @@
+// Pure scope helper imported directly so `src/index.ts` stays free of fetch/auth I/O.
+import { mergeSecretsConfig } from "../core/secrets/scope";
 import type {
 	AnyDevConfig,
 	AppConfig,
 	DevConfig,
 	EnvValues,
 	EnvVarsBuilder,
+	LinkConfig,
 	ServiceConfig,
 } from "../types";
 
@@ -44,17 +47,19 @@ type Overlay<TBase, TOverride> = Omit<TBase, keyof TOverride> & TOverride;
 // An unspecified overlay contributes no known names; a concrete override still does.
 type KnownEnv<T> = string extends keyof T ? Record<never, never> : T;
 type BaseApps<T extends AnyDevConfig> = NonNullable<T["apps"]>;
+type BaseLinks<T extends AnyDevConfig> = NonNullable<T["links"]>;
 type BaseEnv<T extends AnyDevConfig> =
 	NonNullable<T["env"]> extends (...args: never[]) => infer R
 		? Extract<R, EnvValues>
 		: Record<never, never>;
 
-/** Merge reusable configs without losing added app, service or environment keys. */
+/** Merge reusable configs without losing added app, service, link or environment keys. */
 export function mergeConfigs<
 	TBase extends AnyDevConfig,
 	const TServices extends Record<string, ServiceConfig> = Record<never, never>,
 	const TApps extends Record<string, AppConfig> = Record<never, never>,
 	TEnv extends EnvValues = Record<never, never>,
+	const TLinks extends Record<string, LinkConfig> = Record<never, never>,
 >(
 	base: TBase,
 	overrides: Omit<
@@ -62,15 +67,17 @@ export function mergeConfigs<
 			DevConfig<
 				Overlay<TBase["services"], TServices>,
 				Overlay<BaseApps<TBase>, TApps>,
-				TEnv
+				TEnv,
+				Overlay<BaseLinks<TBase>, TLinks>
 			>
 		>,
-		"services" | "apps"
-	> & { services?: TServices; apps?: TApps },
+		"services" | "apps" | "links"
+	> & { services?: TServices; apps?: TApps; links?: TLinks },
 ): DevConfig<
 	Overlay<TBase["services"], TServices>,
 	Overlay<BaseApps<TBase>, TApps>,
-	Overlay<KnownEnv<BaseEnv<TBase>>, TEnv>
+	Overlay<KnownEnv<BaseEnv<TBase>>, TEnv>,
+	Overlay<BaseLinks<TBase>, TLinks>
 >;
 export function mergeConfigs(
 	base: AnyDevConfig,
@@ -81,6 +88,16 @@ export function mergeConfigs(
 		...overrides,
 		services: { ...base.services, ...overrides.services },
 		apps: mergeGroup(base.apps, overrides.apps),
+		links: mergeGroup(base.links, overrides.links),
+		exportEnv:
+			base.exportEnv || overrides.exportEnv
+				? [
+						...new Set([
+							...(base.exportEnv ?? []),
+							...(overrides.exportEnv ?? []),
+						]),
+					]
+				: undefined,
 		env: mergeEnvBuilders(
 			base.env as SharedEnvBuilder | undefined,
 			overrides.env as SharedEnvBuilder | undefined,
@@ -90,10 +107,7 @@ export function mergeConfigs(
 		seed: overrides.seed ?? base.seed,
 		options: mergeGroup(base.options, overrides.options),
 		docker: mergeGroup(base.docker, overrides.docker),
-		secrets:
-			base.secrets === false || overrides.secrets === false
-				? (overrides.secrets ?? base.secrets)
-				: mergeGroup(base.secrets, overrides.secrets),
+		secrets: mergeSecretsConfig(base.secrets, overrides.secrets),
 		tasks: mergeGroup(base.tasks, overrides.tasks),
 		unsetEnv:
 			base.unsetEnv || overrides.unsetEnv

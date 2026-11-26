@@ -1,4 +1,4 @@
-import type { AppConfig, SecretsScopeConfig } from "./app";
+import type { AppConfig, SecretsScopeInput } from "./app";
 import type { ConfigEnvVarNames } from "./computed";
 import type { DevEnvironment } from "./environment";
 import type { ExecResult, HookContext } from "./hooks";
@@ -144,8 +144,8 @@ export interface MigrationConfig {
 	command: string;
 	/** Working directory relative to monorepo root */
 	cwd?: string;
-	/** Infisical scope for this command. Default: the config-level `secrets`. `false`: none. */
-	secrets?: SecretsScopeConfig | false;
+	/** Infisical scope (or layered scopes) for this command. Default: the config-level `secrets`. `false`: none. */
+	secrets?: SecretsScopeInput | false;
 }
 
 /**
@@ -192,16 +192,29 @@ export type SeedCheckContext<
 export interface SeedConfig<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TAddedServices extends string = never,
+	TAddedApps extends string = never,
 > {
-	requiredServices?: readonly Extract<keyof TServices, string>[];
-	/** Seed before apps. Default true; false overlaps apps unless a selected service needs afterPreparation. */
+	requiredServices?: readonly (
+		Extract<keyof TServices, string> | TAddedServices
+	)[];
+	/**
+	 * Apps that must be ready before `seed.check` and `seed.command` run
+	 * (e.g. `["firebase"]` for an app-hosted emulator suite). When set,
+	 * remaining apps wait for the seed unless `beforeApps` is `false`.
+	 */
+	afterApps?: readonly (Extract<keyof TApps, string> | TAddedApps)[];
+	/**
+	 * Seed before apps (or before remaining apps when `afterApps` is set).
+	 * Default true; false overlaps apps unless a selected service needs afterPreparation.
+	 */
 	beforeApps?: boolean;
 	/** Command to run the seeder */
 	command: string;
 	/** Working directory relative to monorepo root */
 	cwd?: string;
-	/** Infisical scope for the seeder. Default: the config-level `secrets`. `false`: none. */
-	secrets?: SecretsScopeConfig | false;
+	/** Infisical scope (or layered scopes) for the seeder. Default: the config-level `secrets`. `false`: none. */
+	secrets?: SecretsScopeInput | false;
 	/**
 	 * Check function to determine if seeding is needed.
 	 * Return true to run the seed command, false to skip.

@@ -1,11 +1,13 @@
-import { applyIntegrations } from "../config/integrations";
+import { applyProfileIntegrations } from "../config/integrations";
 import { resolveConfig } from "../config/resolve";
 import type {
+	AnyProfileConfig,
 	AppConfig,
 	ConfigEnvVarNames,
 	EnvValues,
 	GetEnvVarValue,
 	HostsOptionsLike,
+	LinkConfig,
 	ServiceConfig,
 } from "../types";
 import {
@@ -17,6 +19,7 @@ import {
 	resolveCheckoutView,
 	sharedEnv,
 } from "./checkout-view";
+import { resolveLiveLinksSync } from "./links";
 import { unallocatedPortsMessage } from "./port-exhaustion";
 import { asComputedUrls, findMonorepoRoot } from "./ports";
 import { readLiveCapturesSync } from "./run-registry";
@@ -59,7 +62,9 @@ export function getEnvVar<
 		projectPrefix: string;
 		services: TServices;
 		apps?: TApps;
+		links?: Readonly<Record<string, LinkConfig>>;
 		env?: (...args: never[]) => TEnv;
+		profiles?: Readonly<Record<string, AnyProfileConfig>>;
 		options?: {
 			envFiles?: readonly import("../types").EnvInputFile[];
 			worktreeIsolation?: boolean;
@@ -68,22 +73,28 @@ export function getEnvVar<
 		};
 	},
 	name: TName,
+	options?: { profile?: string },
 ): GetEnvVarValue<TEnv, TName> {
 	const root = findMonorepoRoot();
 	// `apps` is typed by the config's own definitions, which name app keys
 	// only: what each holds is an `AppConfig`, as validation ensures.
-	const { applied, view } = checkoutViewFor(config as AnyConfig, root);
+	const { resolved, view } = checkoutViewFor(
+		config as AnyConfig,
+		root,
+		options?.profile,
+	);
 
 	// Live state is read on every call: a run that starts or ends between two
 	// loads of a config changes it.
 	const live = readLiveNamedUrls(root, view.hostPlan, view.portPlan.ports);
-	const hosts = namedHostsRuntime(applied.options?.hosts, view.hostPlan, live);
+	const hosts = namedHostsRuntime(resolved.options?.hosts, view.hostPlan, live);
 	const served = live?.hostnames ? new Set(live.hostnames) : undefined;
 	const urls = asComputedUrls(namedUrls(view.plainUrls, hosts, served));
+	const { links } = resolveLiveLinksSync(root, resolved.links);
 
 	const envVars = sharedEnv(
-		{ ...view, config: applied, portOffset: view.portPlan.offset, urls },
-		{ publicUrls: {}, captured: readLiveCapturesSync(root), hosts },
+		{ ...view, config: resolved, portOffset: view.portPlan.offset, urls },
+		{ publicUrls: {}, captured: readLiveCapturesSync(root), hosts, links },
 	);
 	return envVars[name] as GetEnvVarValue<TEnv, TName>;
 }
@@ -106,7 +117,10 @@ const views = new WeakMap<
 	AnyConfig,
 	{
 		key: string;
-		applied: AnyConfig;
+		resolved: CheckoutConfig<
+			Record<string, ServiceConfig>,
+			Record<string, AppConfig>
+		>;
 		view: CheckoutView<
 			Record<string, ServiceConfig>,
 			Record<string, AppConfig>
@@ -114,18 +128,26 @@ const views = new WeakMap<
 	}
 >();
 
-function checkoutViewFor(config: AnyConfig, root: string) {
+function checkoutViewFor(
+	config: AnyConfig,
+	root: string,
+	profile: string | undefined,
+) {
 	const environment = Object.entries(process.env).sort(([a], [b]) =>
 		a < b ? -1 : 1,
 	);
-	const key = JSON.stringify([root, environment]);
+	const key = JSON.stringify([root, profile ?? null, environment]);
 	const cached = views.get(config);
 	if (cached?.key === key) return cached;
 
 	// What a run sees: integrations add apps, services, env and the primary
 	// app (Shopify's frontend) before anything is computed.
-	const applied = applyIntegrations(config, { root });
-	const view = resolveCheckoutView(resolveConfig(applied), root);
+	const applied = applyProfileIntegrations(config, { root, profile });
+	const resolved = resolveConfig(
+		applied,
+		profile !== undefined ? { profile } : undefined,
+	);
+	const view = resolveCheckoutView(resolved, root);
 
 	// Read before this checkout's first run, with every block claimed: the
 	// value points at another checkout's block. Said, not thrown, as for `env`.
@@ -133,7 +155,7 @@ function checkoutViewFor(config: AnyConfig, root: string) {
 		console.warn(unallocatedPortsMessage(root));
 	}
 
-	const entry = { key, applied, view };
+	const entry = { key, resolved, view };
 	views.set(config, entry);
 	return entry;
 }

@@ -1,4 +1,4 @@
-import type { AppConfig } from "./app";
+import type { AppConfig, SecretsScopeInput } from "./app";
 import type { PreflightStep, SetupCheck } from "./commands";
 import type { DevConfig } from "./config";
 import type { AnyDevEnvironment } from "./environment";
@@ -61,6 +61,16 @@ export interface IntegrationAppContext {
 	port?: number;
 	root: string;
 	workspaceId: string;
+	/** Set when the active profile restricts the config to a subset of apps. */
+	activeApps?: ReadonlySet<string>;
+}
+
+/** One app that just passed readiness, handed to {@link BuncargoIntegration.onAppReady}. */
+export interface IntegrationAppReadyContext extends IntegrationAppContext {
+	ports: Readonly<Record<string, number>>;
+	urls: Readonly<Record<string, string>>;
+	loopbackUrls: Readonly<Record<string, string>>;
+	signal?: AbortSignal;
 }
 
 /** The runtime an integration command gets. */
@@ -121,8 +131,27 @@ export interface BuncargoIntegration<
 	describe?(
 		ctx: HookContext<Record<string, ServiceConfig>, Record<string, AppConfig>>,
 	): Record<string, string>;
+	/**
+	 * Non-secret env vars exported to linked checkouts (`runs.json` `exports`).
+	 * Called with the active run's selection, so an integration only exports
+	 * endpoints whose app or service is actually running.
+	 */
+	exportEnv?(
+		ctx: HookContext<Record<string, ServiceConfig>, Record<string, AppConfig>>,
+	): Record<string, string> | undefined;
 	/** Env this integration adds to one app's process, beneath the app's own `envVars`. */
 	appEnv?(app: IntegrationAppContext): Record<string, string> | undefined;
+	/**
+	 * Runs right after an app passes its readiness check (and on every restart),
+	 * before downstream `startAfter` waves and `seed.afterApps` proceed.
+	 */
+	onAppReady?(app: IntegrationAppReadyContext): void | Promise<void>;
+	/** Extra Infisical secret scopes this integration fetches during startup (e.g. `functionsEnv`). */
+	secretScopes?(ctx: {
+		selectedApps: readonly string[];
+		root?: string;
+		defaults?: SecretsScopeInput | false;
+	}): readonly SecretsScopeInput[];
 	/** Fields merged into the app's run-registry entry (what BuncargoBar reads). */
 	describeApp?(app: IntegrationAppContext): Record<string, unknown> | undefined;
 	/** A hint shown next to the app in the startup banner. */

@@ -70,6 +70,51 @@ export function validateReferences(
 		errors.push("Seed must have a command");
 	}
 
+	if (config.seed?.afterApps !== undefined) {
+		const { afterApps } = config.seed;
+		if (
+			!Array.isArray(afterApps) ||
+			afterApps.some((name) => typeof name !== "string" || !config.apps?.[name])
+		) {
+			errors.push("seed.afterApps must name configured apps");
+		} else {
+			const apps = config.apps ?? {};
+			for (const name of afterApps) {
+				if (apps[name]?.essential === false) {
+					errors.push(
+						`seed.afterApps cannot include "${name}" because apps.${name}.essential is false`,
+					);
+				}
+			}
+
+			if (config.seed.beforeApps !== false) {
+				const needsPublic = new Set<string>(
+					Object.entries(apps)
+						.filter(([, app]) => app.needsPublicUrls)
+						.map(([name]) => name),
+				);
+				let expanded = needsPublic.size > 0;
+				while (expanded) {
+					expanded = false;
+					for (const [name, app] of Object.entries(apps)) {
+						if (needsPublic.has(name)) continue;
+						if (app.startAfter?.some((dep) => needsPublic.has(dep))) {
+							needsPublic.add(name);
+							expanded = true;
+						}
+					}
+				}
+				for (const name of afterApps) {
+					if (needsPublic.has(name)) {
+						errors.push(
+							`seed.afterApps cannot include "${name}" because it waits for public URLs (needsPublicUrls); set seed.beforeApps: false or remove needsPublicUrls`,
+						);
+					}
+				}
+			}
+		}
+	}
+
 	if (config.prisma?.service && !config.services?.[config.prisma.service]) {
 		errors.push(
 			`prisma.service "${config.prisma.service}" must match a configured service key`,
@@ -130,13 +175,101 @@ export function validateReferences(
 			}
 		}
 
+		const reactive =
+			(task.onAppReady !== undefined && task.onAppReady.length > 0) ||
+			task.watch !== undefined;
+
+		for (const appName of task.onAppReady ?? []) {
+			const targetApp = config.apps?.[appName];
+			if (!targetApp) {
+				errors.push(
+					`tasks.${name}.onAppReady includes unknown app "${appName}"`,
+				);
+			} else if (targetApp.devCommand === false) {
+				errors.push(
+					`tasks.${name}.onAppReady references port-only app "${appName}" (devCommand: false), which buncargo does not spawn`,
+				);
+			}
+		}
+
+		if (reactive) {
+			if (config.apps?.[name]) {
+				errors.push(
+					`Reactive task "${name}" shares a name with apps.${name}; rename the task so its TUI pane and log file stay distinct.`,
+				);
+			} else if (config.services[name]) {
+				errors.push(
+					`Reactive task "${name}" shares a name with services.${name}; rename the task so its TUI pane and log file stay distinct.`,
+				);
+			} else if (name === "buncargo" || name === "seed" || name === "egress") {
+				errors.push(
+					`Reactive task "${name}" uses a reserved log name; rename the task.`,
+				);
+			}
+		}
+
 		checkRelativePath(`tasks.${name}.cwd`, task.cwd);
 	}
 
 	for (const [name, profile] of Object.entries(config.profiles ?? {})) {
-		for (const appName of profile.apps) {
+		// Profiles that override `integrations` change which integration-added apps
+		// exist; their app lists are validated after those integrations are applied.
+		if (profile.integrations === undefined) {
+			for (const appName of profile.apps ?? []) {
+				if (!config.apps?.[appName]) {
+					errors.push(`profiles.${name} includes unknown app "${appName}"`);
+				}
+			}
+			if (
+				profile.egressGuard &&
+				typeof profile.egressGuard === "object" &&
+				profile.egressGuard.apps
+			) {
+				for (const appName of profile.egressGuard.apps) {
+					if (!config.apps?.[appName]) {
+						errors.push(
+							`profiles.${name}.egressGuard.apps includes unknown app "${appName}"`,
+						);
+					}
+				}
+			}
+		}
+		for (const linkName of Object.keys(profile.links ?? {})) {
+			if (!config.links?.[linkName]) {
+				errors.push(
+					`profiles.${name}.links includes unknown link "${linkName}"`,
+				);
+			}
+		}
+	}
+
+	if (
+		config.egressGuard &&
+		typeof config.egressGuard === "object" &&
+		config.egressGuard.apps
+	) {
+		for (const appName of config.egressGuard.apps) {
 			if (!config.apps?.[appName]) {
-				errors.push(`profiles.${name} includes unknown app "${appName}"`);
+				errors.push(`egressGuard.apps includes unknown app "${appName}"`);
+			}
+		}
+	}
+
+	if (config.exportEnv && config.exportEnv.length > 0) {
+		const secretCaptureEnvs = new Map<string, string>();
+		for (const [appName, app] of Object.entries(config.apps ?? {})) {
+			for (const [captureName, capture] of Object.entries(app.captures ?? {})) {
+				if (capture.secret && capture.env) {
+					secretCaptureEnvs.set(capture.env, `${appName}.${captureName}`);
+				}
+			}
+		}
+		for (const key of config.exportEnv) {
+			const secretSource = secretCaptureEnvs.get(key);
+			if (secretSource) {
+				errors.push(
+					`exportEnv cannot include "${key}" because capture "${secretSource}" is marked secret`,
+				);
 			}
 		}
 	}

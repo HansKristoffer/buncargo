@@ -11,8 +11,10 @@ import {
 	namedUrls,
 	resolveCheckoutView,
 } from "../core/checkout-view";
+import type { EgressGuardProxy } from "../core/egress-guard";
 import type { EnvInput } from "../core/env-input";
 import { tailscaleBlockPorts } from "../core/hosts/tailscale-serve";
+import { resolveLiveLinksSync } from "../core/links";
 import {
 	markOffsetClaimsReclaimed,
 	offsetClaimKey,
@@ -55,10 +57,12 @@ import type {
 	AppConfig,
 	DevEnvironmentTunnelLog,
 	HostsRuntime,
+	LinkInspection,
 	NamedHostsActivation,
 	PortOffsetProvenance,
 	ResolvedApp,
 	ResolvedDevConfig,
+	ResolvedLink,
 	ResolvedService,
 	ServiceConfig,
 } from "../types";
@@ -145,6 +149,10 @@ export interface DevEnvContext {
 	readonly loopbackUrls: UrlMap;
 	/** Mutated in place so consumers holding the object see tunnel updates. */
 	readonly publicUrls: UrlMap;
+	/** Live linked checkouts declared under `config.links`, resolved on read. */
+	readonly links: Readonly<Record<string, ResolvedLink | undefined>>;
+	/** Full link inspection for configured `links` (sync). */
+	inspectLinks(): readonly LinkInspection[];
 	readonly workspaceId: string;
 	readonly portOffset: number;
 	readonly portOffsetProvenance: PortOffsetProvenance;
@@ -167,6 +175,13 @@ export interface DevEnvContext {
 	 * environment built from them, and keep them over later allocations.
 	 */
 	adoptAssignedPorts(hostPorts: Readonly<Record<string, number>>): void;
+	/**
+	 * Adopt live ports from an active run in `~/.buncargo/runs.json` for
+	 * command invocations (`run`, `exec`, `env`, `generate`). Updates ports and
+	 * URLs, and upgrades an `"unallocated"` preview to `"claim"` with any
+	 * consistent offset implied by the live ports.
+	 */
+	adoptLivePorts(livePorts: Readonly<Record<string, number>>): void;
 	ensureComposeFile(): string;
 	/**
 	 * The same service model the compose file is rendered from.
@@ -180,6 +195,12 @@ export interface DevEnvContext {
 	setPublicUrls(urls: Readonly<Record<string, string | undefined>>): void;
 	clearPublicUrls(): void;
 	onSecretsWait?: (ms: number) => void;
+	/** Active egress-guard proxy URL while servers are running, else undefined. */
+	readonly egressProxyUrl: string | undefined;
+	/** Register (or replace) the active egress-guard proxy owned by this run. */
+	setEgressProxy(proxy: EgressGuardProxy | undefined): Promise<void>;
+	/** Stop any active egress-guard proxy owned by this run. */
+	closeEgressProxy(): Promise<void>;
 	/** Where the lifecycle reports its progress; see {@link StatusOutput}. */
 	output: StatusOutput;
 	logInfo(
@@ -256,6 +277,7 @@ export function createDevEnvContext(
 	let selectedServiceKeys: readonly string[] = [];
 	let startSelection: StartSelection | undefined;
 	let preparedSelection: string | undefined;
+	let activeEgressProxy: EgressGuardProxy | undefined;
 
 	/**
 	 * A suffixed environment, or any in CI, gives its port block back when it
@@ -525,6 +547,12 @@ export function createDevEnvContext(
 		urls,
 		loopbackUrls,
 		publicUrls,
+		get links() {
+			return resolveLiveLinksSync(root, config.links).links;
+		},
+		inspectLinks() {
+			return resolveLiveLinksSync(root, config.links).inspections;
+		},
 		workspaceId: workspaceId(root),
 		get portOffset() {
 			return portPlan.offset;
@@ -540,6 +568,21 @@ export function createDevEnvContext(
 			return resolveContainerRuntimeBinary(runtimeSelection);
 		},
 		hosts,
+		get egressProxyUrl() {
+			return activeEgressProxy?.url;
+		},
+		async setEgressProxy(proxy) {
+			const previous = activeEgressProxy;
+			activeEgressProxy = proxy;
+			if (previous && previous !== proxy) {
+				await previous.close();
+			}
+		},
+		async closeEgressProxy() {
+			const current = activeEgressProxy;
+			activeEgressProxy = undefined;
+			if (current) await current.close();
+		},
 		output: TERMINAL_OUTPUT,
 
 		assignedPortTargets(serviceKeys) {
@@ -549,6 +592,37 @@ export function createDevEnvContext(
 		adoptAssignedPorts(hostPorts) {
 			Object.assign(assignedHostPorts, hostPorts);
 			Object.assign(portMap, hostPorts);
+			refreshPorts();
+		},
+
+		adoptLivePorts(livePorts) {
+			if (Object.keys(livePorts).length === 0) return;
+			Object.assign(portMap, livePorts);
+
+			// Derive the live run's port offset when every adopted port agrees on
+			// one non-negative shift from its configured base port.
+			const offsets = new Set<number>();
+			for (const [key, port] of Object.entries(livePorts)) {
+				const base = apps[key]?.port ?? services[key]?.port;
+				if (base !== undefined && port >= base) {
+					offsets.add(port - base);
+				}
+			}
+			const derivedOffset = offsets.size === 1 ? [...offsets][0] : undefined;
+			if (
+				portPlan.provenance === "unallocated" ||
+				(derivedOffset !== undefined && derivedOffset !== portPlan.offset)
+			) {
+				portPlan = {
+					...portPlan,
+					offset: derivedOffset ?? portPlan.offset,
+					provenance:
+						portPlan.provenance === "unallocated"
+							? "claim"
+							: portPlan.provenance,
+				};
+			}
+
 			refreshPorts();
 		},
 
@@ -627,6 +701,7 @@ export function createDevEnvContext(
 				localIp,
 				portOffset: portPlan.offset,
 				tunnels: tunnelRows,
+				links: resolveLiveLinksSync(root, config.links).inspections,
 				hintFor: (name) => {
 					const app = apps[name];
 					if (!app) return undefined;

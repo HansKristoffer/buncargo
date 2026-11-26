@@ -101,6 +101,7 @@ function fixture(
 		urls: {},
 		loopbackUrls: {},
 		publicUrls: {},
+		links: {},
 		captured: {},
 		composeFile: "compose.yml",
 		ensureComposeFile: () => {
@@ -119,6 +120,7 @@ function fixture(
 		output: TERMINAL_OUTPUT,
 		assignedPortTargets: () => ({}),
 		adoptAssignedPorts: () => {},
+		closeEgressProxy: async () => {},
 		...where,
 	};
 
@@ -157,6 +159,7 @@ function fixture(
 		releaseApps: async () => {
 			events.push("release apps");
 		},
+		flushPatches: async () => {},
 	};
 	const serviceWatch = createServiceWatch(ctx, runClaim.sessionId);
 	const appPipeline = createAppPipeline({
@@ -164,6 +167,8 @@ function fixture(
 		ports: {},
 		projectName: ctx.projectName,
 		unsetEnv: undefined,
+		egressGuard: undefined,
+		setEgressProxy: async () => {},
 		runtime: () => runtime,
 		appEnv: (name, production) => envVars.buildAppEnvVars(name, production),
 		runHook: createServerHookRunner(ctx, envVars),

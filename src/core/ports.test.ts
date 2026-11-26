@@ -9,6 +9,7 @@ import {
 	computeDevIdentity,
 	computeLoopbackUrls,
 	computeUrls,
+	findMonorepoRoot,
 	getProjectName,
 	getWorktreeProjectSuffix,
 } from "./ports";
@@ -389,5 +390,29 @@ describe("checkoutProjectNames", () => {
 				worktreeIsolation: false,
 			}),
 		).toEqual({ dev: "gey-renamed", ci: "gey-renamed-ci" });
+	});
+});
+
+describe("findMonorepoRoot", () => {
+	it("resolves pnpm-workspace.yaml and rootless dev.config.ts checkouts from subdirectories", () => {
+		const pnpmRoot = mkdtempSync(join(home(), "pnpm-mono-"));
+		writeFileSync(
+			join(pnpmRoot, "pnpm-workspace.yaml"),
+			"packages:\n  - apps/*\n",
+		);
+		const frontend = join(pnpmRoot, "apps", "frontend");
+		mkdirSync(frontend, { recursive: true });
+		expect(findMonorepoRoot(frontend)).toBe(pnpmRoot);
+
+		// Rootless repo (no root package.json) whose subpackage has its own pnpm-workspace.yaml.
+		const rootless = mkdtempSync(join(home(), "rootless-"));
+		writeFileSync(join(rootless, "dev.config.ts"), "export default {};\n");
+		const coreDir = join(rootless, "core");
+		mkdirSync(coreDir, { recursive: true });
+		writeFileSync(
+			join(coreDir, "pnpm-workspace.yaml"),
+			"packages:\n  - ../packages/*\n",
+		);
+		expect(findMonorepoRoot(coreDir)).toBe(rootless);
 	});
 });

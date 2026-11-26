@@ -109,6 +109,7 @@ describe("buncargo env", () => {
 				"details",
 				"hosts",
 				"isWorktree",
+				"links",
 				"localIp",
 				"loopbackUrls",
 				"overrides",
@@ -125,6 +126,78 @@ describe("buncargo env", () => {
 				/^https:\/\/(?:[a-z0-9-]+\.)?web\.liveurls\.localhost$/,
 			);
 			expect(urls.api).toBe("http://localhost:3000");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("applies default and --profile env overrides", async () => {
+		const root = realpathSync(
+			mkdtempSync(join(tmpdir(), "buncargo-env-prof-")),
+		);
+		writeFileSync(join(root, "package.json"), "{}");
+		writeFileSync(
+			join(root, "dev.config.ts"),
+			`export default {
+				projectPrefix: "profenv",
+				services: {},
+				apps: { api: { port: 3000, devCommand: false } },
+				env: () => ({
+					FIREBASE_PROJECT_ID: "demo-prof",
+					FIRESTORE_EMULATOR_HOST: "127.0.0.1:8080",
+				}),
+				profiles: {
+					default: { env: { ACTIVE_PROFILE: "local" } },
+					dev: {
+						env: (ports) => ({
+							ACTIVE_PROFILE: "cloud-" + ports.api,
+							FIREBASE_PROJECT_ID: "prof-dev",
+							FIRESTORE_EMULATOR_HOST: undefined,
+						}),
+					},
+				},
+				options: { hosts: false, worktreeIsolation: false },
+			};`,
+		);
+		const env: Record<string, string | undefined> = {
+			...process.env,
+			HOME: join(root, "home"),
+			BUNCARGO_PORT_OFFSET: "0",
+		};
+		for (const name of [...CI_ENV_VARS, "BUNCARGO_HOSTS"]) delete env[name];
+
+		const runEnv = async (args: string[]) => {
+			const child = Bun.spawn(
+				[
+					process.execPath,
+					resolve(import.meta.dir, "../bin.ts"),
+					"env",
+					...args,
+				],
+				{ cwd: root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+			);
+			const [stdout, stderr, exitCode] = await Promise.all([
+				new Response(child.stdout).text(),
+				new Response(child.stderr).text(),
+				child.exited,
+			]);
+			return { exitCode, stdout, stderr };
+		};
+
+		try {
+			const def = await runEnv([]);
+			expect(def.exitCode).toBe(0);
+			const defJson = JSON.parse(def.stdout) as EnvJson;
+			expect(defJson.vars.ACTIVE_PROFILE).toBe("local");
+			expect(defJson.vars.FIREBASE_PROJECT_ID).toBe("demo-prof");
+			expect(defJson.vars.FIRESTORE_EMULATOR_HOST).toBe("127.0.0.1:8080");
+
+			const cloud = await runEnv(["--profile=dev"]);
+			expect(cloud.exitCode).toBe(0);
+			const cloudJson = JSON.parse(cloud.stdout) as EnvJson;
+			expect(cloudJson.vars.ACTIVE_PROFILE).toBe("cloud-3000");
+			expect(cloudJson.vars.FIREBASE_PROJECT_ID).toBe("prof-dev");
+			expect(cloudJson.vars.FIRESTORE_EMULATOR_HOST).toBeUndefined();
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

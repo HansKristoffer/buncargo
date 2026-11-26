@@ -102,8 +102,22 @@ describe("integration stacks", () => {
 
 		const [run] = await loadRuns();
 		expect(run?.services).toEqual([
-			{ name: "api", status: "starting", stack: "fake" },
-			{ name: "db", status: "starting", stack: "fake" },
+			{
+				name: "api",
+				port: env.ports.api,
+				url: env.urls.api,
+				loopbackUrl: env.loopbackUrls.api,
+				status: "ready",
+				stack: "fake",
+			},
+			{
+				name: "db",
+				port: env.ports.db,
+				url: env.urls.db,
+				loopbackUrl: env.loopbackUrls.db,
+				status: "ready",
+				stack: "fake",
+			},
 		]);
 		expect(run?.stacks).toEqual([
 			{

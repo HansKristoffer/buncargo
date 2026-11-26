@@ -395,6 +395,7 @@ setTimeout(() => {}, 30_000);
 		"failures",
 		"hostsWarnings",
 		"idleLimitMs",
+		"linkWarnings",
 		"log",
 		"outcome",
 		"pid",
@@ -406,6 +407,7 @@ setTimeout(() => {}, 30_000);
 		exitCode: 0,
 		apps: [{ name: "api", status: "ready", url: "http://localhost:3000" }],
 		hostsWarnings: ["Named URLs unavailable: the daemon is down."],
+		linkWarnings: [],
 		failures: [],
 	});
 });

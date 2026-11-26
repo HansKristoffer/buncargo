@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { getErrorMessage, startTimer, typedSwitch } from "hanzio";
+import { describeUnknownProfile } from "../config";
 import {
 	containerRuntimeForEnv,
 	replaceStaleStacksOn,
@@ -12,6 +13,10 @@ import {
 	routesDownRemoves,
 } from "../core/hosts";
 import { releaseLeases } from "../core/leases";
+import { linkStartupIssues, resolveLiveLinksAsync } from "../core/links";
+import { selectReactiveTasks } from "../core/process";
+import { stopDevServers } from "../core/process/dev-servers";
+import { stripTerminalOutput } from "../core/process/output-capture";
 import {
 	askConfirm,
 	isInteractive,
@@ -23,7 +28,12 @@ import {
 	recordRunCapture,
 } from "../core/run-publish";
 import { detachedRunMode, isCI } from "../core/runtime-flags";
-import { formatStep, formatWarn, joinColoredNames } from "../core/style";
+import {
+	formatDone,
+	formatStep,
+	formatWarn,
+	joinColoredNames,
+} from "../core/style";
 import {
 	createNoopPhaseTimer,
 	createPhaseTimer,
@@ -40,11 +50,10 @@ import {
 	internalsOf,
 	type PreparedSeed,
 	type PrepareOptions,
-} from "../environment";
-import {
-	assertSeedSucceeded,
 	SeedFailedError,
-} from "../environment/seed-startup";
+	TERMINAL_OUTPUT,
+} from "../environment";
+import { assertSeedSucceeded } from "../environment/seed-startup";
 import { planStart } from "../planning";
 import type {
 	AnyDevEnvironment,
@@ -92,6 +101,7 @@ import {
 	leaseTakeoverHints,
 	warnSkippedLeaseApps,
 } from "./dev-leases";
+import { planLinkedStarts, startLinkedCheckouts } from "./dev-links";
 import { openDevOutput } from "./dev-output";
 import {
 	acceptTakeover,
@@ -338,14 +348,6 @@ async function runDevCommand<
 	};
 	process.on("uncaughtException", onCrash);
 	process.on("unhandledRejection", onCrash);
-	const tunnels = createTunnelCoordinator(
-		env,
-		{ resolveExposeTargets, startPublicTunnels, stopPublicTunnels },
-		{
-			exposeRequested: exposeRequested(args.values),
-			signal: controller.signal,
-		},
-	);
 
 	const timer =
 		options.timer ??
@@ -353,16 +355,43 @@ async function runDevCommand<
 			? createPhaseTimer({ json: args.values["timing-json"] })
 			: createNoopPhaseTimer());
 
+	let activeEnv = env as unknown as AnyDevEnvironment;
+	let tunnels:
+		| DevTunnelCoordinator<
+				Record<string, ServiceConfig>,
+				Record<string, AppConfig>
+		  >
+		| undefined;
 	let connect: DevConnect | undefined;
 	let exitCode: DevFlowExit;
 	let failure: RunFailure | undefined;
 	const failureContext: DevFailureContext = { setupHints: [] };
 	try {
+		const requestedProfile = args.values.profile;
+		if (requestedProfile !== undefined) {
+			// Validate profile existence with hints inside `try` so listeners and
+			// detached failure reports still settle cleanly on an unknown profile.
+			selectProfileApps(env, requestedProfile);
+			const envInternals = internalsOf(env);
+			if (envInternals.activeProfile !== requestedProfile) {
+				activeEnv = envInternals.withProfile(requestedProfile);
+			}
+		}
+
+		tunnels = createTunnelCoordinator(
+			activeEnv,
+			{ resolveExposeTargets, startPublicTunnels, stopPublicTunnels },
+			{
+				exposeRequested: exposeRequested(args.values),
+				signal: controller.signal,
+			},
+		);
+
 		if (!isOneShot(args.values) && !args.values.down && !args.values.reset) {
 			connect = createDevConnect();
 		}
 
-		exitCode = await runDevFlow(env, args, tunnels, {
+		exitCode = await runDevFlow(activeEnv, args, tunnels, {
 			watchdog,
 			connect,
 			timer,
@@ -385,7 +414,7 @@ async function runDevCommand<
 		if (failure && detachedRunMode() !== undefined) {
 			const { recordDetachedReport } = await import("./dev-detach");
 			const reported = failure;
-			recordDetachedReport(env.root, (report) => ({
+			recordDetachedReport(activeEnv.root, (report) => ({
 				...report,
 				failures: [...report.failures, reported],
 			}));
@@ -395,7 +424,7 @@ async function runDevCommand<
 		// is the one `--timing` was asked for.
 		timer.report();
 		try {
-			await teardown(env, tunnels, connect);
+			await teardown(activeEnv, tunnels, connect);
 		} finally {
 			// Last, after teardown's own messages: agents read `dev | tail`.
 			if (failure) {
@@ -430,14 +459,14 @@ async function teardown<
 	TApps extends Record<string, AppConfig>,
 >(
 	env: DevEnvironment<TServices, TApps>,
-	tunnels: DevTunnelCoordinator<TServices, TApps>,
+	tunnels: DevTunnelCoordinator<TServices, TApps> | undefined,
 	connect?: DevConnect,
 ): Promise<void> {
 	await flushRunPatches(env);
 	try {
 		const hosts = releaseNamedHosts(namedHostsOf(env));
 		const results = await Promise.allSettled([
-			tunnels.stop(),
+			tunnels?.stop(),
 			connect?.stop(),
 			hosts,
 			releaseLeases(env.sessionId),
@@ -613,12 +642,15 @@ async function runDevFlow<
 		),
 	}));
 
+	const afterAppsSeedRun =
+		args.values.seed && (pipeline.seed?.afterApps?.length ?? 0) > 0;
 	const prepareOptions: PrepareOptions = {
-		watchdog: options.watchdog,
+		watchdog: options.watchdog && !afterAppsSeedRun,
 		signal,
 		wait: true,
-		// The seed overlaps the apps only in a run that spawns them.
-		startServers: !isOneShot(args.values),
+		// The seed overlaps the apps only in a run that spawns them; `--seed`
+		// with `seed.afterApps` also spawns its prerequisite apps below.
+		startServers: !isOneShot(args.values) || afterAppsSeedRun,
 		seed: seedMode(args),
 		prepare: prepareMode(args),
 		onPhase: timer.record,
@@ -648,12 +680,18 @@ async function runDevFlow<
 	// checks: this runs on every start in every worktree.
 	if (!isOneShot(args.values)) {
 		const anyEnv = env as unknown as AnyDevEnvironment;
-		const checks = allChecks(anyEnv, pipeline.setupChecks).filter(
-			(check) => check.fast !== false,
-		);
+		const checks = allChecks(anyEnv, pipeline.setupChecks, {
+			egressGuardEnabled: pipeline.egressGuard?.enabled,
+		}).filter((check) => check.fast !== false);
 		const failed = (
 			await timer.measure("checks", () =>
-				runChecks(checks, { root: env.root, env: anyEnv }),
+				runChecks(checks, {
+					root: env.root,
+					env: anyEnv,
+					...(pipeline.activeApps !== undefined
+						? { activeApps: pipeline.activeApps }
+						: {}),
+				}),
 			)
 		).filter((result) => !result.ok);
 		// The steps below take no signal: a Ctrl-C during one is seen at the
@@ -673,6 +711,62 @@ async function runDevFlow<
 			runPreflight(anyEnv, pipeline.preflight, Object.keys(appsForDev)),
 		);
 		signal.throwIfAborted();
+	}
+
+	// Cross-repo links: checked before any side-effecting step (`--replace-stale`,
+	// port allocation, named-hosts activation, interactive prompts).
+	const linkWarnings: string[] = [];
+	const checkingLinks =
+		prepareOptions.prepare === "all" &&
+		pipeline.linksConfig !== undefined &&
+		Object.keys(pipeline.linksConfig).length > 0;
+	if (checkingLinks) {
+		let { inspections } = await resolveLiveLinksAsync(
+			env.root,
+			pipeline.linksConfig,
+		);
+		if (args.values["with-links"]) {
+			const upstream = planLinkedStarts(
+				inspections,
+				pipeline.linksConfig,
+				"before",
+			);
+			if (upstream.length > 0) {
+				await startLinkedCheckouts(upstream, {
+					signal,
+					onStart: (target) => {
+						const profileSuffix = target.profile
+							? ` (--profile=${target.profile})`
+							: "";
+						log.info(
+							`🔗 Starting required linked repo "${target.name}" in ${target.targetRoot}${profileSuffix}...`,
+						);
+					},
+					onDone: (target) => {
+						log.done(`Linked repo "${target.name}" is up`);
+					},
+				});
+				({ inspections } = await resolveLiveLinksAsync(
+					env.root,
+					pipeline.linksConfig,
+				));
+			}
+		}
+		const issues = linkStartupIssues(inspections);
+		for (const warning of issues.warnings) {
+			log.warn(warning);
+			linkWarnings.push(warning);
+		}
+		if (linkWarnings.length > 0) {
+			detached?.recordDetachedReport(env.root, (report) => ({
+				...report,
+				linkWarnings: [...(report.linkWarnings ?? []), ...linkWarnings],
+			}));
+		}
+		if (issues.errors.length > 0) {
+			throw new CliError(issues.errors.join("\n"));
+		}
+		prepareOptions.checkLinks = false;
 	}
 
 	connect?.plan(appsForDev, plan.requiredServiceKeys, env.services);
@@ -860,11 +954,121 @@ async function runDevFlow<
 	}
 
 	if (args.values.seed) {
+		if (prepared.seed.kind === "after-apps") {
+			const prereqPlan = planStart(env.apps, env.services, {
+				onlyApps: [...prepared.seed.apps],
+			});
+			const prereqClassified = await timer.measure("app ports", () =>
+				classifyCliApps(prereqPlan.apps, env.ports, {
+					signal,
+					waitForServer: (url, timeout) =>
+						withSignal(env.waitForServer(url, timeout), signal),
+					context: { root: env.root, projectName: env.projectName },
+					runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
+					skipContainers: !hasServices,
+				}),
+			);
+			const [firstUnhealthyPrereq] = prereqClassified.unhealthy;
+			if (firstUnhealthyPrereq) {
+				throw new CliError(unhealthyAppMessage(firstUnhealthyPrereq), [
+					"Stop the existing process or free the port.",
+				]);
+			}
+
+			const startablePrereqs = Object.fromEntries(
+				Object.entries(prereqClassified.startApps).filter(
+					([, app]) => app.devCommand !== false,
+				),
+			);
+			if (Object.keys(startablePrereqs).length === 0) {
+				const outcome = await timer.measure("seed", () =>
+					env.runSeed({ force: true, signal }),
+				);
+				return reportCliSeed(
+					env,
+					pipeline.seed,
+					{ kind: "ran", outcome },
+					plan.requiredServiceKeys,
+					appsForDev,
+				);
+			}
+
+			const claimedPrereqs = await pipeline.claimApps(prepared, {
+				apps: startablePrereqs,
+				reused: prereqClassified.reusedApps,
+				leasePolicy: cliLeasePolicy({
+					takeover: () => initialTakeover(false),
+				}),
+				signal,
+			});
+			const [firstSkip] = claimedPrereqs.skipped;
+			if (firstSkip) {
+				throw new CliError(
+					`--seed cannot start ${firstSkip.app}: ${firstSkip.key} is in use by another run.`,
+					[
+						...describeLeaseRefusal(firstSkip),
+						...leaseTakeoverHints(firstSkip),
+					],
+				);
+			}
+
+			const view = await openDevOutput(env, claimedPrereqs.apps, {
+				tui: "off",
+			});
+			failureContext.output = view.output;
+			let spawnedPids: Record<string, number> = {};
+			try {
+				signal.throwIfAborted();
+				view.start();
+				const pids = await pipeline.spawn(claimedPrereqs, {
+					signal,
+					output: view.output,
+					waitForExit: false,
+					keepOthersOnFailure: false,
+					watch: false,
+					reactiveTasks: false,
+					deferPublicUrlApps: false,
+					onAppPhase: (name, life, previous) => {
+						if (life.pid !== undefined && life.pid !== previous.pid) {
+							options.runningApps.add(name);
+						}
+						if (
+							life.phase === "down" &&
+							life.end?.exit !== previous.end?.exit
+						) {
+							options.runningApps.delete(name);
+						}
+					},
+				});
+				spawnedPids = Object.fromEntries(
+					Object.entries(pids).filter(
+						(entry): entry is [string, number] => entry[1] !== undefined,
+					),
+				);
+			} finally {
+				try {
+					if (Object.keys(spawnedPids).length > 0) {
+						await stopDevServers(spawnedPids);
+					}
+				} finally {
+					for (const name of Object.keys(spawnedPids))
+						options.runningApps.delete(name);
+					await view.stop();
+				}
+			}
+
+			signal.throwIfAborted();
+			log.line();
+			log.success("Seeding complete");
+			return 0;
+		}
+
 		return reportCliSeed(
 			env,
 			pipeline.seed,
 			prepared.seed,
 			plan.requiredServiceKeys,
+			appsForDev,
 		);
 	}
 
@@ -986,10 +1190,43 @@ async function runDevFlow<
 	}
 
 	if (next === "already-running") {
-		if (overlapSeed) {
+		if (overlapSeed || prepared.seed.kind === "after-apps") {
 			assertSeedSucceeded(
 				await timer.measure("seed", () => env.runSeed({ signal })),
 			);
+		}
+
+		if (args.values["with-links"] && checkingLinks) {
+			const { inspections } = await resolveLiveLinksAsync(
+				env.root,
+				pipeline.linksConfig,
+			);
+			const downstream = planLinkedStarts(
+				inspections,
+				pipeline.linksConfig,
+				"after",
+			);
+			if (downstream.length > 0) {
+				await startLinkedCheckouts(downstream, {
+					signal,
+					onStart: (target) => {
+						const profileSuffix = target.profile
+							? ` (--profile=${target.profile})`
+							: "";
+						log.info(
+							`🔗 Starting linked repo "${target.name}" in ${target.targetRoot}${profileSuffix}...`,
+						);
+					},
+					onDone: (target) => log.done(`Linked repo "${target.name}" is up`),
+					onWarning: (message) => {
+						log.warn(message);
+						detached?.recordDetachedReport(env.root, (report) => ({
+							...report,
+							linkWarnings: [...(report.linkWarnings ?? []), message],
+						}));
+					},
+				});
+			}
 		}
 
 		log.success("Selected apps are already running. Nothing to start.");
@@ -1002,8 +1239,16 @@ async function runDevFlow<
 	const holds = next === "hold";
 	const appsElapsed = startTimer();
 	let firstSpawn = false;
+	const reactiveTaskNames = Object.keys(
+		selectReactiveTasks(
+			pipeline.tasks,
+			new Set([...classifiedApps.startNames, ...classifiedApps.reusedNames]),
+			new Set(plan.requiredServiceKeys),
+		),
+	);
 	const view = await openDevOutput(env, classifiedApps.startApps, {
 		tui: tuiMode(args.values),
+		tasks: reactiveTaskNames,
 	});
 	failureContext.output = view.output;
 	// What preparation said before this output opened goes to the run's log and
@@ -1036,15 +1281,27 @@ async function runDevFlow<
 		}
 	};
 
+	let downstreamLinksTask: Promise<unknown> | undefined;
 	try {
 		// After every prompt and the banner, which stay in the scrollback, and
 		// never for a run already interrupted.
 		signal.throwIfAborted();
 		view.start();
+		// Route progress lines (such as post-app seed status) through RunOutput
+		// while the view is active so they never write raw text over the TUI.
+		pipeline.reportTo({
+			log: (line) =>
+				view.output.announce("buncargo", stripTerminalOutput(line).trim(), {
+					raw: line,
+				}),
+		});
 		// The TUI covers that scrollback: repeat why an app is missing, and why
 		// the URLs are `localhost:port`, in its Overview (events are not
 		// printed again in stream mode).
 		for (const warning of printedHostsWarnings) {
+			view.output.event("buncargo", warning, "warn");
+		}
+		for (const warning of linkWarnings) {
 			view.output.event("buncargo", warning, "warn");
 		}
 		for (const skip of leaseSkips) {
@@ -1053,24 +1310,95 @@ async function runDevFlow<
 			}
 		}
 
+		const publishSource = {
+			sessionId: env.sessionId,
+			urls: env.urls,
+			loopbackUrls: env.loopbackUrls,
+			publicUrls: env.publicUrls,
+			hosts: env.hosts,
+			apps: env.apps,
+			details: env.details,
+			exportedEnv: (selection?: {
+				apps?: readonly string[];
+				services?: readonly string[];
+				production?: boolean;
+			}) =>
+				pipeline.exportedEnv({
+					apps: Object.keys(appsForDev),
+					services: plan.requiredServiceKeys,
+					production: false,
+					...selection,
+				}),
+		};
+
 		await pipeline.spawn(claimed, {
 			signal,
 			initialPortOwners: wave1PortOwners,
 			prepare: holds
 				? async (sessionSignal) => {
 						await tunnels.openOwnedTunnels(sessionSignal);
-						void recordAppUrls(env, Object.keys(appsForDev));
+						void recordAppUrls(publishSource, Object.keys(appsForDev));
 					}
 				: undefined,
 			onSeedReady: () => {
-				if (!holds) log.success("All servers ready");
+				if (!holds) {
+					view.output.announce("buncargo", "All servers ready", {
+						raw: formatDone("All servers ready"),
+					});
+				}
 			},
 			stayOpen: holds ? waitForShutdownSignal : undefined,
-			onReady: async () => {
+			onReady: async (readySignal) => {
 				if (!holds) timer.record("app readiness", appsElapsed());
 				timer.report();
 				if (servicesOnly) {
 					log.success("Services ready. Press Ctrl-C to end the run.");
+				}
+				if (args.values["with-links"] && checkingLinks) {
+					// Flush our `ready` app rows before launching downstream companions
+					// that list this checkout as `required: true`.
+					await flushRunPatches(env);
+					const { inspections } = await resolveLiveLinksAsync(
+						env.root,
+						pipeline.linksConfig,
+					);
+					const downstream = planLinkedStarts(
+						inspections,
+						pipeline.linksConfig,
+						"after",
+					);
+					if (downstream.length > 0) {
+						const runDownstream = () =>
+							startLinkedCheckouts(downstream, {
+								signal: readySignal ?? signal,
+								onStart: (target) => {
+									const profileSuffix = target.profile
+										? ` (--profile=${target.profile})`
+										: "";
+									const text = `Starting linked repo "${target.name}" in ${target.targetRoot}${profileSuffix}...`;
+									view.output.announce("buncargo", text, {
+										raw: formatStep(`🔗 ${text}`),
+									});
+								},
+								onDone: (target) => {
+									const text = `Linked repo "${target.name}" is up`;
+									view.output.announce("buncargo", text, {
+										raw: formatDone(text),
+									});
+								},
+								onWarning: (message) => {
+									view.output.announce("buncargo", message, {
+										raw: formatWarn(message),
+										level: "warn",
+									});
+									detached?.recordDetachedReport(env.root, (report) => ({
+										...report,
+										linkWarnings: [...(report.linkWarnings ?? []), message],
+									}));
+								},
+							}).catch(() => {});
+						downstreamLinksTask = runDownstream();
+					}
 				}
 			},
 			attach: args.values.attach,
@@ -1141,10 +1469,10 @@ async function runDevFlow<
 			},
 			onAfterWave1: async (signal) => {
 				await timer.measure("tunnels", () => tunnels.openOwnedTunnels(signal));
-				void recordAppUrls(env, Object.keys(appsForDev));
+				void recordAppUrls(publishSource, Object.keys(appsForDev));
 			},
 			onCapture: async (app, captured) => {
-				void recordRunCapture(env, app, captured);
+				void recordRunCapture(publishSource, app, captured);
 			},
 			// Nothing to wait for without --expose, so needsPublicUrls apps
 			// join wave 1 and get health-checked like everything else.
@@ -1152,7 +1480,11 @@ async function runDevFlow<
 		});
 		return undefined;
 	} finally {
+		if (downstreamLinksTask) {
+			await Promise.allSettled([downstreamLinksTask]);
+		}
 		// First, so teardown's messages land on the user's own screen.
+		pipeline.reportTo(TERMINAL_OUTPUT);
 		await view.stop();
 	}
 }
@@ -1187,16 +1519,15 @@ export function selectProfileApps<TApps extends Record<string, AppConfig>>(
 	const profile = profiles[name ?? "default"];
 	// Validation checked these against the applied config, which includes the
 	// apps integrations add, so every name is an app key at runtime.
-	if (profile) return [...profile.apps] as Extract<keyof TApps, string>[];
+	if (profile) {
+		return profile.apps
+			? ([...profile.apps] as Extract<keyof TApps, string>[])
+			: undefined;
+	}
 	if (name === undefined) return undefined;
 
-	const available = Object.keys(profiles);
-	throw new CliError(
-		`Unknown profile "${name}".`,
-		available.length > 0
-			? [`Available profiles: ${available.join(", ")}`]
-			: ["Add one to your dev config: profiles: { full: { apps: [...] } }"],
-	);
+	const { message, hint } = describeUnknownProfile(name, profiles);
+	throw new CliError(message, [hint]);
 }
 
 /**
@@ -1209,6 +1540,7 @@ function reportCliSeed(
 	seedConfig: EnvironmentInternals["seed"],
 	seed: PreparedSeed,
 	selectedServices: readonly string[],
+	selectedApps: Readonly<Record<string, ResolvedApp>>,
 ): number {
 	const outcome: SeedOutcome =
 		seed.kind === "ran" ? seed.outcome : { status: "not-needed" };
@@ -1222,7 +1554,7 @@ function reportCliSeed(
 		},
 		"not-needed": () => {
 			throw (
-				seedSelectionError(seedConfig, selectedServices, env) ??
+				seedSelectionError(seedConfig, selectedServices, env, selectedApps) ??
 				new CliError("The seed did not run for this selection.")
 			);
 		},

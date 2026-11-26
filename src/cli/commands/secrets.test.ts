@@ -112,3 +112,110 @@ it("judges required keys the way dev does", async () => {
 		infisical.stop();
 	}
 }, 30_000);
+
+it("lists layered scopes and honors --profile in secrets ls and secrets check", async () => {
+	const infisical = startFakeInfisical();
+	infisical.folders["p1:local:/backend"] = {
+		secrets: { LOCAL_ONLY: "1", SHARED: "from-local" },
+	};
+	infisical.folders["p1:dev:/"] = {
+		secrets: { ROOT_DEV: "1" },
+	};
+	infisical.folders["p1:dev:/backend"] = {
+		secrets: { DEV_ONLY: "1", SHARED: "from-dev" },
+	};
+	infisical.folders["p1:prod:/functions"] = {
+		secrets: { UNLEASH_A: "ua", PROD_BLOCKED: "nope" },
+	};
+
+	writeFileSync(
+		join(dir, "dev.config.ts"),
+		`export default {
+			projectPrefix: "secrets",
+			services: {},
+			secrets: { projectId: "p1", environment: "local", siteUrl: ${JSON.stringify(infisical.siteUrl)} },
+			apps: {
+				backend: {
+					port: 3000,
+					devCommand: "true",
+					secrets: [
+						{ path: "/backend", required: ["SHARED"] },
+						{ environment: "prod", path: "/functions", only: ["UNLEASH_A"], required: ["UNLEASH_A"] },
+					],
+				},
+			},
+			profiles: {
+				dev: { secrets: { environment: "dev" } },
+				offline: { secrets: false },
+			},
+		};`,
+	);
+
+	const runCli = async (args: string[]) => {
+		const env: Record<string, string | undefined> = {
+			...process.env,
+			HOME: infisical.home,
+			BUNCARGO_INFISICAL_PATH: infisical.cliPath,
+		};
+		for (const name of CI_ENV_VARS) delete env[name];
+		delete env.INFISICAL_CLIENT_ID;
+		delete env.INFISICAL_CLIENT_SECRET;
+		const proc = Bun.spawn([process.execPath, cli, "secrets", ...args], {
+			cwd: dir,
+			env,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, code] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		return {
+			code,
+			stdout: Bun.stripANSI(stdout),
+			stderr: Bun.stripANSI(stderr),
+		};
+	};
+
+	try {
+		const localLs = await runCli(["ls", "--app=backend"]);
+		expect(localLs.code).toBe(0);
+		expect(localLs.stdout).toContain("p1 local/backend");
+		expect(localLs.stdout).toContain("p1 prod/functions");
+		expect(localLs.stdout).toMatch(/LOCAL_ONLY\s+infisical/);
+		expect(localLs.stdout).toMatch(/UNLEASH_A\s+infisical/);
+		expect(localLs.stdout).not.toContain("PROD_BLOCKED");
+
+		const devLs = await runCli(["ls", "--app=backend", "--profile=dev"]);
+		expect(devLs.code).toBe(0);
+		expect(devLs.stdout).toContain("p1 dev/backend");
+		expect(devLs.stdout).toContain("p1 prod/functions");
+		expect(devLs.stdout).toMatch(/DEV_ONLY\s+infisical/);
+		expect(devLs.stdout).not.toContain("LOCAL_ONLY");
+
+		const devCheck = await runCli(["check", "--json", "--profile=dev"]);
+		expect(devCheck.code).toBe(0);
+		const checkJson = JSON.parse(devCheck.stdout) as {
+			ok: boolean;
+			scopes: { environment: string; path: string }[];
+		};
+		expect(checkJson.ok).toBe(true);
+		expect(
+			checkJson.scopes.some(
+				(s) => s.environment === "dev" && s.path === "/backend",
+			),
+		).toBe(true);
+		expect(
+			checkJson.scopes.some(
+				(s) => s.environment === "prod" && s.path === "/functions",
+			),
+		).toBe(true);
+
+		const offlineCheck = await runCli(["check", "--json", "--profile=offline"]);
+		expect(offlineCheck.code).toBe(0);
+		expect(JSON.parse(offlineCheck.stdout).scopes).toEqual([]);
+	} finally {
+		infisical.stop();
+	}
+}, 30_000);

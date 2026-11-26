@@ -11,6 +11,7 @@ import {
 	reusedSummary,
 	treeFingerprint,
 } from "../core/check-passes";
+import { detectPackageManager, findLockfile } from "../core/package-manager";
 import { execAsync } from "../core/process";
 import { readWorkspaceGraph, selectChangedWorkspaces } from "./changed";
 import {
@@ -142,12 +143,13 @@ function scriptJobs(
 	path: string,
 	present: readonly string[],
 	scripts: readonly string[],
+	runScriptArgs: (workspacePath: string, script: string) => string[],
 ): Workspace[] {
 	return present.map((script) => ({
 		path,
 		job: script === scripts[0] ? path : `${path}#${script}`,
 		fileCount: 0,
-		command: [process.execPath, "run", script],
+		command: runScriptArgs(path, script),
 	}));
 }
 
@@ -223,6 +225,7 @@ async function resolveIncludedWorkspaces(
 	include: readonly string[],
 	root: string,
 	scripts: readonly string[],
+	runScriptArgs: (workspacePath: string, script: string) => string[],
 ): Promise<{ workspaces: Workspace[]; problems: IncludeProblem[] }> {
 	const workspaces: Workspace[] = [];
 	const problems: IncludeProblem[] = [];
@@ -247,7 +250,7 @@ async function resolveIncludedWorkspaces(
 			seen.add(path);
 			const present = presentScripts(root, path, scripts);
 			if (present.length > 0) {
-				workspaces.push(...scriptJobs(path, present, scripts));
+				workspaces.push(...scriptJobs(path, present, scripts, runScriptArgs));
 			} else if (existsSync(join(root, path, "tsconfig.json"))) {
 				try {
 					tsc ??= await resolveProjectTsc(root);
@@ -314,6 +317,22 @@ async function discoverWorkspaces(
 		root,
 	);
 
+	const rootManager = detectPackageManager(root);
+	const workspaceManagers = new Map<
+		string,
+		ReturnType<typeof detectPackageManager>
+	>();
+	const runScriptArgs = (workspacePath: string, script: string) => {
+		const cached = workspaceManagers.get(workspacePath);
+		if (cached) return cached.runScriptArgs(script);
+		const abs = join(root, workspacePath);
+		// Prefer a workspace's own lockfile/packageManager (rootless repos),
+		// falling back to the root checkout's detected manager.
+		const detected =
+			findLockfile(abs) !== undefined ? detectPackageManager(abs) : rootManager;
+		workspaceManagers.set(workspacePath, detected);
+		return detected.runScriptArgs(script);
+	};
 	const seen = new Set<string>();
 	const candidates: Workspace[] = [];
 	for (const match of matches) {
@@ -325,6 +344,7 @@ async function discoverWorkspaces(
 				pkgPath,
 				presentScripts(root, pkgPath, selection.scripts),
 				selection.scripts,
+				runScriptArgs,
 			),
 		);
 	}
@@ -335,6 +355,7 @@ async function discoverWorkspaces(
 		selection.include ?? [],
 		root,
 		selection.scripts,
+		runScriptArgs,
 	);
 	for (const workspace of included.workspaces) {
 		if (seen.has(workspace.path)) continue;

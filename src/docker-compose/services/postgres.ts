@@ -9,7 +9,8 @@ import {
 	resolveHealthcheck,
 } from "./shared";
 
-export type PostgresServiceOptions = PresetServiceCredentialOptions;
+export type PostgresServiceOptions = PresetServiceCredentialOptions &
+	Pick<ServiceConfig, "urlParams">;
 
 export type PostgresServiceConfig = ServiceConfig<{
 	DATABASE_URL: "url";
@@ -45,13 +46,18 @@ export const postgresDockerService = defineDockerService<
 		DATABASE_URL: "url",
 	},
 	credentials: { user: "postgres", password: "postgres", database: "postgres" },
-	url: ({ host, port, credentials }) =>
-		`postgresql://${credentials?.user}:${credentials?.password}@${host}:${port}/${credentials?.database}`,
+	url: ({ host, port, credentials, urlParams }) => {
+		const base = `postgresql://${credentials?.user}:${credentials?.password}@${host}:${port}/${credentials?.database}`;
+		const entries = urlParams ? Object.entries(urlParams) : [];
+		if (entries.length === 0) return base;
+		return `${base}?${new URLSearchParams(entries).toString()}`;
+	},
 	enhanceServiceConfig: (base, options): PostgresServiceConfig => ({
 		...base,
 		database: options?.database,
 		user: options?.user,
 		password: options?.password,
+		urlParams: options?.urlParams,
 	}),
 	build: ({ serviceKey, config, runtime }) => {
 		const user = composeLiteral(config.credentials?.user ?? "postgres");

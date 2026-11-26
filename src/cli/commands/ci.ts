@@ -9,9 +9,16 @@ import {
 	withCheckSlot,
 } from "../../core/check-slots";
 import { CI_PROJECT_SUFFIX } from "../../core/ports";
+import { printStream, RunOutput } from "../../core/process/run-output";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
-import { internalsOf, STDERR_OUTPUT } from "../../environment";
+import {
+	internalsOf,
+	type Prepared,
+	SeedFailedError,
+	STDERR_OUTPUT,
+} from "../../environment";
 import { loadDevEnv } from "../../loader";
+import { resolveSelectedApps } from "../../planning";
 import type { AnyDevEnvironment, ExecResult, SeedOutcome } from "../../types";
 import {
 	BASE_EXITS,
@@ -33,9 +40,27 @@ interface CiRequest {
 	slot: boolean;
 	services: string[] | undefined;
 	apps: string[] | undefined;
+	profile: string | undefined;
 	build: boolean;
 	runtime: string | undefined;
 	command: readonly string[];
+}
+
+/** Route supervised app and seed output to stderr so stdout belongs solely to the wrapped command. */
+function createStderrRunOutput(appNames: readonly string[]) {
+	const output = new RunOutput({ terminals: "pipe" });
+	const width = Math.max(4, ...appNames.map((name) => name.length));
+	const unsubscribe = printStream(output, {
+		width,
+		write: (text) => process.stderr.write(text),
+	});
+	return {
+		output,
+		dispose: () => {
+			unsubscribe();
+			output.dispose();
+		},
+	};
 }
 
 /**
@@ -121,6 +146,12 @@ export const ciCommand = defineCommand({
 				description:
 					"Start these apps (and their requiredApps) after preparation and wait until they are healthy",
 			},
+			profile: {
+				kind: "string",
+				value: "<name>",
+				description:
+					"Apply a profile's env and secrets overrides (default: the profile named default)",
+			},
 			build: {
 				kind: "boolean",
 				description:
@@ -175,6 +206,7 @@ export const ciCommand = defineCommand({
 			services:
 				values.services === undefined ? undefined : commaList(values.services),
 			apps: values.apps === undefined ? undefined : commaList(values.apps),
+			profile: values.profile,
 			build: values.build,
 			runtime: values.runtime,
 			command: passthrough,
@@ -205,7 +237,10 @@ async function runCi(parsed: CiRequest): Promise<number> {
 	// A stack of its own, under a name no other run has, with its data in
 	// memory: tearing it down never reaches the checkout's dev database or
 	// another `ci` run's services, and a run killed outright leaves no volume.
-	const checkout = await loadDevEnv({ containerRuntime: parsed.runtime });
+	const checkout = await loadDevEnv({
+		containerRuntime: parsed.runtime,
+		...(parsed.profile !== undefined ? { profile: parsed.profile } : {}),
+	});
 	const env = checkout.withSuffix(ciSuffix(), {
 		data: "tmpfs",
 		ports: "assigned",
@@ -213,7 +248,8 @@ async function runCi(parsed: CiRequest): Promise<number> {
 
 	// Its progress, and the output of the commands it runs for itself (Prisma
 	// generate, the seed), on stderr.
-	internalsOf(env).reportTo(STDERR_OUTPUT);
+	const pipeline = internalsOf(env);
+	pipeline.reportTo(STDERR_OUTPUT);
 
 	const prisma = env.prisma;
 	const services = parsed.services ?? Object.keys(env.services);
@@ -250,11 +286,42 @@ async function runCi(parsed: CiRequest): Promise<number> {
 		]);
 	}
 
+	const afterApps = parsed.seed ? (pipeline.seed?.afterApps ?? []) : [];
+	if (afterApps.length > 0) {
+		const missingSeedServices = (pipeline.seed?.requiredServices ?? []).filter(
+			(name) => !services.includes(name),
+		);
+		if (missingSeedServices.length > 0) {
+			throw new CliError(
+				`--seed needs service(s) ${missingSeedServices.join(", ")}, which --services leaves out.`,
+			);
+		}
+	}
+	const ciApps = [...new Set([...afterApps, ...apps])];
+
 	// Unless `docker.generatedFile` names one file for every stack.
 	const ownComposeFile =
 		env.composeFile !== checkout.composeFile
 			? resolve(env.root, env.composeFile)
 			: undefined;
+
+	const runCommand = async (signal: AbortSignal): Promise<ExecResult> => {
+		if (parsed.command.length === 0) return exited(0);
+
+		// The command gets no shared scope: a CI job should not need Infisical
+		// access for its tests. Migrations and the seed still get their own scopes.
+		const result = await env.exec(parsed.command, {
+			secrets: false,
+			verbose: true,
+			throwOnError: false,
+			signal,
+		});
+		if (result.exitCode !== 0 && !signal.aborted) {
+			await reportContainerLoss(env);
+		}
+
+		return result;
+	};
 
 	// The teardown runs inside the signal scope: a second Ctrl-C, or the
 	// runner's SIGTERM after its SIGINT, arriving while the stack comes down
@@ -266,6 +333,51 @@ async function runCi(parsed: CiRequest): Promise<number> {
 	const run = () =>
 		runForwardingSignals(async (signal) => {
 			try {
+				// App-only CI (no containers selected): prepare directly over `ciApps`
+				// so app ports (including extraPorts) are probed and `afterApps` seeding
+				// runs in one session with all app/seed output on stderr.
+				if (services.length === 0 && ciApps.length > 0) {
+					const stderrOut = createStderrRunOutput([
+						...ciApps,
+						...(afterApps.length > 0 ? ["seed"] : []),
+					]);
+					try {
+						const prepared = await pipeline.prepare({
+							onlyApps: ciApps,
+							startServers: true,
+							prepare,
+							schema: parsed.schemaPush ? "push" : "migrate",
+							seed: parsed.seed ? "force" : "skip",
+							productionBuild: parsed.build,
+							watchdog: false,
+							claim: { idleTimeoutMs: WATCHDOG_IDLE_TIMEOUT_MS },
+							signal,
+						});
+						const claimed = await pipeline.claimApps(prepared, { signal });
+						try {
+							await pipeline.spawn(claimed, {
+								signal,
+								output: stderrOut.output,
+								waitForExit: false,
+								keepOthersOnFailure: false,
+								watch: false,
+								reactiveTasks: false,
+							});
+						} catch (error) {
+							if (error instanceof SeedFailedError) {
+								await reportContainerLoss(env);
+								return exited(error.exitCode || 1);
+							}
+							throw error;
+						}
+
+						return await runCommand(signal);
+					} finally {
+						stderrOut.dispose();
+						await env.stop({ removeVolumes: true });
+					}
+				}
+
 				return await env.withServices(
 					services,
 					{
@@ -278,8 +390,9 @@ async function runCi(parsed: CiRequest): Promise<number> {
 						prepare,
 						schema: parsed.schemaPush ? "push" : "migrate",
 						// Forced: `seed.check` is for skipping a seed on a warm local
-						// database, and a CI database is never warm.
-						seed: parsed.seed ? "force" : "skip",
+						// database, and a CI database is never warm. When `seed.afterApps`
+						// is set, seeding runs inside the app session below instead.
+						seed: parsed.seed && afterApps.length === 0 ? "force" : "skip",
 						// This process tears the containers down itself, and a CI
 						// runner is thrown away after the job anyway.
 						watchdog: false,
@@ -300,33 +413,59 @@ async function runCi(parsed: CiRequest): Promise<number> {
 							if (drift !== 0) return exited(drift);
 						}
 
-						// Inside `withServices`, so the teardown's `stop()` stops them
-						// with the stack. Throws when one fails to build or start, or
-						// misses its health check.
-						if (apps.length > 0) {
-							await env.startServers({
-								onlyApps: apps,
+						if (ciApps.length === 0) return runCommand(signal);
+
+						// Start prerequisite `afterApps` and requested `--apps` in one
+						// session so `afterApps` are seeded before dependent apps spawn
+						// without killing/restarting them, and keep stdout pure.
+						const selected = resolveSelectedApps(env.apps, ciApps);
+						const appNames = Object.keys(selected.apps);
+						const stderrOut = createStderrRunOutput([
+							...appNames,
+							...(afterApps.length > 0 ? ["seed"] : []),
+						]);
+						try {
+							const appPrepared: Prepared = {
+								selection: {
+									appNames,
+									requiredServiceKeys: services,
+								},
+								apps: selected.apps,
+								hasServices: services.length > 0,
 								productionBuild: parsed.build,
-								signal,
-							});
+								verbose: true,
+								watchdog: false,
+								seed:
+									afterApps.length > 0
+										? {
+												kind: "after-apps",
+												apps: afterApps,
+												beforeOtherApps: true,
+												force: true,
+											}
+										: { kind: "none" },
+							};
+							const claimed = await pipeline.claimApps(appPrepared, { signal });
+							try {
+								await pipeline.spawn(claimed, {
+									signal,
+									output: stderrOut.output,
+									waitForExit: false,
+									keepOthersOnFailure: false,
+									watch: false,
+								});
+							} catch (error) {
+								if (error instanceof SeedFailedError) {
+									await reportContainerLoss(env);
+									return exited(error.exitCode || 1);
+								}
+								throw error;
+							}
+
+							return await runCommand(signal);
+						} finally {
+							stderrOut.dispose();
 						}
-
-						if (parsed.command.length === 0) return exited(0);
-
-						// The command gets no shared scope: a CI job should not need
-						// Infisical access for its tests. Migrations and the seed
-						// still get their own scopes.
-						const result = await env.exec(parsed.command, {
-							secrets: false,
-							verbose: true,
-							throwOnError: false,
-							signal,
-						});
-						if (result.exitCode !== 0 && !signal.aborted) {
-							await reportContainerLoss(env);
-						}
-
-						return result;
 					},
 				);
 			} catch (error) {

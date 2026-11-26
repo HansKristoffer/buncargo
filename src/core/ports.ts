@@ -72,10 +72,19 @@ export function asComputedLoopbackUrls<
 	return urls as ComputedLoopbackUrls<TServices, TApps>;
 }
 
-/** The nearest directory above `startDir` whose package.json has workspaces, or `startDir` itself. */
+/**
+ * The nearest repository/monorepo root above `startDir`, or `startDir` itself.
+ *
+ * Prefers a `package.json` with `workspaces`, then a directory containing
+ * `dev.config.ts` / `dev.config.js` (so rootless multi-package repos resolve
+ * from subdirectories even when a package has its own `pnpm-workspace.yaml`),
+ * then `pnpm-workspace.yaml`.
+ */
 export function findMonorepoRoot(startDir?: string): string {
 	const initial = resolve(startDir ?? process.cwd());
 	let dir = initial;
+	let configDir: string | undefined;
+	let pnpmDir: string | undefined;
 	for (;;) {
 		try {
 			const pkgPath = resolve(dir, "package.json");
@@ -89,8 +98,21 @@ export function findMonorepoRoot(startDir?: string): string {
 		} catch {
 			// Continue searching
 		}
+		if (
+			configDir === undefined &&
+			(existsSync(resolve(dir, "dev.config.ts")) ||
+				existsSync(resolve(dir, "dev.config.js")))
+		) {
+			configDir = dir;
+		}
+		if (
+			pnpmDir === undefined &&
+			existsSync(resolve(dir, "pnpm-workspace.yaml"))
+		) {
+			pnpmDir = dir;
+		}
 		const parent = dirname(dir);
-		if (parent === dir) return initial;
+		if (parent === dir) return configDir ?? pnpmDir ?? initial;
 		dir = parent;
 	}
 }

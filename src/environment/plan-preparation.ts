@@ -1,3 +1,4 @@
+import { selectReactiveTasks } from "../core/process";
 import { resolvePrismaConfig } from "../prisma/config";
 import { migrationsFor } from "../prisma/migrations-for";
 import type {
@@ -5,6 +6,7 @@ import type {
 	MigrationConfig,
 	ResolvedApp,
 	ResolvedService,
+	SecretsScopeInput,
 	StartOptions,
 } from "../types";
 import type { StartSecretsSelection } from "./prefetch-secrets";
@@ -23,12 +25,17 @@ export interface PreparationPlan {
 	/** `afterContainersReady` runs: the selection brings up a service. */
 	readonly afterContainersReady: boolean;
 	/**
-	 * The seed step runs: the seed's services are selected (any service, for a
-	 * seed that names none, or for no seed, whose step then says so).
+	 * The seed step runs: the seed's services (and `afterApps`, when set) are
+	 * selected (any service, for a seed that names none, or for no seed, whose
+	 * step then says so).
 	 */
 	readonly seedSelected: boolean;
 	/** The seed runs beside the apps rather than before them. */
 	readonly seedOverlaps: boolean;
+	/** Prerequisite apps that must be ready before the seed runs (`seed.afterApps`). */
+	readonly seedAfterApps: readonly string[] | undefined;
+	/** When `seedAfterApps` is set, whether remaining apps wait for the seed. */
+	readonly seedBeforeOtherApps: boolean;
 	/** Up before the migrations; in containers-only mode, every selected service. */
 	readonly earlyServices: Record<string, ResolvedService>;
 	/** `afterPreparation` services: up once the migrations and the seed are done. */
@@ -41,6 +48,8 @@ export interface PreparationInput {
 	readonly requiredServiceKeys: readonly string[];
 	/** The apps the start spawns. */
 	readonly apps: Record<string, ResolvedApp>;
+	/** Checkout root, for integrations whose secret scopes fall back to `.infisical.json`. */
+	readonly root?: string;
 }
 
 export interface PreparationOptions {
@@ -59,7 +68,13 @@ export interface PreparationOptions {
 export function planPreparation(
 	config: Pick<
 		AnyDevConfig,
-		"prisma" | "migrations" | "seed" | "hooks" | "secrets"
+		| "prisma"
+		| "migrations"
+		| "seed"
+		| "hooks"
+		| "secrets"
+		| "integrations"
+		| "tasks"
 	>,
 	services: Readonly<Record<string, ResolvedService>>,
 	input: PreparationInput,
@@ -87,9 +102,28 @@ export function planPreparation(
 				: migration,
 		);
 
-	const seedSelected = prepared(config.seed?.requiredServices);
+	const afterApps =
+		config.seed?.afterApps && config.seed.afterApps.length > 0
+			? config.seed.afterApps
+			: undefined;
+	const hasAfterApps = afterApps !== undefined;
+	const appsSatisfied = afterApps
+		? afterApps.every((name) => name in input.apps)
+		: true;
+	const servicesSatisfied = hasAfterApps
+		? config.seed?.requiredServices !== undefined
+			? config.seed.requiredServices.every((name) => selected.includes(name))
+			: true
+		: prepared(config.seed?.requiredServices);
+
 	const appCount = Object.keys(input.apps).length;
+	const seedSelected = hasAfterApps
+		? appsSatisfied && servicesSatisfied && options.spawn && appCount > 0
+		: servicesSatisfied;
+	const seedAfterApps = hasAfterApps && seedSelected ? afterApps : undefined;
+	const seedBeforeOtherApps = config.seed?.beforeApps !== false;
 	const seedOverlaps =
+		!hasAfterApps &&
 		options.seed === "auto" &&
 		options.spawn &&
 		appCount > 0 &&
@@ -109,6 +143,37 @@ export function planPreparation(
 				targets.filter(([, service]) => service.afterPreparation),
 			);
 
+	const selectedAppNames = Object.keys(input.apps);
+	const integrationSecretScopes =
+		options.prepare === "all"
+			? (config.integrations ?? []).flatMap((integration) =>
+					(
+						integration.secretScopes?.({
+							selectedApps: selectedAppNames,
+							root: input.root,
+							defaults: config.secrets,
+						}) ?? []
+					).map((scope) => [integration.name, scope] as const),
+				)
+			: [];
+	const startableAppNames = Object.entries(input.apps)
+		.filter(([, app]) => app.devCommand !== false)
+		.map(([name]) => name);
+	const reactiveTasks =
+		options.prepare === "all" && options.spawn
+			? selectReactiveTasks(
+					config.tasks,
+					new Set(startableAppNames),
+					new Set(selected),
+				)
+			: {};
+	const taskSecretScopes: (readonly [string, SecretsScopeInput])[] =
+		config.secrets &&
+		Object.values(reactiveTasks).some((task) => task.app === undefined)
+			? [["tasks", config.secrets]]
+			: [];
+	const extraScopes = [...integrationSecretScopes, ...taskSecretScopes];
+
 	return {
 		migrations,
 		prismaSelected,
@@ -119,6 +184,8 @@ export function planPreparation(
 			config.hooks?.afterContainersReady !== undefined && anySelected,
 		seedSelected,
 		seedOverlaps,
+		seedAfterApps,
+		seedBeforeOtherApps,
 		earlyServices,
 		lateServices,
 		secrets: containersOnly
@@ -133,6 +200,7 @@ export function planPreparation(
 						config.seed !== undefined &&
 						seedSelected,
 					migrations,
+					...(extraScopes.length > 0 ? { extraScopes } : {}),
 				},
 	};
 }

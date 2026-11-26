@@ -47,6 +47,8 @@ export function findStrayLoopbackUrls(input: {
 		values: Readonly<Record<string, string>>;
 	}[];
 	ports: Readonly<Record<string, number>>;
+	/** Ports owned by intentionally linked checkouts; never flagged as stray. */
+	allowedPorts?: ReadonlySet<number>;
 	isListening: (port: number) => boolean;
 }): StrayLoopbackUrl[] {
 	const block = new Set(Object.values(input.ports));
@@ -59,7 +61,13 @@ export function findStrayLoopbackUrls(input: {
 			seen.add(key);
 
 			const port = loopbackUrlPort(url);
-			if (port === undefined || block.has(port)) continue;
+			if (
+				port === undefined ||
+				block.has(port) ||
+				input.allowedPorts?.has(port)
+			) {
+				continue;
+			}
 
 			// Ports of one service in two checkouts differ by whole offset steps.
 			const meant = Object.entries(input.ports).find(

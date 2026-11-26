@@ -1,5 +1,3 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
 import { getErrorMessage, typedSwitch } from "hanzio";
 import type {
 	BuncargoIntegration,
@@ -9,6 +7,8 @@ import type {
 	ResolvedService,
 } from "../types";
 import { environmentOpenUrl, preferredAppUrl } from "./app-url";
+import { canonicalCheckoutPath } from "./canonical-path";
+import { readGitBranch } from "./git-branch";
 import type { StartDevServersOptions } from "./process/dev-servers";
 import type { CapturedValue } from "./process/output-capture";
 import { readProcessIdentitiesAsync } from "./process-identity";
@@ -60,6 +60,8 @@ export interface RunSource {
 	readonly containerRuntimeBinary?: string;
 	readonly projectPrefix: string;
 	readonly projectName: string;
+	readonly projectSuffix?: string;
+	readonly profile?: string;
 	readonly root: string;
 	readonly isWorktree: boolean;
 	readonly ports: object;
@@ -71,6 +73,12 @@ export interface RunSource {
 	readonly integrations?: readonly BuncargoIntegration[];
 	readonly workspaceId?: string;
 	details?(): Record<string, string>;
+	/** Non-secret shared env vars (`exportEnv`, integrations) published for linked checkouts. */
+	exportedEnv?(selection?: {
+		apps?: readonly string[];
+		services?: readonly string[];
+		production?: boolean;
+	}): Record<string, string>;
 	readonly hosts: {
 		readonly active: boolean;
 		readonly tld: string;
@@ -86,31 +94,7 @@ function reportFailure(action: string, error: unknown): void {
 	console.warn(formatWarn(`Could not ${action} the run registry: ${message}`));
 }
 
-/**
- * The branch a checkout is on, for the menu bar's row subtitle.
- *
- * Read here rather than in the app, so nothing downstream has to know that a
- * worktree's `.git` is a file pointing at the real git directory. A detached
- * HEAD or an unreadable file yields nothing, which the UI renders as no
- * subtitle at all.
- */
-export function readGitBranch(root: string): string | undefined {
-	try {
-		const gitPath = join(root, ".git");
-		if (!existsSync(gitPath)) return undefined;
-		const gitFileText = statSync(gitPath).isFile()
-			? readFileSync(gitPath, "utf-8")
-			: "";
-		const gitDir = gitFileText.startsWith("gitdir:")
-			? resolve(dirname(gitPath), gitFileText.slice("gitdir:".length).trim())
-			: gitPath;
-		const head = readFileSync(join(gitDir, "HEAD"), "utf-8").trim();
-		const match = head.match(/^ref:\s*refs\/heads\/(.+)$/);
-		return match?.[1];
-	} catch {
-		return undefined;
-	}
-}
+export { readGitBranch } from "./git-branch";
 
 /** The run's labelled values, as registry rows; best-effort like the rest. */
 function runDetails(env: Pick<RunSource, "details">): {
@@ -123,6 +107,25 @@ function runDetails(env: Pick<RunSource, "details">): {
 			value,
 		}));
 		return details.length > 0 ? { details } : {};
+	} catch {
+		return {};
+	}
+}
+
+/** Non-secret exported env for linked checkouts; best-effort like details. */
+function runExports(
+	env: Pick<RunSource, "exportedEnv">,
+	selection?: {
+		apps?: readonly string[];
+		services?: readonly string[];
+		production?: boolean;
+	},
+): {
+	exports?: Record<string, string>;
+} {
+	try {
+		const values = env.exportedEnv?.(selection) ?? {};
+		return Object.keys(values).length > 0 ? { exports: values } : {};
 	} catch {
 		return {};
 	}
@@ -307,6 +310,8 @@ export interface PublishRunInput {
 	serviceStatus?: RunServiceStatus;
 	/** The config's tasks, which BuncargoBar offers to run. */
 	tasks?: Readonly<Record<string, { readonly description?: string }>>;
+	/** Whether apps run in production build mode. */
+	production?: boolean;
 }
 
 /**
@@ -358,6 +363,8 @@ async function writeRun(
 			sessionId: env.sessionId,
 			projectPrefix: env.projectPrefix,
 			projectName: env.projectName,
+			suffix: env.projectSuffix,
+			profile: env.profile,
 			root: env.root,
 			isWorktree: env.isWorktree,
 		})),
@@ -375,6 +382,11 @@ async function writeRun(
 			input.serviceStatus ?? "ready",
 			input.serviceNames,
 		),
+		...runExports(env, {
+			apps: Object.keys(input.apps),
+			services: input.serviceNames,
+			production: input.production,
+		}),
 		...runDetails(env),
 		...(input.tasks && Object.keys(input.tasks).length > 0
 			? {
@@ -499,18 +511,6 @@ async function markAppsRestarting(
 	await patchCurrentRun(run, { restarting: [...names] });
 }
 
-/** Mark the named services with one status, e.g. `ready` once they were waited for. */
-export async function markServices(
-	run: RunSession,
-	names: readonly string[],
-	status: RunServiceStatus,
-): Promise<void> {
-	if (names.length === 0) return;
-	await patchCurrentRun(run, {
-		services: names.map((name) => ({ name, status })),
-	});
-}
-
 /**
  * Record a spawned app's pid together with its birth identity.
  *
@@ -581,7 +581,10 @@ export function appRowEvents(
  */
 export async function recordAppUrls(
 	env: RunSession &
-		Pick<RunSource, "urls" | "loopbackUrls" | "publicUrls" | "hosts"> & {
+		Pick<
+			RunSource,
+			"urls" | "loopbackUrls" | "publicUrls" | "hosts" | "exportedEnv"
+		> & {
 			readonly apps?: object;
 		},
 	names: readonly string[],
@@ -595,7 +598,9 @@ export async function recordAppUrls(
 		return [{ name, publicUrl, openUrl: environmentOpenUrl(env, name) }];
 	});
 
-	if (apps.length > 0) await patchCurrentRun(env, { apps });
+	if (apps.length > 0) {
+		await patchCurrentRun(env, { apps, ...runExports(env) });
+	}
 }
 
 /**
@@ -606,7 +611,7 @@ export async function recordAppUrls(
  */
 export async function recordRunCapture(
 	env: RunSession &
-		Pick<RunSource, "details"> & {
+		Pick<RunSource, "details" | "exportedEnv"> & {
 			readonly apps: Readonly<Record<string, ResolvedApp>>;
 		},
 	app: string,
@@ -614,6 +619,7 @@ export async function recordRunCapture(
 ): Promise<void> {
 	if (env.apps[app]?.captures?.[captured.name]?.secret) return;
 	const { details } = runDetails(env);
+	const { exports } = runExports(env);
 	const captures = { [captured.name]: captured.value };
 	const recorded: RunPatch = typedSwitch(captured.as, {
 		event: () => ({}),
@@ -625,6 +631,7 @@ export async function recordRunCapture(
 	});
 	await patchCurrentRun(env, {
 		...recorded,
+		...(exports ? { exports } : {}),
 		...(details ? { details } : {}),
 	});
 }
@@ -634,15 +641,24 @@ export async function recordRunCapture(
  * process (`env`, `generate`, `wait`) that should see what `dev` captured.
  * Returns them; the newest run wins when several are live.
  */
-export async function adoptLiveCaptures(env: {
-	root: string;
-	captured: Readonly<Record<string, string>>;
-	setPublicUrls?(urls: Record<string, string>): void;
-}): Promise<Record<string, string>> {
+export async function adoptLiveCaptures(
+	env: {
+		root: string;
+		captured: Readonly<Record<string, string>>;
+		setPublicUrls?(urls: Record<string, string>): void;
+	},
+	preloadedRuns?: readonly RunEntry[],
+): Promise<Record<string, string>> {
 	try {
-		const runs = (await findRunsByRoot(env.root)).sort((a, b) =>
-			a.startedAt.localeCompare(b.startedAt),
-		);
+		const target = canonicalCheckoutPath(env.root);
+		const source = preloadedRuns ?? (await findRunsByRoot(env.root));
+		const runs = source
+			.filter(
+				(run) =>
+					run.suffix === undefined &&
+					canonicalCheckoutPath(run.root) === target,
+			)
+			.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
 		const captures: Record<string, string> = Object.assign(
 			{},
 			...runs.map((run) => run.captures ?? {}),

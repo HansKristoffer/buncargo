@@ -37,10 +37,12 @@ export interface OutputLine {
 
 export interface AppStateDetail {
 	state: AppState;
-	/** "exit 1", "signal SIGTERM". */
+	/** "exit 1", "signal SIGTERM", "idle", "running", "ok". */
 	detail?: string;
 	/** Not essential: the run went on, and `r` / `buncargo restart` brings it back. */
 	restartable?: boolean;
+	/** Command hint shown in stream mode on failure (default: `buncargo restart <name>`). */
+	rerunCommand?: string;
 }
 
 export interface RunOutputListener {
@@ -370,17 +372,19 @@ export function printStream(
 			}
 			write(formatPrefixedLine(line.app, line.raw, options.width));
 		},
-		state(app, { state, detail, restartable }) {
+		state(app, { state, detail, restartable, rerunCommand }) {
 			if (state !== "stopped" && state !== "failed") return;
 			if (!restartable) return;
 
 			const detailSuffix = detail ? ` (${detail})` : "";
+			const hintLabel = rerunCommand ? "Run it again:" : "Restart it:";
+			const hintCommand = rerunCommand ?? `buncargo restart ${app}`;
 			const lines = [
 				`  ${pc.red("✗")}  ${colorizeName(app)} ${state}${detailSuffix}; the rest of the run keeps going`,
 				...lastErrorLines(output.tail(app)).map(
 					(line) => `       ${pc.dim(line)}`,
 				),
-				`       ${pc.dim("Restart it:")} buncargo restart ${app}`,
+				`       ${pc.dim(hintLabel)} ${hintCommand}`,
 			];
 			write(`${lines.join("\n")}\n`);
 		},

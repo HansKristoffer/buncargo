@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { startFakeInfisical } from "../core/secrets/fake-infisical.testing";
 import { clearScopeSecretsCache } from "../core/secrets/index";
 import { useTempHome } from "../core/test-env.testing";
+import type { AnyDevEnvironment } from "../types";
 import { createDevEnvironment } from "./create-dev-environment";
 import { runMigrationsSequentially } from "./migrations";
 
@@ -135,4 +136,130 @@ it("runs app startup, seed, migrations and exec offline without fetching disable
 	} finally {
 		await env.stop();
 	}
+});
+
+it("layers multiple Infisical scopes in order for apps, exec, seed, and profile overrides", async () => {
+	const infisical = startFakeInfisical();
+	infisical.folders["kanpla:local:/backend"] = {
+		secrets: { APP_KEY: "local-key", SHARED: "from-local" },
+	};
+	infisical.folders["kanpla:dev:/backend"] = {
+		secrets: { APP_KEY: "dev-key", SHARED: "from-dev" },
+	};
+	infisical.folders["kanpla:prod:/functions"] = {
+		secrets: {
+			UNLEASH_TOKEN: "prod-unleash",
+			SHARED: "from-prod",
+			PROD_ADMIN: "never-injected",
+		},
+	};
+	const savedPath = process.env.BUNCARGO_INFISICAL_PATH;
+	process.env.BUNCARGO_INFISICAL_PATH = infisical.cliPath;
+	const root = mkdtempSync(join(tmpdir(), "buncargo-layered-profiles-"));
+	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
+	cleanups.push(() => {
+		infisical.stop();
+		rmSync(root, { recursive: true, force: true });
+		if (savedPath === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
+		else process.env.BUNCARGO_INFISICAL_PATH = savedPath;
+	});
+
+	const config = {
+		projectPrefix: "kanpla",
+		services: {},
+		secrets: {
+			projectId: "kanpla",
+			siteUrl: infisical.siteUrl,
+			environment: "local",
+		},
+		env: () => ({
+			FIREBASE_PROJECT_ID: "demo-kanpla",
+			FIRESTORE_EMULATOR_HOST: "127.0.0.1:8080",
+		}),
+		apps: {
+			backend: {
+				port: 3000,
+				devCommand: false as const,
+				secrets: [
+					{ path: "/backend" },
+					{
+						environment: "prod",
+						path: "/functions",
+						only: ["UNLEASH_TOKEN", "SHARED"],
+					},
+				],
+			},
+		},
+		profiles: {
+			default: {
+				env: { PROFILE_TAG: "local-default" },
+			},
+			dev: {
+				env: (ports: Record<string, number>) => ({
+					PROFILE_TAG: `cloud-${ports.backend}`,
+					FIREBASE_PROJECT_ID: "kanpla-dev",
+					// Clearing emulator host drops it from built env.
+					FIRESTORE_EMULATOR_HOST: undefined,
+				}),
+				secrets: { environment: "dev" },
+			},
+			offline: {
+				env: { PROFILE_TAG: "offline" },
+				secrets: false as const,
+			},
+		},
+	};
+
+	const readVars = async (env: AnyDevEnvironment, app?: string) =>
+		JSON.parse(
+			(
+				await env.exec(
+					[
+						"bun",
+						"-e",
+						"console.log(JSON.stringify({ appKey: process.env.APP_KEY ?? null, shared: process.env.SHARED ?? null, unleash: process.env.UNLEASH_TOKEN ?? null, prodAdmin: process.env.PROD_ADMIN ?? null, fb: process.env.FIREBASE_PROJECT_ID ?? null, emu: process.env.FIRESTORE_EMULATOR_HOST ?? null, tag: process.env.PROFILE_TAG ?? null }))",
+					],
+					{ app },
+				)
+			).stdout,
+		);
+
+	// Default profile applies `profiles.default.env` and uses `local` + `prod` layers.
+	const localEnv = createDevEnvironment(config, { root });
+	expect(await readVars(localEnv, "backend")).toEqual({
+		appKey: "local-key",
+		shared: "from-prod",
+		unleash: "prod-unleash",
+		prodAdmin: null,
+		fb: "demo-kanpla",
+		emu: "127.0.0.1:8080",
+		tag: "local-default",
+	});
+
+	// `--profile=dev` switches base scope to `dev` (keeping explicit `prod` layer) and clears emulator host.
+	const devEnv = createDevEnvironment(config, { root, profile: "dev" });
+	expect(await readVars(devEnv, "backend")).toEqual({
+		appKey: "dev-key",
+		shared: "from-prod",
+		unleash: "prod-unleash",
+		prodAdmin: null,
+		fb: "kanpla-dev",
+		emu: null,
+		tag: `cloud-${devEnv.ports.backend}`,
+	});
+
+	// `--profile=offline` disables secrets altogether.
+	const offlineEnv = createDevEnvironment(config, {
+		root,
+		profile: "offline",
+	});
+	expect(await readVars(offlineEnv, "backend")).toEqual({
+		appKey: null,
+		shared: null,
+		unleash: null,
+		prodAdmin: null,
+		fb: "demo-kanpla",
+		emu: "127.0.0.1:8080",
+		tag: "offline",
+	});
 });

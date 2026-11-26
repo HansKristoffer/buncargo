@@ -1,10 +1,21 @@
 # Environment and preparation
 
-`createDevEnvironment()` lives in `src/environment/`. It applies integrations, validates and
-resolves the config (`resolveConfig`); `context.ts` then resolves identity, ports and URLs once
-into a `DevEnvContext`, which holds only the resolved services and apps. `env-vars.ts`,
-`lifecycle.ts`, `servers.ts` and `run-claim.ts` are built on it, and `create-dev-environment.ts`
-only composes them. Extract a complex concern into a focused module (logging, seeding) rather than growing the composition.
+`createDevEnvironment()` lives in `src/environment/`. It applies integrations (re-applying
+profile-overridden `integrations` via `mergeProfileIntegrations` when set), validates and
+resolves the config (`resolveConfig`, composing the requested or `default` profile's `env`,
+`secrets`, `links`, `egressGuard`, and `activeApps` before `applySecretDefaults`); `context.ts`
+then resolves identity, ports and URLs once into a `DevEnvContext`, which holds only the resolved
+services and apps (and resolves `ctx.links` live from `runs.json` + `.buncargo/links.json`).
+`env-vars.ts`, `lifecycle.ts`, `servers.ts` and `run-claim.ts` are built on it, and
+`create-dev-environment.ts` only composes them. `env-vars.ts` captures `ctx.links` once per
+`buildAppEnvVars`, `buildEnvFingerprint`, and `buildAppEnvVarsMap` call to avoid redundant reads
+and snapshot skew, injects `egressGuard` proxy variables when active, and builds `exportedEnv`
+from `exportableSharedEnv` (no `.env` passthroughs, `buncargo env set` overrides, Infisical
+secrets, or `secret: true` captures) merged over integration `exportEnv` hooks. `pipeline.ts`
+starts the `egressGuard` proxy around app supervision and arms `watchLinks` via `onReadyWatch`
+before `onReady` so reactive link reloads (`restartOn: ["links.<alias>"]`, `onChange: "restart"`,
+and `generatedFiles` re-renders) catch fast companion startups. Extract a complex concern into a
+focused module (logging, seeding) rather than growing the composition.
 
 `context.ts` starts from `resolveCheckoutView` and builds every environment with `sharedEnv`
 (`core/checkout-view.ts`), which `getEnvVar` also answers from. `getEnvVar` used to be a second
@@ -18,18 +29,27 @@ block, not the view from before it. What `start()` leaves to the CLI, and why, i
 `seeding.ts` owns the only seed path: `runSeedIfNeeded` backs both `start()` and `env.runSeed()`
 (which `buncargo dev --seed` calls with `force: true`). A failed seed fails `start()`; it does not
 log and continue. `seed-startup.ts` shares selection for `seed.beforeApps: false`; any selected
-`afterPreparation` service forces the serial path. `server-session.ts` owns the concurrent seed
-task, cancellation and draining, including production builds and empty sessions kept open for
-tunnels, and joins the seed before `afterServers` and readiness. Concurrent output is prefixed by
-`exec`'s `outputPrefix` without an output sink; with one (the CLI's run output) it goes there as
-`seed`, so stream mode and the TUI both show it and log it to `seed.log`.
+`afterPreparation` service forces the serial path. When `seed.afterApps` is set, `planPreparation`
+emits `seedAfterApps` and `prepare()` defers seeding as `PreparedSeed` `{ kind: "after-apps" }`:
+`server-session.ts` passes it into `startDevServers` as an `AfterAppsTask` that waits for those
+prerequisite apps to report ready before running `seed.check` and `seed.command`, either blocking
+remaining apps (`beforeApps !== false`) or overlapping them (`beforeApps: false`) and joining before
+`afterServers` and readiness. In `buncargo dev --seed` and `buncargo ci --seed`, the CLI starts only
+the `afterApps` prerequisites (reusing healthy already-running ones untouched), runs the forced seed,
+and stops temporary apps gracefully via `stopDevServers` so `stopGraceMs` is honored. `server-session.ts`
+owns concurrent and post-app seed tasks, cancellation and draining, including production builds and
+empty sessions kept open for tunnels or post-app seeds, and joins the seed before `afterServers` and
+readiness. Concurrent output is prefixed by `exec`'s `outputPrefix` without an output sink; with one
+(the CLI's run output) it goes there as `seed`, so stream mode and the TUI both show it and log it to
+`seed.log`.
 
 ## One pipeline
 
 `start()` and `buncargo dev` are the same three phases, so claims, leases, app rows, hooks and the
 seed decision cannot drift between them (a parity test in `run-cli.test.ts` compares the two).
 `prepare()` (`lifecycle.ts`) claims the run, prepares the services and returns a `Prepared`,
-including the seed's place: run, overlapping the apps, or left out. `claimApps()` and `spawn()`
+including the seed's place: run, overlapping the apps, after prerequisite apps (`after-apps`), or
+left out. `claimApps()` and `spawn()`
 (`pipeline.ts`) take the leases through a `LeasePolicy` (the library's never asks; `dev`'s asks or
 takes over), publish the rows, then run the session with the environment's own hooks, health,
 captures and the app-only watchdog. The CLI reaches the phases through `internalsOf(env)`

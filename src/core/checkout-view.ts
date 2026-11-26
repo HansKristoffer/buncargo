@@ -14,10 +14,16 @@ import type {
 	NamedHost,
 	NamedHostsActivation,
 	ResolvedApps,
+	ResolvedLink,
+	ResolvedLinkConfig,
 	ResolvedServices,
 	ServiceConfig,
 } from "../types";
-import { capturedEnv } from "./captured-values";
+import {
+	capturedEnv,
+	publicCapturedEnv,
+	secretCaptureEnvKeys,
+} from "./captured-values";
 import { buildSharedEnvValues, mergeSharedEnvWithOverlay } from "./env";
 import { type EnvInput, loadEnvInput } from "./env-input";
 import { applyEnvOverrides, readEnvOverrides } from "./env-overrides";
@@ -46,6 +52,7 @@ export interface CheckoutConfig<
 	projectPrefix: string;
 	services: ResolvedServices<TServices>;
 	apps: ResolvedApps<TApps>;
+	links?: Readonly<Record<string, ResolvedLinkConfig>>;
 	env?: (...args: never[]) => EnvValues;
 	options?: {
 		envFiles?: readonly EnvInputFile[];
@@ -236,7 +243,10 @@ export interface SharedEnvSource<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 > {
-	readonly config: { env?: (...args: never[]) => EnvValues };
+	readonly config: {
+		env?: (...args: never[]) => EnvValues;
+		activeApps?: ReadonlySet<string>;
+	};
 	readonly projectName: string;
 	readonly workspaceId: string;
 	readonly localIp: string;
@@ -256,6 +266,7 @@ export interface SharedEnvExtras {
 	publicUrls: Readonly<Record<string, string>>;
 	captured: Readonly<Record<string, string>>;
 	hosts: HostsRuntime | null;
+	links?: Readonly<Record<string, ResolvedLink | undefined>>;
 }
 
 /** The context `env` and `envVars` callbacks receive. */
@@ -275,6 +286,10 @@ export function envOverlayContext<
 		publicUrls: extras.publicUrls as ComputedPublicUrls<TServices, TApps>,
 		loopbackUrls: source.loopbackUrls,
 		captured: extras.captured,
+		links: extras.links ?? {},
+		...(source.config.activeApps !== undefined
+			? { activeApps: source.config.activeApps }
+			: {}),
 	};
 }
 
@@ -339,5 +354,46 @@ export function sharedEnv<
 		source.envOverrides,
 		source.inputEnv.declared,
 	);
+	return merged;
+}
+
+/**
+ * The export-safe portion of {@link sharedEnv}: computed service/app URLs and
+ * ports, non-secret captures, and values returned by `config.env`. Never
+ * carries `.env` file passthroughs (`inputEnv.declared`), `buncargo env set`
+ * overrides, Infisical secrets, or `secret: true` captures.
+ */
+export function exportableSharedEnv<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+>(
+	source: SharedEnvSource<TServices, TApps>,
+	extras: SharedEnvExtras,
+): EnvValues {
+	const { services, apps, ports, urls, loopbackUrls } = source;
+	const { hosts } = extras;
+	const shared = buildSharedEnvValues({
+		projectName: source.projectName,
+		production: extras.production,
+		services,
+		ports,
+		urls,
+		loopbackUrls,
+		publicUrls: extras.publicUrls,
+	});
+	Object.assign(shared, publicCapturedEnv(apps, extras.captured));
+	shared.BUNCARGO_WORKSPACE_ID = source.workspaceId;
+	if (hosts?.active && hosts.caPath) shared.NODE_EXTRA_CA_CERTS = hosts.caPath;
+
+	const merged = mergeSharedEnvWithOverlay(
+		shared,
+		source.config.env as EnvVarsBuilder<TServices, TApps> | undefined,
+		ports,
+		urls,
+		envOverlayContext(source, extras),
+	);
+	for (const secretKey of secretCaptureEnvKeys(apps)) {
+		delete merged[secretKey];
+	}
 	return merged;
 }

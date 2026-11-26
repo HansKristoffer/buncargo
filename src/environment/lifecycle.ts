@@ -7,6 +7,7 @@ import {
 	withProjectLifecycleLock,
 } from "../container-runtime";
 import { registerAbortCleanup, withDeadline } from "../core/deadline";
+import { linkStartupIssues, resolveLiveLinksAsync } from "../core/links";
 import { toPortMap, toUrlMap } from "../core/ports";
 import { stopDevServers } from "../core/process/dev-servers";
 import { isCI } from "../core/runtime-flags";
@@ -32,7 +33,7 @@ import type {
 } from "../types";
 import { recordTeardown } from "./container-loss";
 import type { DevEnvContext } from "./context";
-import { syncEnvFile } from "./env-file";
+import { syncEnvFiles } from "./env-file";
 import type { DevEnvVarsApi } from "./env-vars";
 import {
 	type GeneratedFilesContext,
@@ -62,6 +63,13 @@ const STEP_TIMEOUT_MS = 600_000;
 export interface PrepareOptions extends StartOptions {
 	/** Print the environment banner once the run is claimed. Default: false. */
 	banner?: boolean;
+	/**
+	 * Enforce configured `links` during `prepare()`. Default: `true`.
+	 * `buncargo dev` checks links ahead of side-effecting steps (hosts, ports,
+	 * stale-stack replacement) and passes `false` here; DB-only `buncargo ci`
+	 * skips required dev links.
+	 */
+	checkLinks?: boolean;
 }
 
 export interface DevLifecycleApi {
@@ -107,6 +115,7 @@ export type LifecycleContext = Pick<
 	| "logInfo"
 	| "onSecretsWait"
 	| "ownedServerPids"
+	| "closeEgressProxy"
 	| "output"
 	| "assignedPortTargets"
 	| "adoptAssignedPorts"
@@ -339,7 +348,7 @@ export function createLifecycleApi(
 	}
 
 	function runSeed(options: SeedRunOptions = {}): Promise<SeedOutcome> {
-		if (latest && !latest.plan.seedSelected) {
+		if (latest && !latest.plan.seedSelected && !options.force) {
 			return Promise.resolve({ status: "not-needed" });
 		}
 
@@ -347,7 +356,7 @@ export function createLifecycleApi(
 	}
 
 	async function syncConfiguredEnvFile(verbose: boolean): Promise<void> {
-		const result = await syncEnvFile({
+		const results = await syncEnvFiles({
 			root: ctx.root,
 			envFile: config.options?.envFile,
 			projectName: ctx.projectName,
@@ -355,21 +364,23 @@ export function createLifecycleApi(
 			ports: toPortMap(ports),
 			loopbackUrls: toUrlMap(ctx.loopbackUrls),
 		});
-		if (!verbose || !result) {
-			return;
-		}
+		if (!verbose) return;
 
-		if (result.absent) {
-			ctx.output.log(
-				formatWarn(`No ${relative(ctx.root, result.path)} to sync; skipped`),
-			);
-			return;
-		}
+		for (const result of results) {
+			if (result.absent) {
+				ctx.output.log(
+					formatWarn(`No ${relative(ctx.root, result.path)} to sync; skipped`),
+				);
+				continue;
+			}
 
-		if (result.created || result.changed.length > 0) {
-			const valueCount = `${result.changed.length} value${result.changed.length === 1 ? "" : "s"}`;
-			const what = result.created ? "Created" : `Synced ${valueCount} in`;
-			ctx.output.log(formatDone(`${what} ${relative(ctx.root, result.path)}`));
+			if (result.created || result.changed.length > 0) {
+				const valueCount = `${result.changed.length} value${result.changed.length === 1 ? "" : "s"}`;
+				const what = result.created ? "Created" : `Synced ${valueCount} in`;
+				ctx.output.log(
+					formatDone(`${what} ${relative(ctx.root, result.path)}`),
+				);
+			}
 		}
 	}
 
@@ -392,7 +403,10 @@ export function createLifecycleApi(
 					(options.startServers ?? true) &&
 					(options.prepare ?? "all") === "all" &&
 					Object.keys(prepared.apps).length > 0;
-				if (!spawns) return null;
+				if (!spawns) {
+					await runClaim.flushPatches();
+					return null;
+				}
 
 				try {
 					const claimed = await appPipeline.claimApps(prepared, {
@@ -441,6 +455,7 @@ export function createLifecycleApi(
 			{
 				requiredServiceKeys: selection.requiredServiceKeys,
 				apps: startPlan.apps,
+				root: ctx.root,
 			},
 			{
 				prepare: options.prepare ?? "all",
@@ -510,6 +525,27 @@ export function createLifecycleApi(
 			assertAppWorkingDirectories(apps, ctx.root, productionBuild);
 		}
 
+		// Cross-repo links: checked on full starts (`mode === "all"`), never
+		// blocking containers-only helpers like `prisma` or `sql`.
+		if (
+			options.checkLinks !== false &&
+			mode === "all" &&
+			config.links &&
+			Object.keys(config.links).length > 0
+		) {
+			const { inspections } = await resolveLiveLinksAsync(
+				ctx.root,
+				config.links,
+			);
+			const issues = linkStartupIssues(inspections);
+			for (const warning of issues.warnings) {
+				serviceWatch.notify(warning, true);
+			}
+			if (issues.errors.length > 0) {
+				throw new Error(issues.errors.join("\n"));
+			}
+		}
+
 		const hasServices = selection.requiredServiceKeys.length > 0;
 		const prepared = (seed: PreparedSeed): Prepared => ({
 			selection,
@@ -576,7 +612,11 @@ export function createLifecycleApi(
 			// retires it, `releaseRun()` releases it, and the sweep reads an
 			// owner that died without either as a crash.
 			if (hasServices) {
-				await runClaim.claimRun({ ...options.claim, signal });
+				await runClaim.claimRun({
+					...options.claim,
+					production: productionBuild,
+					signal,
+				});
 				// A script that starts containers and then crashes needs someone to
 				// clean up after it, exactly as a `buncargo dev` does.
 				if (options.watchdog !== false) ensureWatchdog();
@@ -705,6 +745,7 @@ export function createLifecycleApi(
 
 				if (
 					config.seed?.beforeApps === false &&
+					!plan.seedAfterApps &&
 					Object.keys(plan.lateServices).length > 0 &&
 					verbose
 				) {
@@ -751,7 +792,18 @@ export function createLifecycleApi(
 		run: (options: { force?: boolean }) => Promise<SeedOutcome>,
 	): Promise<PreparedSeed> {
 		if (mode === "skip") return { kind: "none" };
+		if (plan.seedAfterApps) {
+			return {
+				kind: "after-apps",
+				apps: plan.seedAfterApps,
+				beforeOtherApps: plan.seedBeforeOtherApps,
+				force: mode === "force",
+			};
+		}
 		if (mode === "force") {
+			if (config.seed && !plan.seedSelected) {
+				return { kind: "ran", outcome: { status: "not-needed" } };
+			}
 			return { kind: "ran", outcome: await run({ force: true }) };
 		}
 
@@ -775,6 +827,7 @@ export function createLifecycleApi(
 				onlyServices: names,
 				startServers: false,
 				prepare: mode,
+				checkLinks: false,
 				seed: options.seed ?? (mode === "all" ? "auto" : "skip"),
 			});
 
@@ -866,6 +919,17 @@ export function createLifecycleApi(
 		for (const name of Object.keys(ctx.ownedServerPids)) {
 			delete ctx.ownedServerPids[name];
 		}
+		const afterServersStop = config.hooks?.afterServersStop;
+		if (afterServersStop) {
+			await step(() =>
+				withDeadline(
+					(hookSignal) => afterServersStop(hookContext(hookSignal)),
+					STEP_TIMEOUT_MS,
+					signal,
+				),
+			);
+		}
+		await step(() => ctx.closeEgressProxy());
 		await step(() => runClaim.releaseApps());
 
 		if (appOnlyRun()) {

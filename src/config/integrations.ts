@@ -43,6 +43,68 @@ function composeHooks(
 }
 
 /**
+ * Merge a profile's `integrations` override over the base config's integrations.
+ * `false` disables every top-level integration; an array replaces base entries
+ * with the same `name` in place and appends any new integrations.
+ */
+function mergeProfileIntegrations(
+	base: readonly BuncargoIntegration[] | undefined,
+	override: false | readonly BuncargoIntegration[],
+): BuncargoIntegration[] {
+	if (override === false) return [];
+	const byName = new Map(override.map((entry) => [entry.name, entry]));
+	const merged: BuncargoIntegration[] = [];
+	const placed = new Set<string>();
+	for (const entry of base ?? []) {
+		const replacement = byName.get(entry.name);
+		if (replacement) {
+			merged.push(replacement);
+			placed.add(entry.name);
+		} else {
+			merged.push(entry);
+		}
+	}
+	for (const entry of override) {
+		if (!placed.has(entry.name)) merged.push(entry);
+	}
+	return merged;
+}
+
+/**
+ * Apply integrations to `config`, honoring an active profile's `integrations`
+ * override (`profiles.<name>.integrations`) when present.
+ */
+export function applyProfileIntegrations<T extends object>(
+	config: T,
+	options: { root?: string; profile?: string } = {},
+): T {
+	const input = config as IntegrationConfig & {
+		profiles?: Readonly<
+			Record<
+				string,
+				{ integrations?: false | readonly BuncargoIntegration[] } | undefined
+			>
+		>;
+	};
+	const profileName =
+		options.profile ?? (input.profiles?.default ? "default" : undefined);
+	const profileOverride = profileName
+		? input.profiles?.[profileName]
+		: undefined;
+	if (profileOverride?.integrations === undefined) {
+		return applyIntegrations(config, { root: options.root });
+	}
+	const mergedIntegrations = mergeProfileIntegrations(
+		input.integrations,
+		profileOverride.integrations,
+	);
+	return applyIntegrations(
+		{ ...config, integrations: mergedIntegrations },
+		{ root: options.root },
+	);
+}
+
+/**
  * Apply a config's integrations: each `config()` transform in order, then the
  * hooks, setup checks and preflight steps they contribute. Runs before
  * validation, so everything an integration adds is validated like the rest.

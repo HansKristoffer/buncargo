@@ -8,6 +8,7 @@
       "root": "/tmp/buncargo-fixture/lullu",
       "worktree": "t3code-f003056f",
       "branch": "fix-login",
+      "profile": "local",
       "pid": 1,
       "startedAt": "2026-09-03T10:47:56.971Z",
       "updatedAt": "2026-09-03T10:48:12.101Z",
@@ -121,6 +122,10 @@
       ],
       "captures": {
         "appUrl": "https://example.trycloudflare.com"
+      },
+      "exports": {
+        "FIRESTORE_EMULATOR_HOST": "127.0.0.1:8080",
+        "GCLOUD_PROJECT": "demo-lullu"
       },
       "details": [
         {

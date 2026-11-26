@@ -77,9 +77,23 @@ describe("parseDevArgs", () => {
 		expect(devErrors(["--replace-stale", "--down"])).toEqual([
 			"--replace-stale clears the way for a start; it cannot be combined with --down or --reset.",
 		]);
+		expect(devErrors(["--with-links", "--down"])).toEqual([
+			"--with-links starts missing linked repos; it cannot be combined with --down or --reset.",
+		]);
 		expect(devErrors(["--detach", "--seed"])).toEqual([
 			"--detach runs the dev servers in the background; it cannot be combined with --tui, --attach or a one-shot mode.",
 		]);
+	});
+
+	it("warns when --with-links is passed with --up-only or --migrate", () => {
+		expect(
+			ignoredFlagWarnings(dev(["--up-only", "--with-links"]).values).map(
+				(line) => line.split(" ")[0],
+			),
+		).toEqual(["--with-links"]);
+		expect(ignoredFlagWarnings(dev(["--seed", "--with-links"]).values)).toEqual(
+			[],
+		);
 	});
 
 	it("defaults to the TUI, and --no-tui opts out", () => {

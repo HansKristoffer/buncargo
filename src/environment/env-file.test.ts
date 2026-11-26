@@ -16,7 +16,7 @@ import {
 	buildEnvFileUpdates,
 	isReplaceableEnvValue,
 	rewriteEnvValues,
-	syncEnvFile,
+	syncEnvFiles,
 } from "./env-file";
 
 describe("isReplaceableEnvValue", () => {
@@ -201,7 +201,7 @@ describe("buildEnvFileUpdates", () => {
 	});
 });
 
-describe("syncEnvFile", () => {
+describe("syncEnvFiles", () => {
 	let root: string;
 
 	beforeEach(() => {
@@ -219,19 +219,21 @@ describe("syncEnvFile", () => {
 		loopbackUrls: { api: "http://localhost:4900" },
 	};
 
+	const syncOne = async (
+		envFile: Parameters<typeof syncEnvFiles>[0]["envFile"],
+	) => (await syncEnvFiles({ ...base, root, envFile }))[0];
+
 	it("does nothing when not configured", async () => {
-		expect(
-			await syncEnvFile({ ...base, root, envFile: undefined }),
-		).toBeUndefined();
-		expect(
-			await syncEnvFile({ ...base, root, envFile: false }),
-		).toBeUndefined();
+		expect(await syncEnvFiles({ ...base, root, envFile: undefined })).toEqual(
+			[],
+		);
+		expect(await syncEnvFiles({ ...base, root, envFile: false })).toEqual([]);
 	});
 
 	it("rewrites a stale port in place", async () => {
 		writeFileSync(join(root, ".env"), "# api\nAPI_URL=http://localhost:1\n");
 
-		const result = await syncEnvFile({ ...base, root, envFile: true });
+		const result = await syncOne(true);
 
 		expect(result?.changed).toContain("API_URL");
 		expect(readFileSync(join(root, ".env"), "utf-8")).toBe(
@@ -244,7 +246,7 @@ describe("syncEnvFile", () => {
 		writeFileSync(path, "API_URL=http://localhost:1\n");
 		chmodSync(path, 0o600);
 
-		await syncEnvFile({ ...base, root, envFile: true });
+		await syncOne(true);
 
 		expect(readFileSync(path, "utf-8")).toBe("API_URL=http://localhost:4900\n");
 		expect(statSync(path).mode & 0o777).toBe(0o600);
@@ -253,14 +255,12 @@ describe("syncEnvFile", () => {
 	it("fails on a dotenv it cannot read instead of calling it absent", async () => {
 		mkdirSync(join(root, ".env"));
 
-		await expect(
-			syncEnvFile({ ...base, root, envFile: true }),
-		).rejects.toThrow();
+		await expect(syncOne(true)).rejects.toThrow();
 	});
 
 	// The file is the repo's contract, so buncargo must not invent one.
 	it("reports an absent file rather than creating it", async () => {
-		const result = await syncEnvFile({ ...base, root, envFile: true });
+		const result = await syncOne(true);
 
 		expect(result?.absent).toBe(true);
 		expect(result?.created).toBe(false);
@@ -269,11 +269,7 @@ describe("syncEnvFile", () => {
 	it("bootstraps from createFrom when the file is missing", async () => {
 		writeFileSync(join(root, ".env.example"), "API_URL=\n");
 
-		const result = await syncEnvFile({
-			...base,
-			root,
-			envFile: { createFrom: ".env.example" },
-		});
+		const result = await syncOne({ createFrom: ".env.example" });
 
 		expect(result?.created).toBe(true);
 		expect(readFileSync(join(root, ".env"), "utf-8")).toBe(
@@ -284,11 +280,7 @@ describe("syncEnvFile", () => {
 	it("honors an explicit path", async () => {
 		writeFileSync(join(root, "custom.env"), "API_URL=\n");
 
-		const result = await syncEnvFile({
-			...base,
-			root,
-			envFile: { path: "custom.env" },
-		});
+		const result = await syncOne({ path: "custom.env" });
 
 		expect(result?.path).toBe(join(root, "custom.env"));
 		expect(readFileSync(join(root, "custom.env"), "utf-8")).toBe(
@@ -298,10 +290,36 @@ describe("syncEnvFile", () => {
 
 	it("leaves no temp file behind", async () => {
 		writeFileSync(join(root, ".env"), "API_URL=\n");
-		await syncEnvFile({ ...base, root, envFile: true });
+		await syncOne(true);
 
 		expect(readdirSync(root).filter((name) => name.includes(".tmp-"))).toEqual(
 			[],
+		);
+	});
+
+	it("syncs multiple dotenv paths when options.envFile is an array", async () => {
+		mkdirSync(join(root, "core"), { recursive: true });
+		mkdirSync(join(root, "emails"), { recursive: true });
+		writeFileSync(join(root, "core", ".env"), "API_URL=\n");
+		writeFileSync(join(root, "emails", ".env.example"), "API_URL=\n");
+
+		const results = await syncEnvFiles({
+			...base,
+			root,
+			envFile: [
+				"core/.env",
+				{ path: "emails/.env", createFrom: "emails/.env.example" },
+			],
+		});
+
+		expect(results).toHaveLength(2);
+		expect(results[0]?.changed).toEqual(["API_URL"]);
+		expect(results[1]?.created).toBe(true);
+		expect(readFileSync(join(root, "core", ".env"), "utf-8")).toBe(
+			"API_URL=http://localhost:4900\n",
+		);
+		expect(readFileSync(join(root, "emails", ".env"), "utf-8")).toBe(
+			"API_URL=http://localhost:4900\n",
 		);
 	});
 });

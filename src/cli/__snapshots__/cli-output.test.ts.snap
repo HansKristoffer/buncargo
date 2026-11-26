@@ -29,7 +29,7 @@ exports[`buncargo CLI output run --help 1`] = `
 "exit 0
 --- stdout
 
-Usage: buncargo run [<task>] [-- <args>]
+Usage: buncargo run [<task>] [options] [-- <args>]
 
 Run a task from dev.config.ts (lists them without a name)
 
@@ -37,8 +37,9 @@ Arguments:
   <task>  A key of tasks in dev.config.ts
 
 Options:
-  --help, -h  Show this help message
-  --          Arguments appended to the task's command
+  --profile=<name>  Apply a profile's env and secrets overrides (default: the active run's profile, or default)
+  --help, -h        Show this help message
+  --                Arguments appended to the task's command
 
 Exit codes:
   0  success
@@ -85,12 +86,13 @@ exports[`buncargo CLI output generate --help 1`] = `
 "exit 0
 --- stdout
 
-Usage: buncargo generate
+Usage: buncargo generate [options]
 
 Render generatedFiles without starting anything
 
 Options:
-  --help, -h  Show this help message
+  --profile=<name>  Apply a profile's env overrides (default: the active run's profile, or default)
+  --help, -h        Show this help message
 
 Exit codes:
   0  success
@@ -141,12 +143,13 @@ Usage: buncargo exec [options] -- <command> [args...]
 Run a command with the checkout environment
 
 Options:
-  --app=<name>  Use this app's environment and default working directory
-  --cwd=<path>  Working directory relative to the repository root
-  --db=<name>   Point the variables that name this checkout's Postgres database at database <name>
-  --slot        Hold one of the machine-wide check slots (BUNCARGO_CHECK_SLOTS, default 3) while it runs
-  --help, -h    Show this help message
-  --            Required: the command; following arguments pass unchanged
+  --app=<name>      Use this app's environment and default working directory
+  --cwd=<path>      Working directory relative to the repository root
+  --db=<name>       Point the variables that name this checkout's Postgres database at database <name>
+  --profile=<name>  Apply a profile's env and secrets overrides (default: the active run's profile, or default)
+  --slot            Hold one of the machine-wide check slots (BUNCARGO_CHECK_SLOTS, default 3) while it runs
+  --help, -h        Show this help message
+  --                Required: the command; following arguments pass unchanged
 
 Exit codes:
   0  success
@@ -239,9 +242,10 @@ Options:
   --up-only                      Start containers only, then exit (no migrations, seed, or dev servers)
   --expose[=<targets>]           Expose configured targets via public quick tunnels
   --apps=<apps>                  Run selected apps plus their requiredApps (as <app>...)
-  --profile=<name>               Run a profile's apps (default: the profile named default)
+  --profile=<name>               Apply a profile's apps, env and secrets overrides (default: the profile named default)
   --attach=<app>                 Give one app the TTY (overrides interactive: true)
-  --no-watch                     Do not restart apps when their watched files change
+  --no-watch                     Do not restart apps or re-run watched tasks when their files change
+  --with-links                   Start missing linked repos in the background (required links before startup, optional links after)
   --detach                       Run in the background; return once the apps are up (logs: buncargo logs)
   --keep                         With --detach: never stop for idling (default: stops after 2h with no request or buncargo command)
   --json                         With --detach: print the outcome as one JSON document (DetachedResultJson)
@@ -273,7 +277,7 @@ Examples:
   bun dev --seed              Run migrations and seed the database
   bun dev --down              Stop all containers
   bun dev --reset             Stop containers and remove all data
-  bun dev --profile=full      Run the apps of profiles.full
+  bun dev --profile=full      Apply profiles.full (apps, env and secrets)
   bun dev --detach --json     Start in the background; print the outcome as JSON
   bun dev --expose            Expose all targets with expose: true
   bun dev --expose=api,web    Expose specific targets
@@ -281,6 +285,7 @@ Examples:
   bun dev --runtime=apple     Run services on Apple container instead of Docker
   bun dev --no-tui            Prefixed lines instead of the terminal UI
   bun dev --takeover          Move apps running in another terminal into this one
+  bun dev --with-links        Start missing linked repos in the background
 
 
 --- stderr
@@ -416,6 +421,93 @@ Run "bunx buncargo files <command> --help" for a command's options.
 "
 `;
 
+exports[`buncargo CLI output links --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo links [options] | links pin|unpin
+
+Inspect cross-repo links, or pin a link to a specific checkout/worktree
+
+Commands:
+  pin    Pin a configured link to a specific checkout or worktree path
+  unpin  Clear pinned checkout path(s) and return to auto-discovery
+
+Without a command: Show cross-repo links, their live targets, URLs, and exported env
+
+Options:
+  --json            One JSON document on stdout
+  --profile=<name>  Apply a profile's link overrides (default: the profile named default)
+  --check           Exit 1 if any required link is unavailable or any link is ambiguous
+  --help, -h        Show this help message
+
+Exit codes:
+  0  success
+  1  bad arguments, or (--check) a required link is unavailable or ambiguous
+
+JSON output: LinksJson (--json)
+
+Run "bunx buncargo links <command> --help" for a command's options.
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output links pin --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo links pin <name> <path>
+
+Pin a configured link to a specific checkout or worktree path
+
+Arguments:
+  <name>  Link alias from dev.config.ts (links.<name>)
+  <path>  Path to the linked checkout or Git worktree
+
+Options:
+  --help, -h  Show this help message
+
+Exit codes:
+  0  success
+  1  failed, or bad arguments
+
+Examples:
+  bunx buncargo links pin backend ../backend                         Pin the backend link to a sibling checkout
+  bunx buncargo links pin backend ~/.t3/worktrees/backend/feature-x  Pair this worktree with a specific backend worktree
+
+
+--- stderr
+"
+`;
+
+exports[`buncargo CLI output links unpin --help 1`] = `
+"exit 0
+--- stdout
+
+Usage: buncargo links unpin <name>...
+
+Clear pinned checkout path(s) and return to auto-discovery
+
+Arguments:
+  <name>  Link alias(es) to unpin
+
+Options:
+  --help, -h  Show this help message
+
+Exit codes:
+  0  success
+  1  failed, or bad arguments
+
+Examples:
+  bunx buncargo links unpin backend  Clear the pinned path for backend
+
+
+--- stderr
+"
+`;
+
 exports[`buncargo CLI output secrets --help 1`] = `
 "exit 0
 --- stdout
@@ -451,6 +543,7 @@ Options:
   --slot                         Hold one of the machine's check slots from before the services start until teardown
   --services=<names>             Start only these services (default: every configured one)
   --apps=<names>                 Start these apps (and their requiredApps) after preparation and wait until they are healthy
+  --profile=<name>               Apply a profile's env and secrets overrides (default: the profile named default)
   --build                        With --apps: run their buildCommand, then their prodCommand instead of devCommand
   --runtime=<docker|apple|auto>  Container runtime backend (default: docker)
   --help, -h                     Show this help message
@@ -971,9 +1064,9 @@ USAGE:
 
 COMMANDS:
   setup [options]                           Run the fix of every failing check
-  run [<task>] [-- <args>]                  Run a task from dev.config.ts (lists them without a name)
+  run [<task>] [options] [-- <args>]        Run a task from dev.config.ts (lists them without a name)
   wait --app=<name> [options]               Block until an app of this checkout's run is healthy
-  generate                                  Render generatedFiles without starting anything
+  generate [options]                        Render generatedFiles without starting anything
   build [<app>...] [options]                Run apps' buildCommand one at a time
   exec [options] -- <command> [args...]     Run a command with the checkout environment
   slot -- <command> [args...]               Run a heavy command in a machine-wide check slot, environment untouched
@@ -984,6 +1077,7 @@ COMMANDS:
   predeploy                                 Before a deploy: migrate, then seed when predeploy.seed says so
   prisma <args>                             Run Prisma CLI with correct DATABASE_URL
   files <command>                           Gitignored files every checkout needs (.env.local), per machine (status | save | pull | merge | diff | export | import)
+  links [options] | links pin|unpin         Inspect cross-repo links, or pin a link to a specific checkout/worktree (pin | unpin)
   secrets <command>                         List Infisical keys and where each comes from (never values) (ls | check)
   ci [options] [-- <args>]                  Start services in CI, prepare them, run a command, tear down
   env [options] | env set|unset             Print environment info as JSON, or override a variable (set | unset)
@@ -1048,9 +1142,9 @@ USAGE:
 
 COMMANDS:
   setup [options]                           Run the fix of every failing check
-  run [<task>] [-- <args>]                  Run a task from dev.config.ts (lists them without a name)
+  run [<task>] [options] [-- <args>]        Run a task from dev.config.ts (lists them without a name)
   wait --app=<name> [options]               Block until an app of this checkout's run is healthy
-  generate                                  Render generatedFiles without starting anything
+  generate [options]                        Render generatedFiles without starting anything
   build [<app>...] [options]                Run apps' buildCommand one at a time
   exec [options] -- <command> [args...]     Run a command with the checkout environment
   slot -- <command> [args...]               Run a heavy command in a machine-wide check slot, environment untouched
@@ -1061,6 +1155,7 @@ COMMANDS:
   predeploy                                 Before a deploy: migrate, then seed when predeploy.seed says so
   prisma <args>                             Run Prisma CLI with correct DATABASE_URL
   files <command>                           Gitignored files every checkout needs (.env.local), per machine (status | save | pull | merge | diff | export | import)
+  links [options] | links pin|unpin         Inspect cross-repo links, or pin a link to a specific checkout/worktree (pin | unpin)
   secrets <command>                         List Infisical keys and where each comes from (never values) (ls | check)
   ci [options] [-- <args>]                  Start services in CI, prepare them, run a command, tear down
   env [options] | env set|unset             Print environment info as JSON, or override a variable (set | unset)
@@ -1125,9 +1220,9 @@ USAGE:
 
 COMMANDS:
   setup [options]                           Run the fix of every failing check
-  run [<task>] [-- <args>]                  Run a task from dev.config.ts (lists them without a name)
+  run [<task>] [options] [-- <args>]        Run a task from dev.config.ts (lists them without a name)
   wait --app=<name> [options]               Block until an app of this checkout's run is healthy
-  generate                                  Render generatedFiles without starting anything
+  generate [options]                        Render generatedFiles without starting anything
   build [<app>...] [options]                Run apps' buildCommand one at a time
   exec [options] -- <command> [args...]     Run a command with the checkout environment
   slot -- <command> [args...]               Run a heavy command in a machine-wide check slot, environment untouched
@@ -1138,6 +1233,7 @@ COMMANDS:
   predeploy                                 Before a deploy: migrate, then seed when predeploy.seed says so
   prisma <args>                             Run Prisma CLI with correct DATABASE_URL
   files <command>                           Gitignored files every checkout needs (.env.local), per machine (status | save | pull | merge | diff | export | import)
+  links [options] | links pin|unpin         Inspect cross-repo links, or pin a link to a specific checkout/worktree (pin | unpin)
   secrets <command>                         List Infisical keys and where each comes from (never values) (ls | check)
   ci [options] [-- <args>]                  Start services in CI, prepare them, run a command, tear down
   env [options] | env set|unset             Print environment info as JSON, or override a variable (set | unset)
@@ -1202,9 +1298,9 @@ USAGE:
 
 COMMANDS:
   setup [options]                           Run the fix of every failing check
-  run [<task>] [-- <args>]                  Run a task from dev.config.ts (lists them without a name)
+  run [<task>] [options] [-- <args>]        Run a task from dev.config.ts (lists them without a name)
   wait --app=<name> [options]               Block until an app of this checkout's run is healthy
-  generate                                  Render generatedFiles without starting anything
+  generate [options]                        Render generatedFiles without starting anything
   build [<app>...] [options]                Run apps' buildCommand one at a time
   exec [options] -- <command> [args...]     Run a command with the checkout environment
   slot -- <command> [args...]               Run a heavy command in a machine-wide check slot, environment untouched
@@ -1215,6 +1311,7 @@ COMMANDS:
   predeploy                                 Before a deploy: migrate, then seed when predeploy.seed says so
   prisma <args>                             Run Prisma CLI with correct DATABASE_URL
   files <command>                           Gitignored files every checkout needs (.env.local), per machine (status | save | pull | merge | diff | export | import)
+  links [options] | links pin|unpin         Inspect cross-repo links, or pin a link to a specific checkout/worktree (pin | unpin)
   secrets <command>                         List Infisical keys and where each comes from (never values) (ls | check)
   ci [options] [-- <args>]                  Start services in CI, prepare them, run a command, tear down
   env [options] | env set|unset             Print environment info as JSON, or override a variable (set | unset)
@@ -1346,6 +1443,7 @@ JSON documents, by the type that describes each:
   dev             DetachedResultJson (--detach --json)
   check           CheckPlanJson (--list --json)
   files status    FilesStatusJson (--json)
+  links           LinksJson (--json)
   secrets check   SecretsCheckJson (--json)
   env             EnvJson
   runs            RunsJson (--json)
@@ -1414,9 +1512,9 @@ USAGE:
 
 COMMANDS:
   setup [options]                           Run the fix of every failing check
-  run [<task>] [-- <args>]                  Run a task from dev.config.ts (lists them without a name)
+  run [<task>] [options] [-- <args>]        Run a task from dev.config.ts (lists them without a name)
   wait --app=<name> [options]               Block until an app of this checkout's run is healthy
-  generate                                  Render generatedFiles without starting anything
+  generate [options]                        Render generatedFiles without starting anything
   build [<app>...] [options]                Run apps' buildCommand one at a time
   exec [options] -- <command> [args...]     Run a command with the checkout environment
   slot -- <command> [args...]               Run a heavy command in a machine-wide check slot, environment untouched
@@ -1427,6 +1525,7 @@ COMMANDS:
   predeploy                                 Before a deploy: migrate, then seed when predeploy.seed says so
   prisma <args>                             Run Prisma CLI with correct DATABASE_URL
   files <command>                           Gitignored files every checkout needs (.env.local), per machine (status | save | pull | merge | diff | export | import)
+  links [options] | links pin|unpin         Inspect cross-repo links, or pin a link to a specific checkout/worktree (pin | unpin)
   secrets <command>                         List Infisical keys and where each comes from (never values) (ls | check)
   ci [options] [-- <args>]                  Start services in CI, prepare them, run a command, tear down
   env [options] | env set|unset             Print environment info as JSON, or override a variable (set | unset)

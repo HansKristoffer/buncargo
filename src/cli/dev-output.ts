@@ -33,7 +33,7 @@ export interface DevOutputSource {
 export async function openDevOutput(
 	env: DevOutputSource,
 	apps: Record<string, ResolvedApp>,
-	options: { tui: "auto" | "on" | "off" },
+	options: { tui: "auto" | "on" | "off"; tasks?: readonly string[] },
 ): Promise<{
 	output: RunOutput;
 	start(): void;
@@ -47,13 +47,15 @@ export async function openDevOutput(
 	}
 
 	const names = Object.keys(apps);
+	const taskNames = options.tasks ?? [];
+	const panes = [...names, ...taskNames];
 	const terminal = isInteractive();
 	if (options.tui === "on" && !terminal) {
 		log.warn("--tui needs a terminal; printing prefixed lines instead.");
 	}
 
 	const actions = appActions(apps);
-	const useTui = options.tui !== "off" && terminal && names.length > 0;
+	const useTui = options.tui !== "off" && terminal && panes.length > 0;
 
 	// In the TUI every app gets a terminal of its own, sized to its pane.
 	// Load the TUI modules only when a terminal actually draws it, so detached,
@@ -64,7 +66,8 @@ export async function openDevOutput(
 		const { RunTui: RunTuiClass } = await import("./tui/run-tui");
 		tui = new RunTuiClass({
 			output,
-			apps: names,
+			apps: panes,
+			taskNames: new Set(taskNames),
 			urlFor: (app) => environmentOpenUrl(env, app),
 			actions,
 			logPath: (app) => (app ? logs?.file(app) : logs?.dir),
@@ -74,7 +77,7 @@ export async function openDevOutput(
 
 	const stopPrinting = tui
 		? undefined
-		: printStream(output, { width: prefixWidth(names) });
+		: printStream(output, { width: prefixWidth(panes) });
 
 	// Stream mode has no footer: say once where each declared action leads.
 	const hinted = new Set<TuiAction>();

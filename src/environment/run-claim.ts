@@ -5,7 +5,7 @@ import type { StartDevServersOptions } from "../core/process/dev-servers";
 import {
 	appRowEvents,
 	flushRunPatches,
-	markServices,
+	patchCurrentRun,
 	publishCurrentRun,
 	type RunSource,
 } from "../core/run-publish";
@@ -102,6 +102,8 @@ export interface DevRunClaimApi {
 	 * withdraw an entry that only listed them.
 	 */
 	releaseApps(): Promise<void>;
+	/** Wait for any queued status/export patches on this session to reach disk. */
+	flushPatches(): Promise<void>;
 }
 
 type ClaimState = { kind: "unclaimed" } | { kind: "claimed"; at: number };
@@ -114,6 +116,8 @@ interface AppClaimOptions {
 	reused?: Record<string, ResolvedApp>;
 	/** The app that owns the terminal, when one does. */
 	attached?: string;
+	/** Whether the run builds/runs apps in production mode. */
+	production?: boolean;
 	signal?: AbortSignal;
 }
 
@@ -123,6 +127,8 @@ export interface ClaimOptions {
 	idleTimeoutMs?: number | false;
 	/** The hold when neither this nor `options.autoShutdown` says one. */
 	defaultIdleTimeoutMs?: number | false;
+	/** Whether the run builds/runs in production mode. */
+	production?: boolean;
 }
 
 /**
@@ -156,15 +162,26 @@ export type RunClaimContext = Pick<
 	| "root"
 	| "worktree"
 	| "services"
+	| "ports"
+	| "urls"
+	| "loopbackUrls"
 	| "selectedServiceKeys"
 	| "hasSelectedServices"
 	| "runtimeBinary"
 > & {
+	readonly projectSuffix?: string;
+	readonly profile?: string;
 	readonly runtime: Pick<DevEnvContext["runtime"], "name">;
 	readonly config: Pick<
 		DevEnvContext["config"],
 		"projectPrefix" | "options" | "tasks" | "services" | "integrations"
 	>;
+	/** Non-secret shared env vars (`exportEnv`, integrations) published on the run entry. */
+	readonly exportedEnv?: (selection?: {
+		apps?: readonly string[];
+		services?: readonly string[];
+		production?: boolean;
+	}) => Record<string, string>;
 };
 
 export function createRunClaimApi(
@@ -210,6 +227,21 @@ export function createRunClaimApi(
 	// after a `stop()`) keeps it: resolving that afresh dropped a hold the
 	// first claim asked for, which kept the containers forever.
 	let lastHold: RunHold | undefined;
+	let lastProduction = false;
+
+	/** Best-effort export read: a throwing `config.env` never aborts a claim or patch. */
+	function safeExports(selection: {
+		apps: readonly string[];
+		services: readonly string[];
+		production: boolean;
+	}): Record<string, string> | undefined {
+		try {
+			const values = ctx.exportedEnv?.(selection) ?? {};
+			return Object.keys(values).length > 0 ? values : undefined;
+		} catch {
+			return undefined;
+		}
+	}
 
 	/**
 	 * The hold a claim asks for: the one named, or, when none is (a library
@@ -228,6 +260,17 @@ export function createRunClaimApi(
 			: { kind: "timed", ms, inherited: false };
 	}
 
+	function serviceEndpointFields(name: string) {
+		const port = (ctx.ports as Record<string, number | undefined>)[name];
+		if (port === undefined) return {};
+		const loopbackUrl =
+			(ctx.loopbackUrls as Record<string, string | undefined>)[name] ??
+			`http://localhost:${port}`;
+		const url =
+			(ctx.urls as Record<string, string | undefined>)[name] ?? loopbackUrl;
+		return { port, url, loopbackUrl };
+	}
+
 	function serviceEntries(): RunServiceEntry[] {
 		return ctx.selectedServiceKeys.map((name) => {
 			const service = ctx.services[name] as ResolvedService | undefined;
@@ -235,6 +278,7 @@ export function createRunClaimApi(
 			return {
 				name,
 				kind: service?.kind === "job" ? ("job" as const) : undefined,
+				...serviceEndpointFields(name),
 				status: "starting" as const,
 				// A stack's own CLI names its containers; `stop` cannot reach one.
 				...(service?.kind === "external"
@@ -280,7 +324,12 @@ export function createRunClaimApi(
 				// can read `ready` again (the registry never lets `ready` undo
 				// `stopped` on its own).
 				if (reportedReady.size > 0) {
-					void markServices(session, [...reportedReady], "starting");
+					void patchCurrentRun(session, {
+						services: [...reportedReady].map((name) => ({
+							name,
+							status: "starting" as const,
+						})),
+					});
 				}
 				reportedReady.clear();
 				return;
@@ -290,8 +339,14 @@ export function createRunClaimApi(
 
 			const hold = await claimHold(options);
 			lastHold = hold;
+			lastProduction = options.production ?? false;
 
 			const stacks = stackEntries();
+			const exports = safeExports({
+				apps: Object.keys(listedApps),
+				services: ctx.selectedServiceKeys,
+				production: lastProduction,
+			});
 			const at = Date.now();
 			await publishRun({
 				...(await buildRunEntryAsync(
@@ -299,6 +354,8 @@ export function createRunClaimApi(
 						sessionId,
 						projectPrefix: ctx.config.projectPrefix,
 						projectName: ctx.projectName,
+						suffix: ctx.projectSuffix,
+						profile: ctx.profile,
 						root: ctx.root,
 						isWorktree: ctx.worktree,
 					},
@@ -306,6 +363,7 @@ export function createRunClaimApi(
 				)),
 				hold,
 				services: serviceEntries(),
+				...(exports ? { exports } : {}),
 				...(stacks.length > 0 ? { stacks } : {}),
 			});
 			// Only once the entry is on disk: a claim that failed to publish
@@ -338,9 +396,22 @@ export function createRunClaimApi(
 		},
 
 		servicesReady(serviceKeys) {
+			if (serviceKeys.length === 0) return;
 			for (const key of serviceKeys) reportedReady.add(key);
 
-			void markServices(session, serviceKeys, "ready");
+			const exports = safeExports({
+				apps: Object.keys(listedApps),
+				services: ctx.selectedServiceKeys,
+				production: lastProduction,
+			});
+			void patchCurrentRun(session, {
+				services: serviceKeys.map((name) => ({
+					name,
+					...serviceEndpointFields(name),
+					status: "ready" as const,
+				})),
+				...(exports ? { exports } : {}),
+			});
 		},
 
 		ensureWatchdog() {
@@ -375,6 +446,7 @@ export function createRunClaimApi(
 				Object.keys(listed).length === 0 && options.serviceNames.length === 0;
 			if (describesNothing) return claimedApps;
 
+			if (options.production !== undefined) lastProduction = options.production;
 			// Over the claim, if there is one: its services, as `dev` lists them.
 			// The describe keeps each listed row's process and state.
 			await flushRunPatches(session);
@@ -384,6 +456,7 @@ export function createRunClaimApi(
 				serviceNames: options.serviceNames,
 				attached: options.attached,
 				tasks: ctx.config.tasks,
+				production: lastProduction,
 			});
 			return claimedApps;
 		},
@@ -415,6 +488,10 @@ export function createRunClaimApi(
 				leases ? releaseLeases(sessionId) : undefined,
 				listed ? withdrawAppOnlyEntry() : undefined,
 			]);
+		},
+
+		flushPatches() {
+			return flushRunPatches(session);
 		},
 	};
 }

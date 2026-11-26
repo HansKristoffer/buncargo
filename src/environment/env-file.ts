@@ -17,7 +17,7 @@ import { isAbsolute, resolve } from "node:path";
 import { buildSharedEnvValues } from "../core/env";
 import type { PortMap, UrlMap } from "../core/ports";
 import { writeTextFile } from "../core/registry-file";
-import type { EnvFileOptions, ResolvedService } from "../types";
+import type { EnvFileOption, EnvFileOptions, ResolvedService } from "../types";
 
 /** `.env` line: optional `export`, a key, `=`, then the value. */
 const ENV_LINE =
@@ -121,14 +121,24 @@ export function buildEnvFileUpdates(input: {
 	return updates;
 }
 
-/** Normalize `boolean | EnvFileOptions` to the options, or undefined when off. */
-function resolveEnvFileOptions(
-	envFile: boolean | EnvFileOptions | undefined,
-): (Required<Pick<EnvFileOptions, "path">> & EnvFileOptions) | undefined {
-	if (!envFile) return undefined;
+type NormalizedEnvFileOptions = Required<Pick<EnvFileOptions, "path">> &
+	EnvFileOptions;
 
-	const options = envFile === true ? {} : envFile;
-	return { ...options, path: options.path ?? ".env" };
+function normalizeEnvFileEntry(
+	entry: string | EnvFileOptions,
+): NormalizedEnvFileOptions {
+	if (typeof entry === "string") return { path: entry };
+	return { ...entry, path: entry.path ?? ".env" };
+}
+
+/** Normalize {@link EnvFileOption} into the ordered list of dotenv targets to sync. */
+function resolveEnvFileList(
+	envFile: EnvFileOption | undefined,
+): NormalizedEnvFileOptions[] {
+	if (!envFile) return [];
+	if (envFile === true) return [{ path: ".env" }];
+	if (Array.isArray(envFile)) return envFile.map(normalizeEnvFileEntry);
+	return [normalizeEnvFileEntry(envFile as string | EnvFileOptions)];
 }
 
 function isMissing(error: unknown): boolean {
@@ -146,25 +156,16 @@ export interface EnvFileSyncResult {
 	absent?: boolean;
 }
 
-/**
- * Sync one dotenv in place.
- *
- * Writes through a temp file and a rename so a concurrent reader, such as a
- * test runner loading `.env` while this runs, never sees a truncated file. The
- * file keeps its mode. Only a missing file is absent; any other read error
- * throws, rather than passing for a dotenv the repo does not have.
- */
-export async function syncEnvFile(input: {
-	root: string;
-	envFile: boolean | EnvFileOptions | undefined;
-	projectName: string;
-	services: Record<string, ResolvedService>;
-	ports: PortMap;
-	loopbackUrls: UrlMap;
-}): Promise<EnvFileSyncResult | undefined> {
-	const options = resolveEnvFileOptions(input.envFile);
-	if (!options) return undefined;
-
+async function syncOneEnvFile(
+	options: NormalizedEnvFileOptions,
+	input: {
+		root: string;
+		projectName: string;
+		services: Record<string, ResolvedService>;
+		ports: PortMap;
+		loopbackUrls: UrlMap;
+	},
+): Promise<EnvFileSyncResult> {
 	const path = isAbsolute(options.path)
 		? options.path
 		: resolve(input.root, options.path);
@@ -211,4 +212,28 @@ export async function syncEnvFile(input: {
 
 	await writeTextFile(path, next);
 	return { path, changed, created };
+}
+
+/**
+ * Sync every configured dotenv in place.
+ *
+ * Writes through a temp file and a rename so a concurrent reader, such as a
+ * test runner loading `.env` while this runs, never sees a truncated file. The
+ * file keeps its mode. Only a missing file is absent; any other read error
+ * throws, rather than passing for a dotenv the repo does not have.
+ */
+export async function syncEnvFiles(input: {
+	root: string;
+	envFile: EnvFileOption | undefined;
+	projectName: string;
+	services: Record<string, ResolvedService>;
+	ports: PortMap;
+	loopbackUrls: UrlMap;
+}): Promise<EnvFileSyncResult[]> {
+	const entries = resolveEnvFileList(input.envFile);
+	const results: EnvFileSyncResult[] = [];
+	for (const entry of entries) {
+		results.push(await syncOneEnvFile(entry, input));
+	}
+	return results;
 }

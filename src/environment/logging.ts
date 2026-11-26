@@ -1,3 +1,4 @@
+import { typedSwitch } from "hanzio";
 import pc from "picocolors";
 import { appEntryPath, withEntryPath } from "../core/app-url";
 import { describeService } from "../core/service-identity";
@@ -8,7 +9,7 @@ import {
 	formatSection,
 	prefixWidth,
 } from "../core/style";
-import type { ResolvedService } from "../types";
+import type { LinkInspection, ResolvedService } from "../types";
 
 interface BannerTunnel {
 	kind: "service" | "app";
@@ -37,6 +38,8 @@ export interface EnvironmentBannerInput {
 	localIp: string;
 	portOffset: number;
 	tunnels?: BannerTunnel[];
+	/** Cross-repo links declared in config, shown when non-empty. */
+	links?: readonly LinkInspection[];
 	/** A dim hint after an app's row, from its integrations (`bunx buncargo expo sim`). */
 	hintFor?: (app: string) => string | undefined;
 }
@@ -87,10 +90,12 @@ export function formatEnvironmentBanner(
 		localIp,
 		portOffset,
 		tunnels,
+		links = [],
 	} = input;
 	const serviceNames = Object.keys(services);
 	const appNames = Object.keys(apps);
-	const width = prefixWidth([...serviceNames, ...appNames]);
+	const linkNames = links.map((link) => link.name);
+	const width = prefixWidth([...serviceNames, ...appNames, ...linkNames]);
 	const lines: string[] = [
 		"",
 		formatBannerHeader({
@@ -184,8 +189,58 @@ export function formatEnvironmentBanner(
 		}
 	}
 
+	if (links.length > 0) {
+		lines.push("", formatSection("Links"));
+		for (const item of links) {
+			lines.push(formatBannerLinkLine(item, width));
+		}
+	}
+
 	lines.push("");
 	return lines;
+}
+
+function formatBannerLinkLine(item: LinkInspection, width: number): string {
+	const name = paddedName(item.name, width);
+	return typedSwitch(item.status, {
+		linked: () => formatConnectedLinkLine(item, name),
+		"missing-endpoints": () => formatConnectedLinkLine(item, name),
+		disabled: () =>
+			`  ${pc.dim("○")}  ${name}  ${pc.dim("disabled by profile")}`,
+		ambiguous: () => {
+			const hint = `${item.candidates.length} running, run \`buncargo links pin ${item.name} <path>\``;
+			return `  ${pc.yellow("!")}  ${name}  ${pc.yellow(hint)}`;
+		},
+		"not-running": () => {
+			if (item.pinProjectMismatch && item.pinnedRoot) {
+				const mismatch = `pinned to "${item.pinProjectMismatch}", expected "${item.project}"`;
+				return `  ${pc.yellow("!")}  ${name}  ${pc.yellow(mismatch)}`;
+			}
+			if (item.pinMissing && item.pinnedRoot) {
+				const missingPin = `pinned path missing (${item.pinnedRoot})`;
+				return `  ${pc.yellow("!")}  ${name}  ${pc.yellow(missingPin)}`;
+			}
+			const suffix = item.required
+				? pc.red("not running (required)")
+				: pc.dim("not running (optional)");
+			return `  ${pc.dim("○")}  ${name}  ${suffix}`;
+		},
+	});
+}
+
+function formatConnectedLinkLine(item: LinkInspection, name: string): string {
+	const link = item.link;
+	if (!link) return `  ${pc.dim("○")}  ${name}  ${pc.dim(item.project)}`;
+	const tag = item.source === "pinned" ? "pinned" : "auto";
+	const detail = link.branch
+		? `${link.projectName} (${link.branch}, ${tag})`
+		: `${link.projectName} (${tag})`;
+	const missingList = [...item.missingApps, ...item.missingServices].join(", ");
+	const missingNote =
+		item.status === "missing-endpoints"
+			? pc.yellow(`  ·  missing: ${missingList}`)
+			: "";
+	return `  ${pc.green("➜")}  ${name}  ${pc.dim(detail)}  ${pc.dim(link.root)}${missingNote}`;
 }
 
 export function logEnvironmentInfo(input: EnvironmentBannerInput): void {

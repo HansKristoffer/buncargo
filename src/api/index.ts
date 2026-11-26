@@ -9,6 +9,7 @@ export type {
 	EnvJson,
 	FilesStatusJson,
 	GcJson,
+	LinksJson,
 	RunsJson,
 	SecretsCheckJson,
 	StatusJson,
@@ -54,6 +55,12 @@ export {
 	killPortOwner,
 } from "../core/process";
 export { isCI } from "../core/runtime-flags";
+export {
+	type LookupRunningOptions,
+	lookupRunningApp,
+	lookupRunningService,
+	type RunningEndpoint,
+} from "../core/sibling-lookup";
 export {
 	type PublicExposeTarget,
 	type PublicTunnel,

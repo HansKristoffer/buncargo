@@ -93,6 +93,8 @@ export interface DetachedReport {
 	failures: RunFailure[];
 	/** Why named URLs fell back to `localhost:port`, which is otherwise silent. */
 	hostsWarnings: string[];
+	/** Warnings about optional cross-repo links (ambiguity, stale or mismatched pins). */
+	linkWarnings?: string[];
 	/**
 	 * Whether the run's selection has apps to spawn (see {@link settledRun}),
 	 * recorded once it has planned: only the run loads the config.
@@ -178,6 +180,7 @@ function validateReport(value: unknown): DetachedReport | undefined {
 		!Array.isArray(value.setupHints) ||
 		!Array.isArray(value.failures) ||
 		!Array.isArray(value.hostsWarnings) ||
+		!(value.linkWarnings === undefined || Array.isArray(value.linkWarnings)) ||
 		!(value.expectApps === undefined || isBoolean(value.expectApps))
 	) {
 		return undefined;
@@ -188,6 +191,9 @@ function validateReport(value: unknown): DetachedReport | undefined {
 		setupHints: value.setupHints.filter(isString),
 		failures: value.failures.filter(isRunFailure),
 		hostsWarnings: value.hostsWarnings.filter(isString),
+		...(value.linkWarnings !== undefined
+			? { linkWarnings: value.linkWarnings.filter(isString) }
+			: {}),
 		...(value.expectApps !== undefined && { expectApps: value.expectApps }),
 	};
 }
@@ -432,6 +438,7 @@ async function startAndWait(input: {
 				...base,
 				outcome: exited === 0 ? "finished" : "failed",
 				hostsWarnings: report?.hostsWarnings ?? [],
+				linkWarnings: report?.linkWarnings ?? [],
 				failures: exited === 0 || !failure ? [] : [failure],
 				exited,
 				output: tail(logPath),
@@ -473,6 +480,7 @@ async function startAndWait(input: {
 				idleLimitMs: run.idleLimitMs ?? null,
 				outcome: down.length === 0 ? "up" : "failed",
 				hostsWarnings: report?.hostsWarnings ?? [],
+				linkWarnings: report?.linkWarnings ?? [],
 				failures: down.map(
 					(app) =>
 						report?.failures.find((failure) => failure.step === app.name) ??
@@ -492,6 +500,7 @@ async function startAndWait(input: {
 				apps,
 				outcome: "timeout",
 				hostsWarnings: report?.hostsWarnings ?? [],
+				linkWarnings: report?.linkWarnings ?? [],
 				failures: [],
 			};
 		}
@@ -547,6 +556,7 @@ function printOutcome(outcome: DetachedOutcome, timeoutMs: number): void {
 	}
 	log.line(`  pid ${pid} · output: ${logPath}`);
 	for (const warning of outcome.hostsWarnings) log.warn(warning);
+	for (const warning of outcome.linkWarnings) log.warn(warning);
 
 	if (outcome.outcome === "up") {
 		const idleLimit = outcome.idleLimitMs;

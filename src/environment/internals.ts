@@ -1,10 +1,14 @@
 import type { PortOwner } from "../core/process";
 import type { CapturedValue } from "../core/process/output-capture";
 import type {
+	AnyDevEnvironment,
 	ComposeDocument,
+	LinkInspection,
 	NamedHostsActivation,
 	PortOffsetProvenance,
 	PreflightStep,
+	ResolvedEgressGuardConfig,
+	ResolvedLinkConfig,
 	SeedConfig,
 	SetupCheck,
 	TaskConfig,
@@ -44,16 +48,36 @@ export interface EnvironmentInternals extends AppPipeline {
 	/** Seed command from config, when present. */
 	readonly seed?: Pick<
 		SeedConfig<AnyServices, AnyApps>,
-		"command" | "cwd" | "beforeApps" | "requiredServices"
+		"command" | "cwd" | "beforeApps" | "requiredServices" | "afterApps"
 	>;
+	/** Active profile name when explicitly selected (undefined for default/none). */
+	readonly activeProfile?: string;
+	/** Rebuild this environment with a named profile's `env`/`secrets` applied. */
+	withProfile(profile: string): AnyDevEnvironment;
 	/** `setupChecks` from config and its integrations, run by `buncargo dev` before it starts anything. */
 	readonly setupChecks?: readonly SetupCheck[];
 	/** `preflight` from config and its integrations, run by `buncargo dev` with the terminal. */
 	readonly preflight?: readonly PreflightStep[];
 	/** `tasks` from config, for `buncargo run`. */
 	readonly tasks?: Readonly<Record<string, TaskConfig<string, string>>>;
+	/** Effective `links` config after active profile overrides, for `buncargo links`, `status`, `doctor`. */
+	readonly linksConfig?: Readonly<Record<string, ResolvedLinkConfig>>;
+	/** Effective `egressGuard` config after active profile overrides. */
+	readonly egressGuard?: ResolvedEgressGuardConfig;
+	/** Set when the active profile restricts the config to a subset of apps. */
+	readonly activeApps?: ReadonlySet<string>;
+	/** Sync inspection of every configured link. */
+	inspectLinks(): readonly LinkInspection[];
+	/** Non-secret shared env vars (`exportEnv`, integrations) published to linked checkouts. */
+	exportedEnv(selection?: {
+		apps?: readonly string[];
+		services?: readonly string[];
+		production?: boolean;
+	}): Record<string, string>;
 	/** Switch `urls` between localhost:port and named HTTPS hostnames. */
 	setNamedHostsActive(active: boolean, extras?: NamedHostsActivation): void;
+	/** Adopt live ports from an active run of this checkout (for `run` / `exec` / `env`). */
+	adoptLivePorts(ports: Readonly<Record<string, number>>): void;
 	/** Write the generated compose file when it is missing; returns the path passed to `-f`. */
 	ensureComposeFile(): string;
 	/** The service model the compose file is rendered from. */

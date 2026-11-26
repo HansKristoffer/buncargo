@@ -1,10 +1,11 @@
-import type { AppConfig, SecretsScopeConfig } from "./app";
+import type { AppConfig, SecretsScopeInput } from "./app";
 import type {
 	ComputedLoopbackUrls,
 	ComputedPorts,
 	ComputedPublicUrls,
 	ComputedUrls,
 } from "./computed";
+import type { LinkConfig, ResolvedLinks } from "./links";
 import type { ServiceConfig } from "./service";
 
 /**
@@ -14,10 +15,11 @@ export interface ExecOptions {
 	/** Select an app overlay and its default working directory. */
 	app?: string;
 	/**
-	 * Infisical scope to inject, beneath everything else. Default: the app's
-	 * `secrets`, else the config-level `secrets`. `false` injects none.
+	 * Infisical scope (or layered scopes) to inject, beneath everything else.
+	 * Default: the app's `secrets`, else the config-level `secrets`. `false`
+	 * injects none.
 	 */
-	secrets?: SecretsScopeConfig | false;
+	secrets?: SecretsScopeInput | false;
 	/** Cancel the command and terminate its owned process group. */
 	signal?: AbortSignal;
 	/** Maximum execution time. Startup commands default to ten minutes; standalone exec has no default. */
@@ -53,6 +55,7 @@ export interface ExecResult {
 export interface HookContext<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TLinks extends Record<string, LinkConfig> = Record<string, LinkConfig>,
 > {
 	/** Selected names for this operation; requiredApps/Compose dependencies are expanded. */
 	selectedApps?: readonly Extract<keyof TApps, string>[];
@@ -84,6 +87,12 @@ export interface HookContext<
 	localIp: string;
 	/** Values apps printed, by capture name (see `AppConfig.captures`). Empty until captured. */
 	captured: Readonly<Record<string, string>>;
+	/** Live state of linked repos declared under `links`, by alias. */
+	links: ResolvedLinks<TLinks>;
+	/** Set when the active profile restricts the run to a subset of apps. */
+	activeApps?: ReadonlySet<string>;
+	/** Resolved config-level Infisical secrets (after active profile overrides). */
+	secrets?: SecretsScopeInput | false;
 }
 
 /** A value an app printed that matched one of its `captures`. */
@@ -101,20 +110,29 @@ export interface CaptureEvent {
 export interface DevHooks<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TLinks extends Record<string, LinkConfig> = Record<string, LinkConfig>,
 > {
 	/** After database readiness and before automatic/custom migrations. Skipped in containers-only mode. */
-	beforeMigrations?: (ctx: HookContext<TServices, TApps>) => Promise<void>;
+	beforeMigrations?: (
+		ctx: HookContext<TServices, TApps, TLinks>,
+	) => Promise<void>;
 	/** After every container is healthy and migrations have run, before the seed and the apps. */
-	afterContainersReady?: (ctx: HookContext<TServices, TApps>) => Promise<void>;
+	afterContainersReady?: (
+		ctx: HookContext<TServices, TApps, TLinks>,
+	) => Promise<void>;
 	/** Called before starting dev servers */
-	beforeServers?: (ctx: HookContext<TServices, TApps>) => Promise<void>;
+	beforeServers?: (ctx: HookContext<TServices, TApps, TLinks>) => Promise<void>;
 	/** Called after dev servers are ready */
-	afterServers?: (ctx: HookContext<TServices, TApps>) => Promise<void>;
+	afterServers?: (ctx: HookContext<TServices, TApps, TLinks>) => Promise<void>;
+	/** Called when a dev server session ends (or before `stop()`), for ephemeral cleanup. */
+	afterServersStop?: (
+		ctx: HookContext<TServices, TApps, TLinks>,
+	) => Promise<void>;
 	/** Called before stopping the environment */
-	beforeStop?: (ctx: HookContext<TServices, TApps>) => Promise<void>;
+	beforeStop?: (ctx: HookContext<TServices, TApps, TLinks>) => Promise<void>;
 	/** An app printed a value one of its `captures` matched (every `as`). */
 	onCapture?: (
 		event: CaptureEvent,
-		ctx: HookContext<TServices, TApps>,
+		ctx: HookContext<TServices, TApps, TLinks>,
 	) => void | Promise<void>;
 }

@@ -1,6 +1,8 @@
 import { mapValues } from "hanzio";
+import { resolveEgressGuard } from "../core/egress-guard";
+import { applyProfileLinkOverrides } from "../core/links";
 import { isCI } from "../core/runtime-flags";
-import { applySecretDefaults } from "../core/secrets/scope";
+import { applySecretDefaults, mergeSecretsConfig } from "../core/secrets/scope";
 import {
 	BUILT_IN_SERVICE_ENV_VARS,
 	defaultServiceProtocol,
@@ -8,15 +10,22 @@ import {
 } from "../core/service-presets";
 import { presetDefinition } from "../docker-compose/services";
 import type {
+	AnyProfileConfig,
 	AppConfig,
 	DockerComposeServiceRaw,
 	DockerPresetName,
+	EgressGuardOption,
+	EnvValues,
+	EnvVarsBuilder,
+	LinkConfig,
 	ResolvedApp,
 	ResolvedApps,
 	ResolvedDocker,
+	ResolvedEgressGuardConfig,
+	ResolvedLinkConfig,
 	ResolvedService,
 	ResolvedServices,
-	SecretsScopeConfig,
+	SecretsScopeInput,
 	ServiceConfig,
 	ServiceCredentials,
 	UrlBuilderFn,
@@ -99,7 +108,8 @@ function urlFor(
 	if (service.urlTemplate) return service.urlTemplate;
 	if (preset) {
 		const { url } = presetDefinition(preset);
-		return (context) => url({ ...context, credentials });
+		return (context) =>
+			url({ ...context, credentials, urlParams: service.urlParams });
 	}
 	return ({ host, port }) => `http://${host}:${port}`;
 }
@@ -270,26 +280,135 @@ export function resolveApps<TApps extends Record<string, AppConfig>>(
 	return mapValues(apps ?? {}, (app) => resolveApp(app)) as ResolvedApps<TApps>;
 }
 
+type SharedEnvBuilder = EnvVarsBuilder<
+	Record<string, ServiceConfig>,
+	Record<string, AppConfig>
+>;
+
+function composeProfileEnv(
+	base: ((...args: never[]) => EnvValues) | undefined,
+	override: EnvValues | ((...args: never[]) => EnvValues) | undefined,
+): ((...args: never[]) => EnvValues) | undefined {
+	if (override === undefined) return base;
+	const baseFn = base as SharedEnvBuilder | undefined;
+	const overrideFn: SharedEnvBuilder =
+		typeof override === "function"
+			? (override as SharedEnvBuilder)
+			: () => override;
+	if (!baseFn) return overrideFn;
+	return (ports, urls, ctx) => ({
+		...baseFn(ports, urls, ctx),
+		...overrideFn(ports, urls, ctx),
+	});
+}
+
+/** Message and actionable hint when a requested `--profile` does not exist. */
+export function describeUnknownProfile(
+	name: string,
+	profiles: Readonly<Record<string, unknown>> | undefined,
+): { message: string; hint: string } {
+	const available = Object.keys(profiles ?? {});
+	return {
+		message: `Unknown profile "${name}".`,
+		hint:
+			available.length > 0
+				? `Available profiles: ${available.join(", ")}`
+				: "Add one to your dev config: profiles: { full: { apps: [...] } }",
+	};
+}
+
+function selectActiveProfile(
+	profiles: Readonly<Record<string, AnyProfileConfig>> | undefined,
+	requested: string | undefined,
+): AnyProfileConfig | undefined {
+	if (requested !== undefined) {
+		const matched = profiles?.[requested];
+		if (!matched) {
+			const { message, hint } = describeUnknownProfile(requested, profiles);
+			throw new Error(`${message} ${hint}`);
+		}
+		return matched;
+	}
+	return profiles?.default;
+}
+
+function expandProfileActiveApps(
+	apps: Readonly<Record<string, ResolvedApp>>,
+	profileApps: readonly string[] | undefined,
+): ReadonlySet<string> | undefined {
+	if (!profileApps) return undefined;
+	const active = new Set<string>();
+	const queue = [...profileApps];
+	while (queue.length > 0) {
+		const name = queue.shift();
+		if (!name || active.has(name)) continue;
+		active.add(name);
+		const app = apps[name];
+		if (!app) continue;
+		for (const dep of [
+			...(app.requiredApps ?? []),
+			...(app.startAfter ?? []),
+		]) {
+			if (!active.has(dep)) queue.push(dep);
+		}
+	}
+	return active;
+}
+
 /**
- * A validated config, integrations applied, with its services and apps
- * resolved: each app's `secrets` scope carries the config-level defaults.
+ * A validated config, integrations applied, with its services, active profile
+ * overrides (`env` and `secrets`), and apps resolved: each app's `secrets`
+ * scope carries the effective config-level defaults.
  * Runs once per environment; everything downstream reads this.
  */
 export function resolveConfig<
 	TConfig extends {
 		services: Record<string, ServiceConfig>;
 		apps?: Record<string, AppConfig>;
-		secrets?: SecretsScopeConfig | false;
+		links?: Readonly<Record<string, LinkConfig>>;
+		env?: (...args: never[]) => EnvValues;
+		secrets?: SecretsScopeInput | false;
+		egressGuard?: EgressGuardOption;
+		profiles?: Readonly<Record<string, AnyProfileConfig>>;
 	},
 >(
 	config: TConfig,
-): Omit<TConfig, "services" | "apps"> & {
+	options?: { profile?: string },
+): Omit<TConfig, "services" | "apps" | "links" | "egressGuard"> & {
 	services: ResolvedServices<TConfig["services"]>;
 	apps: ResolvedApps<NonNullable<TConfig["apps"]>>;
+	links?: Readonly<Record<string, ResolvedLinkConfig>>;
+	egressGuard?: ResolvedEgressGuardConfig;
+	activeApps?: ReadonlySet<string>;
 } {
+	const activeProfile = selectActiveProfile(config.profiles, options?.profile);
+	const effectiveSecrets =
+		activeProfile?.secrets !== undefined
+			? mergeSecretsConfig(config.secrets, activeProfile.secrets)
+			: config.secrets;
+	const effectiveEnv = composeProfileEnv(config.env, activeProfile?.env);
+	const effectiveLinks = applyProfileLinkOverrides(
+		config.links,
+		activeProfile?.links,
+	);
+	const effectiveEgressGuard = resolveEgressGuard(
+		config.egressGuard,
+		activeProfile?.egressGuard,
+	);
+	const resolvedApps = applySecretDefaults(
+		resolveApps(config.apps),
+		effectiveSecrets,
+	);
+	const activeApps = expandProfileActiveApps(resolvedApps, activeProfile?.apps);
+
 	return {
 		...config,
+		...(effectiveEnv !== undefined ? { env: effectiveEnv } : {}),
+		...(effectiveSecrets !== undefined ? { secrets: effectiveSecrets } : {}),
+		...(effectiveLinks !== undefined ? { links: effectiveLinks } : {}),
+		egressGuard: effectiveEgressGuard,
+		...(activeApps !== undefined ? { activeApps } : {}),
 		services: resolveServices(config.services),
-		apps: applySecretDefaults(resolveApps(config.apps), config.secrets),
+		apps: resolvedApps,
 	};
 }

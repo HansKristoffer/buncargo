@@ -58,6 +58,14 @@ export interface FakeInfisical {
 		string,
 		{ secrets: Record<string, string>; imports?: Record<string, string> }
 	>;
+	/**
+	 * Optional per-folder overrides keyed by `${projectId}:${environment}:${secretPath}`,
+	 * checked before `projects[projectId]`.
+	 */
+	folders: Record<
+		string,
+		{ secrets: Record<string, string>; imports?: Record<string, string> }
+	>;
 	stop(): void;
 }
 
@@ -112,6 +120,7 @@ export function startFakeInfisical(
 
 	const requests: string[] = [];
 	const projects: FakeInfisical["projects"] = {};
+	const folders: FakeInfisical["folders"] = {};
 	const listed = (entries: Record<string, string> = {}) =>
 		Object.entries(entries).map(([secretKey, secretValue]) => ({
 			secretKey,
@@ -150,9 +159,13 @@ export function startFakeInfisical(
 				if (!auth.startsWith("Bearer "))
 					return new Response("{}", { status: 401 });
 				const projectId = url.searchParams.get("projectId") ?? "";
+				const environment = url.searchParams.get("environment") ?? "";
+				const secretPath = url.searchParams.get("secretPath") ?? "/";
 				if (options.forbiddenProjects?.includes(projectId))
 					return new Response("{}", { status: 403 });
-				const project = projects[projectId];
+				const project =
+					folders[`${projectId}:${environment}:${secretPath}`] ??
+					projects[projectId];
 				if (!project) return new Response("{}", { status: 404 });
 				return Response.json({
 					secrets: listed(project.secrets),
@@ -169,6 +182,7 @@ export function startFakeInfisical(
 		siteUrl: `http://localhost:${server.port}`,
 		requests,
 		projects,
+		folders,
 		cliPath,
 		home: dir,
 		release,

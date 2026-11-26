@@ -1,4 +1,4 @@
-import type { AppConfig, SecretsScopeConfig, TypedAppDefinitions } from "./app";
+import type { AppConfig, SecretsScopeInput, TypedAppDefinitions } from "./app";
 import type {
 	CheckConfig,
 	GeneratedFileConfig,
@@ -18,6 +18,7 @@ import type {
 import type { DevEnvironment, DevEnvironmentFor } from "./environment";
 import type { DevHooks } from "./hooks";
 import type { BuncargoIntegration, IntegrationAdds } from "./integrations";
+import type { LinkConfig, ProfileLinkOverride, ResolvedLinks } from "./links";
 import type { MigrationConfig, PrismaConfig, SeedConfig } from "./preparation";
 import type { DockerComposeGenerationOptions, ServiceConfig } from "./service";
 import type { ConcreteStringKeys } from "./type-utils";
@@ -78,11 +79,12 @@ export interface DevOptions<
 	 */
 	hosts?: boolean | HostsOptions<TServices>;
 	/**
-	 * Keep a dotenv on disk in step with the allocated ports, for tooling that
-	 * reads `.env` instead of inheriting buncargo's environment.
-	 * `true` uses `.env`. Off by default.
+	 * Keep one or more dotenv files on disk in step with the allocated ports,
+	 * for tooling that reads `.env` instead of inheriting buncargo's environment.
+	 * `true` uses `.env`; pass a path, an options object, or an array of them
+	 * for multi-package repos (`["core/.env", "emails/.env"]`). Off by default.
 	 */
-	envFile?: boolean | EnvFileOptions;
+	envFile?: EnvFileOption;
 	/** Root-relative dotenv defaults, loaded after config evaluation; later files win. */
 	envFiles?: readonly EnvInputFile[];
 	/**
@@ -93,6 +95,10 @@ export interface DevOptions<
 	 */
 	checkoutFiles?: readonly CheckoutFile[];
 }
+
+/** One or more dotenv targets accepted by {@link DevOptions.envFile}. */
+export type EnvFileOption =
+	boolean | string | EnvFileOptions | readonly (string | EnvFileOptions)[];
 
 /**
  * Options for {@link DevOptions.envFile}.
@@ -231,11 +237,13 @@ export type CheckoutFile =
 export type EnvValues = Record<string, string | number | undefined>;
 
 /**
- * Third argument to {@link EnvVarsBuilder}: identity, LAN IP, and public URLs.
+ * Third argument to {@link EnvVarsBuilder}: identity, LAN IP, public URLs, and
+ * live cross-repo links.
  */
 export type EnvVarsContext<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
+	TLinks extends Record<string, LinkConfig> = Record<string, LinkConfig>,
 > = {
 	projectName: string;
 	localIp: string;
@@ -248,6 +256,10 @@ export type EnvVarsContext<
 	loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
 	/** Values apps printed, by capture name (see `AppConfig.captures`). */
 	captured?: Readonly<Record<string, string>>;
+	/** Live state of linked repos declared under `links`, by alias. */
+	links: ResolvedLinks<TLinks>;
+	/** Set when the active profile restricts the config to a subset of apps (expanded with dependencies). */
+	activeApps?: ReadonlySet<string>;
 };
 
 /**
@@ -262,10 +274,11 @@ export type EnvVarsBuilder<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 	TEnv extends EnvValues = EnvValues,
+	TLinks extends Record<string, LinkConfig> = Record<string, LinkConfig>,
 > = (
 	ports: ComputedPorts<TServices, TApps>,
 	urls: ComputedUrls<TServices, TApps>,
-	ctx: EnvVarsContext<TServices, TApps>,
+	ctx: EnvVarsContext<TServices, TApps, TLinks>,
 ) => TEnv;
 
 /**
@@ -277,6 +290,35 @@ export type EnvVarsBuilder<
 export type OverlayEnvVarNames<TEnv> = ConcreteStringKeys<TEnv>;
 
 /**
+ * Local deny-by-default outbound HTTP/HTTPS/gRPC proxy for a run.
+ *
+ * When enabled, buncargo binds a loopback proxy on an ephemeral port and
+ * injects `HTTP_PROXY`, `HTTPS_PROXY`, `grpc_proxy`, `NO_PROXY` (covering
+ * loopback and named `.localhost` hosts), and `NODE_USE_ENV_PROXY=1` into
+ * covered apps so dev credentials cannot accidentally reach external APIs.
+ */
+export interface EgressGuardConfig {
+	/** Enable the egress proxy. Default: `true` when this object is provided. */
+	enabled?: boolean;
+	/**
+	 * External hosts allowed through the proxy: exact hostnames
+	 * (`"app.unleash-hosted.com"`), `host:port`, or leading wildcards
+	 * (`"*.unleash-hosted.com"`). Loopback and `*.localhost` are always allowed.
+	 */
+	allow?: readonly string[];
+	/**
+	 * `"block"` (default) rejects non-allowlisted outbound requests with HTTP 403
+	 * and logs a warning. `"warn"` logs them and forwards them.
+	 */
+	mode?: "block" | "warn";
+	/** Restrict proxy injection to these app names. Default: all apps. */
+	apps?: readonly string[];
+}
+
+/** Egress guard setting on a config or profile (`false` disables an inherited guard). */
+export type EgressGuardOption = boolean | EgressGuardConfig;
+
+/**
  * Main configuration for the dev environment.
  */
 export interface DevConfig<
@@ -286,6 +328,7 @@ export interface DevConfig<
 	>,
 	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
 	TEnv extends EnvValues = EnvValues,
+	TLinks extends Record<string, LinkConfig> = Record<string, LinkConfig>,
 > {
 	/** Prefix for Docker project name (e.g., 'myapp' -> 'myapp-main') */
 	projectPrefix: string;
@@ -294,13 +337,27 @@ export interface DevConfig<
 	/** Applications to start (optional) */
 	apps?: TApps;
 	/**
+	 * Cross-repo links to other buncargo projects' live runs (optional).
+	 * Live endpoints and exported non-secret env vars are read from
+	 * `ctx.links.<alias>` in `env`, `apps.<name>.envVars`, hooks and generated
+	 * files. Pin a specific worktree checkout with `buncargo links pin`.
+	 */
+	links?: TLinks;
+	/**
+	 * Non-secret shared env var names to publish to linked checkouts via
+	 * `~/.buncargo/runs.json` (`ctx.links.<alias>.env`). Integrations such as
+	 * `buncargo/firebase` add their emulator host and project variables
+	 * automatically. Never list Infisical secrets or credentials here.
+	 */
+	exportEnv?: readonly string[];
+	/**
 	 * Shared env overlay merged on top of computed ports/urls for every process.
 	 * Use this for values that belong to the whole stack (rewritten WEB_URL,
 	 * VITE_* aliases, SMTP_HOST). App-only values stay on `apps.<name>.envVars`.
 	 */
-	env?: EnvVarsBuilder<TServices, TApps, TEnv>;
+	env?: EnvVarsBuilder<TServices, TApps, TEnv, TLinks>;
 	/** Lifecycle hooks (optional) */
-	hooks?: DevHooks<TServices, TApps>;
+	hooks?: DevHooks<TServices, TApps, TLinks>;
 	/** Migrations to run after containers are ready (optional). Runs sequentially. */
 	migrations?: MigrationConfig[];
 	/** Seed configuration (optional). Runs after migrations, before servers. */
@@ -309,8 +366,14 @@ export interface DevConfig<
 	prisma?: PrismaConfig<TServices, TApps>;
 	/** Additional options (optional) */
 	options?: DevOptions<TServices, TApps>;
-	/** Scope defaults. Set false to disable all buncargo secret fetching for this environment. */
-	secrets?: SecretsScopeConfig | false;
+	/** Scope defaults (single or layered). Set false to disable all buncargo secret fetching for this environment. */
+	secrets?: SecretsScopeInput | false;
+	/**
+	 * Deny-by-default local egress proxy for blocking unintended outbound HTTP,
+	 * HTTPS and gRPC calls while running with dev credentials (optional;
+	 * overridable per profile).
+	 */
+	egressGuard?: EgressGuardOption;
 	/**
 	 * Variables removed from every process buncargo starts for the project:
 	 * apps, tasks, `exec`, migrations and the seed. For tools that change
@@ -348,10 +411,14 @@ export interface DevConfig<
 	/** Hooks and settings for `buncargo predeploy` (optional) */
 	predeploy?: PredeployConfig;
 	/**
-	 * Named app selections for `buncargo dev --profile=<name>` (optional).
-	 * A profile named `default` is what a bare `buncargo dev` runs.
+	 * Named profiles for `buncargo dev --profile=<name>` (app selection, env,
+	 * secrets and link overrides; optional). A profile named `default` is what a
+	 * bare `buncargo dev` runs.
 	 */
-	profiles?: Record<string, ProfileConfig<Extract<keyof TApps, string>>>;
+	profiles?: Record<
+		string,
+		ProfileConfig<Extract<keyof TApps, string>, TServices, TApps, TLinks>
+	>;
 }
 
 /**
@@ -363,7 +430,13 @@ export type DevConfigInput<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 	TEnv extends EnvValues = EnvValues,
-> = DevConfig<TServices, TypedAppDefinitions<TServices, TApps>, TEnv>;
+	TLinks extends Record<string, LinkConfig> = Record<string, LinkConfig>,
+> = DevConfig<
+	TServices,
+	TypedAppDefinitions<TServices, TApps, never, never, TLinks>,
+	TEnv,
+	TLinks
+>;
 
 /**
  * {@link DevOptions} with its app/service key positions widened to `string`.
@@ -400,12 +473,20 @@ type AnyDevHooks = {
 	]?: (...args: never[]) => void | Promise<void>;
 };
 
-/** {@link SeedConfig} with `check`'s context erased. */
+/** {@link SeedConfig} with `check`'s context erased and key arrays widened. */
 type AnyDevSeedConfig = Omit<
 	SeedConfig<Record<string, ServiceConfig>, Record<string, AppConfig>>,
-	"check"
+	"check" | "requiredServices" | "afterApps"
 > & {
+	requiredServices?: readonly string[];
+	afterApps?: readonly string[];
 	check?: (...args: never[]) => Promise<boolean>;
+};
+
+/** {@link ProfileConfig} with `env`'s builder context erased and link keys widened. */
+export type AnyProfileConfig = Omit<ProfileConfig, "env" | "links"> & {
+	env?: EnvValues | ((...args: never[]) => EnvValues);
+	links?: Readonly<Record<string, ProfileLinkOverride | undefined>>;
 };
 
 /**
@@ -422,13 +503,15 @@ type AnyDevSeedConfig = Omit<
  */
 export type AnyDevConfig = Omit<
 	DevConfig,
-	"env" | "hooks" | "seed" | "options" | "prisma"
+	"env" | "hooks" | "seed" | "options" | "prisma" | "profiles" | "links"
 > & {
+	links?: Readonly<Record<string, LinkConfig>>;
 	env?: (...args: never[]) => EnvValues;
 	hooks?: AnyDevHooks;
 	seed?: AnyDevSeedConfig;
 	options?: AnyDevOptions;
 	prisma?: AnyPrismaConfig;
+	profiles?: Record<string, AnyProfileConfig>;
 };
 
 /**
@@ -443,6 +526,7 @@ export type DevConfigLike = {
 	projectPrefix: string;
 	services: Record<string, ServiceConfig>;
 	apps?: Record<string, AppConfig>;
+	links?: Readonly<Record<string, LinkConfig>>;
 	/**
 	 * Declared so {@link DevEnvironmentFor} can recover the overlay type. The
 	 * parameters are `never[]` because any concrete builder must stay assignable

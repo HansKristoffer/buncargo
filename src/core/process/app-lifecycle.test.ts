@@ -279,4 +279,13 @@ describe("runVerdict", () => {
 		const map = new Map<string, AppLife>(Object.entries(lives));
 		expect(runVerdict(map, startAfter(edges))).toEqual(verdict);
 	});
+
+	it("ends over a failed app required by a post-app task such as seed", () => {
+		const map = new Map<string, AppLife>(
+			Object.entries({ firebase: failed, web: notSpawnedYet }),
+		);
+		expect(
+			runVerdict(map, startAfter({}), [{ label: "seed", apps: ["firebase"] }]),
+		).toEqual({ ends: true, app: "firebase", dependents: ["seed"] });
+	});
 });

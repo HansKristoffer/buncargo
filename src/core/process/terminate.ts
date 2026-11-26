@@ -9,8 +9,8 @@ import type { RunEntry } from "../run-registry";
 import { formatWarn } from "../style";
 import { DetachedApp } from "./detached-app";
 import { isProcessAlive } from "./lifecycle";
-import { signalProcessTree } from "./port-owner";
 import type { AppChild } from "./pty-app";
+import { signalProcessTree } from "./signal-tree";
 
 function exitSeen(child: AppChild | DetachedApp): boolean {
 	return child.exitCode !== null || child.signalCode !== null;

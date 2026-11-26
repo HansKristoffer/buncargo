@@ -40,6 +40,7 @@ describe("runs.json v2 fixture", () => {
 		expect(run?.projectPrefix).toBe("lullu");
 		expect(run?.worktree).toBe("t3code-f003056f");
 		expect(run?.branch).toBe("fix-login");
+		expect(run?.profile).toBe("local");
 		expect(run?.primaryApp).toBe("platform");
 		expect(run?.hosts).toEqual({ active: true, tld: "localhost" });
 		expect(run?.cli.program).toBe("/bin/echo");
@@ -68,9 +69,13 @@ describe("runs.json v2 fixture", () => {
 		expect(run?.apps[1]?.openUrl).toBe(run?.apps[1]?.publicUrl);
 		// The Expo app is the one the app offers a simulator button for.
 		expect(run?.apps[1]?.integrations?.expo?.scheme).toBe("lullu");
-		// Integration rows and captures, and the lease an app holds.
+		// Integration rows and captures, exported env, and the lease an app holds.
 		expect(run?.details?.[0]?.label).toBe("Shopify preview");
 		expect(run?.captures?.appUrl).toBe("https://example.trycloudflare.com");
+		expect(run?.exports).toEqual({
+			FIRESTORE_EMULATOR_HOST: "127.0.0.1:8080",
+			GCLOUD_PROJECT: "demo-lullu",
+		});
 		expect(run?.apps[0]?.exclusive).toStartWith("shopify-app:");
 		// `stop` waits this long for an app that saves data on its way out.
 		expect(run?.apps.find((app) => app.name === "jobs")?.stopGraceMs).toBe(

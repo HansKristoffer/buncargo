@@ -36,7 +36,7 @@ export function validateDevStart<
 	if (!isOneShot(args.values)) assertAppWorkingDirectories(apps, env.root);
 
 	if (seed) {
-		const error = seedSelectionError(seedConfig, serviceNames, env);
+		const error = seedSelectionError(seedConfig, serviceNames, env, apps);
 		if (error) throw error;
 	}
 
@@ -111,25 +111,48 @@ export function assertConfiguredApps(
 }
 
 /**
- * `--seed` with a selection that leaves out the services its seed needs.
- * The seed would be skipped, and a run that seeded nothing must not report
- * "Seeding complete". `undefined` when the seed can run.
+ * `--seed` with a selection that leaves out the services or `afterApps` its
+ * seed needs. The seed would be skipped, and a run that seeded nothing must
+ * not report "Seeding complete". `undefined` when the seed can run.
  */
 export function seedSelectionError(
-	seed: { readonly requiredServices?: readonly string[] } | undefined,
+	seed:
+		| {
+				readonly requiredServices?: readonly string[];
+				readonly afterApps?: readonly string[];
+		  }
+		| undefined,
 	selectedServices: readonly string[],
 	config: {
 		readonly apps: Record<string, ResolvedApp>;
 		readonly services: Record<string, unknown>;
 	},
+	selectedApps: Readonly<Record<string, ResolvedApp>>,
 ): CliError | undefined {
 	if (!seed) return undefined;
 
+	const afterApps =
+		seed.afterApps && seed.afterApps.length > 0 ? seed.afterApps : undefined;
+	if (afterApps) {
+		const missingApps = afterApps.filter((name) => !(name in selectedApps));
+		if (missingApps.length > 0) {
+			const plural = missingApps.length === 1 ? "" : "s";
+			return new CliError(
+				`--seed needs app${plural} ${missingApps.join(", ")}, which this selection does not start.`,
+				[
+					"Run it without --apps or --profile to include all apps.",
+					`Or include ${missingApps.length === 1 ? "it" : "them"}: --apps=${missingApps.join(",")}`,
+				],
+			);
+		}
+	}
+
 	const required = seed.requiredServices;
 
-	// No `requiredServices` means the seed runs against whichever services are selected.
+	// No `requiredServices` means the seed runs against whichever services are
+	// selected, or against `afterApps` alone when `afterApps` is set.
 	if (!required) {
-		if (selectedServices.length > 0) return undefined;
+		if (afterApps || selectedServices.length > 0) return undefined;
 
 		return new CliError(
 			"--seed runs the seed against the selected services, and this selection starts none.",

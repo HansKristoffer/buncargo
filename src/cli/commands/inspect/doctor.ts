@@ -32,6 +32,7 @@ import {
 	type TailscaleServeDeps,
 	tailscaleServeDeps,
 } from "../../../core/hosts/tailscale-serve";
+import { linkStartupIssues, resolveLiveLinksAsync } from "../../../core/links";
 import {
 	barDecline,
 	isBarSupported,
@@ -85,8 +86,17 @@ async function checkSetupChecks(
 	env: DevEnv,
 ): Promise<void> {
 	const anyEnv = env as AnyDevEnvironment;
-	const checks = allChecks(anyEnv, internalsOf(anyEnv).setupChecks);
-	const results = await runChecks(checks, { root: env.root, env: anyEnv });
+	const internals = internalsOf(anyEnv);
+	const checks = allChecks(anyEnv, internals.setupChecks, {
+		egressGuardEnabled: internals.egressGuard?.enabled,
+	});
+	const results = await runChecks(checks, {
+		root: env.root,
+		env: anyEnv,
+		...(internals.activeApps !== undefined
+			? { activeApps: internals.activeApps }
+			: {}),
+	});
 
 	for (const result of results) {
 		const [line] = describeCheckFailures([result]);
@@ -662,6 +672,54 @@ function checkMenuBarApp(report: DoctorReport): void {
 	);
 }
 
+async function checkLinks(report: DoctorReport, env: DevEnv): Promise<void> {
+	const linksConfig = internalsOf(env).linksConfig;
+	if (!linksConfig || Object.keys(linksConfig).length === 0) return;
+
+	let inspections: Awaited<
+		ReturnType<typeof resolveLiveLinksAsync>
+	>["inspections"];
+	try {
+		({ inspections } = await resolveLiveLinksAsync(env.root, linksConfig));
+	} catch (error) {
+		report.issue(`Could not inspect links: ${getErrorMessage(error)}`);
+		return;
+	}
+
+	const issues = linkStartupIssues(inspections);
+	for (const item of inspections) {
+		typedSwitch(item.status, {
+			linked: () => {
+				if (!item.link) return;
+				report.note(
+					`Link "${item.name}" -> ${item.link.projectName} (${item.link.root})`,
+				);
+			},
+			disabled: () => {
+				report.note(`Link "${item.name}" disabled by profile`);
+			},
+			ambiguous: () => {},
+			"not-running": () => {
+				if (item.required || item.pinMissing || item.pinProjectMismatch) return;
+				report.note(
+					`Link "${item.name}" (${item.project}) not running (optional)`,
+				);
+			},
+			"missing-endpoints": () => {
+				if (item.required || !item.link) return;
+				const missing = [...item.missingApps, ...item.missingServices].join(
+					", ",
+				);
+				report.note(
+					`warning: Link "${item.name}" (${item.link.root}) is missing ${missing}`,
+				);
+			},
+		});
+	}
+	for (const warning of issues.warnings) report.note(`warning: ${warning}`);
+	for (const error of issues.errors) report.issue(error);
+}
+
 async function doctor(fix: boolean): Promise<number> {
 	const report = new DoctorReport();
 
@@ -711,6 +769,7 @@ async function doctor(fix: boolean): Promise<number> {
 		}
 		await checkOrphanedContainers(report, env, selected);
 		await checkNamedHosts(report, env, hostsFix);
+		await checkLinks(report, env);
 		await checkSetupChecks(report, env);
 	}
 

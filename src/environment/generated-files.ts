@@ -47,12 +47,14 @@ export type GeneratedFilesContext = Pick<
 	| "loopbackUrls"
 	| "publicUrls"
 	| "captured"
+	| "links"
 > & { readonly config: Pick<DevEnvContext["config"], "generatedFiles"> };
 
 function generatedFileContext(
 	ctx: GeneratedFilesContext,
 	envVars: DevEnvVarsApi,
 ): GeneratedFileContext {
+	const liveLinks = ctx.links;
 	return {
 		root: ctx.root,
 		projectName: ctx.projectName,
@@ -61,9 +63,10 @@ function generatedFileContext(
 		loopbackUrls: toUrlMap(ctx.loopbackUrls),
 		publicUrls: { ...ctx.publicUrls },
 		captured: { ...ctx.captured },
+		links: { ...liveLinks },
 		// The process environment underneath, so CI can hand in a value that
 		// no run captured: `BASE_URL=https://… bunx buncargo generate`.
-		env: { ...process.env, ...envVars.buildEnvVars() },
+		env: { ...process.env, ...envVars.buildEnvVars(false, liveLinks) },
 	};
 }
 

@@ -46,6 +46,8 @@ export interface TuiAction {
 interface RunTuiOptions {
 	output: RunOutput;
 	apps: readonly string[];
+	/** Subset of `apps` entries that are finite reactive tasks (shown with `r run` and no interact mode). */
+	taskNames?: ReadonlySet<string>;
 	/** The URL `o` opens for an app (what BuncargoBar's open does). */
 	urlFor(app: string): string | undefined;
 	actions?: readonly TuiAction[];
@@ -233,6 +235,7 @@ export class RunTui {
 	private readonly stdin: NodeJS.ReadStream;
 	private readonly stdout: NodeJS.WriteStream;
 	private readonly appSet: ReadonlySet<string>;
+	private readonly taskSet: ReadonlySet<string>;
 	private readonly onInput = (data: Buffer | string) =>
 		this.input(String(data));
 	private readonly onResize = () => this.layout(true);
@@ -251,6 +254,7 @@ export class RunTui {
 		this.stdin = options.stdin ?? process.stdin;
 		this.stdout = options.stdout ?? process.stdout;
 		this.appSet = new Set(options.apps);
+		this.taskSet = options.taskNames ?? new Set();
 	}
 
 	/** Pane size every app's terminal gets. */
@@ -540,7 +544,11 @@ export class RunTui {
 				this.select(0);
 				return;
 			case "\r":
-				if (app && this.options.output.screens.has(app))
+				if (
+					app &&
+					!this.taskSet.has(app) &&
+					this.options.output.screens.has(app)
+				)
 					this.mode = { kind: "interact" };
 				return;
 			case "\u001b[5~":
@@ -568,7 +576,9 @@ export class RunTui {
 				return;
 			case "o":
 				if (app) {
-					const url = this.options.urlFor(app);
+					const url = this.taskSet.has(app)
+						? undefined
+						: this.options.urlFor(app);
 					if (url) this.open(url);
 					else this.message = `${app} has no URL`;
 				} else if (this.urlTargets().length > 0) {
@@ -581,9 +591,12 @@ export class RunTui {
 				if (app) {
 					const restart = this.options.output.controls?.restart;
 					if (restart) void restart(app).catch(() => {});
+					const isTask = this.taskSet.has(app);
+					const verb = isTask ? "Running" : "Restarting";
+					const action = isTask ? "run" : "restart";
 					this.message = restart
-						? `Restarting ${app}…`
-						: `${app} cannot restart until the run has started its apps`;
+						? `${verb} ${app}…`
+						: `${app} cannot ${action} until the run has started its apps`;
 				}
 				return;
 			case "l":
@@ -941,6 +954,7 @@ export class RunTui {
 
 	private urlTargets(): [string, string][] {
 		return this.options.apps.flatMap((app) => {
+			if (this.taskSet.has(app)) return [];
 			const url = this.options.urlFor(app);
 			return url ? [[app, url] as [string, string]] : [];
 		});
@@ -1123,7 +1137,7 @@ export class RunTui {
 				: "";
 			title = ` Overview${filter}${scrolledBack(this.scroll.get("") ?? 0)}`;
 		} else {
-			const url = this.options.urlFor(app);
+			const url = this.taskSet.has(app) ? undefined : this.options.urlFor(app);
 			const address = url ? `  ${pc.cyan(url)}` : "";
 			const interacting =
 				this.mode.kind === "interact"
@@ -1145,12 +1159,13 @@ export class RunTui {
 			);
 		}
 
+		const isTask = app !== undefined && this.taskSet.has(app);
 		const hints = app
 			? [
 					"↑↓ select",
-					"enter interact",
-					...(this.options.urlFor(app) ? ["o open"] : []),
-					"r restart",
+					...(isTask ? [] : ["enter interact"]),
+					...(!isTask && this.options.urlFor(app) ? ["o open"] : []),
+					isTask ? "r run" : "r restart",
 					"l log",
 					"esc overview",
 					"q quit",

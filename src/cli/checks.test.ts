@@ -165,6 +165,7 @@ describe("loopback URLs check", () => {
 			root: "/nonexistent-buncargo-checkout",
 			services: {},
 			apps: {},
+			links: {},
 			ports: { api: 3000, web: 5173 },
 			portOffsetProvenance: provenance,
 			buildEnvVars: () => ({

@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { anySignal, mapValues, typedSwitch } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
-import type { ResolvedApp } from "../../types";
+import type { ResolvedApp, TaskConfig } from "../../types";
 import { abortableSleep, abortError } from "../deadline";
 import { readEnvOverrides, warnShadowedSecrets } from "../env-overrides";
 import { waitForDevServers } from "../network";
@@ -46,11 +46,40 @@ import {
 	killPortOwner,
 	type PortOwnerSnapshot,
 } from "./port-owner";
+import { ReactiveTaskRunner } from "./reactive-tasks";
 import { printStream, RunOutput } from "./run-output";
 import { planSpawnOrder } from "./start-order";
 import { spawnOwnedWorker } from "./worker-ownership";
 
 export { stopDevServers } from "./app-supervision";
+
+/** Work triggered once named apps are ready (such as post-app seeding). */
+export interface AfterAppsTask {
+	/** Short label for failure reasons (`"seed"`). */
+	label: string;
+	/** Apps that must be ready before `run` starts. */
+	apps: readonly string[];
+	/**
+	 * When true, remaining apps wait for `run` to finish before spawning.
+	 * When false, `run` starts as soon as `apps` are ready and overlaps the
+	 * remaining apps, settling before `onReady`.
+	 */
+	beforeOtherApps: boolean;
+	run: (signal: AbortSignal) => Promise<void>;
+}
+
+/** Reactive one-shot tasks (`onAppReady` / `watch`) supervised alongside dev servers. */
+interface ReactiveTasksInput {
+	tasks: Readonly<Record<string, TaskConfig>>;
+	/** Full configured apps map so `task.app` resolves its default `cwd` even when reused. */
+	apps?: Readonly<Record<string, Pick<ResolvedApp, "cwd">>>;
+	buildEnv: (
+		task: TaskConfig,
+		signal: AbortSignal,
+	) => Record<string, string> | Promise<Record<string, string>>;
+	/** Apps already running and healthy before this session spawned (e.g. reused apps). */
+	initialReadyApps?: readonly string[];
+}
 
 export interface StartDevServersOptions {
 	onPhase?: (name: string, ms: number) => void;
@@ -64,6 +93,8 @@ export interface StartDevServersOptions {
 	runtime?: ContainerRuntimeAdapter;
 	/** All selected app waves have completed readiness. */
 	onReady?: (signal?: AbortSignal) => void | Promise<void>;
+	/** Runs after one app passes readiness (and on restarts), before downstream waves proceed. */
+	onAppReady?: (name: string, signal?: AbortSignal) => void | Promise<void>;
 	verbose?: boolean;
 	productionBuild?: boolean;
 	/** Compose/project name used to classify port occupants. */
@@ -143,6 +174,22 @@ export interface StartDevServersOptions {
 	 * once by the first layer; later layers and wave 2 read fresh.
 	 */
 	initialPortOwners?: PortOwnerSnapshot;
+	/** Work run once named prerequisite apps are ready (e.g. `seed.afterApps`). */
+	afterAppsTask?: AfterAppsTask;
+	/** Reactive finite tasks (`onAppReady` / `watch`) supervised beside the apps. Pass `false` to disable. */
+	reactiveTasks?: ReactiveTasksInput | false;
+	/**
+	 * Called after startup waves settle and before `onReady`, giving callers
+	 * restart/announce hooks for external watchers (such as cross-repo links).
+	 */
+	onReadyWatch?: (
+		controls: {
+			restart(name: string, reason?: string): Promise<boolean>;
+			announce(target: string, text: string): void;
+			ownedApps(): readonly string[];
+		},
+		signal: AbortSignal,
+	) => void;
 }
 
 function resolveAppEnv(
@@ -291,6 +338,65 @@ function toAppFailure(name: string, error: unknown): AppFailure {
 }
 
 /**
+ * Overlap task triggered as soon as every prerequisite app in `waitingOn`
+ * reports ready, while remaining apps keep starting in parallel.
+ */
+function createDeferredTask(
+	waitingOn: readonly string[],
+	run: (signal: AbortSignal) => Promise<void>,
+	supervisor: AppSupervision,
+) {
+	const pending = new Set(waitingOn);
+	const controller = new AbortController();
+	const taskSignal = anySignal(supervisor.signal, controller.signal);
+	let settled = false;
+	let started = false;
+	const completion = Promise.withResolvers<void>();
+	void completion.promise.catch(() => {});
+
+	const start = () => {
+		if (started) return;
+		started = true;
+		Promise.resolve()
+			.then(() => run(taskSignal))
+			.then(
+				() => completion.resolve(),
+				(error) => {
+					supervisor.controller.abort(error);
+					completion.reject(error);
+				},
+			)
+			.finally(() => {
+				settled = true;
+			});
+	};
+
+	return {
+		startIfReady() {
+			if (pending.size === 0) start();
+		},
+		onAppReady(name: string) {
+			if (pending.delete(name) && pending.size === 0) start();
+		},
+		async wait() {
+			if (!started && pending.size > 0) {
+				throw new Error(
+					`Prerequisite app(s) did not become ready: ${[...pending].join(", ")}`,
+				);
+			}
+			if (!started) start();
+			await supervisor.race(completion.promise);
+		},
+		cancel(error?: unknown) {
+			if (!settled) controller.abort(error);
+		},
+		async settled() {
+			if (started) await Promise.allSettled([completion.promise]);
+		},
+	};
+}
+
+/**
  * Start configured dev servers, holding `needsPublicUrls` apps for a second
  * wave when tunnels are opening (see `deferPublicUrlApps`).
  */
@@ -315,6 +421,7 @@ export async function startDevServers(
 		waitForHealth,
 		deferPublicUrlApps = true,
 		onCapture,
+		afterAppsTask,
 	} = options;
 
 	const startable = startableApps(apps, productionBuild);
@@ -344,8 +451,16 @@ export async function startDevServers(
 		...resolveAppEnv(envVarsByApp, name),
 	});
 
-	const order = planSpawnOrder(startable, deferPublicUrlApps);
-	const nameWidth = prefixWidth(Object.keys(startable));
+	const order = planSpawnOrder(
+		startable,
+		deferPublicUrlApps,
+		afterAppsTask?.beforeOtherApps ? afterAppsTask.apps : undefined,
+	);
+	const reactiveTasksInput = options.reactiveTasks || undefined;
+	const nameWidth = prefixWidth([
+		...Object.keys(startable),
+		...Object.keys(reactiveTasksInput?.tasks ?? {}),
+	]);
 	const output = options.output ?? new RunOutput({ terminals: "pipe" });
 	const stopPrinting = options.output
 		? undefined
@@ -369,6 +484,8 @@ export async function startDevServers(
 	}
 
 	const interrupts = interruptOnSignals();
+	let overlapTask: ReturnType<typeof createDeferredTask> | undefined;
+	let reactiveTasks: ReactiveTaskRunner | undefined;
 
 	const supervisor = new AppSupervision(
 		mapValues(startable, (config, name) => ({
@@ -384,7 +501,14 @@ export async function startDevServers(
 			signal: anySignal(options.signal, interrupts.signal),
 			shutdownGraceMs: options.shutdownGraceMs,
 			keepOthersOnFailure: options.keepOthersOnFailure,
+			requiredBy: afterAppsTask
+				? [{ label: afterAppsTask.label, apps: afterAppsTask.apps }]
+				: undefined,
 			onPhase: (name, life, previous, event) => {
+				if (life.phase === "ready" && previous.phase !== "ready") {
+					overlapTask?.onAppReady(name);
+				}
+				reactiveTasks?.onAppPhase(name, life.phase, previous.phase);
 				showPhase(name, life, previous, event);
 				return options.onAppPhase?.(name, life, previous);
 			},
@@ -392,6 +516,29 @@ export async function startDevServers(
 				output.announce(name, text, { raw: formatWarn(text), level: "warn" }),
 		},
 	);
+
+	if (reactiveTasksInput && Object.keys(reactiveTasksInput.tasks).length > 0) {
+		reactiveTasks = new ReactiveTaskRunner({
+			root,
+			apps: reactiveTasksInput.apps ?? apps,
+			tasks: reactiveTasksInput.tasks,
+			buildEnv: reactiveTasksInput.buildEnv,
+			output,
+			signal: supervisor.signal,
+			watch: options.watch,
+			initialReadyApps: reactiveTasksInput.initialReadyApps,
+			unsetEnv: options.unsetEnv,
+			shutdownGraceMs: options.shutdownGraceMs,
+		});
+	}
+
+	if (afterAppsTask && !afterAppsTask.beforeOtherApps) {
+		overlapTask = createDeferredTask(
+			afterAppsTask.apps.filter((name) => name in startable),
+			afterAppsTask.run,
+			supervisor,
+		);
+	}
 
 	const pids = supervisor.pids;
 	let handedOff = false;
@@ -449,7 +596,14 @@ export async function startDevServers(
 		return replaced;
 	};
 
-	output.controls = { restart: (name) => restartApp(name, "requested") };
+	output.controls = {
+		restart: (name) => {
+			if (reactiveTasks?.has(name)) {
+				return Promise.resolve(reactiveTasks.trigger(name, "requested"));
+			}
+			return restartApp(name, "requested");
+		},
+	};
 
 	const scannerFor = createCaptureRestarts(startable, {
 		signal: supervisor.signal,
@@ -652,6 +806,8 @@ export async function startDevServers(
 			if (kind === "health") await health({ [name]: config }, signal);
 
 			signal.throwIfAborted();
+			await options.onAppReady?.(name, signal);
+			signal.throwIfAborted();
 		})();
 
 		const ready = Promise.race([check, failed.promise]).then(
@@ -816,6 +972,15 @@ export async function startDevServers(
 	}
 
 	try {
+		overlapTask?.startIfReady();
+
+		// Prerequisite apps for a blocking `afterAppsTask` (e.g. `seed.afterApps`)
+		// come up first, then the barrier task runs before the remaining apps spawn.
+		for (const layer of order.beforeBarrier) await startWave(layer);
+		if (afterAppsTask?.beforeOtherApps) {
+			await supervisor.race(afterAppsTask.run(supervisor.signal));
+		}
+
 		// Each layer is ready before the next spawns: that is `startAfter`.
 		for (const layer of order.beforeTunnels) await startWave(layer);
 
@@ -826,6 +991,10 @@ export async function startDevServers(
 		for (const layer of order.afterTunnels) await startWave(layer);
 
 		supervisor.signal.throwIfAborted();
+
+		if (overlapTask) {
+			await overlapTask.wait();
+		}
 
 		// After startup, so a save mid-start cannot race the first health check.
 		// Only apps this run spawned: a reused one has nothing here to restart.
@@ -845,6 +1014,23 @@ export async function startDevServers(
 			}
 		}
 
+		// Arm reactive task file watchers (unless --no-watch) and any tasks
+		// whose prerequisite apps were already healthy via reuse.
+		reactiveTasks?.arm();
+
+		// Armed before `onReady` so external watchers (such as cross-repo links
+		// started by `--with-links`) never miss a fast companion transition.
+		options.onReadyWatch?.(
+			{
+				restart: restartApp,
+				announce: (target, text) =>
+					output.announce(target, text, { raw: formatStep(text) }),
+				ownedApps: () =>
+					Object.keys(startable).filter((name) => pids[name] !== undefined),
+			},
+			supervisor.signal,
+		);
+
 		if (options.onReady) {
 			await supervisor.race(
 				Promise.resolve().then(() => options.onReady?.(supervisor.signal)),
@@ -853,7 +1039,11 @@ export async function startDevServers(
 
 		if (waitForExit) {
 			await supervisor.wait();
-			await supervisor.stop();
+			try {
+				await supervisor.stop();
+			} finally {
+				await reactiveTasks?.stop();
+			}
 		} else {
 			handedOff = true;
 			const closing = (async () => {
@@ -871,6 +1061,7 @@ export async function startDevServers(
 					try {
 						await supervisor.stop();
 					} finally {
+						await reactiveTasks?.stop();
 						interrupts.dispose();
 						await closeOwnOutput();
 					}
@@ -881,8 +1072,14 @@ export async function startDevServers(
 
 		return pids;
 	} catch (error) {
+		overlapTask?.cancel(error);
+		await overlapTask?.settled();
 		try {
-			await supervisor.stop();
+			try {
+				await supervisor.stop();
+			} finally {
+				await reactiveTasks?.stop();
+			}
 		} catch (cleanupError) {
 			throw new AggregateError(
 				[error, cleanupError],

@@ -197,4 +197,30 @@ describe("decideInstall", () => {
 		const { root } = project();
 		expect(decideInstall(root, ["dev"])).toBeUndefined();
 	});
+
+	it("detects missing or stale node_modules for pnpm-lock.yaml repos", () => {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-pnpm-install-"));
+		dirs.push(root);
+		mkdirSync(join(root, ".git"));
+		writeFileSync(
+			join(root, "package.json"),
+			JSON.stringify({ devDependencies: { buncargo: "^15.0.0" } }),
+		);
+		writeFileSync(join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+
+		expect(decideInstall(root, ["dev"])).toEqual({
+			dir: root,
+			missing: true,
+			reason: "node_modules is missing",
+		});
+
+		mkdirSync(join(root, "node_modules"));
+		writeInstallStamp(root, "older");
+		expect(decideInstall(root, ["dev"])?.reason).toBe(
+			"pnpm-lock.yaml changed since node_modules was installed",
+		);
+
+		writeInstallStamp(root, lockfileHash(root) ?? "");
+		expect(decideInstall(root, ["dev"])).toBeUndefined();
+	});
 });

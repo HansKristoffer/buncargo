@@ -24,8 +24,13 @@ with its public tunnel still open.
 
 ## Ordering and output capture
 
-`start-order.ts` turns `startAfter` into layers inside the two tunnel phases (without `startAfter`
-a phase is one layer, the old wave).
+`start-order.ts` turns `startAfter` into layers inside the tunnel phases (without `startAfter`
+a phase is one layer, the old wave). When a blocking `AfterAppsTask` (such as `seed.afterApps`
+with `beforeApps !== false`) is supplied, `planSpawnOrder` separates the barrier apps and their
+transitive `startAfter` dependencies into `beforeBarrier` waves so `dev-servers.ts` can await them,
+run the task, and only then spawn `beforeTunnels` and `afterTunnels`. When `beforeOtherApps` is
+`false`, all apps follow normal waves while the task starts as soon as its `afterApps` report ready
+and is joined before `onReady`.
 
 `output-capture.ts` matches complete lines only, because a URL cut off mid-chunk is still a valid
 URL. For the same reason it joins rows an app wrapped itself (Ink at a narrow pane's width) back
@@ -71,7 +76,8 @@ spared only while the wave comes up, and its crash after that ends the run. A bo
 out on purpose: either every wave with a worker waits it out, or a crash inside it needs a verdict
 after the wave moved on. `AppSupervision.fail` is the one path for an app that did not come up or
 could not be restarted, at start, after a side check and after a restart: it decides with
-`runVerdict` (a later app `startAfter`s a failed one, or nothing else is left) before anything is
+`runVerdict` (a later app `startAfter`s a failed one, an `AfterAppsTask` requires it via
+`RequiredByTask`, or nothing else is left) before anything is
 parked, so a row on probation offers no restart until then, and a run about to fail never says the
 rest keeps going. A parked app is spared like an `essential: false` one until a ready process makes
 it essential again: from then its crash ends the run. A reused app (another process serves its
@@ -128,6 +134,16 @@ its apps.
 `app-watch.ts` is the `watch` config: one recursive `fs.watch` (FSEvents) per path, debounced,
 restarting through `restartApp`, which already retires, waits and serializes. Watchers start after
 the waves, so a save mid-start cannot race readiness, and only for apps this run spawned.
+
+`reactive-tasks.ts` (`ReactiveTaskRunner`) drives finite one-shot tasks configured with
+`onAppReady` or `watch`: single-flight with at most one coalesced follow-up run, non-fatal on
+failure (reporting `detail: "exit <n>"` and `rerunCommand: "buncargo run <name>"` into `RunOutput`
+and `.buncargo/logs/<run>/<name>.log` without ending the dev session), triggered on initial app
+readiness and every restart via `AppSupervision`'s `onPhase`, on watched file changes via `watchApp`
+(skipped under `--no-watch`), and manually via `output.controls.restart(taskName)` (TUI `r`).
+`signal-tree.ts` and `find-detached-app.ts` stay separated from `port-owner.ts` and
+`detached-app.ts` so `terminate.ts` and `exec.ts` never pull container runtimes into the
+config-authoring entry (`src/index.ts`).
 
 `readyWhen` is matched by a scanner created per spawn (`watchForReady`), not through `captures`,
 whose scanner reports a value only when it changes and would never see the line again after a

@@ -8,10 +8,18 @@ import {
 	reportScopeOnce,
 	warnSecretsOnce,
 } from "./fetch";
-import { collectScopes, type InfisicalScope } from "./scope";
+import {
+	collectScopes,
+	type InfisicalScope,
+	resolveScopes,
+	scopeKey,
+} from "./scope";
 
 /**
  * Fetch every scope the selected apps name and return each app's own values.
+ *
+ * Layered scopes on an app are fetched in parallel (deduplicated per folder)
+ * and merged strictly in declared order so later scopes override earlier ones.
  *
  * Lowest precedence: keys the developer already exported are dropped here, and
  * the caller layers the computed env on top. Each scope prints one line naming
@@ -29,6 +37,13 @@ export async function loadAppSecrets(
 ): Promise<Record<string, Record<string, string>>> {
 	const env = options.env ?? process.env;
 	// An app that declared nothing is not opted in, whatever the defaults say.
+	const appScopes = Object.entries(apps).flatMap(([name, app]) => {
+		if (!app.secrets) return [];
+		const resolved = resolveScopes(app.secrets, undefined, env);
+		return resolved.length > 0 ? [[name, resolved] as const] : [];
+	});
+	if (appScopes.length === 0) return {};
+
 	const scopes = collectScopes(
 		Object.entries(apps).flatMap(([name, app]) =>
 			app.secrets ? [[name, app.secrets] as const] : [],
@@ -38,7 +53,7 @@ export async function loadAppSecrets(
 	);
 	if (scopes.length === 0) return {};
 
-	const values: Record<string, Record<string, string>> = {};
+	const fetchedByScope = new Map<string, Record<string, string>>();
 	const elapsed = startTimer();
 	try {
 		await Promise.all(
@@ -59,11 +74,20 @@ export async function loadAppSecrets(
 						`Could not load Infisical secrets for ${usedBy.join(", ")}: ${describeSecretsError(error)} Each app will fetch its own.`,
 					);
 				}
-				for (const name of usedBy) values[name] = fetched;
+				fetchedByScope.set(scopeKey(scope), fetched);
 			}),
 		);
 	} finally {
 		options.onWait?.(elapsed());
+	}
+
+	const values: Record<string, Record<string, string>> = {};
+	for (const [name, resolved] of appScopes) {
+		const merged: Record<string, string> = {};
+		for (const scope of resolved) {
+			Object.assign(merged, fetchedByScope.get(scopeKey(scope)));
+		}
+		values[name] = merged;
 	}
 	return values;
 }

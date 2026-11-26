@@ -15,6 +15,7 @@ import { execAsync } from "../../core/process";
 import type { RunEntry } from "../../core/run-registry";
 import { CI_ENV_VARS } from "../../core/runtime-flags";
 import { startFakeInfisical } from "../../core/secrets/fake-infisical.testing";
+import { freePorts } from "../../core/test-env.testing";
 
 const cli = [process.execPath, resolve(import.meta.dir, "../bin.ts")];
 
@@ -552,3 +553,92 @@ esac`,
 		assigned.stop(true);
 	}
 });
+
+it("seeds seed.afterApps once before dependent --apps and keeps stdout pure", async () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-ci-")));
+	const [emuPort, webPort] = freePorts(2);
+	const eventsFile = join(root, "events.log");
+	const seedStateFile = join(root, "seeded.txt");
+
+	writeFileSync(join(root, "package.json"), JSON.stringify({ workspaces: [] }));
+	writeFileSync(
+		join(root, "emu.ts"),
+		`import { appendFileSync } from "node:fs";
+const port = Number(process.env.PORT);
+appendFileSync(${JSON.stringify(eventsFile)}, "emu:start\\n");
+const server = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("emu-ok") });
+console.log("EMULATOR_READY");
+const stop = () => { server.stop(true); process.exit(0); };
+process.on("SIGTERM", stop);
+process.on("SIGINT", stop);`,
+	);
+	writeFileSync(
+		join(root, "web.ts"),
+		`import { appendFileSync, existsSync, readFileSync } from "node:fs";
+const port = Number(process.env.PORT);
+const seeded = existsSync(${JSON.stringify(seedStateFile)}) ? readFileSync(${JSON.stringify(seedStateFile)}, "utf8").trim() : "unseeded";
+appendFileSync(${JSON.stringify(eventsFile)}, "web:start:" + seeded + "\\n");
+const server = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("web:" + seeded) });
+const stop = () => { server.stop(true); process.exit(0); };
+process.on("SIGTERM", stop);
+process.on("SIGINT", stop);`,
+	);
+	writeFileSync(
+		join(root, "seed.ts"),
+		`import { appendFileSync, writeFileSync } from "node:fs";
+const res = await fetch(process.env.EMULATOR_URL);
+appendFileSync(${JSON.stringify(eventsFile)}, "seed:" + (await res.text()) + "\\n");
+writeFileSync(${JSON.stringify(seedStateFile)}, "seeded-ok");
+console.log("SEED_STDOUT_NOISE");`,
+	);
+	writeFileSync(
+		join(root, "dev.config.ts"),
+		`export default {
+			projectPrefix: "ciafter",
+			services: {},
+			apps: {
+				emulator: {
+					port: ${emuPort},
+					devCommand: ${JSON.stringify(`${process.execPath} emu.ts`)},
+					readyWhen: /EMULATOR_READY/,
+				},
+				web: {
+					port: ${webPort},
+					devCommand: ${JSON.stringify(`${process.execPath} web.ts`)},
+					startAfter: ["emulator"],
+				},
+			},
+			seed: {
+				afterApps: ["emulator"],
+				command: ${JSON.stringify(`${process.execPath} seed.ts`)},
+			},
+		};`,
+	);
+
+	try {
+		const result = await execAsync(
+			[
+				...cli,
+				"ci",
+				"--seed",
+				"--apps=web",
+				"--",
+				process.execPath,
+				"-e",
+				`const body = await (await fetch(process.env.WEB_URL)).text(); process.stdout.write("CMD:" + body + "\\n");`,
+			],
+			root,
+			{ HOME: join(root, "home") },
+			{ throwOnError: false },
+		);
+
+		expect(result.exitCode).toBe(0);
+		// Stdout belongs solely to the wrapped command (no app or seed noise).
+		expect(result.stdout).toBe("CMD:web:seeded-ok\n");
+		// Emulator started exactly once, seeded before web booted, and web saw seeded data.
+		const events = readFileSync(eventsFile, "utf8").trim().split("\n");
+		expect(events).toEqual(["emu:start", "seed:emu-ok", "web:start:seeded-ok"]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+}, 30_000);

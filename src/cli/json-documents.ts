@@ -5,7 +5,12 @@ import type { StrayLoopbackUrl } from "../core/loopback-env";
 import type { RemovalRecord } from "../core/removal-log";
 import type { REGISTRY_VERSION, RunEntry } from "../core/run-registry";
 import type { InfisicalScope } from "../core/secrets/scope";
-import type { HostsRuntime, PortOffsetProvenance } from "../types";
+import type {
+	HostsRuntime,
+	LinkInspection,
+	PortOffsetProvenance,
+	ResolvedLink,
+} from "../types";
 import type { CheckMode, DeferredTests } from "./commands/check/plan";
 import type { RunFailure } from "./run-failure";
 
@@ -31,6 +36,8 @@ export interface DetachedResultJson {
 	apps: { name: string; status: string; url: string | null }[];
 	/** Why named URLs fell back to `localhost:port`; empty when they did not. */
 	hostsWarnings: string[];
+	/** Warnings about optional cross-repo links (ambiguity, stale or mismatched pins). */
+	linkWarnings: string[];
 	failures: RunFailure[];
 	/** How long the run may idle before it stops itself; null for never. */
 	idleLimitMs: number | null;
@@ -76,7 +83,19 @@ export interface StatusJson {
 	recentStops: (RemovalRecord & { description: string })[];
 	/** `buncargo env set` keys; names only. */
 	envOverrides: string[];
+	/** Cross-repo links declared in config, with live target and status. */
+	links: LinkInspection[];
 	strayLoopbackUrls: (StrayLoopbackUrl & { message: string })[];
+}
+
+/** `buncargo links --json`: cross-repo links and their live status. */
+export interface LinksJson {
+	version: 1;
+	root: string;
+	project: string;
+	links: LinkInspection[];
+	errors: string[];
+	warnings: string[];
 }
 
 /** `buncargo env`: the checkout's environment as its live run sees it. */
@@ -91,6 +110,8 @@ export interface EnvJson {
 	localIp: string;
 	root: string;
 	captured: Record<string, string>;
+	/** Live cross-repo links (`null` when not running, ambiguous or disabled). */
+	links: Record<string, ResolvedLink | null>;
 	details: Record<string, unknown>;
 	hosts: {
 		active: boolean;

@@ -6,11 +6,13 @@ import {
 	type AppLife,
 	afterExit,
 	initialLife,
+	type RequiredByTask,
 	RunInterrupted,
 	runVerdict,
 	transition,
 } from "./app-lifecycle";
-import { DetachedApp, findDetachedApp } from "./detached-app";
+import { DetachedApp } from "./detached-app";
+import { findDetachedApp } from "./find-detached-app";
 import type { AppChild } from "./pty-app";
 import {
 	ownedProcessAlive,
@@ -84,6 +86,8 @@ export interface AppSupervisionOptions {
 	 * restarted: park it, unless that ends the run (`runVerdict`).
 	 */
 	keepOthersOnFailure?: boolean;
+	/** Non-app tasks (such as `seed.afterApps`) whose prerequisites cannot be parked. */
+	requiredBy?: readonly RequiredByTask[];
 }
 
 /**
@@ -262,6 +266,7 @@ export class AppSupervision {
 		const verdict = runVerdict(
 			lives,
 			(name) => this.apps.get(name)?.spec.startAfter,
+			this.options.requiredBy,
 		);
 		if (!verdict.ends) return undefined;
 

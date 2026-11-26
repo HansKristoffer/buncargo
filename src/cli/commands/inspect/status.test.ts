@@ -83,6 +83,7 @@ it("reports named hosts once a live run registered them, with their URLs", async
 		"tunnels",
 		"recentStops",
 		"envOverrides",
+		"links",
 		"strayLoopbackUrls",
 	]);
 	expect(before.hosts?.active).toBe(false);

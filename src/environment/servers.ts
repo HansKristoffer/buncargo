@@ -50,16 +50,23 @@ export function assertAppWorkingDirectories(
 }
 
 /**
- * `beforeServers`/`afterServers` for `start()` and the CLI alike, told the
- * prepared selection and bounded like every other hook.
+ * `beforeServers`/`afterServers`/`afterServersStop` for `start()` and the CLI
+ * alike, told the prepared selection and bounded like every other hook.
  */
 export function createServerHookRunner(
 	ctx: { readonly config: Pick<DevEnvContext["config"], "hooks"> },
 	envVars: DevEnvVarsApi,
-): (phase: "before" | "after", signal?: AbortSignal) => Promise<boolean> {
+): (
+	phase: "before" | "after" | "afterStop",
+	signal?: AbortSignal,
+) => Promise<boolean> {
 	return async (phase, signal) => {
 		const hook =
-			ctx.config.hooks?.[phase === "before" ? "beforeServers" : "afterServers"];
+			phase === "before"
+				? ctx.config.hooks?.beforeServers
+				: phase === "after"
+					? ctx.config.hooks?.afterServers
+					: ctx.config.hooks?.afterServersStop;
 		if (!hook) return false;
 
 		await withDeadline(

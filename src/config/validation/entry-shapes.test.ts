@@ -65,8 +65,57 @@ describe("nested sections", () => {
 				"apps.web.captures.token.secret must be a boolean",
 				"apps.web.watch.debounce is not an option (paths, ignore, debounceMs)",
 				"apps.web.secrets.exclude must be an array of secret names",
-				"tasks.gen.requiredService is not an option (command, description, app, cwd, requiredServices)",
-				"profiles.full.app is not an option (apps, description)",
+				"tasks.gen.requiredService is not an option (command, description, app, cwd, requiredServices, onAppReady, watch)",
+				"profiles.full.app is not an option (apps, description, env, secrets, links, egressGuard, integrations)",
+			]),
+		);
+	});
+
+	it("validates reactive task triggers and rejects reactive task names colliding with apps", () => {
+		const shapeErrors = validateConfig({
+			projectPrefix: "myapp",
+			services: {},
+			apps: {
+				api: { port: 3000, devCommand: "bun run dev" },
+			},
+			tasks: {
+				emptyTrigger: { command: "bun gen", onAppReady: [] },
+				badWatch: { command: "bun gen", watch: { paths: [] } },
+			},
+		});
+
+		expect(shapeErrors).toEqual(
+			expect.arrayContaining([
+				"tasks.emptyTrigger.onAppReady must be a nonempty array of app names",
+				"tasks.badWatch.watch.paths must be a nonempty array of paths",
+			]),
+		);
+
+		const refErrors = validateConfig({
+			projectPrefix: "myapp",
+			services: {
+				postgres: service.postgres(),
+			},
+			apps: {
+				api: { port: 3000, devCommand: "bun run dev" },
+				portOnly: { port: 3001, devCommand: false },
+			},
+			tasks: {
+				unknownApp: { command: "bun gen", onAppReady: ["missing"] },
+				portOnlyDep: { command: "bun gen", onAppReady: ["portOnly"] },
+				api: { command: "bun gen", onAppReady: ["api"] },
+				postgres: { command: "bun gen", watch: { paths: ["src"] } },
+				seed: { command: "bun gen", watch: { paths: ["src"] } },
+			},
+		});
+
+		expect(refErrors).toEqual(
+			expect.arrayContaining([
+				'tasks.unknownApp.onAppReady includes unknown app "missing"',
+				'tasks.portOnlyDep.onAppReady references port-only app "portOnly" (devCommand: false), which buncargo does not spawn',
+				'Reactive task "api" shares a name with apps.api; rename the task so its TUI pane and log file stay distinct.',
+				'Reactive task "postgres" shares a name with services.postgres; rename the task so its TUI pane and log file stay distinct.',
+				'Reactive task "seed" uses a reserved log name; rename the task.',
 			]),
 		);
 	});

@@ -1,7 +1,8 @@
 // The authoring entry: what a `dev.config.ts` imports. Every config load pays
-// for this graph, so it holds the config helpers and types and nothing that
-// starts a process, allocates a port or reads a run. The environment, the
-// loader and the CLI are `buncargo/api` (`src/api/index.ts`).
+// for this graph, so it holds the config helpers, lightweight sibling-run
+// lookup, and types, never anything that starts a process, talks to a
+// container runtime, or loads an environment. The environment, the loader and
+// the CLI are `buncargo/api` (`src/api/index.ts`).
 
 // Each from its own module: `config/index` also holds the resolver and the
 // validator, which the loader runs and a config never calls.
@@ -11,6 +12,12 @@ export { type DiscoverAppsOptions, discoverApps } from "./config/discover-apps";
 export { mergeConfigs } from "./config/merge-configs";
 // For a `projectPrefix` of a config below the repository's top level.
 export { getWorktreeProjectSuffix } from "./core/ports";
+export {
+	type LookupRunningOptions,
+	lookupRunningApp,
+	lookupRunningService,
+	type RunningEndpoint,
+} from "./core/sibling-lookup";
 export {
 	type ClickhouseServiceOptions,
 	type CustomServiceOptions,
@@ -28,6 +35,7 @@ export {
 
 export type {
 	AnyDevConfig,
+	AnyProfileConfig,
 	AppConfig,
 	AppEnvVars,
 	AppHostOnlyEnvVarNames,
@@ -68,6 +76,9 @@ export type {
 	DocPathExemption,
 	DocPathsCheckConfig,
 	DocsCheckConfig,
+	EgressGuardConfig,
+	EgressGuardOption,
+	EnvFileOption,
 	EnvFileOptions,
 	EnvInputFile,
 	EnvValues,
@@ -88,11 +99,16 @@ export type {
 	HostsRuntime,
 	IntegrationAdds,
 	IntegrationAppContext,
+	IntegrationAppReadyContext,
 	IntegrationCommand,
 	IntegrationCommandContext,
 	IntegrationConfig,
 	IntegrationConfigContext,
 	IntegrationStack,
+	LinkCandidate,
+	LinkConfig,
+	LinkInspection,
+	LinkStatusKind,
 	MigrationConfig,
 	MinioBucketConfig,
 	MinioBucketPolicy,
@@ -104,7 +120,11 @@ export type {
 	PredeployFailure,
 	PrismaConfig,
 	ProfileConfig,
+	ProfileLinkOverride,
+	ResolvedLink,
+	ResolvedLinks,
 	SecretsScopeConfig,
+	SecretsScopeInput,
 	SeedCheckContext,
 	SeedCheckHelpers,
 	SeedConfig,

@@ -202,6 +202,27 @@ export function suitePorts(
 }
 
 /**
+ * Collapse multi-target `storage` arrays (`[{ target, rules }, …]`) to a single
+ * `{ rules }` object for `demo-*` projects: `.firebaserc` has no target
+ * mappings for a demo project id, so `firebase emulators:start --project demo-*`
+ * fails on named storage targets. Prefers the `"default"` target, else the
+ * first entry with `rules`.
+ */
+function normalizeDemoStorage(storage: unknown, projectId: string): unknown {
+	if (!projectId.startsWith("demo-") || !Array.isArray(storage)) {
+		return storage;
+	}
+
+	const withRules = storage.filter(
+		(entry): entry is Json & { rules: string } =>
+			isRecord(entry) && typeof entry.rules === "string" && entry.rules !== "",
+	);
+	const chosen =
+		withRules.find((entry) => entry.target === "default") ?? withRules[0];
+	return chosen ? { rules: chosen.rules } : storage;
+}
+
+/**
  * `firebase.json` with this checkout's ports.
  *
  * Every port is written out, because the CLI picks a free one for an unset
@@ -212,6 +233,7 @@ export function generatedFirebaseConfig(
 	raw: Json,
 	selected: readonly FirebaseEmulator[],
 	ports: FirebaseEmulatorPorts,
+	projectId: string,
 ): Json {
 	const block = emulatorsBlock(raw);
 	const emulators: Json = { ...block };
@@ -239,7 +261,13 @@ export function generatedFirebaseConfig(
 		});
 	}
 
-	return { ...raw, emulators };
+	return {
+		...raw,
+		...(raw.storage !== undefined
+			? { storage: normalizeDemoStorage(raw.storage, projectId) }
+			: {}),
+		emulators,
+	};
 }
 
 /**
