@@ -205,6 +205,12 @@ function validateEgressGuardShape(
 		"an array of host patterns",
 	);
 	check(
+		value.allowHostsOf,
+		`${path}.allowHostsOf`,
+		strings(value.allowHostsOf),
+		"an array of env or secret key names",
+	);
+	check(
 		value.mode,
 		`${path}.mode`,
 		value.mode === "block" || value.mode === "warn",
@@ -282,6 +288,7 @@ function validateNamedEntryShapes(
 			if (typeof entry.command !== "string" || !entry.command)
 				errors.push(`${path}.command must be a nonempty string`);
 			fields(entry, `${path}.`, ["app", "cwd"], "string");
+			fields(entry, `${path}.`, ["egressGuard"], "boolean");
 			check(
 				entry.requiredServices,
 				`${path}.requiredServices`,

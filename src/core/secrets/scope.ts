@@ -13,7 +13,11 @@ import { secretsEnvironment } from "../runtime-flags";
 
 export interface InfisicalScope {
 	projectId: string;
-	/** Scope the CLI user session to this organization. */
+	/**
+	 * Scope the CLI user session to this organization. Unset: the session's
+	 * own, and when that one is refused the project, whichever other
+	 * organization of the login owns it.
+	 */
 	organizationId?: string;
 	environment: string;
 	siteUrl: string;

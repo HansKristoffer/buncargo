@@ -3,6 +3,7 @@ import type { EgressGuardOption, EnvValues, EnvVarsBuilder } from "./config";
 import type { AnyDevEnvironment } from "./environment";
 import type { BuncargoIntegration, IntegrationAdds } from "./integrations";
 import type { LinkConfig, ProfileLinkOverride, ResolvedLink } from "./links";
+import type { ResolvedEgressGuardConfig } from "./resolved";
 import type { ServiceConfig } from "./service";
 
 /** What a {@link SetupCheck} is handed. */
@@ -13,6 +14,8 @@ export interface CheckContext {
 	env: AnyDevEnvironment;
 	/** Set when the active profile restricts the run to a subset of apps. */
 	activeApps?: ReadonlySet<string>;
+	/** The run's egress guard after the active profile, when one is on. */
+	egressGuard?: ResolvedEgressGuardConfig;
 }
 
 /**
@@ -86,6 +89,12 @@ export interface TaskConfig<
 	description?: string;
 	/** Use this app's env, secrets and default working directory. */
 	app?: TAppKey;
+	/**
+	 * Run behind the config's `egressGuard` (its `allow`, `allowHostsOf` and
+	 * `mode`). Default: the guard of `app` when the task borrows a guarded
+	 * app's env, else none. `false` runs unguarded even with a guarded `app`.
+	 */
+	egressGuard?: boolean;
 	/** Working directory relative to the monorepo root. Default: the app's `cwd`, else the root. */
 	cwd?: string;
 	/** Started (with their Compose dependencies) when they are not running. */

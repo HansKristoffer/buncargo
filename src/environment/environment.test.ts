@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { defineDevConfig } from "../config";
 import { getProjectName } from "../core/ports";
 import { CI_ENV_VARS } from "../core/runtime-flags";
+import { freePorts } from "../core/test-env.testing";
 import type { DevConfig, ServiceConfig } from "../types";
 import { createDevEnvironment, internalsOf } from ".";
 
@@ -292,6 +293,40 @@ describe("createDevEnvironment env builders", () => {
 			for (const root of roots) {
 				rmSync(root, { recursive: true, force: true });
 			}
+		}
+	});
+
+	it("passes an app's host as HOST and dials it there", async () => {
+		const [port] = freePorts(1);
+		const root = createWorktreeRoot("Bound_Host");
+		const env = createDevEnvironment(
+			defineDevConfig({
+				projectPrefix: "bound",
+				services: {},
+				apps: {
+					admin: {
+						port,
+						host: "127.0.0.1",
+						devCommand: `${JSON.stringify(process.execPath)} -e 'Bun.serve({ hostname: process.env.HOST, port: Number(process.env.PORT), fetch: () => new Response(process.env.HOST) })'`,
+						healthEndpoint: "/",
+					},
+				},
+			}),
+			{ root },
+		);
+		try {
+			const loopback = `http://127.0.0.1:${env.ports.admin}`;
+			expect(env.loopbackUrls.admin).toBe(loopback);
+			expect(env.buildEnvVars().ADMIN_LOOPBACK_URL).toBe(loopback);
+			expect(env.buildAppEnvVars("admin").HOST).toBe("127.0.0.1");
+
+			await env.start({ watchdog: false, verbose: false });
+			expect(await (await fetch(env.loopbackUrls.admin)).text()).toBe(
+				"127.0.0.1",
+			);
+		} finally {
+			await env.stop({ verbose: false });
+			rmSync(root, { recursive: true, force: true });
 		}
 	});
 

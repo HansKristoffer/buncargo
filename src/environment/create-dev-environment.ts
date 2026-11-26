@@ -214,20 +214,11 @@ function createEnvironment(
 		tasks: resolved.tasks,
 		hasGeneratedFiles: (resolved.generatedFiles?.length ?? 0) > 0,
 		hasActiveEgressProxy: () => ctx.egressProxyUrl !== undefined,
+		egressProxy: () => ctx.egressProxy,
 		setEgressProxy: ctx.setEgressProxy,
 		runtime: () => ctx.runtime,
 		appEnv: (name, production) => envVars.buildAppEnvVars(name, production),
-		buildTaskEnv: async (task, production, signal) => {
-			const computed = task.app
-				? envVars.buildAppEnvVars(task.app, production)
-				: envVars.buildEnvVars(production);
-			const secrets = await envVars.resolveSecrets(undefined, {
-				app: task.app,
-				signal,
-				computed,
-			});
-			return { ...secrets, ...computed };
-		},
+		buildTaskEnv: envVars.buildTaskEnv,
 		runHook: createServerHookRunner(ctx, envVars),
 		onAppReady: async (name, signal) => {
 			const appConfig = ctx.apps[name];
@@ -431,6 +422,7 @@ function createEnvironment(
 		tasks: resolved.tasks,
 		linksConfig: resolved.links,
 		egressGuard: resolved.egressGuard,
+		startTaskEgressGuard: envVars.startTaskEgressGuard,
 		activeApps: resolved.activeApps,
 		inspectLinks: ctx.inspectLinks,
 		exportedEnv: (selection) => envVars.exportedEnv(selection),

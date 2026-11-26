@@ -2,8 +2,10 @@ import { mapValues, startTimer } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
 import type { SkippedLeaseApp } from "../core/app-leases";
 import {
+	allowedHostsOf,
 	type EgressGuardProxy,
 	guardsApp,
+	guardsTask,
 	startEgressGuardProxy,
 } from "../core/egress-guard";
 import { watchLinks } from "../core/link-watch";
@@ -118,6 +120,8 @@ export interface AppPipelineDeps {
 	readonly tasks?: Readonly<Record<string, TaskConfig>>;
 	readonly hasGeneratedFiles?: boolean;
 	readonly hasActiveEgressProxy?: () => boolean;
+	/** The run's active egress proxy, which learns `allowHostsOf` hosts per process. */
+	readonly egressProxy?: () => EgressGuardProxy | undefined;
 	setEgressProxy(proxy: EgressGuardProxy | undefined): Promise<void>;
 	runtime(): ContainerRuntimeAdapter;
 	appEnv(name: string, production: boolean): Record<string, string>;
@@ -253,31 +257,62 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 							}
 						: undefined));
 
+		const announceEgress = (text: string) => {
+			if (output) {
+				output.announce("egress", text, {
+					raw: formatWarn(text),
+					level: "warn",
+				});
+			} else if (verbose) {
+				console.warn(formatWarn(text));
+			}
+		};
+
 		let startedProxy: EgressGuardProxy | undefined;
 		const guard = deps.egressGuard;
 		const needsEgressProxy =
 			guard?.enabled === true &&
 			!deps.hasActiveEgressProxy?.() &&
-			Object.keys(apps).some((name) => guardsApp(guard, name));
+			(Object.keys(apps).some((name) => guardsApp(guard, name)) ||
+				Object.values(reactiveTaskMap).some((task) => guardsTask(guard, task)));
 		if (needsEgressProxy && guard) {
 			startedProxy = await startEgressGuardProxy({
 				allow: guard.allow,
 				mode: guard.mode,
 				onBlocked: (event) => {
 					const action = event.mode === "block" ? "Blocked" : "Allowed (warn)";
-					const text = `${action} outbound ${event.method} to ${event.host}:${event.port} (add "${event.host}" to egressGuard.allow to permit)`;
-					if (output) {
-						output.announce("egress", text, {
-							raw: formatWarn(text),
-							level: "warn",
-						});
-					} else if (verbose) {
-						console.warn(formatWarn(text));
-					}
+					announceEgress(
+						`${action} outbound ${event.method} to ${event.host}:${event.port} (add "${event.host}" to egressGuard.allow to permit)`,
+					);
 				},
 			});
 			await deps.setEgressProxy(startedProxy);
 		}
+
+		// `allowHostsOf`: each guarded app's hosts, once its secrets are in its env.
+		const reportedKeys = new Set<string>();
+		const learnEgressHosts = (
+			name: string,
+			env: Readonly<Record<string, string>>,
+		) => {
+			if (!guard || guard.allowHostsOf.length === 0) return;
+			if (!guardsApp(guard, name)) return;
+			const proxy = deps.egressProxy?.();
+			if (!proxy) return;
+
+			const { hosts, unresolved } = allowedHostsOf(guard.allowHostsOf, {
+				...process.env,
+				...env,
+			});
+			proxy.allowHosts(hosts);
+			for (const key of unresolved) {
+				if (reportedKeys.has(`${name}|${key}`)) continue;
+				reportedKeys.add(`${name}|${key}`);
+				announceEgress(
+					`egressGuard.allowHostsOf: ${name} has no URL in ${key}, so no host is let through for it. Add ${key} to ${name}'s secrets or env.`,
+				);
+			}
+		};
 
 		try {
 			const pids = await startServerSession(
@@ -322,6 +357,7 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 							}
 						: undefined,
 					reactiveTasks,
+					onAppEnv: learnEgressHosts,
 					deferPublicUrlApps: options.deferPublicUrlApps ?? false,
 					onAppPhase: (name, life, previous) => {
 						if (life.pid !== undefined) deps.ownedServerPids[name] = life.pid;

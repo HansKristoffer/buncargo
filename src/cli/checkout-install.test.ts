@@ -142,6 +142,33 @@ describe("a checkout installs itself", () => {
 		expect(run("exec", "--", "true").stderr).not.toContain(INSTALLING);
 	});
 
+	it("installs and hands over when node_modules lacks the project's buncargo, before a command that runs the project", () => {
+		const { root, run } = checkout();
+		expect(run("status").exitCode).toBe(0);
+		// Installed, stamp current, but buncargo itself gone: not a stale install.
+		rmSync(join(root, "node_modules", "buncargo"), {
+			recursive: true,
+			force: true,
+		});
+
+		// Read-only commands never install; they name the fix.
+		const status = run("status", "--json");
+		expect(status.exitCode).not.toBe(0);
+		expect(status.stderr).not.toContain(INSTALLING);
+		expect(status.stderr).toContain("Run `bun install`");
+
+		const exec = run("exec", "--", "true");
+
+		expect(exec.exitCode).toBe(0);
+		expect(exec.stderr).toContain(
+			`buncargo is not installed in .; ${INSTALLING}`,
+		);
+		expect(JSON.parse(exec.stdout)).toMatchObject({
+			ok: true,
+			argv: ["exec", "--", "true"],
+		});
+	});
+
 	it("stops with the install's failure and the command to run", () => {
 		const { root, run } = checkout();
 		const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));

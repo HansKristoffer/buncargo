@@ -228,7 +228,9 @@ const TOPICS: readonly Topic[] = [
   \`bunx buncargo help\` lists them. When \`--profile\` is omitted and this
   checkout has an active run, \`exec\`, \`run\` and \`env\` inherit that active
   run's profile, live ports and URLs automatically (\`--profile=<name>\`
-  overrides it).`,
+  overrides it). A task with \`egressGuard: true\`, or one borrowing a guarded
+  app's env (\`app\`), runs behind a guard of its own with the config's
+  \`egressGuard\` rules.`,
 	},
 	{
 		name: "db",
@@ -428,7 +430,10 @@ const TOPICS: readonly Topic[] = [
   (\`bun.lock\`, \`pnpm-lock.yaml\`, \`yarn.lock\`, \`package-lock.json\`) changed,
   buncargo runs the repo's own package manager frozen-lockfile install itself
   (postinstall scripts included) and then your command, with the install's
-  output on stderr so \`--json\` stays clean. If that install fails, fix what
+  output on stderr so \`--json\` stays clean. The same happens before
+  \`dev\`, \`run\`, \`exec\` and the other project commands when
+  \`node_modules\` lacks the project's buncargo, and an older \`bunx buncargo\`
+  then hands over to the version the lockfile pins. If that install fails, fix what
   it printed and run the install command manually.
 - \`bunx buncargo secrets check --json\` before tests or a run that needs
   secrets: exit 0 when every Infisical scope is readable, 2 when the session is

@@ -332,3 +332,86 @@ export const FIREBASE_PUBLIC_ENV = [
 	"FIREBASE_STORAGE_EMULATOR_HOST",
 	"FIREBASE_FUNCTIONS_EMULATOR_HOST",
 ] as const;
+
+/**
+ * An address nothing answers on (the discard port): where a client is sent
+ * for an emulator this run does not start, so it fails at once instead of
+ * reaching another checkout's emulator on the SDK's default port.
+ */
+export const UNREACHABLE_EMULATOR_HOST = "127.0.0.1:9";
+
+/** The emulators the web SDK's `connect*Emulator` calls dial, by the variable naming each. */
+const WEB_SDK_EMULATOR_ENV: Partial<Record<FirebaseEmulator, string>> = {
+	auth: "FIREBASE_AUTH_EMULATOR_HOST",
+	firestore: "FIRESTORE_EMULATOR_HOST",
+	database: "FIREBASE_DATABASE_EMULATOR_HOST",
+	storage: "FIREBASE_STORAGE_EMULATOR_HOST",
+	functions: "FIREBASE_FUNCTIONS_EMULATOR_HOST",
+};
+
+/**
+ * {@link UNREACHABLE_EMULATOR_HOST} for each emulator the web SDK dials that
+ * `selected` leaves out, under the name {@link emulatorEnv} would give it.
+ */
+export function unselectedEmulatorEnv(
+	selected: readonly FirebaseEmulator[],
+): Record<string, string> {
+	return Object.fromEntries(
+		Object.entries(WEB_SDK_EMULATOR_ENV)
+			.filter(([name]) => !selected.includes(name as FirebaseEmulator))
+			.map(([, variable]) => [variable, UNREACHABLE_EMULATOR_HOST]),
+	);
+}
+
+/**
+ * The browser SDK's `initializeApp` config for an emulated project. The
+ * emulators never check the API key, and the client uploads nothing without
+ * a default bucket, even to the Storage emulator.
+ */
+export function firebaseWebConfig(projectId: string): string {
+	return JSON.stringify({
+		projectId,
+		apiKey: "fake-api-key",
+		authDomain: "localhost",
+		storageBucket: `${projectId}.appspot.com`,
+	});
+}
+
+/** A jar or zip `firebase-tools` downloads on an emulator's first start. */
+export interface EmulatorDownload {
+	/** What `firebase setup:emulators:<name>` takes. */
+	readonly name:
+		"firestore" | "database" | "pubsub" | "storage" | "ui" | "dataconnect";
+	/** The cache entry's name up to its version (`cloud-firestore-emulator-v1.19.7.jar`). */
+	readonly prefix: string;
+}
+
+/** The emulators with a download of their own; the rest run on the CLI's Node. */
+const EMULATOR_DOWNLOADS: Partial<Record<FirebaseEmulator, EmulatorDownload>> =
+	{
+		firestore: { name: "firestore", prefix: "cloud-firestore-emulator-" },
+		database: { name: "database", prefix: "firebase-database-emulator-" },
+		pubsub: { name: "pubsub", prefix: "pubsub-emulator-" },
+		storage: { name: "storage", prefix: "cloud-storage-rules-runtime-" },
+		dataconnect: { name: "dataconnect", prefix: "dataconnect-emulator-" },
+	};
+
+const UI_DOWNLOAD: EmulatorDownload = { name: "ui", prefix: "ui-v" };
+
+/**
+ * The downloads `selected` (and the Emulator UI, when `ui`) need that the
+ * CLI's cache (`cached`, the names in `~/.cache/firebase/emulators`) lacks.
+ */
+export function missingEmulatorDownloads(
+	selected: readonly FirebaseEmulator[],
+	ui: boolean,
+	cached: readonly string[],
+): EmulatorDownload[] {
+	const needed = [
+		...selected.flatMap((name) => EMULATOR_DOWNLOADS[name] ?? []),
+		...(ui ? [UI_DOWNLOAD] : []),
+	];
+	return needed.filter(
+		(download) => !cached.some((entry) => entry.startsWith(download.prefix)),
+	);
+}

@@ -63,14 +63,22 @@ async function runTask(
 ): Promise<number> {
 	const services = task.requiredServices ?? [];
 	return runForwardingSignals(async (signal) => {
-		const command = () =>
-			env.exec(withAppendedArgs(task.command, extraArgs), {
-				app: task.app,
-				cwd: task.cwd,
-				verbose: true,
-				throwOnError: false,
-				signal,
-			});
+		const command = async () => {
+			// No run's proxy reaches this process: a guarded task gets its own.
+			const guard = await internalsOf(env).startTaskEgressGuard(task, signal);
+			try {
+				return await env.exec(withAppendedArgs(task.command, extraArgs), {
+					app: task.app,
+					cwd: task.cwd,
+					verbose: true,
+					throwOnError: false,
+					signal,
+					...(guard ? { env: guard.env } : {}),
+				});
+			} finally {
+				await guard?.close();
+			}
+		};
 		if (services.length === 0) return command();
 
 		// Before the services: an expired Infisical session stops here, not

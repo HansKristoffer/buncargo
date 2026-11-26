@@ -37,10 +37,12 @@ import {
 	emulatorPorts,
 	FIREBASE_PUBLIC_ENV,
 	type FirebaseEmulator,
+	firebaseWebConfig,
 	generatedFirebaseConfig,
 	selectEmulators,
 	suitePorts,
 	uiEnabled,
+	unselectedEmulatorEnv,
 } from "./emulators";
 import {
 	type FunctionsEnvHandle,
@@ -81,6 +83,8 @@ export {
 	FIREBASE_DEFAULT_PORTS,
 	FIREBASE_EMULATORS,
 	type FirebaseEmulator,
+	firebaseWebConfig,
+	UNREACHABLE_EMULATOR_HOST,
 } from "./emulators";
 export {
 	BUNCARGO_FUNCTIONS_ENV_HEADER,
@@ -160,6 +164,26 @@ export interface FirebaseIntegrationOptions {
 	 * `"NEXT_PUBLIC_"`, `"VITE_"`, `["NEXT_PUBLIC_", "EXPO_PUBLIC_"]`.
 	 */
 	publicEnvPrefix?: string | readonly string[];
+	/**
+	 * What the emulator variables of an emulator the web SDK dials (auth,
+	 * Firestore, Realtime Database, Storage, Functions) hold when this run
+	 * does not start it. `"unreachable"` sets them to `127.0.0.1:9`, where
+	 * nothing answers, so a client fails at once instead of falling back to
+	 * the SDK's default port, which may be another checkout's emulator.
+	 * `"unset"` leaves them out, for a project that reaches the real product.
+	 * `publicEnvPrefix` copies follow. Default: `"unreachable"` when the
+	 * project id starts with `"demo-"` (which can reach nothing real), else
+	 * `"unset"`.
+	 */
+	unselectedEmulators?: "unreachable" | "unset";
+	/**
+	 * Variable to write the browser SDK's config into, as JSON for
+	 * `initializeApp`: the emulated `projectId`, a fake `apiKey`,
+	 * `authDomain: "localhost"` and `storageBucket: "<projectId>.appspot.com"`
+	 * (`"NEXT_PUBLIC_FIREBASE_CONFIG"`). Written as named, without
+	 * `publicEnvPrefix`.
+	 */
+	webConfigEnv?: string;
 	/**
 	 * Keep the emulators' data between runs: imported on start, exported on
 	 * stop and restart. A directory relative to the workdir, or false to start
@@ -476,18 +500,30 @@ export function firebase(
 					if (!isActiveForProfile(envCtx.activeApps)) {
 						return userEnv?.(ports, urls, envCtx) ?? {};
 					}
-					const env = emulatorEnv(
-						selected,
-						emulatorPorts(
-							raw,
+					const unreachable =
+						(options.unselectedEmulators ??
+							(projectId.startsWith("demo-") ? "unreachable" : "unset")) ===
+						"unreachable"
+							? unselectedEmulatorEnv(selected)
+							: {};
+					const env = {
+						...unreachable,
+						...emulatorEnv(
 							selected,
-							offsetOf(ports as Record<string, number>),
+							emulatorPorts(
+								raw,
+								selected,
+								offsetOf(ports as Record<string, number>),
+							),
+							projectId,
 						),
-						projectId,
-					);
+					};
 
 					return {
 						...env,
+						...(options.webConfigEnv
+							? { [options.webConfigEnv]: firebaseWebConfig(projectId) }
+							: {}),
 						...publicEnvCopies(
 							Object.fromEntries(
 								FIREBASE_PUBLIC_ENV.map((name) => [name, env[name]]),

@@ -12,6 +12,7 @@ import { lockfileHash, writeInstallStamp } from "./install-stamp";
 import {
 	decideInstall,
 	decideVersionGuard,
+	notInstalledError,
 	refreshesStaleInstall,
 } from "./version-guard";
 
@@ -91,6 +92,33 @@ describe("decideVersionGuard", () => {
 			packageJson: join(root, "package.json"),
 			reason: "not installed",
 		});
+	});
+
+	it("names the workspace root's package manager for a sub-package that lists buncargo", () => {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-guard-pnpm-"));
+		dirs.push(root);
+		mkdirSync(join(root, ".git"));
+		writeFileSync(join(root, "package.json"), JSON.stringify({ name: "mono" }));
+		writeFileSync(join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+		const app = join(root, "apps", "admin");
+		mkdirSync(app, { recursive: true });
+		writeFileSync(
+			join(app, "package.json"),
+			JSON.stringify({ devDependencies: { buncargo: "catalog:" } }),
+		);
+		const running = { version: "16.1.0", root: join(root, "global") };
+
+		const decision = decideVersionGuard(app, running);
+		expect(decision).toEqual({
+			kind: "not-installed",
+			packageJson: join(app, "package.json"),
+			reason: "not installed",
+			lockfileDir: root,
+		});
+		if (decision.kind !== "not-installed") throw new Error("unreachable");
+		expect(notInstalledError(decision, running, app).hints).toEqual([
+			"Run `pnpm install`, then run the command again.",
+		]);
 	});
 
 	it("refuses an install whose CLI is missing", () => {

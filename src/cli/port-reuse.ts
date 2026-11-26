@@ -1,4 +1,5 @@
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
+import { appDialAuthority } from "../core/ports";
 import {
 	classifyPortOccupant,
 	createPortOwnerSnapshotAsync,
@@ -256,7 +257,8 @@ export async function classifyCliApps(
 						`Cannot verify health for "${name}" without a waitForServer implementation.`,
 					);
 				}
-				const url = `http://localhost:${port}${readiness.path}`;
+				const authority = appDialAuthority(config.host) ?? "localhost";
+				const url = `http://${authority}:${port}${readiness.path}`;
 
 				try {
 					await waitForServer(url, REUSE_PROBE_MS);

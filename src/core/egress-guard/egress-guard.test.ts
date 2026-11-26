@@ -1,16 +1,22 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
 import {
 	createServer as createNetServer,
 	connect as netConnect,
 } from "node:net";
-import { createDevEnvironment } from "../../environment";
+import { join } from "node:path";
+import { createDevEnvironment, internalsOf } from "../../environment";
+import { startFakeInfisical } from "../secrets/fake-infisical.testing";
+import { clearScopeSecretsCache } from "../secrets/index";
 import { freePorts, useTempHome } from "../test-env.testing";
 import {
+	allowedHostsOf,
 	type BlockedEgressEvent,
 	buildNoProxyList,
 	type EgressGuardProxy,
 	egressGuardEnv,
 	guardsApp,
+	guardsTask,
 	isHostAllowed,
 	isLoopbackHost,
 	parseConnectAuthority,
@@ -32,6 +38,7 @@ describe("egressGuard rules", () => {
 		expect(resolveEgressGuard(true, undefined)).toEqual({
 			enabled: true,
 			allow: [],
+			allowHostsOf: [],
 			mode: "block",
 		});
 		expect(resolveEgressGuard(true, false)).toBeUndefined();
@@ -43,6 +50,7 @@ describe("egressGuard rules", () => {
 		).toEqual({
 			enabled: true,
 			allow: ["a.example.com"],
+			allowHostsOf: [],
 			mode: "warn",
 			apps: ["api"],
 		});
@@ -54,8 +62,47 @@ describe("egressGuard rules", () => {
 		).toEqual({
 			enabled: true,
 			allow: ["b.example.com"],
+			allowHostsOf: [],
 			mode: "warn",
 			apps: ["api"],
+		});
+		expect(
+			resolveEgressGuard({ allowHostsOf: ["UNLEASH_URL"] }, { mode: "warn" }),
+		).toMatchObject({ allowHostsOf: ["UNLEASH_URL"], mode: "warn" });
+		expect(
+			resolveEgressGuard(
+				{ allowHostsOf: ["UNLEASH_URL"] },
+				{ allowHostsOf: ["OTHER_URL"] },
+			),
+		).toMatchObject({ allowHostsOf: ["OTHER_URL"] });
+	});
+
+	it("guards a task by its own egressGuard, else by the app it borrows", () => {
+		const guard = resolveEgressGuard({ apps: ["admin"] }, undefined);
+		expect(guardsTask(guard, { egressGuard: true })).toBe(true);
+		expect(guardsTask(guard, { app: "admin" })).toBe(true);
+		expect(guardsTask(guard, { app: "admin", egressGuard: false })).toBe(false);
+		expect(guardsTask(guard, { app: "web" })).toBe(false);
+		expect(guardsTask(guard, {})).toBe(false);
+		expect(guardsTask(undefined, { egressGuard: true })).toBe(false);
+	});
+
+	it("reads allowHostsOf hosts from URL values and names the keys without one", () => {
+		expect(
+			allowedHostsOf(
+				["UNLEASH", "SAME", "MISSING", "BARE", "EMPTY", "PATTERN", "V6"],
+				{
+					UNLEASH: "https://Unleash.Example.com/api",
+					SAME: "https://unleash.example.com:4242/other",
+					BARE: "unleash.example.com",
+					EMPTY: "",
+					PATTERN: "https://*.com/",
+					V6: "http://[2001:db8::5]:8080/",
+				},
+			),
+		).toEqual({
+			hosts: ["unleash.example.com", "2001:db8::5"],
+			unresolved: ["MISSING", "BARE", "EMPTY", "PATTERN"],
 		});
 	});
 
@@ -104,13 +151,25 @@ describe("egressGuard rules", () => {
 		});
 		expect(
 			guardsApp(
-				{ enabled: true, allow: [], mode: "block", apps: ["api"] },
+				{
+					enabled: true,
+					allow: [],
+					allowHostsOf: [],
+					mode: "block",
+					apps: ["api"],
+				},
 				"api",
 			),
 		).toBe(true);
 		expect(
 			guardsApp(
-				{ enabled: true, allow: [], mode: "block", apps: ["api"] },
+				{
+					enabled: true,
+					allow: [],
+					allowHostsOf: [],
+					mode: "block",
+					apps: ["api"],
+				},
 				"web",
 			),
 		).toBe(false);
@@ -187,6 +246,36 @@ describe("egressGuard proxy", () => {
 		expect(blocked).toEqual([
 			{ method: "GET", host: "api.mailjet.com", port: 80, mode: "block" },
 			{ method: "CONNECT", host: "api.stripe.com", port: 443, mode: "block" },
+		]);
+	});
+
+	it("lets a host learned with allowHosts through, and still blocks the rest", async () => {
+		const blocked: BlockedEgressEvent[] = [];
+		const proxy = await startEgressGuardProxy({
+			allow: [],
+			mode: "block",
+			onBlocked: (event) => blocked.push(event),
+		});
+		closers.push(() => proxy.close());
+		// `.invalid` never resolves (RFC 6761): let through, the dial fails with a 502.
+		const connect = (host: string) =>
+			sendRaw(
+				proxy.port,
+				`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\n\r\n`,
+			);
+
+		expect(await connect("unleash.invalid")).toContain("403 Forbidden");
+		proxy.allowHosts(["unleash.invalid"]);
+
+		expect(await connect("unleash.invalid")).toContain("502 Bad Gateway");
+		expect(await connect("other.invalid")).toContain("403 Forbidden");
+		// A learned host is an exact name, never a pattern.
+		proxy.allowHosts(["*.invalid"]);
+		expect(await connect("third.invalid")).toContain("403 Forbidden");
+		expect(blocked.map((event) => event.host)).toEqual([
+			"unleash.invalid",
+			"other.invalid",
+			"third.invalid",
 		]);
 	});
 
@@ -293,5 +382,133 @@ describe("egressGuard proxy", () => {
 			proxy: string | null;
 		};
 		expect(otherRes.proxy).toBeNull();
+	});
+
+	it("lets a guarded app through to the host of a URL its secret holds, and no other", async () => {
+		const infisical = startFakeInfisical();
+		infisical.projects.backend = {
+			secrets: { UNLEASH_SERVER_API_URL: "https://unleash.invalid/api" },
+		};
+		const savedPath = process.env.BUNCARGO_INFISICAL_PATH;
+		process.env.BUNCARGO_INFISICAL_PATH = infisical.cliPath;
+		closers.push(async () => {
+			infisical.stop();
+			clearScopeSecretsCache();
+			if (savedPath === undefined) delete process.env.BUNCARGO_INFISICAL_PATH;
+			else process.env.BUNCARGO_INFISICAL_PATH = savedPath;
+		});
+
+		const [adminPort] = freePorts(1);
+		const env = createDevEnvironment(
+			{
+				projectPrefix: "egress-hosts",
+				services: {},
+				egressGuard: { allowHostsOf: ["UNLEASH_SERVER_API_URL"] },
+				apps: {
+					admin: {
+						port: adminPort,
+						devCommand: `${JSON.stringify(process.execPath)} -e 'Bun.serve({ port: Number(process.env.PORT), fetch: () => Response.json({ proxy: process.env.HTTPS_PROXY ?? null }) });'`,
+						healthEndpoint: "/",
+						secrets: { projectId: "backend", siteUrl: infisical.siteUrl },
+					},
+				},
+			},
+			{ root: home() },
+		);
+
+		await env.start({ watchdog: false, verbose: false });
+		closers.push(() => env.stop({ verbose: false }));
+
+		const { proxy } = (await (await fetch(env.loopbackUrls.admin)).json()) as {
+			proxy: string;
+		};
+		const proxyPort = Number(new URL(proxy).port);
+		const connect = (host: string) =>
+			sendRaw(
+				proxyPort,
+				`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\n\r\n`,
+			);
+
+		expect(await connect("unleash.invalid")).toContain("502 Bad Gateway");
+		expect(await connect("other.invalid")).toContain("403 Forbidden");
+	});
+
+	it("gives a guarded task run outside a run a proxy of its own, with its allowHostsOf hosts", async () => {
+		const env = createDevEnvironment(
+			{
+				projectPrefix: "egress-task",
+				services: {},
+				egressGuard: { allowHostsOf: ["UNLEASH_URL"], apps: ["admin"] },
+				env: () => ({ UNLEASH_URL: "https://unleash.invalid/api" }),
+				apps: { admin: { port: 4000, devCommand: false } },
+			},
+			{ root: home() },
+		);
+		const internals = internalsOf(env);
+
+		expect(
+			await internals.startTaskEgressGuard({ command: "true" }),
+		).toBeUndefined();
+		expect(
+			await internals.startTaskEgressGuard({
+				command: "true",
+				app: "admin",
+				egressGuard: false,
+			}),
+		).toBeUndefined();
+
+		const guard = await internals.startTaskEgressGuard({
+			command: "true",
+			egressGuard: true,
+		});
+		if (!guard) throw new Error("Expected a guarded task");
+		closers.push(() => guard.close());
+		expect(guard.env.NODE_USE_ENV_PROXY).toBe("1");
+		const proxyPort = Number(new URL(guard.env.HTTPS_PROXY).port);
+		const connect = (host: string) =>
+			sendRaw(
+				proxyPort,
+				`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\n\r\n`,
+			);
+
+		expect(await connect("unleash.invalid")).toContain("502 Bad Gateway");
+		expect(await connect("other.invalid")).toContain("403 Forbidden");
+	});
+
+	it("runs a reactive task behind the run's guard when it sets egressGuard", async () => {
+		const [apiPort] = freePorts(1);
+		const root = home();
+		const stamp = join(root, "task-proxy.txt");
+		const env = createDevEnvironment(
+			{
+				projectPrefix: "egress-reactive",
+				services: {},
+				egressGuard: { apps: ["api"] },
+				apps: {
+					api: {
+						port: apiPort,
+						devCommand: `${JSON.stringify(process.execPath)} -e 'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("ok") });'`,
+						healthEndpoint: "/",
+					},
+				},
+				tasks: {
+					stamp: {
+						command: `printf '%s' "$HTTPS_PROXY" > ${JSON.stringify(stamp)}`,
+						onAppReady: ["api"],
+						egressGuard: true,
+					},
+				},
+			},
+			{ root },
+		);
+
+		await env.start({ watchdog: false, verbose: false });
+		closers.push(() => env.stop({ verbose: false }));
+
+		const deadline = performance.now() + 5000;
+		while (!existsSync(stamp) && performance.now() < deadline) {
+			await Bun.sleep(20);
+		}
+		expect(readFileSync(stamp, "utf8")).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
 	});
 });

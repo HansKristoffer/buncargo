@@ -10,8 +10,12 @@ and `dev-tunnels.ts` hold the pieces it orchestrates.
   first found from the working directory up to the repository root) is another version, it
   `execve`s that package's `bin` with the same arguments, so the pid, stdio and signals stay the
   run's. `BUNCARGO_REEXEC` stops a second hand-over and is removed before anything starts, so
-  apps never inherit it. A `package.json` listing buncargo with nothing installed is a
-  `CliError`. A CLI run from `src/` is never replaced: that is someone testing the source. It
+  apps never inherit it. A `package.json` listing buncargo with nothing installed, when a
+  lockfile sits at or above it (`lockfileDir`) and the command runs the project
+  (`refreshesStaleInstall`), installs there through `installCheckout` (its
+  `stillNeeded` asks the version guard again under the checkout's lock) and decides again, so it
+  hands over to the locked version; without a lockfile, or when the install still leaves it
+  missing, it is a `CliError` (`notInstalledError`) naming the workspace root's install command. A CLI run from `src/` is never replaced: that is someone testing the source. It
   reads files only; a matching version costs a few `stat`s.
 - Before that decision, a checkout installs itself (`checkout-install.ts`): when a `package.json`
   from the working directory up lists buncargo and the first lockfile (`bun.lock`,

@@ -69,6 +69,7 @@ export const APP_KEYS = {
 	prodCommand: "string",
 	buildCommand: "string",
 	cwd: "string",
+	host: "string",
 	healthEndpoint: "shape",
 	healthTimeout: "duration",
 	extraPorts: "shape",
@@ -208,6 +209,7 @@ export const TASK_KEYS = {
 	command: "shape",
 	description: "string",
 	app: "string",
+	egressGuard: "boolean",
 	cwd: "string",
 	requiredServices: "shape",
 	onAppReady: "shape",
@@ -227,6 +229,7 @@ export const LINK_KEYS = {
 export const EGRESS_GUARD_KEYS = {
 	enabled: "boolean",
 	allow: "shape",
+	allowHostsOf: "shape",
 	mode: "shape",
 	apps: "shape",
 } as const satisfies Record<keyof EgressGuardConfig, FieldCheck>;

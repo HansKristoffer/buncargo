@@ -96,6 +96,25 @@ describe("unknown config boundary", () => {
 		expect(errors).toContain('Worker "jobs" cannot set extraPorts');
 		expect(errors).not.toContain("9099");
 	});
+	it("takes an app host only where named URLs still reach the app", () => {
+		const errors = validateConfig({
+			...config(),
+			apps: {
+				admin: { port: 3000, devCommand: "next dev", host: "127.0.0.1" },
+				all: { port: 3001, devCommand: "x", host: "::" },
+				v6: { port: 3002, devCommand: "x", host: "::1" },
+				lan: { port: 3003, devCommand: "x", host: "192.168.1.20" },
+				jobs: { kind: "worker", host: "127.0.0.1", devCommand: "x" },
+			},
+		});
+		const reason =
+			'must be "127.0.0.1", "0.0.0.0" or "::": named URLs reach an app only on IPv4 loopback or a wildcard bind';
+		expect(errors).toEqual([
+			`apps.v6.host ${reason}`,
+			`apps.lan.host ${reason}`,
+			'Worker "jobs" cannot set host',
+		]);
+	});
 	it("validates primary-app references even with no apps", () => {
 		expect(
 			validateConfig({

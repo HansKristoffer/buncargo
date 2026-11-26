@@ -152,9 +152,13 @@ its last install (a branch switch) before a command that runs the project (`dev`
 `logs`, `predeploy` or the menu bar's buttons): the CLI prints one line, runs that package
 manager's frozen-lockfile install (the project's postinstall scripts included, its output on stderr
 so `--json` stays clean), and then runs the command. When that install fails, it stops with the
-install's output and prints the checkout's install command. A project without a lockfile whose
-`package.json` lists buncargo but has none installed stops and asks you to install it instead of
-running a version the project did not choose.
+install's output and prints the checkout's install command. A checkout whose `node_modules` lacks
+the project's buncargo (removed, or added to the lockfile since) installs the same way before a
+command that runs the project and then hands over to it; other commands stop with the install
+command. A project without a lockfile whose `package.json` lists
+buncargo but has none installed stops and asks you to install it, with the install command of the
+package manager that owns the workspace root (`pnpm install` in a pnpm monorepo, even from a
+sub-package), instead of running a version the project did not choose.
 
 `buncargo env` prints JSON (`portOffset`, `portOffsetProvenance`: `hash` | `claim` | `env` | `shifted` | `unallocated`), including `vars`: the variables `exec`, tasks and the apps are given, without their Infisical secrets. `--get ports.api` prints one raw value for scripts, and a bare name (`--get DATABASE_URL`) reads from `vars`. `--export` prints `vars` as quoted `export` lines.
 
@@ -298,7 +302,7 @@ export default defineDevConfig({
 
 **Setup checks** (`setupChecks`) are preconditions of the checkout. `buncargo dev` runs the fast ones before it starts anything and stops with each failing check's fix, instead of failing deep inside whichever app imports the missing file first. `buncargo setup` runs all of them: core checks (Bun matches `.bun-version`, the container runtime is up, `.buncargo/` and `gitignore: true` generated files are ignored, Infisical is readable, the Prisma client matches the schema), then the config's, then the integrations' (Shopify: CLI version, login, link, `web_directories`, tomls agreeing). It offers each fix in turn, runs them all with `--yes` or in CI, and checks again. It is idempotent. `buncargo doctor` lists them too. A check returns `true`, `false` or `{ ok, detail }`; `fix` is a command or a function; `fast: false` keeps an expensive check out of `dev`; `severity: "warning"` reports without failing. A check that throws counts as failed. `exists(path)` resolves against the monorepo root, whatever directory `dev` was started from.
 
-**Tasks** are the finite commands a project runs on demand or reactively during `buncargo dev`. `buncargo run shop:seed` is `exec` with that app's env, secrets and working directory, after starting `requiredServices` (and their Compose dependencies) if they are down. When `--profile` is omitted and this checkout has an active run in `~/.buncargo/runs.json`, `buncargo run` inherits the active run's profile, live ports, named URLs, and captures (pass `--profile=<name>` to override). Services a task starts are held on the same idle timer as a `dev` run's. Arguments after `--` are appended to the command without being re-parsed by the shell. `buncargo run` alone lists the tasks, `buncargo help` shows them too, and BuncargoBar puts a run button next to each one.
+**Tasks** are the finite commands a project runs on demand or reactively during `buncargo dev`. `buncargo run shop:seed` is `exec` with that app's env, secrets and working directory, after starting `requiredServices` (and their Compose dependencies) if they are down. When `--profile` is omitted and this checkout has an active run in `~/.buncargo/runs.json`, `buncargo run` inherits the active run's profile, live ports, named URLs, and captures (pass `--profile=<name>` to override). Services a task starts are held on the same idle timer as a `dev` run's. Arguments after `--` are appended to the command without being re-parsed by the shell. `buncargo run` alone lists the tasks, `buncargo help` shows them too, and BuncargoBar puts a run button next to each one. A task runs behind the [egress guard](#egress-guard) when it sets `egressGuard: true`, or when it borrows a guarded app's env with `app` and does not set `egressGuard: false`; `buncargo run` starts a proxy of its own for it with the config's rules, since a run's proxy belongs to that run's process.
 
 Tasks can also run **reactively** during `buncargo dev` (and library `env.start()`) for finite codegen workflows such as OpenAPI client generation against a running local backend:
 
@@ -328,7 +332,7 @@ export default defineDevConfig({
 
 - **Triggers:** `onAppReady` waits until every listed app is healthy on initial boot and re-runs whenever any of those apps restarts and becomes healthy again (e.g. a Fastify server restarts after a Zod route edit and the task fetches `$CORE_LOOPBACK_URL/docs/yaml`). `watch` runs the finite command when watched files change (exit code `0` is success, never a crashed worker; disabled by `--no-watch`). Both can be combined on one task, and any reactive task can also be triggered manually via `buncargo run <name>` or by pressing `r` in its TUI pane.
 - **Single-flight & non-fatal:** When triggers fire while a task is already running, buncargo coalesces them into at most one follow-up run so generators never overlap. Failures (e.g. a mid-edit syntax error) report in the task's TUI pane (`exit <n>`) and `.buncargo/logs/<run>/<name>.log` without killing the dev session, and recover on the next trigger.
-- **Environment:** Each run receives the resolved run environment (active profile, Infisical secrets, live loopback and named URLs of the running apps). Reactive task names cannot collide with `apps.<name>`, `services.<name>`, or the reserved log names `buncargo`, `seed`, and `egress`.
+- **Environment:** Each run receives the resolved run environment (active profile, Infisical secrets, live loopback and named URLs of the running apps), behind the run's egress guard when the task is guarded (`egressGuard: true`, or a guarded `app`). Reactive task names cannot collide with `apps.<name>`, `services.<name>`, or the reserved log names `buncargo`, `seed`, and `egress`.
 
 **Profiles** replace a `dev:*` script per combination of apps or environment mode (such as local emulators vs cloud dev). Each profile sets at least one of `apps`, `env` (static values or an `(ports, urls, ctx) => ...` builder composed over the config's `env`; setting a key to `undefined` drops an inherited computed variable such as an emulator host), `secrets` (overrides merged onto the config-level `secrets`, a layered scope list, or `false` to disable secret fetching), `links` (`false` to disable a configured cross-repo link in this profile, or `{ required?, apps?, services?, onChange?, profile? }` to override its requirements), `egressGuard` (`boolean | EgressGuardConfig` to enable, disable, or customize the local outbound proxy), or `integrations` (`false` to drop integrations or an array overriding matching integrations by `name`, e.g. a faster `firebase({ emulators: [...] })` subset). `buncargo dev --profile=full` applies that profile's overrides and records the active profile on the run entry in `~/.buncargo/runs.json`; omitting `apps` keeps every app selected. When a profile omits an integration's app (such as `firebase`), that integration automatically skips emulator env vars, credential isolation, and setup checks. A profile named `default` applies automatically when no `--profile` is passed and no active run is recorded. `buncargo env`, `buncargo exec`, `buncargo run`, `buncargo generate`, `buncargo status`, `buncargo url`, and `buncargo open` inherit the active run's profile automatically unless `--profile=<name>` is passed; `buncargo links`, `buncargo ci`, `buncargo secrets ls`, `buncargo secrets check`, and `getEnvVar(config, name, { profile })` accept a profile too. `--profile` and `--apps` cannot be combined on `dev`.
 
@@ -824,6 +828,14 @@ A selection that skips the seed is fine for `dev`, but `dev --seed` asks for it:
 there it fails before anything starts, naming the services or `afterApps` the seed needs
 (`--seed --apps=web` when `web` does not require `postgres` or `firebase`).
 
+When a profile's `apps` or `--apps` leaves out an app `seed.afterApps` names (a lite
+profile without `admin`, with `afterApps: ["firebase", "admin"]`), `dev` and library
+`start()` skip the seed and start the rest: neither `seed.check` nor `seed.command` runs,
+and the run prints one line naming the missing apps (`Seed skipped: seed.afterApps waits
+for app admin, which this run does not start.`) and the command that seeds: `dev --seed` with
+the current `--apps` plus the missing ones, or without `--apps` and `--profile`. A forced seed in `start({ seed: "force" })`
+reports `not-needed` the same way.
+
 When `seed.afterApps` names app-hosted prerequisites (such as `afterApps: ["firebase"]`
 for the Firebase Emulator Suite), buncargo spawns those apps (and their transitive
 `startAfter` dependencies) first, waits for them to report ready, and then runs
@@ -1239,7 +1251,7 @@ Buncargo records every Serve entry it adds in `~/.buncargo/tailscale-serve.json`
 
 ### Loopback URLs
 
-Some clients cannot follow a named HTTPS URL: Playwright does not trust the local CA, the Stripe CLI fails the HTTP→HTTPS redirect, and GUI database clients want a plain connection string. Enabling `hosts` rewrites `urls.<name>` in place, so those consumers get `loopbackUrls` instead: the same set of services and apps, always addressed as `http://localhost:<port>`.
+Some clients cannot follow a named HTTPS URL: Playwright does not trust the local CA, the Stripe CLI fails the HTTP→HTTPS redirect, and GUI database clients want a plain connection string. Enabling `hosts` rewrites `urls.<name>` in place, so those consumers get `loopbackUrls` instead: the same set of services and apps, addressed as `http://localhost:<port>`, or at the address an app listens on when it sets `host` (`http://127.0.0.1:<port>` for `host: "127.0.0.1"`), since `localhost` can resolve to `::1` first.
 
 It is available everywhere the URLs are: `env.loopbackUrls`, the `env()` and `envVars()` context, `HookContext`, the `<NAME>_LOOPBACK_URL` env var, and `buncargo env --get loopbackUrls.api` for shell scripts. There is no `<app>Local` member. That key is the LAN IP, a different address for a different purpose (mobile devices on the network).
 
@@ -1562,7 +1574,7 @@ credentials out of browser and Expo public environment mappings.
 | `NODE_ENV` | Shared env | `development` unless production build |
 | `<NAME>_PORT` | Shared env | Assigned port for each port-bearing service/app. `<NAME>` is the key upper-cased with `-` as `_`: `my-db` is `MY_DB_PORT` |
 | `<NAME>_URL` | Shared env | Local URL. Named HTTPS when hosts are active (`https://api.myapp.localhost`, or `https://<machine>.ts.net:<port>` with `BUNCARGO_HOSTS=tailscale`) |
-| `<NAME>_LOOPBACK_URL` | Shared env | Always `http://localhost:<port>`, never rewritten by named hosts |
+| `<NAME>_LOOPBACK_URL` | Shared env | `http://localhost:<port>` (an app with `host`: that address), never rewritten by named hosts |
 | `<NAME>_PUBLIC_URL` | Shared env | Tunnel URL while a tunnel is active |
 | `NODE_EXTRA_CA_CERTS` | Shared env | Path to the mkcert CA when named hosts are active |
 | `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` | Shared env | `.localhost` (or `.<tld>`), or the Tailscale name, so Vite accepts the named Host |
@@ -1571,7 +1583,7 @@ credentials out of browser and Expo public environment mappings.
 | `CLICKHOUSE_URL` | Shared env | From `service.clickhouse()` |
 | `CLICKHOUSE_NATIVE_PORT` | Shared env | ClickHouse `secondaryPort` |
 | `PORT` | Server app process | That server app's assigned port; not generated for workers |
-| `HOST` | Server app process | `0.0.0.0`; not generated for workers |
+| `HOST` | Server app process | The app's `host`, else `0.0.0.0`; not generated for workers |
 | `ASTRO_DEV_BACKGROUND` / `ASTRO_PREVIEW_BACKGROUND` | Per-app process | Default `1` keeps Astro in the foreground under buncargo supervision; override in `staticEnv` or `envVars` |
 | `BUNCARGO_APP_NAME` | Per-app process | The app's key in `apps`, so a framework plugin knows which app it is |
 | `BUNCARGO_APP_HOSTNAME` | Per-app process | That app's named host (only when loopback named hosts are active) |
@@ -1600,13 +1612,13 @@ defineDevConfig({
 });
 ```
 
-It fetches the way `hanzio/secrets` does, with the same defaults. The CLI is asked only for its session token for `siteUrl`. When `organizationId` names another organization, that token is exchanged for one scoped to it, so projects in different organizations run side by side without `infisical switch`, and the CLI's own session is never switched. The secrets themselves come over HTTP. With `INFISICAL_CLIENT_ID`/`INFISICAL_CLIENT_SECRET` (CI), or without them a machine identity in `~/.infisical/universal-auth.json` for the same `siteUrl` (agentgate keeps one there on every machine; `INFISICAL_UNIVERSAL_AUTH_FILE` overrides the path), a universal-auth identity is used instead of the CLI for apps as well as commands. Every consumer of the same scope shares the cached fetch, so machine-auth app startup receives injection too.
+It fetches the way `hanzio/secrets` does, with the same defaults. The CLI is asked only for its session token for `siteUrl`. When `organizationId` names another organization, that token is exchanged for one scoped to it, so projects in different organizations run side by side without `infisical switch`, and the CLI's own session is never switched. Without `organizationId`, a login that spans several organizations needs none: when the session's own organization is refused the project (HTTP 403), buncargo lists the login's organizations (`GET /api/v1/organization`), tries the project in each of the others, and remembers the one that answers for the project's other scopes in that process. An organization that will not take the session (MFA, SSO or a policy) is skipped rather than ending the search. When none can read it, the error keeps Infisical's own refusal, adds the organizations it tried, and names the fix: access to the project's environment and path, or the `infisical login` for an organization that would not take the session. The secrets themselves come over HTTP. With `INFISICAL_CLIENT_ID`/`INFISICAL_CLIENT_SECRET` (CI), or without them a machine identity in `~/.infisical/universal-auth.json` for the same `siteUrl` (agentgate keeps one there on every machine; `INFISICAL_UNIVERSAL_AUTH_FILE` overrides the path), a universal-auth identity is used instead of the CLI for apps as well as commands. Every consumer of the same scope shares the cached fetch, so machine-auth app startup receives injection too.
 
 **Layered scopes & `.infisical.json`.** `secrets` on the config, an app, a migration, `seed`, `exec`, or a profile accepts either a single scope object or an ordered array of scope objects (`SecretsScopeInput`). When `projectId` is omitted, buncargo reads `workspaceId` from `<root>/.infisical.json` if present. Each layer inherits connection defaults (`projectId`, `organizationId`, `environment`, `siteUrl`, `path`) from the config-level `secrets` (or the base layer) without leaking `only`/`exclude`/`required` filters across layers; when a profile supplies multiple layered scopes, apps declaring their own `path` preserve the profile's extra overlay scopes. Layers are fetched in parallel, share the same `folderKey` cache when they read the same folder with different filters, and merge strictly in declared order (later layers override earlier ones). `required` keys are aggregated across all layers. `only` and `exclude` accept both exact key names and `*` / `?` glob patterns (e.g. `exclude: ["FB_PRIVATE_KEY_*"]`).
 
 **Where secrets go.** Apps get their own scope(s). Migrations, the seed, `buncargo exec`, `buncargo prisma`, tasks and hooks' `ctx.exec` get theirs too: `migrations[].secrets`, `seed.secrets`, `exec --app=<name>` (that app's scope), otherwise the config-level `secrets`. A profile's `secrets` overrides the config-level defaults (for example switching `environment` from `"local"` to `"dev"`, or setting `secrets: false` for an offline profile) before app scopes inherit from it. `secrets: false` turns them off for one app or command, including startup prefetch. Set config-level `secrets: false` to disable all buncargo secret requests for that environment, even when apps, seeders or migrations declare explicit scopes. This is useful when a reusable config is overridden for offline CI. `mergeConfigs(base, { secrets: false })` preserves the opt-out; an explicit scope override can re-enable it. The opt-out controls buncargo fetching; applications still validate their own configuration and must receive synthetic test inputs. Precedence, lowest first: the secrets, then the developer's own exported environment, then the computed env. So `export OPENAI_API_KEY=sk-local` still wins in that shell. Apps without a `secrets` block are untouched by the app injection.
 
-**An expired session stops the run.** Without an Infisical CLI session for a `siteUrl` (none, an expired one, or a CLI that starts its interactive login), `buncargo dev`, `run`, `exec` and library `start()` fail fast with `INFISICAL_AUTH_EXPIRED` before anything starts, within a few seconds, and name the fix: `infisical login --domain=<siteUrl>` or configuring a Machine Identity. buncargo's own call to the CLI never logs in: its stdin is closed, `BROWSER=false` blocks browser launches, a login prompt ends it at once, and it gets 2 seconds. `dev` checks the selected apps' scopes and the config-level one (`--up-only` skips it), `run` and `exec` the scope of the command, `start()` the scopes of what it starts. A machine identity needs no session and skips the check. This fail-fast behaviour applies in headless/non-TTY shells and CI too (stopping expired sessions from letting apps spawn hanging browser logins); only a shell that exports `INFISICAL_TOKEN` or `INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN` for the apps' own loaders keeps warning. The check is the session token the fetches use anyway, so it adds no CLI process. When the CLI times out or fails and `siteUrl` does not answer either, buncargo is offline or Infisical is down, not logged out: the run warns that Infisical is unreachable and goes on, and each app's own loader fetches its own. A 403 is no login problem either: the warning names the project and the session's organization, and the fix is `secrets.organizationId` or the project's access.
+**An expired session stops the run.** Without an Infisical CLI session for a `siteUrl` (none, an expired one, or a CLI that starts its interactive login), `buncargo dev`, `run`, `exec` and library `start()` fail fast with `INFISICAL_AUTH_EXPIRED` before anything starts, within a few seconds, and name the fix: `infisical login --domain=<siteUrl>` or configuring a Machine Identity. buncargo's own call to the CLI never logs in: its stdin is closed, `BROWSER=false` blocks browser launches, a login prompt ends it at once, and it gets 2 seconds. `dev` checks the selected apps' scopes and the config-level one (`--up-only` skips it), `run` and `exec` the scope of the command, `start()` the scopes of what it starts. A machine identity needs no session and skips the check. This fail-fast behaviour applies in headless/non-TTY shells and CI too (stopping expired sessions from letting apps spawn hanging browser logins); only a shell that exports `INFISICAL_TOKEN` or `INFISICAL_UNIVERSAL_AUTH_ACCESS_TOKEN` for the apps' own loaders keeps warning. The check is the session token the fetches use anyway, so it adds no CLI process. When the CLI times out or fails and `siteUrl` does not answer either, buncargo is offline or Infisical is down, not logged out: the run warns that Infisical is unreachable and goes on, and each app's own loader fetches its own. A 403 is no login problem either: after trying the login's other organizations, the warning names the project and the organizations, and the fix is the project's access (or `secrets.organizationId` when the site cannot list them).
 
 **Other fetch failures.** A signed-in fetch that fails (a missing project or environment, no access, the network) warns once per scope and continues with environment/computed values. Apps can fall back to their own loader; `secrets.required` prevents startup when declared required keys are still absent. Commands retain responsibility for validating their inputs. Machine HTTP failures never switch to CLI authentication.
 
@@ -1619,6 +1631,34 @@ It fetches the way `hanzio/secrets` does, with the same defaults. The CLI is ask
 Apart from a missing session, a failed fetch warns once and continues; an app's own loader then does what it does today. Values are never logged, never written to a state file, and never included in an error: neither the CLI's output nor a response body is echoed. An empty value is never injected, since a blank variable would read as "already set".
 
 Defaults: `siteUrl` is `https://eu.infisical.com` (like hanzio; it was `app.infisical.com` before the next major), `environment` is `SECRETS_ENV` or `dev`, `path` is `/`.
+
+### Egress guard
+
+`egressGuard` runs a loopback proxy for the run and points the guarded apps at it (`HTTP_PROXY`, `HTTPS_PROXY`, `grpc_proxy`, `NO_PROXY`, `NODE_USE_ENV_PROXY=1`), so dev credentials cannot reach an outside API by accident. Loopback, `*.localhost` and private addresses always pass. Anything else needs a rule: `"block"` mode answers it with a 403 and logs it under `egress`, `"warn"` logs it and lets it through.
+
+```ts
+defineDevConfig({
+  egressGuard: {
+    allow: ["api.anthropic.com", "*.unleash-hosted.com"],
+    // Hosts known only once secrets load: the host of each key's URL.
+    allowHostsOf: ["UNLEASH_SERVER_API_URL"],
+    apps: ["admin"],
+  },
+});
+```
+
+`allow` is fixed when the config loads. `allowHostsOf` names env or secret keys whose values are URLs, for a host that only exists as a secret. It is read from each guarded app's own final environment as the app starts (its Infisical secrets, its `envVars` and `staticEnv`, and the shell's exported values), and the hostname of each URL is added to the run's allowlist on any port: `https://unleash.example.com/api` lets `unleash.example.com` through and nothing else. Hosts are added for the run, so every guarded process of the run can reach a host one of them resolved. A key that is unset, or holds no URL, lets nothing through, and the run says so in the `egress` log. A profile's `egressGuard` object replaces `allow`, `allowHostsOf`, `mode` and `apps` field by field.
+
+Tasks get the guard too. `egressGuard: true` on a task runs it behind the config's guard without borrowing an app's env; a task that borrows a guarded app's env (`app: "admin"`) is guarded unless it sets `egressGuard: false`. A reactive task in a `dev` run uses the run's proxy, and `buncargo run <task>` starts one of its own for the task's lifetime, with the same `allow`, `allowHostsOf` (read from the task's env) and `mode`. `egressGuard: true` needs a top-level `egressGuard`; a profile that turns the guard off leaves the task unguarded too.
+
+```ts
+defineDevConfig({
+  egressGuard: { allowHostsOf: ["UNLEASH_SERVER_API_URL"] },
+  tasks: {
+    parity: { command: "bun scripts/parity.ts", egressGuard: true },
+  },
+});
+```
 
 ### Vite plugin
 
@@ -1708,7 +1748,7 @@ The configuration reference covers the main public options; `src/types/all-types
 | `apps` | `Record<string, AppConfig>` | `undefined` | Servers and portless workers to orchestrate |
 | `links` | `Record<string, LinkConfig>` | `undefined` | Cross-repo links to other buncargo projects' live runs (`project`, `path?`, `required?`, `apps?`, `services?`, `onChange?`, `profile?`). Exposed on `ctx.links` and `env.links`. See [cross-repo linking](#cross-repo-linking) |
 | `exportEnv` | `string[]` | `[]` | Non-secret shared env var names published to linked checkouts via `runs.json` (`ctx.links.<name>.env`); `firebase()` adds its emulator variables automatically |
-| `egressGuard` | `boolean \| { enabled?, allow?, mode?, apps? }` | `undefined` (off) | Built-in local deny-by-default HTTP/CONNECT egress proxy (`HTTP_PROXY`/`HTTPS_PROXY`/`grpc_proxy`/`NO_PROXY`/`NODE_USE_ENV_PROXY=1`); loopback and RFC1918 addresses bypass automatically, `allow` accepts exact hosts or `*.domain` patterns, `mode` is `"block"` (default) or `"warn"`, and `apps` scopes injection to selected apps |
+| `egressGuard` | `boolean \| { enabled?, allow?, allowHostsOf?, mode?, apps? }` | `undefined` (off) | Built-in local deny-by-default HTTP/CONNECT egress proxy (`HTTP_PROXY`/`HTTPS_PROXY`/`grpc_proxy`/`NO_PROXY`/`NODE_USE_ENV_PROXY=1`); loopback and RFC1918 addresses bypass automatically, `allow` accepts exact hosts or `*.domain` patterns, `allowHostsOf` lets through the hosts of URL-valued env or secret keys, `mode` is `"block"` (default) or `"warn"`, and `apps` scopes injection to selected apps. See [egress guard](#egress-guard) |
 | `env` | `(ports, urls, ctx) => Record<string, string \| number>` | `undefined` | Shared overlay merged onto computed ports/urls for every process |
 | `hooks` | `DevHooks` | `undefined` | Lifecycle hooks |
 | `migrations` | `MigrationConfig[]` | `[]` | Selected custom migrations, in order after automatic Prisma migrations for the selected database |
@@ -1719,7 +1759,7 @@ The configuration reference covers the main public options; `src/types/all-types
 | `secrets` | `SecretsScopeInput \| false` | `undefined` | Defaults (or layered scopes) for every app's `secrets`; `false` disables all fetching |
 | `setupChecks` | `{ name, check: ({ root }) => boolean \| Promise<boolean>, fix? }[]` | `[]` | Preconditions `dev` verifies first. See [checks](#checks-tasks-and-profiles) |
 | `preflight` | `{ name, apps?, run(ctx) }[]` | `[]` | Steps `dev` runs with the terminal before starting. See [preflight](#preflight) |
-| `tasks` | `Record<string, { command, description?, app?, cwd?, requiredServices?, onAppReady?, watch? }>` | `{}` | One-shot scripts for `buncargo run <name>`, and reactive codegen tasks (`onAppReady`, `watch`) that run during `dev` |
+| `tasks` | `Record<string, { command, description?, app?, egressGuard?, cwd?, requiredServices?, onAppReady?, watch? }>` | `{}` | One-shot scripts for `buncargo run <name>`, and reactive codegen tasks (`onAppReady`, `watch`) that run during `dev`. `egressGuard: true` runs one behind the config's egress guard |
 | `profiles` | `Record<string, { apps?, env?, secrets?, links?, egressGuard?, integrations?, description? }>` | `{}` | Named profiles (`dev --profile`, `env --profile`, `links --profile`, `secrets --profile`); `default` applies when no `--profile` is passed |
 | `integrations` | `BuncargoIntegration[]` | `[]` | `shopify()`, `expo()`, …; applied in order before validation |
 | `generatedFiles` | `{ path, render(ctx), gitignore? }[]` | `[]` | Files rendered from ports, URLs and captures. See [captures](#captured-output-and-generated-files) |
@@ -1771,6 +1811,7 @@ Validation rejects a key no section takes, so a misspelt `healthEndpont` fails i
 | `prodCommand` | `string` | `devCommand` | Production start command |
 | `buildCommand` | `string` | `undefined` | Production build command |
 | `cwd` | `string` | repo root | Working directory relative to root |
+| `host` | `string` | `"0.0.0.0"` | Address the server listens on, passed as `HOST`: `"127.0.0.1"` keeps it off the network. buncargo dials it there too: `<NAME>_LOOPBACK_URL`, its localhost `<NAME>_URL`, health checks, port reuse and `--expose` tunnels. A server that reads no `HOST` takes it from its command (`next dev --hostname=$HOST`). `"127.0.0.1"`, `"0.0.0.0"` or `"::"`, the binds named URLs and Tailscale Serve still reach; not for workers |
 | `healthEndpoint` | `string \| false` | `"/"` | HTTP path to wait on. `false` skips the wait |
 | `healthTimeout` | `number` | `60000` (`120000` in CI) | App readiness timeout (ms) |
 | `readyWhen` | `RegExp` | `undefined` | Ready once the app's output matches, instead of its `healthEndpoint`. See [ready by output](#ready-by-output) |
@@ -1857,7 +1898,7 @@ Set `seed.beforeApps: false` to overlap the seed and app startup. `afterServers`
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `requiredServices` | `readonly string[]` | any selected service (optional when `afterApps` is set) | All listed services must be selected; `[]` permits app-only preparation |
-| `afterApps` | `readonly string[]` | `undefined` | Apps that must report ready before `seed.check` and `seed.command` run (for example `["firebase"]`) |
+| `afterApps` | `readonly string[]` | `undefined` | Apps that must report ready before `seed.check` and `seed.command` run (for example `["firebase"]`). A selection that leaves one out skips the seed with a log line; `dev --seed` refuses it |
 | `command` | `string` | required | Seeder command (`buncargo dev --seed` uses this) |
 | `cwd` | `string` | repo root | Working directory |
 | `check` | `(ctx) => Promise<boolean>` | always run | Return `true` to seed. `checkTable(table)` defaults its service to `prisma.service ?? "postgres"` |
@@ -2039,7 +2080,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 | `… Refusing while DATABASE_URL_DIRECT points at another server` | A destructive Prisma command while an inherited variable holds a Postgres URL on another host or port | Unset the variable, or add it to `prisma.urlEnvVar` |
 | `… applied N migrations this checkout no longer has` (exit 4) | The database ran migrations a squash or rewrite removed from the chain | `buncargo dev --reset --yes` recreates the database and drops its data; ask first |
 | `Dependencies are installed (no node_modules)` | Fresh worktree | Run the checkout's install command (`bun install`, `pnpm install`, …), or `buncargo setup --yes` |
-| `This project's buncargo (package.json) is not installed` | `bunx buncargo` found a different buncargo than the project lists, and the project's is not installed | Run the checkout's install command (`bun install`, `pnpm install`, …) |
+| `This project's buncargo (package.json) is not installed` | `bunx buncargo` found a different buncargo than the project lists, the project's is not installed, and the checkout has no lockfile to install it from | Run the install command it names (`bun install`, `pnpm install`, …) |
 | `<pm> install --frozen-lockfile failed in <dir>` | The checkout installed itself and its lockfile does not match `package.json`, or a postinstall script failed | Fix what the install printed, then run the checkout's install command |
 | `Worker "…" is already running` | Library startup encountered an owned worker | Reuse it through the CLI or use `dev --takeover` |
 | `Apple container cannot verify finite job exit codes yet` | A job was selected with Apple | Use `--runtime=docker` |

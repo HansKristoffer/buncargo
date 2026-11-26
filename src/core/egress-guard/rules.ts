@@ -5,7 +5,11 @@
  * environment variables, and `NODE_USE_ENV_PROXY` version checks.
  */
 
-import type { EgressGuardOption, ResolvedEgressGuardConfig } from "../../types";
+import type {
+	EgressGuardOption,
+	ResolvedEgressGuardConfig,
+	TaskConfig,
+} from "../../types";
 
 /** Merge base `egressGuard` with an optional active profile override. */
 export function resolveEgressGuard(
@@ -20,37 +24,55 @@ export function resolveEgressGuard(
 	const baseObj = typeof base === "object" ? base : undefined;
 	const baseEnabled =
 		base === true || (baseObj !== undefined && baseObj.enabled !== false);
+	if (override === undefined && !baseEnabled) return undefined;
 
-	if (override === undefined) {
-		if (!baseEnabled) return undefined;
-		return {
-			enabled: true,
-			allow: [...(baseObj?.allow ?? [])],
-			mode: baseObj?.mode ?? "block",
-			...(baseObj?.apps ? { apps: [...baseObj.apps] } : {}),
-		};
-	}
-
-	if (override === true) {
-		return {
-			enabled: true,
-			allow: [...(baseObj?.allow ?? [])],
-			mode: baseObj?.mode ?? "block",
-			...(baseObj?.apps ? { apps: [...baseObj.apps] } : {}),
-		};
-	}
-
-	const apps = override.apps ?? baseObj?.apps;
+	// `true` turns the base guard on as it is; an object overrides field by field.
+	const overrideObj = typeof override === "object" ? override : undefined;
+	const apps = overrideObj?.apps ?? baseObj?.apps;
 	return {
 		enabled: true,
-		allow: [...(override.allow ?? baseObj?.allow ?? [])],
-		mode: override.mode ?? baseObj?.mode ?? "block",
+		allow: [...(overrideObj?.allow ?? baseObj?.allow ?? [])],
+		allowHostsOf: [
+			...(overrideObj?.allowHostsOf ?? baseObj?.allowHostsOf ?? []),
+		],
+		mode: overrideObj?.mode ?? baseObj?.mode ?? "block",
 		...(apps ? { apps: [...apps] } : {}),
 	};
 }
 
+/**
+ * The hosts `allowHostsOf` lets through for one process: the hostname of each
+ * named key's URL in that process's final environment (secrets included).
+ * `unresolved` names the keys that are unset or hold no URL with a host, so
+ * the run can say why their host stays blocked.
+ */
+export function allowedHostsOf(
+	keys: readonly string[],
+	env: Readonly<Record<string, string | undefined>>,
+): { hosts: string[]; unresolved: string[] } {
+	const hosts = new Set<string>();
+	const unresolved: string[] = [];
+	for (const key of keys) {
+		const host = urlHostname(env[key]);
+		if (host) hosts.add(host);
+		else unresolved.push(key);
+	}
+	return { hosts: [...hosts], unresolved };
+}
+
+/** A URL's exact hostname; never a pattern (`https://*.com` names no host). */
+function urlHostname(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	try {
+		const host = normalizeHost(new URL(value.trim()).hostname);
+		return host && !host.includes("*") ? host : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Normalize a hostname from a URL or `CONNECT` target (lowercase, unbracketed). */
-function normalizeHost(raw: string): string {
+export function normalizeHost(raw: string): string {
 	const trimmed = raw.trim().toLowerCase();
 	if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
 		return trimmed.slice(1, -1);
@@ -162,6 +184,18 @@ export function buildNoProxyList(extra: readonly string[] = []): string {
 	return [...entries].join(",");
 }
 
+/** Every variable {@link egressGuardEnv} sets, for a process opting out of an app's guard. */
+export const EGRESS_GUARD_ENV_KEYS = [
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"grpc_proxy",
+	"NO_PROXY",
+	"no_proxy",
+	"NODE_USE_ENV_PROXY",
+] as const;
+
 /** Proxy environment variables injected into guarded app processes. */
 export function egressGuardEnv(
 	proxyUrl: string,
@@ -185,6 +219,20 @@ export function guardsApp(
 	appName: string,
 ): boolean {
 	return guard.apps === undefined || guard.apps.includes(appName);
+}
+
+/**
+ * Whether a task runs behind the guard: its own `egressGuard` when set, else
+ * the guard of the app whose env it borrows (`app`). A task with neither runs
+ * unguarded, like a hook.
+ */
+export function guardsTask(
+	guard: ResolvedEgressGuardConfig | undefined,
+	task: Pick<TaskConfig, "app" | "egressGuard">,
+): boolean {
+	if (!guard) return false;
+	if (task.egressGuard !== undefined) return task.egressGuard;
+	return task.app !== undefined && guardsApp(guard, task.app);
 }
 
 /**

@@ -24,6 +24,16 @@ export interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	buildCommand?: string;
 	/** Working directory relative to monorepo root */
 	cwd?: string;
+	/**
+	 * Address the app listens on, passed as `HOST` instead of `0.0.0.0`
+	 * (`"127.0.0.1"` keeps it off the network). buncargo also dials it there:
+	 * `<APP>_LOOPBACK_URL`, its localhost `<APP>_URL`, health checks and
+	 * readiness. A server that reads no `HOST` takes it from the command:
+	 * `next dev --hostname=$HOST`. `"127.0.0.1"`, `"0.0.0.0"` or `"::"`: the
+	 * named-host proxy and Tailscale Serve reach an app on IPv4 loopback. Not
+	 * for workers.
+	 */
+	host?: string;
 	/** Health check endpoint path (e.g., '/api/health'). Set to false to skip readiness wait. */
 	healthEndpoint?: string | false;
 	/** Timeout for health check in milliseconds */
@@ -194,7 +204,9 @@ export interface SecretsScopeConfig {
 	/**
 	 * Infisical organization the project belongs to. A CLI session is scoped
 	 * to it per fetch, so projects in different organizations run side by side
-	 * without `infisical switch`.
+	 * without `infisical switch`. Unset: the session's own organization, and
+	 * when that one is refused the project, whichever other organization of
+	 * the login can read it.
 	 */
 	organizationId?: string;
 	/** Environment slug. Default: `SECRETS_ENV`, else `"dev"`. */
@@ -236,6 +248,7 @@ export type WorkerAppConfig<TStatic extends EnvValues = EnvValues> =
 		kind: "worker";
 		devCommand: string;
 		port?: never;
+		host?: never;
 		extraPorts?: never;
 		expose?: never;
 		healthEndpoint?: never;

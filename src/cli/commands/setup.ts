@@ -74,6 +74,7 @@ async function setup(values: {
 		...(internals.activeApps !== undefined
 			? { activeApps: internals.activeApps }
 			: {}),
+		...(internals.egressGuard ? { egressGuard: internals.egressGuard } : {}),
 	};
 	const checks = allChecks(env, internals.setupChecks, {
 		egressGuardEnabled: internals.egressGuard?.enabled,

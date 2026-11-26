@@ -4,6 +4,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -227,9 +228,78 @@ describe("firebase()", () => {
 			NEXT_PUBLIC_FIRESTORE_EMULATOR_HOST: "127.0.0.1:8180",
 			NEXT_PUBLIC_FIREBASE_PROJECT_ID: "demo-myapp",
 		});
-		// Not emulated, so the SDKs keep talking to the real service.
-		expect(vars.FIREBASE_DATABASE_EMULATOR_HOST).toBeUndefined();
+		// Not emulated: a demo project's clients are sent where nothing answers.
+		expect(vars.FIREBASE_DATABASE_EMULATOR_HOST).toBe("127.0.0.1:9");
 		expect(vars.NEXT_PUBLIC_GCLOUD_PROJECT).toBeUndefined();
+	});
+
+	it("sends clients of an emulator the run does not start where nothing answers", () => {
+		const lite = (options: Parameters<typeof firebase>[0]) =>
+			createDevEnvironment(
+				{
+					...config,
+					integrations: [
+						firebase({
+							publicEnvPrefix: "NEXT_PUBLIC_",
+							emulators: ["auth", "firestore"],
+							...options,
+						}),
+					],
+				},
+				{ root },
+			).buildEnvVars() as Record<string, string>;
+
+		const demo = lite({});
+		expect(demo).toMatchObject({
+			FIRESTORE_EMULATOR_HOST: "127.0.0.1:8180",
+			FIREBASE_FUNCTIONS_EMULATOR_HOST: "127.0.0.1:9",
+			FIREBASE_STORAGE_EMULATOR_HOST: "127.0.0.1:9",
+			FIREBASE_DATABASE_EMULATOR_HOST: "127.0.0.1:9",
+			NEXT_PUBLIC_FIREBASE_FUNCTIONS_EMULATOR_HOST: "127.0.0.1:9",
+			NEXT_PUBLIC_FIREBASE_STORAGE_EMULATOR_HOST: "127.0.0.1:9",
+		});
+		// Server-side clients that only an emulator run sets stay out.
+		expect(demo.STORAGE_EMULATOR_HOST).toBeUndefined();
+		expect(demo.PUBSUB_EMULATOR_HOST).toBeUndefined();
+
+		for (const vars of [
+			lite({ unselectedEmulators: "unset" }),
+			lite({ projectId: "my-app-dev" }),
+		]) {
+			expect(vars.FIRESTORE_EMULATOR_HOST).toBe("127.0.0.1:8180");
+			expect(vars.FIREBASE_FUNCTIONS_EMULATOR_HOST).toBeUndefined();
+			expect(vars.NEXT_PUBLIC_FIREBASE_FUNCTIONS_EMULATOR_HOST).toBeUndefined();
+		}
+		expect(
+			lite({ projectId: "my-app-dev", unselectedEmulators: "unreachable" })
+				.FIREBASE_FUNCTIONS_EMULATOR_HOST,
+		).toBe("127.0.0.1:9");
+	});
+
+	it("writes the browser SDK's config for the emulated project into webConfigEnv", () => {
+		const env = createDevEnvironment(
+			{
+				...config,
+				integrations: [
+					firebase({
+						projectId: "demo-kanpla",
+						webConfigEnv: "NEXT_PUBLIC_FIREBASE_CONFIG",
+					}),
+				],
+			},
+			{ root },
+		);
+		const vars = env.buildEnvVars() as Record<string, string>;
+		expect(JSON.parse(vars.NEXT_PUBLIC_FIREBASE_CONFIG)).toEqual({
+			projectId: "demo-kanpla",
+			apiKey: "fake-api-key",
+			authDomain: "localhost",
+			storageBucket: "demo-kanpla.appspot.com",
+		});
+		const without = createDevEnvironment(config, { root }).buildEnvVars();
+		expect(
+			(without as Record<string, string>).NEXT_PUBLIC_FIREBASE_CONFIG,
+		).toBeUndefined();
 	});
 
 	it("writes the copy of firebase.json the CLI is started on", () => {
@@ -584,8 +654,10 @@ describe("firebase()", () => {
 			"--only auth,firestore",
 		);
 		expect(fastEnv.apps.firebase?.devCommand).not.toContain("functions");
-		expect(fastEnv.buildEnvVars()).not.toHaveProperty(
+		// Not started: sent where nothing answers, never to another checkout's 5001.
+		expect(fastEnv.buildEnvVars()).toHaveProperty(
 			"FIREBASE_FUNCTIONS_EMULATOR_HOST",
+			"127.0.0.1:9",
 		);
 
 		// describe() also stays empty when activeApps excludes firebase.
@@ -994,6 +1066,83 @@ describe("firebase checks", () => {
 		expect(await check("firebase.json exists", ["auth"]).check(context())).toBe(
 			true,
 		);
+	});
+
+	it("finds the selected emulators' downloads in the CLI's cache, and fetches the missing ones through the package manager", async () => {
+		const savedCache = process.env.FIREBASE_EMULATORS_PATH;
+		const caseRoot = mkdtempSync(join(tmpdir(), "buncargo-fb-downloads-"));
+		const cache = join(caseRoot, "emulators");
+		mkdirSync(cache);
+		process.env.FIREBASE_EMULATORS_PATH = cache;
+		// The CLI as `bunx --no-install firebase` finds it: names each download it fetched.
+		const bin = join(caseRoot, "node_modules", ".bin");
+		mkdirSync(bin, { recursive: true });
+		writeFileSync(
+			join(bin, "firebase"),
+			`#!/bin/sh\nname="\${1#setup:emulators:}"\ntouch "$FIREBASE_EMULATORS_PATH/$name-fetched"\n`,
+		);
+		chmodSync(join(bin, "firebase"), 0o755);
+		writeFileSync(join(cache, "cloud-firestore-emulator-v1.19.7.jar"), "");
+		const downloads = firebaseChecks({
+			project: () => readFirebaseProject(root),
+			workdir: () => caseRoot,
+			emulators: () => ["auth", "firestore", "pubsub", "storage"],
+			dataDir: () => undefined,
+			appName: "firebase",
+		}).find((entry) => entry.name === "Firebase emulator downloads are cached");
+		if (!downloads) throw new Error("no downloads check");
+		const guard = (apps?: string[]) => ({
+			enabled: true as const,
+			allow: [],
+			allowHostsOf: [],
+			mode: "block" as const,
+			...(apps ? { apps } : {}),
+		});
+		const open = {
+			root: caseRoot,
+			env: {} as AnyDevEnvironment,
+		} as CheckContext;
+		const guarded = { ...open, egressGuard: guard() };
+		const guardedElsewhere = { ...open, egressGuard: guard(["web"]) };
+		try {
+			expect(await downloads.check(open)).toEqual({
+				ok: false,
+				severity: "warning",
+				detail:
+					"pubsub, storage, ui not downloaded yet (the first start downloads them); run `bunx --no-install firebase setup:emulators:pubsub && bunx --no-install firebase setup:emulators:storage && bunx --no-install firebase setup:emulators:ui`",
+			});
+			// Behind the guard, the CLI could not fetch them itself.
+			expect(await downloads.check(guardedElsewhere)).toMatchObject({
+				severity: "warning",
+			});
+			expect(await downloads.check(guarded)).toMatchObject({
+				ok: false,
+				detail: expect.stringContaining("the egress guard would refuse"),
+			});
+			expect(await downloads.check(guarded)).not.toHaveProperty("severity");
+
+			const fix = downloads.fix;
+			if (typeof fix !== "function") throw new Error("no fix");
+			await fix(guarded);
+			expect(readdirSync(cache).sort()).toEqual([
+				"cloud-firestore-emulator-v1.19.7.jar",
+				"pubsub-fetched",
+				"storage-fetched",
+				"ui-fetched",
+			]);
+
+			for (const name of [
+				"pubsub-emulator-0.8.27",
+				"cloud-storage-rules-runtime-v1.1.3.jar",
+				"ui-v1.15.0.zip",
+			])
+				writeFileSync(join(cache, name), "");
+			expect(await downloads.check(guarded)).toBe(true);
+		} finally {
+			if (savedCache === undefined) delete process.env.FIREBASE_EMULATORS_PATH;
+			else process.env.FIREBASE_EMULATORS_PATH = savedCache;
+			rmSync(caseRoot, { recursive: true, force: true });
+		}
 	});
 
 	it("skips firebase checks when activeApps excludes firebase and uses package-manager fix hints", async () => {

@@ -20,6 +20,10 @@ export interface PackageManagerSpec {
 	frozenInstallArgs(): string[];
 	addDevCommand(pkg: string): string;
 	runScriptArgs(script: string): string[];
+	/** Run an installed package binary, never downloading one (`pnpm exec firebase …`). */
+	execArgs(bin: string, args: readonly string[]): string[];
+	/** {@link execArgs} as a person would type it. */
+	execDisplay(bin: string, args: readonly string[]): string;
 }
 
 export interface DetectedLockfile {
@@ -64,6 +68,14 @@ function packageManagerSpec(
 			],
 			addDevCommand: (pkg) => `bun add -d ${pkg}`,
 			runScriptArgs: (script) => [process.execPath, "run", script],
+			execArgs: (bin, args) => [
+				process.execPath,
+				"x",
+				"--no-install",
+				bin,
+				...args,
+			],
+			execDisplay: (bin, args) => ["bunx --no-install", bin, ...args].join(" "),
 		}),
 		pnpm: () => ({
 			name: "pnpm" as const,
@@ -73,6 +85,8 @@ function packageManagerSpec(
 			frozenInstallArgs: () => ["pnpm", "install", "--frozen-lockfile"],
 			addDevCommand: (pkg) => `pnpm add -D ${pkg}`,
 			runScriptArgs: (script) => ["pnpm", "run", script],
+			execArgs: (bin, args) => ["pnpm", "exec", bin, ...args],
+			execDisplay: (bin, args) => ["pnpm exec", bin, ...args].join(" "),
 		}),
 		yarn: () => ({
 			name: "yarn" as const,
@@ -82,6 +96,8 @@ function packageManagerSpec(
 			frozenInstallArgs: () => ["yarn", "install", "--frozen-lockfile"],
 			addDevCommand: (pkg) => `yarn add -D ${pkg}`,
 			runScriptArgs: (script) => ["yarn", "run", script],
+			execArgs: (bin, args) => ["yarn", bin, ...args],
+			execDisplay: (bin, args) => ["yarn", bin, ...args].join(" "),
 		}),
 		npm: () => ({
 			name: "npm" as const,
@@ -91,6 +107,8 @@ function packageManagerSpec(
 			frozenInstallArgs: () => ["npm", "ci"],
 			addDevCommand: (pkg) => `npm install -D ${pkg}`,
 			runScriptArgs: (script) => ["npm", "run", script],
+			execArgs: (bin, args) => ["npm", "exec", "--no", "--", bin, ...args],
+			execDisplay: (bin, args) => ["npm exec --no --", bin, ...args].join(" "),
 		}),
 	});
 }

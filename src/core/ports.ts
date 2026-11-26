@@ -339,6 +339,19 @@ export function envName(key: string): string {
 }
 
 /**
+ * Where a client dials an app that listens on `host` (`apps.<name>.host`), as
+ * a URL authority: the address itself when it is one, bracketed for IPv6, so
+ * `localhost` never resolves to a family the app did not bind. Undefined for
+ * a wildcard bind (or none), which every loopback address reaches.
+ */
+export function appDialAuthority(host: string | undefined): string | undefined {
+	if (!host || host === "0.0.0.0" || host === "::" || host === "localhost") {
+		return undefined;
+	}
+	return host.includes(":") ? `[${host}]` : host;
+}
+
+/**
  * Compute the localhost/local-IP URLs for all services and apps.
  *
  * Named-host (`https://<name>.<project>.localhost`) rewriting is layered on top
@@ -347,7 +360,7 @@ export function envName(key: string): string {
  */
 export function computeUrls(
 	services: Readonly<Record<string, ResolvedService>>,
-	apps: Readonly<Record<string, { port?: number }>>,
+	apps: Readonly<Record<string, { port?: number; host?: string }>>,
 	ports: PortMap,
 	localIp: string,
 	/** Host for app URLs (`BUNCARGO_URL_HOST`); services always use `localhost`. */
@@ -366,7 +379,9 @@ export function computeUrls(
 	for (const [name, app] of Object.entries(apps)) {
 		const port = ports[name];
 		if (port === undefined || app.port === undefined) continue;
-		urls[name] = `http://${appHost ?? host}:${port}`;
+		// An app bound to one address is reached there, whatever the URL host.
+		const bound = appDialAuthority(app.host);
+		urls[name] = `http://${bound ?? appHost ?? host}:${port}`;
 		// Also add local IP version for mobile connectivity
 		urls[`${name}Local`] = `http://${localIp}:${port}`;
 	}
@@ -384,7 +399,7 @@ export function computeUrls(
  */
 export function computeLoopbackUrls(
 	services: Readonly<Record<string, ResolvedService>>,
-	apps: Readonly<Record<string, { port?: number }>>,
+	apps: Readonly<Record<string, { port?: number; host?: string }>>,
 	ports: PortMap,
 ): UrlMap {
 	// The LAN IP only feeds the aliases this then drops.

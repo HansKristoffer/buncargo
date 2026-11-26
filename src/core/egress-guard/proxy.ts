@@ -16,7 +16,7 @@ import {
 } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { connect as netConnect, type Socket } from "node:net";
-import { isHostAllowed, isLoopbackHost } from "./rules";
+import { isHostAllowed, isLoopbackHost, normalizeHost } from "./rules";
 
 export interface BlockedEgressEvent {
 	readonly method: string;
@@ -28,6 +28,8 @@ export interface BlockedEgressEvent {
 export interface EgressGuardProxy {
 	readonly port: number;
 	readonly url: string;
+	/** Let these exact hostnames through from now on (`allowHostsOf`, resolved per process). */
+	allowHosts(hosts: readonly string[]): void;
 	close(): Promise<void>;
 }
 
@@ -79,6 +81,12 @@ export async function startEgressGuardProxy(
 	options: StartEgressGuardProxyOptions,
 ): Promise<EgressGuardProxy> {
 	const sockets = new Set<Socket>();
+	// Hosts learned once the guarded processes' env is final (`allowHostsOf`):
+	// exact names, kept out of `allow` so none is ever read as a pattern or port.
+	const learned = new Set<string>();
+	const isAllowed = (host: string, port: number) =>
+		learned.has(normalizeHost(host)) ||
+		isHostAllowed(host, port, options.allow);
 	let boundPort = 0;
 	const trackSocket = (socket: Socket) => {
 		sockets.add(socket);
@@ -132,7 +140,7 @@ export async function startEgressGuardProxy(
 				return;
 			}
 
-			const allowed = isHostAllowed(host, port, options.allow);
+			const allowed = isAllowed(host, port);
 			if (!allowed) {
 				options.onBlocked?.({
 					method: req.method ?? "GET",
@@ -202,7 +210,7 @@ export async function startEgressGuardProxy(
 			return;
 		}
 
-		const allowed = isHostAllowed(target.host, target.port, options.allow);
+		const allowed = isAllowed(target.host, target.port);
 		if (!allowed) {
 			options.onBlocked?.({
 				method: "CONNECT",
@@ -266,6 +274,9 @@ export async function startEgressGuardProxy(
 	return {
 		port: boundPort,
 		url: `http://127.0.0.1:${boundPort}`,
+		allowHosts: (hosts) => {
+			for (const host of hosts) learned.add(normalizeHost(host));
+		},
 		close: async () => {
 			if (closed) return;
 			closed = true;

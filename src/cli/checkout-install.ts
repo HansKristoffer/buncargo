@@ -17,16 +17,22 @@ const INSTALL_LOCK_TIMEOUT_MS = 10 * 60_000;
  * `pnpm install --frozen-lockfile`, …), before the command it was asked for.
  * The project's postinstall scripts (`prisma generate`) run as part of it.
  *
+ * `stillNeeded` is asked again under the checkout's lock: by default, whether
+ * the dependencies still predate the lockfile.
+ *
  * Its output goes to stderr, so a `--json` command's stdout stays one JSON
  * document. Agents in several terminals of one worktree install once: the
  * others wait on the checkout's lock and find it done.
  */
-export function installCheckout(need: InstallNeed): void {
+export function installCheckout(
+	need: InstallNeed,
+	stillNeeded: () => boolean = () => installNeed(need.dir) !== undefined,
+): void {
 	withFileLockSync(
 		projectStateFilePath(need.dir, "install"),
 		() => {
 			// Another buncargo may have installed while this one waited.
-			if (!installNeed(need.dir)) return;
+			if (!stillNeeded()) return;
 
 			const manager = detectPackageManager(need.dir);
 			const hash = lockfileHash(need.dir);

@@ -283,6 +283,7 @@ function registerStubInternals(
 			};
 		},
 		secretsSession: async () => {},
+		startTaskEgressGuard: async () => undefined,
 		notify: (next) => {
 			report = next;
 		},

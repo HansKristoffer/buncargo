@@ -1,13 +1,19 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { childProcessEnv } from "../core/child-env";
+import { guardsApp } from "../core/egress-guard";
 import { appendToGitignore, isGitIgnored } from "../core/gitignore";
 import { detectPackageManager, findLockfile } from "../core/package-manager";
 import { lookupOnPath } from "../core/tool-binary";
 import { parseVersion } from "../core/version";
 import type { CheckOutcome, SetupCheck } from "../types";
 import { firebaseCli } from "./cli";
-import type { FirebaseEmulator } from "./emulators";
+import {
+	type FirebaseEmulator,
+	missingEmulatorDownloads,
+	uiEnabled,
+} from "./emulators";
 import { FIREBASE_CONFIG_FILE, type FirebaseProject } from "./project";
 
 /** The emulators `firebase-tools` runs on the JVM. */
@@ -17,6 +23,21 @@ const JAVA_EMULATORS: readonly FirebaseEmulator[] = [
 	"storage",
 	"pubsub",
 ];
+
+/**
+ * Where `firebase-tools` keeps the emulators' jars and zips, as it decides:
+ * `FIREBASE_EMULATORS_PATH`, else `~/.cache/firebase/emulators`.
+ */
+function emulatorCacheEntries(env: NodeJS.ProcessEnv): string[] {
+	const dir =
+		env.FIREBASE_EMULATORS_PATH ||
+		join(homedir(), ".cache", "firebase", "emulators");
+	try {
+		return readdirSync(dir);
+	} catch {
+		return [];
+	}
+}
 
 /** Bounds `java -version` so a broken stub (such as macOS's prompt shim) never hangs. */
 const JAVA_VERSION_TIMEOUT_MS = 5_000;
@@ -214,6 +235,18 @@ export function firebaseChecks(state: {
 	const installFix = pmDir
 		? detectPackageManager(pmDir).addDevCommand("firebase-tools")
 		: "bun add -d firebase-tools";
+	// Where the CLI is installed, so the package manager finds its binary.
+	const cliDir = (root: string) => {
+		const workdir = state.workdir(root);
+		return findLockfile(workdir) !== undefined ? workdir : root;
+	};
+	const missingDownloads = (root: string) =>
+		missingEmulatorDownloads(
+			state.emulators(root),
+			uiEnabled(state.project(root).raw),
+			emulatorCacheEntries(process.env),
+		);
+	const setupArgs = (name: string) => [`setup:emulators:${name}`];
 	const skippedByProfile = (activeApps?: ReadonlySet<string>) =>
 		state.appName !== undefined &&
 		activeApps !== undefined &&
@@ -284,6 +317,56 @@ export function firebaseChecks(state: {
 						: readFirebaseToolsVersion([state.workdir(root), root]);
 				return evaluateJavaVersion(javaMajor, cliVersion);
 			},
+		},
+		{
+			name: "Firebase emulator downloads are cached",
+			check: ({ root, activeApps, egressGuard }) => {
+				if (skippedByProfile(activeApps)) return true;
+				const missing = missingDownloads(root);
+				if (missing.length === 0) return true;
+
+				const manager = detectPackageManager(cliDir(root));
+				const commands = missing
+					.map((download) =>
+						manager.execDisplay("firebase", setupArgs(download.name)),
+					)
+					.join(" && ");
+				// Behind the guard the CLI's own first download is refused.
+				const guarded =
+					egressGuard !== undefined &&
+					state.appName !== undefined &&
+					guardsApp(egressGuard, state.appName);
+				const why = guarded
+					? "the egress guard would refuse the CLI's first download"
+					: "the first start downloads them";
+				return {
+					ok: false,
+					...(guarded ? {} : { severity: "warning" as const }),
+					detail: `${missing.map((download) => download.name).join(", ")} not downloaded yet (${why}); run \`${commands}\``,
+				};
+			},
+			fix: ({ root }) => {
+				const dir = cliDir(root);
+				const manager = detectPackageManager(dir);
+				for (const download of missingDownloads(root)) {
+					const args = setupArgs(download.name);
+					const result = Bun.spawnSync(manager.execArgs("firebase", args), {
+						cwd: dir,
+						stdin: "ignore",
+						stdout: "inherit",
+						stderr: "inherit",
+						env: childProcessEnv(),
+					});
+					if (result.exitCode !== 0) {
+						const command = manager.execDisplay("firebase", args);
+						throw new Error(
+							`\`${command}\` failed in ${dir} (exit ${result.exitCode}); its output is above.`,
+						);
+					}
+				}
+			},
+			fixDescription:
+				"run `firebase setup:emulators:<name>` for each missing download, through the project's package manager",
 		},
 		{
 			name: "Firebase emulator data is gitignored",

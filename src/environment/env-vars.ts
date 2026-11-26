@@ -7,9 +7,13 @@ import {
 	sharedEnv,
 } from "../core/checkout-view";
 import {
+	allowedHostsOf,
 	buildNoProxyList,
+	EGRESS_GUARD_ENV_KEYS,
 	egressGuardEnv,
 	guardsApp,
+	guardsTask,
+	startEgressGuardProxy,
 } from "../core/egress-guard";
 import { stringifyEnvValues } from "../core/env";
 import { portableEnvFingerprint } from "../core/env-fingerprint";
@@ -25,6 +29,7 @@ import {
 	stopsTheRun,
 	warnSecretsOnce,
 } from "../core/secrets/index";
+import { formatWarn } from "../core/style";
 import type {
 	EnvVarsBuilder,
 	ExecOptions,
@@ -32,6 +37,7 @@ import type {
 	ResolvedApp,
 	ResolvedLink,
 	SecretsScopeInput,
+	TaskConfig,
 } from "../types";
 import type {
 	AnyApps,
@@ -99,6 +105,27 @@ export interface DevEnvVarsApi {
 			computed?: Record<string, string>;
 		},
 	): Promise<Record<string, string>>;
+	/**
+	 * One run of `task`'s env: its app's (or the shared) env over its secrets,
+	 * behind the run's egress proxy when the task is guarded and one is active.
+	 */
+	buildTaskEnv(
+		task: TaskConfig,
+		production: boolean,
+		signal?: AbortSignal,
+	): Promise<Record<string, string>>;
+	/**
+	 * An egress proxy of its own for one guarded `task` outside a run
+	 * (`buncargo run`), its `allowHostsOf` hosts read from the task's env. The
+	 * returned `env` points the task at it. `undefined` when the task is not
+	 * guarded.
+	 */
+	startTaskEgressGuard(
+		task: TaskConfig,
+		signal?: AbortSignal,
+	): Promise<
+		{ env: Record<string, string>; close(): Promise<void> } | undefined
+	>;
 }
 
 export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
@@ -165,6 +192,25 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 		return exported;
 	}
 
+	/** What points a process at the egress proxy at `proxyUrl`, this checkout's hosts exempt. */
+	function egressEnvFor(proxyUrl: string): Record<string, string> {
+		const extraNoProxy: string[] = [];
+		if (ctx.localIp) {
+			extraNoProxy.push(ctx.localIp);
+		}
+		if (ctx.hosts?.tld && ctx.hosts.tld !== "localhost") {
+			extraNoProxy.push(`.${ctx.hosts.tld}`);
+		}
+		for (const url of Object.values(ctx.hosts?.tailscaleUrls ?? {})) {
+			try {
+				extraNoProxy.push(new URL(url).hostname);
+			} catch {
+				// Ignore non-URL strings.
+			}
+		}
+		return egressGuardEnv(proxyUrl, buildNoProxyList(extraNoProxy));
+	}
+
 	function buildAppEnvVars(
 		appName: string,
 		production = false,
@@ -199,31 +245,12 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 			}
 		}
 
-		const egressEnv: Record<string, string> = {};
-		if (
+		const egressEnv =
 			ctx.egressProxyUrl &&
 			config.egressGuard?.enabled &&
 			guardsApp(config.egressGuard, appName)
-		) {
-			const extraNoProxy: string[] = [];
-			if (ctx.localIp) {
-				extraNoProxy.push(ctx.localIp);
-			}
-			if (ctx.hosts?.tld && ctx.hosts.tld !== "localhost") {
-				extraNoProxy.push(`.${ctx.hosts.tld}`);
-			}
-			for (const url of Object.values(ctx.hosts?.tailscaleUrls ?? {})) {
-				try {
-					extraNoProxy.push(new URL(url).hostname);
-				} catch {
-					// Ignore non-URL strings.
-				}
-			}
-			Object.assign(
-				egressEnv,
-				egressGuardEnv(ctx.egressProxyUrl, buildNoProxyList(extraNoProxy)),
-			);
-		}
+				? egressEnvFor(ctx.egressProxyUrl)
+				: {};
 
 		const processEnv: Record<string, string> = {
 			...shared,
@@ -233,7 +260,9 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 			...egressEnv,
 			...(appConfig?.staticEnv ? stringifyEnvValues(appConfig.staticEnv) : {}),
 			// A worker listens on nothing.
-			...(appConfig && appConfig.port === undefined ? {} : { HOST: "0.0.0.0" }),
+			...(appConfig && appConfig.port === undefined
+				? {}
+				: { HOST: appConfig?.host ?? "0.0.0.0" }),
 			// So a framework plugin can configure itself without the consumer
 			// repeating which app it is. Nothing else tells the child process.
 			BUNCARGO_APP_NAME: appName,
@@ -399,6 +428,105 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 		});
 	}
 
+	async function buildTaskEnv(
+		task: TaskConfig,
+		production: boolean,
+		signal?: AbortSignal,
+	): Promise<Record<string, string>> {
+		const computed = task.app
+			? buildAppEnvVars(task.app, production)
+			: buildEnvVars(production);
+
+		// A guarded app's env carries the proxy; the task's own setting decides.
+		const guarded = guardsTask(config.egressGuard, task);
+		const borrowsGuard =
+			task.app !== undefined &&
+			config.egressGuard !== undefined &&
+			guardsApp(config.egressGuard, task.app);
+		// Beneath what the task's env sets itself, as for an app; an opt-out
+		// removes only the values the guard put there.
+		const guardEnv = ctx.egressProxyUrl
+			? egressEnvFor(ctx.egressProxyUrl)
+			: undefined;
+		if (guarded && guardEnv) {
+			for (const [key, value] of Object.entries(guardEnv)) {
+				computed[key] ??= value;
+			}
+		} else if (!guarded && borrowsGuard && guardEnv) {
+			for (const key of EGRESS_GUARD_ENV_KEYS) {
+				if (computed[key] === guardEnv[key]) delete computed[key];
+			}
+		}
+
+		const secrets = await resolveSecrets(undefined, {
+			app: task.app,
+			signal,
+			computed,
+		});
+		const env = { ...secrets, ...computed };
+		if (guarded) learnTaskEgressHosts(task, env, ctx.egressProxy);
+		return env;
+	}
+
+	const reportedTaskKeys = new Set<string>();
+
+	/** `allowHostsOf` for one task run: its hosts join `proxy`'s allowlist. */
+	function learnTaskEgressHosts(
+		task: TaskConfig,
+		env: Readonly<Record<string, string>>,
+		proxy: { allowHosts(hosts: readonly string[]): void } | undefined,
+	): void {
+		const keys = config.egressGuard?.allowHostsOf ?? [];
+		if (!proxy || keys.length === 0) return;
+
+		const { hosts, unresolved } = allowedHostsOf(keys, {
+			...process.env,
+			...env,
+		});
+		proxy.allowHosts(hosts);
+		const label = task.description ?? task.command;
+		// Once per task and key: a watched task runs again on every change.
+		const unreported = unresolved.filter(
+			(key) => !reportedTaskKeys.has(`${label}|${key}`),
+		);
+		for (const key of unreported) reportedTaskKeys.add(`${label}|${key}`);
+		if (unreported.length > 0) {
+			ctx.output.log(
+				formatWarn(
+					`egressGuard.allowHostsOf: the task "${label}" has no URL in ${unreported.join(", ")}, so no host is let through for it.`,
+				),
+			);
+		}
+	}
+
+	async function startTaskEgressGuard(task: TaskConfig, signal?: AbortSignal) {
+		const guard = config.egressGuard;
+		if (!guard || !guardsTask(guard, task)) return undefined;
+
+		const proxy = await startEgressGuardProxy({
+			allow: guard.allow,
+			mode: guard.mode,
+			onBlocked: (event) => {
+				const action = event.mode === "block" ? "Blocked" : "Allowed (warn)";
+				console.warn(
+					formatWarn(
+						`${action} outbound ${event.method} to ${event.host}:${event.port} (add "${event.host}" to egressGuard.allow to permit)`,
+					),
+				);
+			},
+		});
+		try {
+			if (guard.allowHostsOf.length > 0) {
+				const env = await buildTaskEnv(task, false, signal);
+				learnTaskEgressHosts(task, env, proxy);
+			}
+		} catch (error) {
+			await proxy.close();
+			throw error;
+		}
+		return { env: egressEnvFor(proxy.url), close: () => proxy.close() };
+	}
+
 	// Created once, then reused so hooks observe a stable identity.
 	let hookContext: HookContext<AnyServices, AnyApps> | null = null;
 
@@ -485,5 +613,7 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 		exec,
 		execTeardown,
 		resolveSecrets,
+		buildTaskEnv,
+		startTaskEgressGuard,
 	};
 }
