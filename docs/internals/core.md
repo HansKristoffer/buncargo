@@ -41,7 +41,10 @@ Cross-cutting utilities in `src/core/` that most features touch.
   (`egressGuard`): `rules.ts` holds pure allowlist/loopback/RFC1918 matching and proxy env
   generation (`HTTP_PROXY`, `HTTPS_PROXY`, `grpc_proxy`, `NO_PROXY`, `NODE_USE_ENV_PROXY=1`);
   `proxy.ts` runs an ephemeral `127.0.0.1:0` proxy for the run's lifetime, blocking or warning
-  on non-allowlisted outbound traffic.
+  on non-allowlisted outbound traffic. Its allowlist grows at runtime (`allowHosts`): the
+  pipeline resolves `allowHostsOf` keys (`allowedHostsOf`, pure) from each guarded app's spawn
+  env, secrets included, through `startDevServers`' `onAppEnv`, because secrets load after the
+  config and after the proxy starts.
 
 ## Persisted files and locks
 

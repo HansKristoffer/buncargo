@@ -176,6 +176,12 @@ export interface StartDevServersOptions {
 	initialPortOwners?: PortOwnerSnapshot;
 	/** Work run once named prerequisite apps are ready (e.g. `seed.afterApps`). */
 	afterAppsTask?: AfterAppsTask;
+	/**
+	 * Told each app's spawn env (secrets beneath the computed env) as it is
+	 * built, on the first spawn and every restart: the egress guard learns
+	 * `allowHostsOf` hosts here.
+	 */
+	onAppEnv?: (name: string, env: Readonly<Record<string, string>>) => void;
 	/** Reactive finite tasks (`onAppReady` / `watch`) supervised beside the apps. Pass `false` to disable. */
 	reactiveTasks?: ReactiveTasksInput | false;
 	/**
@@ -446,10 +452,11 @@ export async function startDevServers(
 		Object.values(secrets).flatMap((values) => Object.keys(values)),
 	);
 
-	const appEnv = (name: string) => ({
-		...secrets[name],
-		...resolveAppEnv(envVarsByApp, name),
-	});
+	const appEnv = (name: string) => {
+		const env = { ...secrets[name], ...resolveAppEnv(envVarsByApp, name) };
+		options.onAppEnv?.(name, env);
+		return env;
+	};
 
 	const order = planSpawnOrder(
 		startable,

@@ -227,6 +227,7 @@ export const LINK_KEYS = {
 export const EGRESS_GUARD_KEYS = {
 	enabled: "boolean",
 	allow: "shape",
+	allowHostsOf: "shape",
 	mode: "shape",
 	apps: "shape",
 } as const satisfies Record<keyof EgressGuardConfig, FieldCheck>;

@@ -20,37 +20,55 @@ export function resolveEgressGuard(
 	const baseObj = typeof base === "object" ? base : undefined;
 	const baseEnabled =
 		base === true || (baseObj !== undefined && baseObj.enabled !== false);
+	if (override === undefined && !baseEnabled) return undefined;
 
-	if (override === undefined) {
-		if (!baseEnabled) return undefined;
-		return {
-			enabled: true,
-			allow: [...(baseObj?.allow ?? [])],
-			mode: baseObj?.mode ?? "block",
-			...(baseObj?.apps ? { apps: [...baseObj.apps] } : {}),
-		};
-	}
-
-	if (override === true) {
-		return {
-			enabled: true,
-			allow: [...(baseObj?.allow ?? [])],
-			mode: baseObj?.mode ?? "block",
-			...(baseObj?.apps ? { apps: [...baseObj.apps] } : {}),
-		};
-	}
-
-	const apps = override.apps ?? baseObj?.apps;
+	// `true` turns the base guard on as it is; an object overrides field by field.
+	const overrideObj = typeof override === "object" ? override : undefined;
+	const apps = overrideObj?.apps ?? baseObj?.apps;
 	return {
 		enabled: true,
-		allow: [...(override.allow ?? baseObj?.allow ?? [])],
-		mode: override.mode ?? baseObj?.mode ?? "block",
+		allow: [...(overrideObj?.allow ?? baseObj?.allow ?? [])],
+		allowHostsOf: [
+			...(overrideObj?.allowHostsOf ?? baseObj?.allowHostsOf ?? []),
+		],
+		mode: overrideObj?.mode ?? baseObj?.mode ?? "block",
 		...(apps ? { apps: [...apps] } : {}),
 	};
 }
 
+/**
+ * The hosts `allowHostsOf` lets through for one process: the hostname of each
+ * named key's URL in that process's final environment (secrets included).
+ * `unresolved` names the keys that are unset or hold no URL with a host, so
+ * the run can say why their host stays blocked.
+ */
+export function allowedHostsOf(
+	keys: readonly string[],
+	env: Readonly<Record<string, string | undefined>>,
+): { hosts: string[]; unresolved: string[] } {
+	const hosts = new Set<string>();
+	const unresolved: string[] = [];
+	for (const key of keys) {
+		const host = urlHostname(env[key]);
+		if (host) hosts.add(host);
+		else unresolved.push(key);
+	}
+	return { hosts: [...hosts], unresolved };
+}
+
+/** A URL's exact hostname; never a pattern (`https://*.com` names no host). */
+function urlHostname(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	try {
+		const host = normalizeHost(new URL(value.trim()).hostname);
+		return host && !host.includes("*") ? host : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Normalize a hostname from a URL or `CONNECT` target (lowercase, unbracketed). */
-function normalizeHost(raw: string): string {
+export function normalizeHost(raw: string): string {
 	const trimmed = raw.trim().toLowerCase();
 	if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
 		return trimmed.slice(1, -1);

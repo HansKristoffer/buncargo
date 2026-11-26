@@ -205,6 +205,12 @@ function validateEgressGuardShape(
 		"an array of host patterns",
 	);
 	check(
+		value.allowHostsOf,
+		`${path}.allowHostsOf`,
+		strings(value.allowHostsOf),
+		"an array of env or secret key names",
+	);
+	check(
 		value.mode,
 		`${path}.mode`,
 		value.mode === "block" || value.mode === "warn",

@@ -197,6 +197,8 @@ export interface DevEnvContext {
 	onSecretsWait?: (ms: number) => void;
 	/** Active egress-guard proxy URL while servers are running, else undefined. */
 	readonly egressProxyUrl: string | undefined;
+	/** The active egress-guard proxy itself, for hosts learned per process (`allowHostsOf`). */
+	readonly egressProxy: EgressGuardProxy | undefined;
 	/** Register (or replace) the active egress-guard proxy owned by this run. */
 	setEgressProxy(proxy: EgressGuardProxy | undefined): Promise<void>;
 	/** Stop any active egress-guard proxy owned by this run. */
@@ -570,6 +572,9 @@ export function createDevEnvContext(
 		hosts,
 		get egressProxyUrl() {
 			return activeEgressProxy?.url;
+		},
+		get egressProxy() {
+			return activeEgressProxy;
 		},
 		async setEgressProxy(proxy) {
 			const previous = activeEgressProxy;

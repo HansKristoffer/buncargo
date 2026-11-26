@@ -209,6 +209,8 @@ export type ResolvedApps<TApps = Record<string, unknown>> = {
 export interface ResolvedEgressGuardConfig {
 	readonly enabled: true;
 	readonly allow: readonly string[];
+	/** Keys whose URL hosts are allowed per guarded process, once its env is final. */
+	readonly allowHostsOf: readonly string[];
 	readonly mode: "block" | "warn";
 	readonly apps?: readonly string[];
 }

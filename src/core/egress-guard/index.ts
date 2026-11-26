@@ -5,6 +5,7 @@ export {
 	startEgressGuardProxy,
 } from "./proxy";
 export {
+	allowedHostsOf,
 	buildNoProxyList,
 	egressGuardEnv,
 	guardsApp,

@@ -1620,6 +1620,23 @@ Apart from a missing session, a failed fetch warns once and continues; an app's 
 
 Defaults: `siteUrl` is `https://eu.infisical.com` (like hanzio; it was `app.infisical.com` before the next major), `environment` is `SECRETS_ENV` or `dev`, `path` is `/`.
 
+### Egress guard
+
+`egressGuard` runs a loopback proxy for the run and points the guarded apps at it (`HTTP_PROXY`, `HTTPS_PROXY`, `grpc_proxy`, `NO_PROXY`, `NODE_USE_ENV_PROXY=1`), so dev credentials cannot reach an outside API by accident. Loopback, `*.localhost` and private addresses always pass. Anything else needs a rule: `"block"` mode answers it with a 403 and logs it under `egress`, `"warn"` logs it and lets it through.
+
+```ts
+defineDevConfig({
+  egressGuard: {
+    allow: ["api.anthropic.com", "*.unleash-hosted.com"],
+    // Hosts known only once secrets load: the host of each key's URL.
+    allowHostsOf: ["UNLEASH_SERVER_API_URL"],
+    apps: ["admin"],
+  },
+});
+```
+
+`allow` is fixed when the config loads. `allowHostsOf` names env or secret keys whose values are URLs, for a host that only exists as a secret. It is read from each guarded app's own final environment as the app starts (its Infisical secrets, its `envVars` and `staticEnv`, and the shell's exported values), and the hostname of each URL is added to the run's allowlist on any port: `https://unleash.example.com/api` lets `unleash.example.com` through and nothing else. Hosts are added for the run, so every guarded process of the run can reach a host one of them resolved. A key that is unset, or holds no URL, lets nothing through, and the run says so in the `egress` log. A profile's `egressGuard` object replaces `allow`, `allowHostsOf`, `mode` and `apps` field by field.
+
 ### Vite plugin
 
 `buncargoVite()` configures the Vite dev server from the variables above, which removes the three things a Vite app in a buncargo repo otherwise hand-writes:
@@ -1708,7 +1725,7 @@ The configuration reference covers the main public options; `src/types/all-types
 | `apps` | `Record<string, AppConfig>` | `undefined` | Servers and portless workers to orchestrate |
 | `links` | `Record<string, LinkConfig>` | `undefined` | Cross-repo links to other buncargo projects' live runs (`project`, `path?`, `required?`, `apps?`, `services?`, `onChange?`, `profile?`). Exposed on `ctx.links` and `env.links`. See [cross-repo linking](#cross-repo-linking) |
 | `exportEnv` | `string[]` | `[]` | Non-secret shared env var names published to linked checkouts via `runs.json` (`ctx.links.<name>.env`); `firebase()` adds its emulator variables automatically |
-| `egressGuard` | `boolean \| { enabled?, allow?, mode?, apps? }` | `undefined` (off) | Built-in local deny-by-default HTTP/CONNECT egress proxy (`HTTP_PROXY`/`HTTPS_PROXY`/`grpc_proxy`/`NO_PROXY`/`NODE_USE_ENV_PROXY=1`); loopback and RFC1918 addresses bypass automatically, `allow` accepts exact hosts or `*.domain` patterns, `mode` is `"block"` (default) or `"warn"`, and `apps` scopes injection to selected apps |
+| `egressGuard` | `boolean \| { enabled?, allow?, allowHostsOf?, mode?, apps? }` | `undefined` (off) | Built-in local deny-by-default HTTP/CONNECT egress proxy (`HTTP_PROXY`/`HTTPS_PROXY`/`grpc_proxy`/`NO_PROXY`/`NODE_USE_ENV_PROXY=1`); loopback and RFC1918 addresses bypass automatically, `allow` accepts exact hosts or `*.domain` patterns, `allowHostsOf` lets through the hosts of URL-valued env or secret keys, `mode` is `"block"` (default) or `"warn"`, and `apps` scopes injection to selected apps. See [egress guard](#egress-guard) |
 | `env` | `(ports, urls, ctx) => Record<string, string \| number>` | `undefined` | Shared overlay merged onto computed ports/urls for every process |
 | `hooks` | `DevHooks` | `undefined` | Lifecycle hooks |
 | `migrations` | `MigrationConfig[]` | `[]` | Selected custom migrations, in order after automatic Prisma migrations for the selected database |

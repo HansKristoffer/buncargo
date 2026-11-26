@@ -214,6 +214,7 @@ function createEnvironment(
 		tasks: resolved.tasks,
 		hasGeneratedFiles: (resolved.generatedFiles?.length ?? 0) > 0,
 		hasActiveEgressProxy: () => ctx.egressProxyUrl !== undefined,
+		egressProxy: () => ctx.egressProxy,
 		setEgressProxy: ctx.setEgressProxy,
 		runtime: () => ctx.runtime,
 		appEnv: (name, production) => envVars.buildAppEnvVars(name, production),

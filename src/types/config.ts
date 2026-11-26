@@ -307,6 +307,15 @@ export interface EgressGuardConfig {
 	 */
 	allow?: readonly string[];
 	/**
+	 * Env or secret keys holding URLs whose hosts are let through, for a host
+	 * known only once secrets load (`["UNLEASH_SERVER_API_URL"]`). Read from
+	 * each guarded process's final environment when it starts: an app's own
+	 * secrets, `envVars` and exported shell values. The hosts are added to the
+	 * run's allowlist, as exact hostnames on any port; a key that is unset or
+	 * holds no URL is reported and lets nothing through.
+	 */
+	allowHostsOf?: readonly string[];
+	/**
 	 * `"block"` (default) rejects non-allowlisted outbound requests with HTTP 403
 	 * and logs a warning. `"warn"` logs them and forwards them.
 	 */
