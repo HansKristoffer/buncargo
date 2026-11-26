@@ -221,7 +221,9 @@ export async function runSeedIfNeeded(
 	});
 
 	if (result.exitCode !== 0) {
-		console.error(formatFail("Seeding failed"));
+		const failedLine = formatFail("Seeding failed");
+		if (options.onOutputLine) ctx.output.log(failedLine);
+		else console.error(failedLine);
 
 		// Already shown when its output was streamed.
 		const streamed =

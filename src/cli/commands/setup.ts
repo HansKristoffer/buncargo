@@ -67,8 +67,17 @@ async function setup(values: {
 	}
 
 	const env = (await loadDevEnv()) as AnyDevEnvironment;
-	const ctx: CheckContext = { root: env.root, env };
-	const checks = allChecks(env, internalsOf(env).setupChecks);
+	const internals = internalsOf(env);
+	const ctx: CheckContext = {
+		root: env.root,
+		env,
+		...(internals.activeApps !== undefined
+			? { activeApps: internals.activeApps }
+			: {}),
+	};
+	const checks = allChecks(env, internals.setupChecks, {
+		egressGuardEnabled: internals.egressGuard?.enabled,
+	});
 	const autoFix = values.yes || isCI();
 	const canAsk = !autoFix && isInteractive();
 

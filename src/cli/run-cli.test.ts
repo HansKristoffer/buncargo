@@ -224,6 +224,9 @@ function registerStubInternals(
 			worktree: false,
 			config: { projectPrefix: env.projectPrefix, services: env.services },
 			services: env.services,
+			ports: env.ports as Record<string, number>,
+			urls: env.urls as Record<string, string>,
+			loopbackUrls: env.loopbackUrls as Record<string, string>,
 			selectedServiceKeys: [],
 			hasSelectedServices: false,
 			runtime: { name: "docker" },
@@ -237,6 +240,8 @@ function registerStubInternals(
 		ports: env.ports as Record<string, number>,
 		projectName: env.projectName,
 		unsetEnv: undefined,
+		egressGuard: undefined,
+		setEgressProxy: async () => {},
 		runtime: () => containerRuntimeForEnv(env),
 		appEnv: (name) => env.buildAppEnvVars(name),
 		runHook: async () => false,
@@ -284,10 +289,14 @@ function registerStubInternals(
 		reportTo: () => {},
 		renderGeneratedFiles: () => [],
 		recordCapture: async () => [],
+		inspectLinks: () => [],
+		exportedEnv: () => ({}),
 		setNamedHostsActive: () => {},
+		adoptLivePorts: () => {},
 		ensureComposeFile: () => ".buncargo/docker-compose.generated.yml",
 		composeModel: () => ({ services: {} }),
 		planPortOffset: () => ({ offset: 0, provenance: "hash" }),
+		withProfile: () => env,
 	});
 }
 

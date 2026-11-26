@@ -104,6 +104,31 @@ describe("preset Compose models", () => {
 		const command = String(model.services.search?.command);
 		expect(interpolate(command, {})).toContain("--api-key=k$y ");
 	});
+
+	it("appends urlParams to Postgres connection URLs", () => {
+		const { env } = render({
+			postgres: service.postgres({
+				database: "translations_dev",
+				urlParams: { sslmode: "disable", connect_timeout: "5" },
+			}),
+		});
+		expect(env.DATABASE_URL).toBe(
+			"postgresql://postgres:postgres@localhost:5442/translations_dev?sslmode=disable&connect_timeout=5",
+		);
+
+		const wrongService = validateConfig({
+			projectPrefix: "db",
+			services: {
+				redis: {
+					...service.redis(),
+					urlParams: { sslmode: "disable" },
+				},
+			},
+		});
+		expect(wrongService).toEqual([
+			expect.stringContaining('Service "redis" sets urlParams'),
+		]);
+	});
 });
 
 describe("minio and job helpers", () => {

@@ -1,4 +1,5 @@
 import { isOneOf, typedSwitch } from "hanzio";
+import { isScopeList } from "../../core/secrets";
 import { findCycle } from "../../planning";
 import type { AnyDevConfig } from "../../types";
 import type { ValidationContext } from "./context";
@@ -46,14 +47,20 @@ export function validateApps(
 			},
 		);
 
-		if (
-			config.secrets !== false &&
-			app.secrets &&
-			!(app.secrets.projectId ?? config.secrets?.projectId)
-		) {
-			errors.push(
-				`App "${name}" sets secrets without a projectId. Set apps.${name}.secrets.projectId, or secrets.projectId for every app.`,
+		if (config.secrets !== false && app.secrets) {
+			const defaultProjectId = isScopeList(config.secrets)
+				? config.secrets[0]?.projectId
+				: config.secrets?.projectId;
+			const list = isScopeList(app.secrets) ? app.secrets : [app.secrets];
+			const inheritedProjectId = list[0]?.projectId ?? defaultProjectId;
+			const missingProjectId = list.some(
+				(entry) => !(entry.projectId ?? inheritedProjectId),
 			);
+			if (missingProjectId) {
+				errors.push(
+					`App "${name}" sets secrets without a projectId. Set apps.${name}.secrets.projectId, or secrets.projectId for every app.`,
+				);
+			}
 		}
 
 		if (app.devCommand !== false && !app.devCommand) {
@@ -127,10 +134,21 @@ export function validateApps(
 		}
 
 		for (const trigger of app.restartOn ?? []) {
-			if (!/^(captured|publicUrls)\.[A-Za-z0-9_-]+$/.test(trigger)) {
+			const isLocalTrigger = /^(captured|publicUrls)\.[A-Za-z0-9_-]+$/.test(
+				trigger,
+			);
+			const isLinkTrigger = /^links\.[A-Za-z0-9][A-Za-z0-9._-]*$/.test(trigger);
+			if (!isLocalTrigger && !isLinkTrigger) {
 				errors.push(
-					`apps.${name}.restartOn "${trigger}" must be captured.<name> or publicUrls.<app>`,
+					`apps.${name}.restartOn "${trigger}" must be captured.<name>, publicUrls.<app>, or links.<alias>`,
 				);
+			} else if (isLinkTrigger) {
+				const alias = trigger.slice("links.".length);
+				if (!config.links?.[alias]) {
+					errors.push(
+						`apps.${name}.restartOn "${trigger}" references unknown link "${alias}"`,
+					);
+				}
 			}
 		}
 	}

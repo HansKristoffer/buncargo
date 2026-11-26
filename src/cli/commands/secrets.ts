@@ -4,11 +4,13 @@ import {
 	type CollectedScope,
 	describeScope,
 	fetchScopeSecrets,
+	isScopeList,
 	missingKeys,
-	resolveScope,
+	requiredSecretKeys,
+	resolveScopes,
 } from "../../core/secrets/index";
 import { loadDevEnv } from "../../loader";
-import type { SecretsScopeConfig } from "../../types";
+import type { SecretsScopeInput } from "../../types";
 import { BASE_EXITS, defineCommand, defineGroup } from "../command-spec";
 import { CliError } from "../errors";
 import type { SecretsCheckJson } from "../json-documents";
@@ -30,8 +32,9 @@ export const SECRETS_CHECK_EXIT = {
 async function listSecrets(
 	app: string | undefined,
 	environment: string | undefined,
+	profile: string | undefined,
 ): Promise<number> {
-	const env = await loadDevEnv();
+	const env = await loadDevEnv(profile !== undefined ? { profile } : undefined);
 
 	if (app !== undefined && !env.apps[app]) {
 		const names = Object.keys(env.apps);
@@ -43,14 +46,21 @@ async function listSecrets(
 	}
 
 	const config = app === undefined ? env.secrets : env.apps[app]?.secrets;
-	const scope = config
-		? resolveScope(
-				{ ...config, ...(environment ? { environment } : {}) },
-				env.secrets,
-			)
-		: undefined;
+	const overridden =
+		config && environment
+			? isScopeList(config)
+				? config.map((entry, index) =>
+						index === 0 || entry.environment === undefined
+							? { ...entry, environment }
+							: entry,
+					)
+				: { ...config, environment }
+			: config;
+	const scopeDefaults =
+		app === undefined || environment !== undefined ? undefined : env.secrets;
+	const scopes = overridden ? resolveScopes(overridden, scopeDefaults) : [];
 
-	if (!scope) {
+	if (scopes.length === 0) {
 		throw app === undefined
 			? new CliError(
 					env.secrets === false
@@ -62,19 +72,31 @@ async function listSecrets(
 				]);
 	}
 
-	// A SecretsError is reported with its fix (`toCliError`).
-	const values = await fetchScopeSecrets(scope);
+	// A SecretsError is reported with its fix (`toCliError`). Fetch layers in
+	// parallel and merge in declared order so later scopes override earlier ones.
+	const layers = await Promise.all(
+		scopes.map((scope) => fetchScopeSecrets(scope)),
+	);
+	const values: Record<string, string> = {};
+	for (const layer of layers) Object.assign(values, layer);
 
 	// What the app is given, in `dev`'s precedence: the secrets, then the
 	// developer's exported environment, then the computed env.
 	const computed: Record<string, string> =
 		app === undefined ? env.buildEnvVars() : env.buildAppEnvVars(app);
 	const effective = { ...values, ...process.env, ...computed };
-	const required = config ? (config.required ?? []) : [];
+	const required = requiredSecretKeys(config);
 	const keys = [...new Set([...Object.keys(values), ...required])].sort();
 	const width = Math.max(0, ...keys.map((key) => key.length));
 
-	log.line(`${app ?? "config"}: ${describeScope(scope)}`);
+	if (scopes.length === 1) {
+		log.line(`${app ?? "config"}: ${describeScope(scopes[0])}`);
+	} else {
+		log.line(`${app ?? "config"}:`);
+		for (const scope of scopes) {
+			log.line(`  - ${describeScope(scope)}`);
+		}
+	}
 	for (const key of keys) {
 		const source = secretSource(key, values, computed, effective);
 		log.line(`  ${key.padEnd(width)}  ${source}`);
@@ -103,10 +125,16 @@ const lsCommand = defineCommand({
 				value: "<slug>",
 				description: "This Infisical environment",
 			},
+			profile: {
+				kind: "string",
+				value: "<name>",
+				description:
+					"Apply a profile's env and secrets overrides (default: the profile named default)",
+			},
 		},
 	},
 	exits: { ...BASE_EXITS, 1: "a required secret is missing, or bad arguments" },
-	run: ({ values }) => listSecrets(values.app, values.env),
+	run: ({ values }) => listSecrets(values.app, values.env, values.profile),
 });
 
 const checkCommand = defineCommand({
@@ -115,6 +143,12 @@ const checkCommand = defineCommand({
 		summary: "Whether every Infisical scope the config uses is readable",
 		flags: {
 			json: { kind: "boolean", description: "One JSON document on stdout" },
+			profile: {
+				kind: "string",
+				value: "<name>",
+				description:
+					"Apply a profile's secrets overrides (default: the profile named default)",
+			},
 		},
 	},
 	exits: {
@@ -126,7 +160,7 @@ const checkCommand = defineCommand({
 			"signed in, but a scope could not be read (project, environment, access, network)",
 	},
 	json: "SecretsCheckJson (--json)",
-	run: ({ values }) => checkSecrets(values.json),
+	run: ({ values }) => checkSecrets(values.json, values.profile),
 });
 
 /**
@@ -160,14 +194,17 @@ function secretSource(
 /** What to change in dev.config.ts so `app` has a scope to list. */
 function noAppScopeFix(
 	app: string,
-	own: SecretsScopeConfig | false | undefined,
-	config: SecretsScopeConfig | false | undefined,
+	own: SecretsScopeInput | false | undefined,
+	config: SecretsScopeInput | false | undefined,
 ): string {
 	if (config === false)
 		return "dev.config.ts sets secrets: false, which turns secrets off for every app.";
 	if (own === false)
 		return `dev.config.ts sets apps.${app}.secrets: false; give it a scope instead, such as { projectId: "…" }.`;
-	if (own === undefined && config?.projectId)
+	const hasConfigProject = Boolean(
+		config && (isScopeList(config) ? config[0]?.projectId : config.projectId),
+	);
+	if (own === undefined && hasConfigProject)
 		return `Add apps.${app}.secrets: {} to dev.config.ts to use the config-level scope, or { projectId: "…" } for its own.`;
 	return `Set apps.${app}.secrets.projectId, or secrets.projectId for every app, in dev.config.ts.`;
 }
@@ -194,9 +231,9 @@ function describeFailure(
 	};
 }
 
-/** `buncargo secrets check [--json]`. */
-async function checkSecrets(json: boolean): Promise<number> {
-	const env = await loadDevEnv();
+/** `buncargo secrets check [--json] [--profile=<name>]`. */
+async function checkSecrets(json: boolean, profile?: string): Promise<number> {
+	const env = await loadDevEnv(profile !== undefined ? { profile } : undefined);
 	const checks = await Promise.all(
 		configSecretScopes(env).map(async (entry): Promise<ScopeCheck> => {
 			try {

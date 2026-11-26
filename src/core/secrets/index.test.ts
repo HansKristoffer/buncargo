@@ -10,6 +10,7 @@ import {
 	startFakeInfisical,
 } from "./fake-infisical.testing";
 import {
+	applyInfisicalProjectConfig,
 	applySecretDefaults,
 	clearScopeSecretsCache,
 	describeSecretsError,
@@ -18,8 +19,13 @@ import {
 	type InfisicalScope,
 	loadAppSecrets,
 	loadScopeSecrets,
+	matchesSecretPattern,
+	mergeSecretsConfig,
 	missingRequiredSecrets,
+	readInfisicalProjectId,
+	requiredSecretKeys,
 	resolveScope,
+	resolveScopes,
 } from "./index";
 
 let fake: (FakeInfisical & { cliPath: string; home: string }) | undefined;
@@ -542,6 +548,518 @@ describe("missingRequiredSecrets", () => {
 				(name) => (name === "api" ? { KEY: "x" } : { KEY: "y" }),
 			),
 		).toEqual({ api: ["DB"] });
+	});
+
+	it("aggregates required keys across layered scopes", () => {
+		expect(
+			missingRequiredSecrets(
+				{
+					backend: {
+						secrets: [
+							{
+								projectId: "p1",
+								path: "/backend",
+								required: ["DB_KEY", "SHARED"],
+							},
+							{
+								projectId: "p1",
+								environment: "prod",
+								path: "/functions",
+								only: ["UNLEASH_A"],
+								required: ["UNLEASH_A", "SHARED"],
+							},
+						],
+					},
+				},
+				() => ({ DB_KEY: "ok" }),
+			),
+		).toEqual({ backend: ["SHARED", "UNLEASH_A"] });
+	});
+});
+
+describe("layered scopes", () => {
+	it("resolves ordered layers inheriting connection defaults without leaking filters", () => {
+		const defaults = {
+			projectId: "proj-eu",
+			organizationId: "org-1",
+			environment: "dev",
+			siteUrl: "https://eu.infisical.com",
+		};
+		const resolved = resolveScopes(
+			[
+				{ path: "/backend", exclude: ["NOISY"] },
+				{
+					environment: "prod",
+					path: "/functions",
+					only: ["UNLEASH_1", "UNLEASH_2"],
+				},
+			],
+			defaults,
+			{},
+		);
+		expect(resolved).toEqual([
+			{
+				projectId: "proj-eu",
+				organizationId: "org-1",
+				environment: "dev",
+				siteUrl: "https://eu.infisical.com",
+				path: "/backend",
+				exclude: ["NOISY"],
+			},
+			{
+				projectId: "proj-eu",
+				organizationId: "org-1",
+				environment: "prod",
+				siteUrl: "https://eu.infisical.com",
+				path: "/functions",
+				only: ["UNLEASH_1", "UNLEASH_2"],
+			},
+		]);
+
+		// Later entries without defaults inherit projectId/org/siteUrl from entry 0.
+		expect(
+			resolveScopes(
+				[
+					{
+						projectId: "p-own",
+						siteUrl: "https://app.infisical.com",
+						path: "/a",
+					},
+					{ environment: "prod", path: "/b", only: ["K"] },
+				],
+				undefined,
+				{},
+			),
+		).toEqual([
+			{
+				projectId: "p-own",
+				environment: "dev",
+				siteUrl: "https://app.infisical.com",
+				path: "/a",
+			},
+			{
+				projectId: "p-own",
+				environment: "prod",
+				siteUrl: "https://app.infisical.com",
+				path: "/b",
+				only: ["K"],
+			},
+		]);
+	});
+
+	it("preserves layered scopes and required keys in applySecretDefaults and mergeSecretsConfig", () => {
+		const layeredDefaults = [
+			{ projectId: "p1", environment: "dev", path: "/shared" },
+			{ environment: "prod", path: "/flags", only: ["UNLEASH_A"] },
+		] as const;
+
+		const resolved = applySecretDefaults(
+			{
+				optIn: {
+					port: 3000,
+					devCommand: "true",
+					secrets: { required: ["REQ"] },
+				} as AppConfig,
+				layered: {
+					port: 3001,
+					devCommand: "true",
+					secrets: [
+						{ path: "/backend", required: ["DB"] },
+						{
+							environment: "prod",
+							path: "/functions",
+							only: ["UNLEASH_B"],
+							required: ["UNLEASH_B"],
+						},
+					],
+				} as AppConfig,
+			},
+			layeredDefaults,
+			{},
+		);
+		expect(Array.isArray(resolved.optIn.secrets)).toBe(true);
+		expect(requiredSecretKeys(resolved.optIn.secrets)).toEqual(["REQ"]);
+		expect(requiredSecretKeys(resolved.layered.secrets)).toEqual([
+			"DB",
+			"UNLEASH_B",
+		]);
+		expect(resolved.layered.secrets).toEqual([
+			{
+				projectId: "p1",
+				environment: "dev",
+				siteUrl: "https://eu.infisical.com",
+				path: "/backend",
+				required: ["DB"],
+			},
+			{
+				projectId: "p1",
+				environment: "prod",
+				siteUrl: "https://eu.infisical.com",
+				path: "/functions",
+				only: ["UNLEASH_B"],
+				required: ["UNLEASH_B"],
+			},
+			{
+				projectId: "p1",
+				environment: "prod",
+				siteUrl: "https://eu.infisical.com",
+				path: "/flags",
+				only: ["UNLEASH_A"],
+			},
+		]);
+		// Re-resolving already-baked scopes against the same defaults is idempotent.
+		expect(
+			resolveScopes(resolved.layered.secrets, layeredDefaults, {}),
+		).toHaveLength(3);
+
+		// Profile-style environment override updates base layer while keeping explicit prod layer.
+		expect(
+			mergeSecretsConfig(layeredDefaults, { environment: "staging" }),
+		).toEqual([
+			{ projectId: "p1", environment: "staging", path: "/shared" },
+			{ environment: "prod", path: "/flags", only: ["UNLEASH_A"] },
+		]);
+		expect(mergeSecretsConfig(layeredDefaults, false)).toBe(false);
+	});
+
+	it("merges layered scopes in declared order and shares folderKey fetches", async () => {
+		const infisical = start();
+		infisical.folders["p1:dev:/backend"] = {
+			secrets: {
+				API_KEY: "dev-api",
+				UNLEASH_URL: "dev-unleash",
+				EXTRA: "keep-me",
+			},
+		};
+		infisical.folders["p1:prod:/functions"] = {
+			secrets: {
+				UNLEASH_URL: "prod-unleash",
+				UNLEASH_TOKEN: "prod-token",
+				PROD_SECRET_NOT_ALLOWED: "must-not-leak",
+			},
+		};
+
+		const apps = applySecretDefaults(
+			{
+				backend: {
+					port: 3000,
+					devCommand: "true",
+					secrets: [
+						{ path: "/backend", exclude: ["EXTRA"] },
+						{
+							environment: "prod",
+							path: "/functions",
+							only: ["UNLEASH_URL", "UNLEASH_TOKEN"],
+						},
+					],
+				} as AppConfig,
+				worker: {
+					port: 3001,
+					devCommand: "true",
+					// Same prod folder as backend's layer 2, different `only` filter -> shares folderKey fetch!
+					secrets: [
+						{ path: "/backend" },
+						{
+							environment: "prod",
+							path: "/functions",
+							only: ["UNLEASH_TOKEN"],
+						},
+					],
+				} as AppConfig,
+			},
+			{ projectId: "p1", siteUrl: infisical.siteUrl, environment: "dev" },
+			noIdentity(),
+		);
+
+		const secrets = await loadAppSecrets(apps, { env: noIdentity() });
+		expect(secrets).toEqual({
+			backend: {
+				API_KEY: "dev-api",
+				UNLEASH_URL: "prod-unleash",
+				UNLEASH_TOKEN: "prod-token",
+			},
+			worker: {
+				API_KEY: "dev-api",
+				EXTRA: "keep-me",
+				UNLEASH_URL: "dev-unleash",
+				UNLEASH_TOKEN: "prod-token",
+			},
+		});
+		// Only 2 distinct folders (dev:/backend and prod:/functions), despite 4 filtered scopes!
+		expect(
+			infisical.requests.filter((entry) => entry === "GET /api/v4/secrets"),
+		).toHaveLength(2);
+	});
+
+	it("keeps config-level only/exclude filters from leaking into layered app scopes", () => {
+		const defaults = {
+			projectId: "p1",
+			environment: "local",
+			exclude: ["UNLEASH_A"],
+		};
+		const appScopes = [
+			{ path: "/backend" },
+			{ environment: "prod", path: "/functions", only: ["UNLEASH_A"] },
+		];
+		const resolved = resolveScopes(appScopes, defaults, noIdentity());
+		expect(resolved).toEqual([
+			{
+				projectId: "p1",
+				environment: "local",
+				path: "/backend",
+				siteUrl: "https://eu.infisical.com",
+			},
+			{
+				projectId: "p1",
+				environment: "prod",
+				path: "/functions",
+				siteUrl: "https://eu.infisical.com",
+				only: ["UNLEASH_A"],
+			},
+		]);
+
+		const apps = applySecretDefaults(
+			{
+				api: {
+					port: 3000,
+					devCommand: "true",
+					secrets: appScopes,
+				} as AppConfig,
+			},
+			defaults,
+			noIdentity(),
+		);
+		expect(apps.api.secrets).toEqual(resolved);
+	});
+
+	it("inherits environment across sibling layers and profile overrides without clobbering pinned layers", () => {
+		const layeredConfig = [
+			{ projectId: "p1", environment: "local", path: "/shared" },
+			{ path: "/extra" },
+			{ environment: "prod", path: "/flags", only: ["FLAG_A"] },
+		];
+
+		expect(resolveScopes(undefined, layeredConfig, noIdentity())).toEqual([
+			{
+				projectId: "p1",
+				environment: "local",
+				path: "/shared",
+				siteUrl: "https://eu.infisical.com",
+			},
+			{
+				projectId: "p1",
+				environment: "local",
+				path: "/extra",
+				siteUrl: "https://eu.infisical.com",
+			},
+			{
+				projectId: "p1",
+				environment: "prod",
+				path: "/flags",
+				siteUrl: "https://eu.infisical.com",
+				only: ["FLAG_A"],
+			},
+		]);
+
+		const overridden = mergeSecretsConfig(layeredConfig, {
+			environment: "staging",
+		});
+		expect(resolveScopes(undefined, overridden, noIdentity())).toEqual([
+			{
+				projectId: "p1",
+				environment: "staging",
+				path: "/shared",
+				siteUrl: "https://eu.infisical.com",
+			},
+			{
+				projectId: "p1",
+				environment: "staging",
+				path: "/extra",
+				siteUrl: "https://eu.infisical.com",
+			},
+			{
+				projectId: "p1",
+				environment: "prod",
+				path: "/flags",
+				siteUrl: "https://eu.infisical.com",
+				only: ["FLAG_A"],
+			},
+		]);
+
+		// Single base with environment overridden by a layered profile list preserves environment.
+		const layeredProfile = mergeSecretsConfig(
+			{ projectId: "p1", environment: "local" },
+			[{ path: "/a" }, { path: "/b" }],
+		);
+		expect(resolveScopes(undefined, layeredProfile, noIdentity())).toEqual([
+			{
+				projectId: "p1",
+				environment: "local",
+				path: "/a",
+				siteUrl: "https://eu.infisical.com",
+			},
+			{
+				projectId: "p1",
+				environment: "local",
+				path: "/b",
+				siteUrl: "https://eu.infisical.com",
+			},
+		]);
+	});
+
+	it("preserves trailing config/profile overlay layers on apps with their own path", async () => {
+		const infisical = start();
+		infisical.folders["p1:dev:/frontend"] = {
+			secrets: {
+				FRONTEND_KEY: "dev-fe",
+				FB_PRIVATE_KEY_A: "strip-me",
+				UNLEASH_URL: "dev-unleash",
+				NEXT_PUBLIC_UNLEASH_TOKEN: "dev-token",
+			},
+		};
+		infisical.folders["p1:prod:/functions"] = {
+			secrets: {
+				UNLEASH_URL: "prod-unleash",
+				NEXT_PUBLIC_UNLEASH_TOKEN: "prod-token",
+				PROD_ONLY_SECRET: "must-not-leak",
+			},
+		};
+
+		const defaults = [
+			{
+				projectId: "p1",
+				siteUrl: infisical.siteUrl,
+				environment: "dev",
+				exclude: ["FB_PRIVATE_KEY_*"],
+			},
+			{
+				environment: "prod",
+				path: "/functions",
+				only: ["UNLEASH_*", "NEXT_PUBLIC_UNLEASH_*"],
+			},
+		];
+
+		const apps = applySecretDefaults(
+			{
+				frontend: {
+					port: 3000,
+					devCommand: "true",
+					secrets: { path: "/frontend", required: ["FRONTEND_KEY"] },
+				} as AppConfig,
+			},
+			defaults,
+			noIdentity(),
+		);
+
+		expect(apps.frontend.secrets).toEqual([
+			{
+				projectId: "p1",
+				siteUrl: infisical.siteUrl,
+				environment: "dev",
+				path: "/frontend",
+				exclude: ["FB_PRIVATE_KEY_*"],
+				required: ["FRONTEND_KEY"],
+			},
+			{
+				projectId: "p1",
+				siteUrl: infisical.siteUrl,
+				environment: "prod",
+				path: "/functions",
+				only: ["UNLEASH_*", "NEXT_PUBLIC_UNLEASH_*"],
+			},
+		]);
+
+		const loaded = await loadAppSecrets(apps, { env: noIdentity() });
+		expect(loaded).toEqual({
+			frontend: {
+				FRONTEND_KEY: "dev-fe",
+				UNLEASH_URL: "prod-unleash",
+				NEXT_PUBLIC_UNLEASH_TOKEN: "prod-token",
+			},
+		});
+	});
+
+	it("matches wildcard globs in only and exclude patterns", () => {
+		expect(matchesSecretPattern("FB_PRIVATE_KEY_1", "FB_PRIVATE_KEY_*")).toBe(
+			true,
+		);
+		expect(matchesSecretPattern("FB_PRIVATE_KEY_", "FB_PRIVATE_KEY_*")).toBe(
+			true,
+		);
+		expect(matchesSecretPattern("OTHER_KEY", "FB_PRIVATE_KEY_*")).toBe(false);
+		expect(matchesSecretPattern("FLAG_A", "FLAG_?")).toBe(true);
+		expect(matchesSecretPattern("FLAG_AB", "FLAG_?")).toBe(false);
+		expect(matchesSecretPattern("EXACT", "EXACT")).toBe(true);
+	});
+
+	it("reads projectId from .infisical.json without opting in unconfigured scopes", () => {
+		const dir = join(home(), "infisical-repo");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, ".infisical.json"),
+			JSON.stringify({ workspaceId: "ws-from-file" }),
+		);
+
+		expect(readInfisicalProjectId(dir)).toBe("ws-from-file");
+
+		const plain = applyInfisicalProjectConfig({ apps: { api: {} } }, dir);
+		expect(plain).toEqual({ apps: { api: {} } });
+
+		const configured = applyInfisicalProjectConfig(
+			{
+				secrets: { environment: "dev" } as SecretsScopeConfig,
+				apps: {
+					api: { secrets: { path: "/api" } as SecretsScopeConfig },
+				},
+			},
+			dir,
+		);
+		expect(configured.secrets).toEqual({
+			projectId: "ws-from-file",
+			environment: "dev",
+		});
+
+		const appOnly = applyInfisicalProjectConfig(
+			{
+				secrets: undefined as SecretsScopeConfig | undefined,
+				apps: {
+					api: { secrets: { path: "/api" } as SecretsScopeConfig },
+					web: {
+						secrets: {
+							projectId: "explicit-id",
+							path: "/web",
+						} as SecretsScopeConfig,
+					},
+				},
+			},
+			dir,
+		);
+		expect(appOnly.secrets).toBeUndefined();
+		expect(appOnly.apps?.api.secrets).toEqual({
+			projectId: "ws-from-file",
+			path: "/api",
+		});
+		expect(appOnly.apps?.web.secrets).toEqual({
+			projectId: "explicit-id",
+			path: "/web",
+		});
+
+		const disabled = applyInfisicalProjectConfig(
+			{
+				secrets: false as const,
+				apps: { api: { secrets: { path: "/api" } } },
+				profiles: {
+					cloud: { secrets: { environment: "staging" } as SecretsScopeConfig },
+				},
+			},
+			dir,
+		);
+		expect(disabled.secrets).toBe(false);
+		expect(disabled.apps?.api.secrets).toEqual({ path: "/api" });
+		expect(disabled.profiles?.cloud.secrets).toEqual({
+			projectId: "ws-from-file",
+			environment: "staging",
+		});
 	});
 });
 

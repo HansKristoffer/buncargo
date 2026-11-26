@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { typedSwitch, typedSwitchGroup } from "hanzio";
 import { containerRuntimeForEnv, isRuntimeUp } from "../container-runtime";
 import {
@@ -10,12 +10,15 @@ import {
 	inspectCheckoutFiles,
 	lastSyncReport,
 } from "../core/checkout-files";
+import { childProcessEnv } from "../core/child-env";
+import { supportsNodeEnvProxy } from "../core/egress-guard";
 import { readEnvOverrides } from "../core/env-overrides";
 import {
 	appendToGitignore,
 	gitignoreCovers,
 	isGitIgnored,
 } from "../core/gitignore";
+import { linkedPortsOf } from "../core/links";
 import {
 	describeStrayLoopbackUrl,
 	findStrayLoopbackUrls,
@@ -23,6 +26,12 @@ import {
 	readDotenvFile,
 	type StrayLoopbackUrl,
 } from "../core/loopback-env";
+import {
+	detectPackageManager,
+	matchesNodeVersion,
+	parseNodeVersionOutput,
+	readPinnedNodeVersion,
+} from "../core/package-manager";
 import { canBindPort } from "../core/process";
 import { isInteractive } from "../core/prompt";
 import { isCI } from "../core/runtime-flags";
@@ -31,11 +40,12 @@ import {
 	infisicalLoginCommand,
 } from "../core/secrets/errors";
 import { describeSecretsError, fetchScopeSecrets } from "../core/secrets/index";
+import { lookupOnPath } from "../core/tool-binary";
 import {
 	prismaSchemaHash,
 	readGeneratedPrismaHash,
 } from "../prisma/schema-hash";
-import type { AnyDevEnvironment, SetupCheck } from "../types";
+import type { AnyDevEnvironment, ResolvedLink, SetupCheck } from "../types";
 import {
 	bunInstallCommand,
 	pinnedBunVersion,
@@ -108,7 +118,10 @@ export function checkoutFileProblem(
  * computed environment that point outside its port block: at a port nothing
  * serves, or at another checkout's.
  */
-export function strayLoopbackUrls(env: AnyDevEnvironment): StrayLoopbackUrl[] {
+export function strayLoopbackUrls(
+	env: AnyDevEnvironment,
+	links: Readonly<Record<string, ResolvedLink | undefined>> = env.links,
+): StrayLoopbackUrl[] {
 	const dotenvFiles = declaredCheckoutFiles(env).filter((file) =>
 		isDotenvPath(file.path),
 	);
@@ -126,24 +139,101 @@ export function strayLoopbackUrls(env: AnyDevEnvironment): StrayLoopbackUrl[] {
 			},
 		],
 		ports: env.ports as Record<string, number>,
+		allowedPorts: linkedPortsOf(links),
 		isListening: (port) => !canBindPort(port),
 	});
 }
 
-function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
+const NODE_VERSION_TIMEOUT_MS = 5_000;
+
+/** App subdirectories that manage their own `package.json` in a rootless repo. */
+function independentAppDirs(env: AnyDevEnvironment): string[] {
+	const seen = new Set<string>();
+	const dirs: string[] = [];
+	for (const app of Object.values(env.apps)) {
+		if (!app.cwd) continue;
+		const abs = resolve(env.root, app.cwd);
+		if (abs === env.root || seen.has(abs)) continue;
+		seen.add(abs);
+		if (declaresDependencies(abs)) dirs.push(app.cwd);
+	}
+	return dirs;
+}
+
+/** Detect installed `node --version` on PATH, bounded so a broken shim never hangs. */
+function detectNodeVersion(): string | undefined {
+	const nodeBin = lookupOnPath("node", childProcessEnv());
+	if (!nodeBin) return undefined;
+	try {
+		const result = Bun.spawnSync([nodeBin, "--version"], {
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+			env: childProcessEnv(),
+			timeout: NODE_VERSION_TIMEOUT_MS,
+		});
+		if (result.exitCode !== 0) return undefined;
+		return parseNodeVersionOutput(result.stdout.toString());
+	} catch {
+		return undefined;
+	}
+}
+
+function coreChecks(
+	env: AnyDevEnvironment,
+	options: { egressGuardEnabled?: boolean } = {},
+): SetupCheck[] {
 	const checks: SetupCheck[] = [];
 	const pinned = pinnedBunVersion(env.root);
+	const pinnedNode = readPinnedNodeVersion(env.root);
 
 	// A fresh worktree has none, and every app then fails on its first import
 	// (`tsgo: command not found`) after the containers were already started.
 	// ponytail: presence only; a lockfile edit since the install is not caught.
 	if (declaresDependencies(env.root)) {
+		const manager = detectPackageManager(env.root);
 		checks.push({
 			name: "Dependencies are installed",
 			check: ({ root }) =>
 				hasNodeModules(root) || { ok: false, detail: "no node_modules" },
-			fix: "bun install",
+			fix: manager.installCommand,
 		});
+	} else {
+		// Rootless multi-package repos (no root `package.json`) install per app dir.
+		const appDirs = independentAppDirs(env);
+		if (appDirs.length > 0) {
+			const missingDirs = (root: string) =>
+				appDirs.filter((cwd) => !hasNodeModules(resolve(root, cwd)));
+			const fixCommands = appDirs
+				.map(
+					(cwd) =>
+						`(cd ${cwd} && ${detectPackageManager(resolve(env.root, cwd)).installCommand})`,
+				)
+				.join(" && ");
+			checks.push({
+				name: "App dependencies are installed",
+				check: ({ root }) => {
+					const missing = missingDirs(root);
+					return (
+						missing.length === 0 || {
+							ok: false,
+							detail: `no node_modules in ${missing.join(", ")}`,
+						}
+					);
+				},
+				fix: async ({ root, env: checkEnv }) => {
+					for (const cwd of missingDirs(root)) {
+						const manager = detectPackageManager(resolve(root, cwd));
+						await checkEnv.exec(manager.installCommand, {
+							cwd,
+							verbose: true,
+							secrets: false,
+						});
+					}
+				},
+				fixDescription: `run \`${fixCommands}\``,
+			});
+		}
 	}
 
 	if (pinned) {
@@ -156,6 +246,47 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 					detail: `running ${Bun.version}`,
 				},
 			fix: bunInstallCommand(pinned),
+		});
+	}
+
+	if (pinnedNode) {
+		checks.push({
+			name: `Node ${pinnedNode.version} (${pinnedNode.source})`,
+			severity: "warning",
+			fast: false,
+			check: () => {
+				const actual = detectNodeVersion();
+				if (!actual) {
+					return {
+						ok: false,
+						detail: `node not found on PATH (expected ${pinnedNode.version})`,
+					};
+				}
+				return (
+					matchesNodeVersion(actual, pinnedNode.version) || {
+						ok: false,
+						detail: `running ${actual}`,
+					}
+				);
+			},
+		});
+	}
+
+	if (options.egressGuardEnabled) {
+		checks.push({
+			name: "Node supports NODE_USE_ENV_PROXY (egressGuard)",
+			severity: "warning",
+			fast: false,
+			check: () => {
+				const actual = detectNodeVersion();
+				if (!actual) return true;
+				return (
+					supportsNodeEnvProxy(actual) || {
+						ok: false,
+						detail: `Node ${actual} ignores NODE_USE_ENV_PROXY; upgrade to Node >= 22.21 or >= 24.5 so Node apps honor egressGuard`,
+					}
+				);
+			},
 		});
 	}
 
@@ -358,6 +489,7 @@ function coreChecks(env: AnyDevEnvironment): SetupCheck[] {
 export function allChecks(
 	env: AnyDevEnvironment,
 	configured: readonly SetupCheck[] | undefined,
+	options: { egressGuardEnabled?: boolean } = {},
 ): SetupCheck[] {
-	return [...coreChecks(env), ...(configured ?? [])];
+	return [...coreChecks(env, options), ...(configured ?? [])];
 }

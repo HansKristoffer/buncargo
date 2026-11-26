@@ -256,16 +256,23 @@ export function afterExit(
 	return "continues";
 }
 
+/** A non-app step (such as `seed.afterApps`) that cannot run if one of its apps fails. */
+export interface RequiredByTask {
+	label: string;
+	apps: readonly string[];
+}
+
 /**
  * Whether going on without the essential apps that are down and failed ends
- * the run, and over which one: one that another app `startAfter`s (that app
- * cannot run without it), or the first when nothing is left running. Asked
+ * the run, and over which one: one that another app `startAfter`s (or a task
+ * such as `seed` requires), or the first when nothing is left running. Asked
  * before they are parked, so a run about to fail never says the rest keeps
  * going.
  */
 export function runVerdict(
 	lives: ReadonlyMap<string, AppLife>,
 	startAfter: (name: string) => readonly string[] | undefined,
+	requiredBy: readonly RequiredByTask[] = [],
 ):
 	{ ends: false } | { ends: true; app: string; dependents: readonly string[] } {
 	const names = [...lives.keys()];
@@ -280,7 +287,12 @@ export function runVerdict(
 	});
 
 	for (const app of failed) {
-		const dependents = names.filter((name) => startAfter(name)?.includes(app));
+		const dependents = [
+			...names.filter((name) => startAfter(name)?.includes(app)),
+			...requiredBy
+				.filter((task) => task.apps.includes(app))
+				.map((task) => task.label),
+		];
 		if (dependents.length > 0) return { ends: true, app, dependents };
 	}
 

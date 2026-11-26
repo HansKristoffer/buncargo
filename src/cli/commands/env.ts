@@ -1,4 +1,6 @@
 import { readEnvOverrides } from "../../core/env-overrides";
+import { internalsOf } from "../../environment";
+import type { ResolvedLink } from "../../types";
 import { BASE_EXITS, defineCommand, defineGroup } from "../command-spec";
 import { CliError } from "../errors";
 import type { EnvJson } from "../json-documents";
@@ -44,8 +46,13 @@ export function formatEnvDotValue(value: unknown): string {
 	return JSON.stringify(value);
 }
 
-async function readEnvJson(): Promise<EnvJson> {
-	const env = await loadLiveEnv();
+async function readEnvJson(profile?: string): Promise<EnvJson> {
+	const env = await loadLiveEnv({ profile });
+	const liveLinks = env.links as Record<string, ResolvedLink | undefined>;
+	const configuredLinkNames = Object.keys(internalsOf(env).linksConfig ?? {});
+	const links = Object.fromEntries(
+		configuredLinkNames.map((name) => [name, liveLinks[name] ?? null]),
+	);
 	return {
 		projectName: env.projectName,
 		ports: env.ports as Record<string, number>,
@@ -57,6 +64,7 @@ async function readEnvJson(): Promise<EnvJson> {
 		localIp: env.localIp,
 		root: env.root,
 		captured: env.captured as Record<string, string>,
+		links,
 		details: env.details() as Record<string, unknown>,
 		hosts: env.hosts
 			? {
@@ -91,6 +99,12 @@ const envShowCommand = defineCommand({
 				description:
 					'Injected vars as shell exports: eval "$(buncargo env --export)"',
 			},
+			profile: {
+				kind: "string",
+				value: "<name>",
+				description:
+					"Apply a profile's env overrides (default: the active run's profile, or default)",
+			},
 		},
 	},
 	exits: BASE_EXITS,
@@ -100,7 +114,7 @@ const envShowCommand = defineCommand({
 			throw new CliError("Choose either --get or --export, not both.");
 		}
 
-		const snapshot = await readEnvJson();
+		const snapshot = await readEnvJson(values.profile);
 		if (values.export) {
 			log.line(formatEnvExports(snapshot.vars));
 			return 0;

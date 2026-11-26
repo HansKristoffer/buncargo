@@ -6,8 +6,9 @@ import {
 	statSync,
 	writeSync,
 } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { isRecord, typedSwitch } from "hanzio";
+import { detectPackageManager, findLockfile } from "../core/package-manager";
 import {
 	isInstallingCheckout,
 	REEXEC_ENV,
@@ -86,16 +87,17 @@ function statOrUndefined(path: string): Stats | undefined {
 }
 
 /**
- * Whether the dependencies in `dir` (which holds `bun.lock`) predate it: the
+ * Whether the dependencies in `dir` (which holds a lockfile) predate it: the
  * lockfile's hash against the one buncargo last installed from.
  *
  * Without that stamp, the `node_modules` directory's own time stands in: a
- * checkout installed by hand is not reinstalled until `bun.lock` changes after
- * it. Stats only, unless a stamp exists to compare the lockfile against.
+ * checkout installed by hand is not reinstalled until the lockfile changes
+ * after it. Stats only, unless a stamp exists to compare the lockfile against.
  */
 export function installNeed(dir: string): InstallNeed | undefined {
-	const lock = statOrUndefined(join(dir, "bun.lock"));
-	if (!lock) return undefined;
+	const found = findLockfile(dir);
+	const lock = found ? statOrUndefined(found.path) : undefined;
+	if (!found || !lock) return undefined;
 
 	const modules = statOrUndefined(join(dir, "node_modules"));
 	if (!modules) {
@@ -112,7 +114,7 @@ export function installNeed(dir: string): InstallNeed | undefined {
 	return {
 		dir,
 		missing: false,
-		reason: "bun.lock changed since node_modules was installed",
+		reason: `${found.name} changed since node_modules was installed`,
 	};
 }
 
@@ -167,7 +169,7 @@ export function decideInstall(
 			declared = true;
 		}
 
-		if (project && existsSync(join(dir, "bun.lock"))) {
+		if (project && findLockfile(dir)) {
 			const need = declared ? installNeed(dir) : undefined;
 			return need?.missing || refreshesStaleInstall(args) ? need : undefined;
 		}
@@ -270,9 +272,16 @@ export async function guardVersion(fromSource: boolean): Promise<void> {
 		run: () => {},
 		"not-installed": (notInstalled) => {
 			const where = relative(process.cwd(), notInstalled.packageJson);
+			const pkgDir = dirname(notInstalled.packageJson);
+			const checkoutDir =
+				basename(pkgDir) === "buncargo" &&
+				basename(dirname(pkgDir)) === "node_modules"
+					? dirname(dirname(pkgDir))
+					: pkgDir;
+			const manager = detectPackageManager(checkoutDir);
 			const message = `This project's buncargo (${where}) is ${notInstalled.reason}, so buncargo ${own.version} from ${root} will not run in its place.`;
 			throw new CliError(message, [
-				"Run `bun install`, then run the command again.",
+				`Run \`${manager.installCommand}\`, then run the command again.`,
 			]);
 		},
 		reexec: (reexec) => handOver(reexec.entry, reexec.version, own.version),

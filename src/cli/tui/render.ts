@@ -133,8 +133,7 @@ export function renderSidebar(
 	entries.forEach((entry, index) => {
 		const active = selected === index + 1;
 		const state = entry.state ?? "starting";
-		const hasExited = state === "stopped" || state === "failed";
-		const label = hasExited && entry.detail ? entry.detail : state;
+		const label = entry.detail ?? state;
 		const mark = entry.unread ? pc.red("!") : " ";
 		const name = active ? entry.name : colorizeName(entry.name);
 		const left = ` ${GLYPH[state]} ${name}`;

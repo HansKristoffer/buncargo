@@ -54,9 +54,9 @@ export function createShapeChecks(errors: string[]) {
 				"a string or finite number",
 			);
 	};
-	/** A `secrets` scope, at the config level or on an app. */
-	const secretsScope = (input: unknown, path: string) => {
-		if (input === undefined || input === false || !record(input, path)) return;
+	/** A single `secrets` scope entry. */
+	const secretsScopeEntry = (input: unknown, path: string) => {
+		if (!record(input, path)) return;
 		errors.push(...unknownKeyErrors(input, path, SECRETS_KEYS));
 		fields(input, `${path}.`, keysChecked(SECRETS_KEYS, "string"), "string");
 		for (const key of ["only", "exclude", "required"])
@@ -66,6 +66,21 @@ export function createShapeChecks(errors: string[]) {
 				strings(input[key]),
 				"an array of secret names",
 			);
+	};
+	/** A `secrets` scope (or layered list of scopes), at the config level or on an app. */
+	const secretsScope = (input: unknown, path: string) => {
+		if (input === undefined || input === false) return;
+		if (Array.isArray(input)) {
+			if (input.length === 0) {
+				errors.push(`${path} must be a nonempty array of secret scopes`);
+				return;
+			}
+			for (const [index, entry] of input.entries()) {
+				secretsScopeEntry(entry, `${path}.${index}`);
+			}
+			return;
+		}
+		secretsScopeEntry(input, path);
 	};
 	return {
 		errors,

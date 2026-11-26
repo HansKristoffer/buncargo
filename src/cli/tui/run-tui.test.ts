@@ -860,4 +860,58 @@ describe("RunTui state", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("renders reactive task panes with `r run`, disables interact mode, and triggers on `r`", async () => {
+		const terminal = fakeTerminal();
+		const output = new RunOutput({ terminals: "pipe" });
+		const triggered: string[] = [];
+		output.controls = {
+			restart: async (name) => {
+				triggered.push(name);
+				return true;
+			},
+		};
+		output.state("gen:client", {
+			state: "stopped",
+			detail: "idle",
+			restartable: true,
+			rerunCommand: "buncargo run gen:client",
+		});
+		const tui = new RunTui({
+			output,
+			apps: ["api", "gen:client"],
+			taskNames: new Set(["gen:client"]),
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		const state = tui as unknown as { mode: { kind: string } };
+		try {
+			tui.start();
+			// Move from Overview -> api -> gen:client.
+			type(tui, "jj");
+			await until(() => drawn(terminal).includes("r run"));
+			const view = drawn(terminal);
+			expect(view).toContain("idle");
+			expect(view).toContain("r run");
+			expect(view).not.toContain("enter interact");
+
+			// Enter does not open interact mode on a task pane.
+			type(tui, "\r");
+			expect(state.mode.kind).toBe("navigate");
+
+			// Pressing `r` runs the task and flashes "Running gen:client…".
+			const since = terminal.writes.length;
+			type(tui, "r");
+			await until(() =>
+				Bun.stripANSI(terminal.writes.slice(since).join("")).includes(
+					"Running gen:client…",
+				),
+			);
+			expect(triggered).toEqual(["gen:client"]);
+		} finally {
+			tui.stop();
+		}
+	});
 });

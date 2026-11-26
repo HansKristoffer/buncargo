@@ -144,3 +144,28 @@ it("refuses --seed without requiredServices when no service is selected", () => 
 		}),
 	).not.toThrow();
 });
+
+it("validates seed.afterApps against selected apps without requiring Docker services", () => {
+	const apps = resolveApps({
+		firebase: { port: 4000, devCommand: "firebase emulators:start" },
+		web: { port: 3000, devCommand: "bun dev" },
+	});
+	const appOnlyEnv = { ...env, services: {}, apps };
+	const seed = { command: "plantr", afterApps: ["firebase"] };
+
+	// Allowed with no Docker services when firebase is selected.
+	expect(() =>
+		validateDevStart(appOnlyEnv, dev(["--seed"]), apps, [], seed),
+	).not.toThrow();
+
+	// Refused when --apps leaves out firebase.
+	expect(() =>
+		validateDevStart(
+			appOnlyEnv,
+			dev(["--seed", "--apps=web"]),
+			{ web: apps.web },
+			[],
+			seed,
+		),
+	).toThrow("--seed needs app firebase, which this selection does not start.");
+});

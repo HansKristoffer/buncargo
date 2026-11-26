@@ -101,6 +101,13 @@ describe("createRunClaimApi", () => {
 				root: home(),
 				worktree: false,
 				services: postgres,
+				ports: { postgres: 5432 },
+				urls: {
+					postgres: "postgresql://postgres:postgres@localhost:5432/demo",
+				},
+				loopbackUrls: {
+					postgres: "postgresql://postgres:postgres@localhost:5432/demo",
+				},
 				selectedServiceKeys: ["postgres"],
 				hasSelectedServices: true,
 				runtime: { name: "docker" },
@@ -205,6 +212,11 @@ describe("a claim's lifecycle and its apps", () => {
 			root,
 			worktree: false,
 			services: postgres,
+			ports: { postgres: 5432 },
+			urls: { postgres: "postgresql://postgres:postgres@localhost:5432/demo" },
+			loopbackUrls: {
+				postgres: "postgresql://postgres:postgres@localhost:5432/demo",
+			},
 			selectedServiceKeys: ["postgres"],
 			hasSelectedServices: true,
 			runtime: { name: "docker" },

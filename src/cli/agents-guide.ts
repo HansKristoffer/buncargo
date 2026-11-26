@@ -83,12 +83,20 @@ const TOPICS: readonly Topic[] = [
   and says what to run next: \`dev --detach; echo $?\` shows it with the
   exit code. Do not run \`dev\` again to find the cause.
   \`dev --detach --json\` prints the same as one JSON document: \`outcome\`,
-  \`apps\` with their URLs, \`failures\`, and \`hostsWarnings\` when named
-  URLs fell back to \`localhost:port\`.
+  \`apps\` with their URLs, \`failures\`, \`hostsWarnings\` when named
+  URLs fell back to \`localhost:port\`, and \`linkWarnings\` for optional
+  cross-repo link warnings.
 - \`bunx buncargo dev --detach api\` starts only some apps (and the apps
-  they require). \`--profile=<name>\` picks a configured set.
+  they require). \`--profile=<name>\` applies a configured profile (apps, env,
+  secrets, links, egressGuard and integrations overrides; \`env\`, \`exec\`,
+  \`run\`, \`generate\`, \`ci\`, \`secrets\` and \`links\` take \`--profile\` too).
+  \`--with-links\` also starts missing linked repos in the background
+  (\`required: true\` upstream repos before startup, optional downstream repos
+  after this checkout is ready).
   \`bunx buncargo dev --up-only\` starts the services alone and returns once
-  they are up (no \`--detach\`).
+  they are up (no \`--detach\`). \`dev --seed\` forces seeding, starting and
+  gracefully stopping any \`seed.afterApps\` prerequisites (or reusing running
+  ones).
 - \`bunx buncargo stop\` (the same as \`stop --all\`; \`down\` runs it too) stops
   this checkout's run, and removes the containers an ended run left waiting
   out its idle hold. A run someone started
@@ -123,6 +131,10 @@ const TOPICS: readonly Topic[] = [
   may be another worktree's.
 - Apps with a \`watch\` config restart themselves when their files change; do
   not run them under \`bun --watch\` as well.
+- Reactive tasks (\`tasks.<name>\` with \`onAppReady\` or \`watch\`) run finite
+  commands (such as OpenAPI codegen) automatically during \`dev\` without
+  killing the session on failure; rerun one on demand with \`buncargo run <task>\`
+  (or \`r\` in the TUI), or disable file watchers with \`dev --no-watch\`.
 
 ## Readiness
 
@@ -202,9 +214,21 @@ const TOPICS: readonly Topic[] = [
   for a mode the stack should keep (\`env set HUBSPOT_MODE=simulator\`) or when
   a shared \`.env.local\` points at another checkout's port, instead of
   prefixing every command with the variable.
+- Cross-repo links (\`links\` in \`dev.config.ts\`): \`bunx buncargo links --json\`
+  shows each linked repo's target checkout, URLs and exported env; \`env --get
+  links.<name>.urls.<app>\` reads one value. \`dev --with-links\` starts
+  missing linked repos automatically, and apps with \`restartOn: ["links.<name>"]\`
+  (or links with \`onChange: "restart"\`) restart automatically when a linked
+  repo comes up, goes down, or changes URLs. When several worktrees of a linked
+  repo run at once, buncargo refuses to guess: pair this checkout with one via
+  \`bunx buncargo links pin <name> <path>\` (\`links unpin <name>\` clears it),
+  then \`bunx buncargo restart <app>\` if this checkout is already running.
 - \`bunx buncargo exec -- <command>\` runs a command with this checkout's
   environment. \`bunx buncargo run <task>\` runs a configured task;
-  \`bunx buncargo help\` lists them.`,
+  \`bunx buncargo help\` lists them. When \`--profile\` is omitted and this
+  checkout has an active run, \`exec\`, \`run\` and \`env\` inherit that active
+  run's profile, live ports and URLs automatically (\`--profile=<name>\`
+  overrides it).`,
 	},
 	{
 		name: "db",
@@ -400,11 +424,12 @@ const TOPICS: readonly Topic[] = [
   none did. Restart the run
   (\`bunx buncargo stop\`, then \`bunx buncargo dev --detach\`) and
   tell the user what stopped it.
-- No \`bun install\` first: in a fresh worktree, or after \`bun.lock\` changed,
-  buncargo runs \`bun install --frozen-lockfile\` itself (postinstall scripts
-  included) and then your command, with the install's output on stderr so
-  \`--json\` stays clean. If that install fails, fix what it printed and run
-  \`bun install\`.
+- No manual install first: in a fresh worktree, or after the lockfile
+  (\`bun.lock\`, \`pnpm-lock.yaml\`, \`yarn.lock\`, \`package-lock.json\`) changed,
+  buncargo runs the repo's own package manager frozen-lockfile install itself
+  (postinstall scripts included) and then your command, with the install's
+  output on stderr so \`--json\` stays clean. If that install fails, fix what
+  it printed and run the install command manually.
 - \`bunx buncargo secrets check --json\` before tests or a run that needs
   secrets: exit 0 when every Infisical scope is readable, 2 when the session is
   missing or expired (the user runs the \`infisical login --domain=…\` it
@@ -417,6 +442,10 @@ const TOPICS: readonly Topic[] = [
   while a run starts or stops: Docker creating or removing a stack's network
   makes Chrome drop its requests. It is a known buncargo issue, not the app;
   reload the page, and do not share one network between projects to avoid it.
+- Outbound HTTP/HTTPS failing with \`403 Blocked by buncargo egressGuard\`:
+  the checkout's local egress proxy blocked an unallowlisted external host.
+  Check \`bunx buncargo logs egress\` for the blocked host and add it to
+  \`egressGuard.allow\` in \`dev.config.ts\` (or ask the user before widening it).
 - \`bunx buncargo setup --yes\` runs the fix of every failing check (missing
   dependencies, generated files).
 - After upgrading buncargo, \`node_modules/buncargo/CHANGELOG.md\` lists what

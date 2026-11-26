@@ -20,6 +20,7 @@ const COMMANDS = {
 	predeploy: async () => (await import("./predeploy")).predeployCommand,
 	prisma: async () => (await import("./prisma")).prismaCommand,
 	files: async () => (await import("./files")).filesCommand,
+	links: async () => (await import("./links")).linksCommand,
 	secrets: async () => (await import("./secrets")).secretsCommand,
 	ci: async () => (await import("./ci")).ciCommand,
 	env: async () => (await import("./env")).envCommand,

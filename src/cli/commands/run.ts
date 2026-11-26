@@ -1,13 +1,13 @@
 import { ensureSecretsSession } from "../../core/secrets/index";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
 import { internalsOf } from "../../environment";
-import { loadDevEnv } from "../../loader";
 import type { AnyDevEnvironment, TaskConfig } from "../../types";
 import { BASE_EXITS, defineCommand } from "../command-spec";
 import { CliError } from "../errors";
 import * as log from "../log";
 import { commandSecretScopes } from "../secrets-scopes";
 import { runForwardingSignals, withAppendedArgs } from "../signal-forward";
+import { loadCommandEnv } from "./load-env";
 
 /** One row per task, for `buncargo run` and `buncargo help`. */
 export function formatTaskRows(
@@ -24,8 +24,9 @@ export function formatTaskRows(
 async function runNamedTask(
 	name: string | undefined,
 	passthrough: readonly string[],
+	profile: string | undefined,
 ): Promise<number> {
-	const env = await loadDevEnv();
+	const env = await loadCommandEnv({ profile });
 	const tasks = internalsOf(env).tasks ?? {};
 
 	if (!name) {
@@ -52,13 +53,7 @@ async function runNamedTask(
 		);
 	}
 
-	// Only a task that starts services allocates ports the way `dev` does;
-	// everything else reads the persisted ones, like `exec`.
-	return runTask(
-		selected.requiredServices?.length ? await loadDevEnv() : env,
-		selected,
-		passthrough,
-	);
+	return runTask(env, selected, passthrough);
 }
 
 async function runTask(
@@ -98,7 +93,14 @@ export const runTaskCommand = defineCommand({
 	spec: {
 		name: "run",
 		summary: "Run a task from dev.config.ts (lists them without a name)",
-		flags: {},
+		flags: {
+			profile: {
+				kind: "string",
+				value: "<name>",
+				description:
+					"Apply a profile's env and secrets overrides (default: the active run's profile, or default)",
+			},
+		},
 		args: [{ name: "<task>", description: "A key of tasks in dev.config.ts" }],
 		passthrough: "Arguments appended to the task's command",
 		examples: [
@@ -110,6 +112,6 @@ export const runTaskCommand = defineCommand({
 		...BASE_EXITS,
 		1: "bad arguments or task; otherwise the task's own code",
 	},
-	run: ({ positionals: [name], passthrough }) =>
-		runNamedTask(name, passthrough),
+	run: ({ values, positionals: [name], passthrough }) =>
+		runNamedTask(name, passthrough, values.profile),
 });

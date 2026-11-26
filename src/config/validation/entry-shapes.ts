@@ -36,6 +36,40 @@ function sharedEnvNames(value: Record<string, unknown>): string[] {
 		);
 }
 
+/** Validate an app or task `watch` block (`{ paths, ignore?, debounceMs? }`). */
+export function validateWatchShape(
+	watch: unknown,
+	path: string,
+	checks: ShapeChecks,
+): void {
+	const { errors, record, check, strings } = checks;
+	if (watch === undefined || !record(watch, path)) return;
+
+	const { debounceMs } = watch;
+	errors.push(...unknownKeyErrors(watch, path, WATCH_KEYS));
+	check(
+		watch.paths,
+		`${path}.paths`,
+		strings(watch.paths) && watch.paths.length > 0,
+		"a nonempty array of paths",
+	);
+	check(
+		watch.ignore,
+		`${path}.ignore`,
+		strings(watch.ignore),
+		"an array of globs",
+	);
+	check(
+		debounceMs,
+		`${path}.debounceMs`,
+		typeof debounceMs === "number" &&
+			Number.isInteger(debounceMs) &&
+			debounceMs >= 0,
+		"a whole number of milliseconds",
+	);
+	if (watch.paths === undefined) errors.push(`${path}.paths is required`);
+}
+
 /** The checks only an app takes: commands, watch, captures, actions and the dependency lists. */
 function validateAppEntry(
 	entry: Record<string, unknown>,
@@ -58,32 +92,7 @@ function validateAppEntry(
 	);
 	secretsScope(entry.secrets, `${path}.secrets`);
 
-	if (entry.watch !== undefined && record(entry.watch, `${path}.watch`)) {
-		const { debounceMs } = entry.watch;
-		errors.push(...unknownKeyErrors(entry.watch, `${path}.watch`, WATCH_KEYS));
-		check(
-			entry.watch.paths,
-			`${path}.watch.paths`,
-			strings(entry.watch.paths) && entry.watch.paths.length > 0,
-			"a nonempty array of paths",
-		);
-		check(
-			entry.watch.ignore,
-			`${path}.watch.ignore`,
-			strings(entry.watch.ignore),
-			"an array of globs",
-		);
-		check(
-			debounceMs,
-			`${path}.watch.debounceMs`,
-			typeof debounceMs === "number" &&
-				Number.isInteger(debounceMs) &&
-				debounceMs >= 0,
-			"a whole number of milliseconds",
-		);
-		if (entry.watch.paths === undefined)
-			errors.push(`${path}.watch.paths is required`);
-	}
+	validateWatchShape(entry.watch, `${path}.watch`, checks);
 
 	check(
 		entry.readyWhen,
@@ -174,6 +183,19 @@ function validateServiceEntry(
 				typeof source === "string" &&
 					["url", "port", "secondaryPort"].includes(source),
 				'"url", "port", or "secondaryPort"',
+			);
+	}
+
+	if (
+		entry.urlParams !== undefined &&
+		record(entry.urlParams, `${path}.urlParams`)
+	) {
+		for (const [key, value] of Object.entries(entry.urlParams))
+			check(
+				value,
+				`${path}.urlParams.${key}`,
+				typeof value === "string",
+				"a string",
 			);
 	}
 

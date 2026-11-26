@@ -107,4 +107,85 @@ describe("planPreparation", () => {
 		expect(includesSeed("force")).toBe(true);
 		expect(includesSeed("skip")).toBe(false);
 	});
+
+	it("plans post-app seeding when seed.afterApps prerequisites are selected", () => {
+		const firebaseApps = resolveApps({
+			firebase: { port: 4000, devCommand: "firebase emulators:start" },
+			web: { port: 3000, devCommand: "bun dev" },
+		});
+		const afterAppsConfig = {
+			seed: { command: "plantr", afterApps: ["firebase"] },
+		};
+
+		// App-only config (no Docker services) still selects the post-app seed.
+		const selected = planPreparation(
+			afterAppsConfig,
+			{},
+			{ requiredServiceKeys: [], apps: firebaseApps },
+			all,
+		);
+		expect(selected.seedSelected).toBe(true);
+		expect(selected.seedAfterApps).toEqual(["firebase"]);
+		expect(selected.seedBeforeOtherApps).toBe(true);
+		expect(selected.seedOverlaps).toBe(false);
+		expect(selected.secrets?.includeSeed).toBe(true);
+
+		// Missing prerequisite app skips post-app seeding.
+		const withoutPrereq = planPreparation(
+			afterAppsConfig,
+			{},
+			{ requiredServiceKeys: [], apps: { web: firebaseApps.web } },
+			all,
+		);
+		expect(withoutPrereq.seedSelected).toBe(false);
+		expect(withoutPrereq.seedAfterApps).toBeUndefined();
+		expect(withoutPrereq.secrets?.includeSeed).toBe(false);
+
+		// `spawn: false` skips post-app seeding (apps do not start).
+		const noSpawn = planPreparation(
+			afterAppsConfig,
+			{},
+			{ requiredServiceKeys: [], apps: firebaseApps },
+			{ ...all, spawn: false },
+		);
+		expect(noSpawn.seedSelected).toBe(false);
+		expect(noSpawn.seedAfterApps).toBeUndefined();
+
+		// `beforeApps: false` preserves overlap after prerequisite apps are ready.
+		const overlap = planPreparation(
+			{
+				seed: { command: "plantr", afterApps: ["firebase"], beforeApps: false },
+			},
+			{},
+			{ requiredServiceKeys: [], apps: firebaseApps },
+			all,
+		);
+		expect(overlap.seedAfterApps).toEqual(["firebase"]);
+		expect(overlap.seedBeforeOtherApps).toBe(false);
+
+		// Explicit `requiredServices` is still enforced alongside `afterApps`.
+		const withService = {
+			seed: {
+				command: "plantr",
+				afterApps: ["firebase"],
+				requiredServices: ["db"],
+			},
+		};
+		expect(
+			planPreparation(
+				withService,
+				services,
+				{ requiredServiceKeys: [], apps: firebaseApps },
+				all,
+			).seedSelected,
+		).toBe(false);
+		expect(
+			planPreparation(
+				withService,
+				services,
+				{ requiredServiceKeys: ["db"], apps: firebaseApps },
+				all,
+			).seedSelected,
+		).toBe(true);
+	});
 });

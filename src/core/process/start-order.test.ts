@@ -69,4 +69,44 @@ describe("planSpawnOrder", () => {
 			),
 		).toThrow("Circular startAfter");
 	});
+
+	it("separates barrierApps and their transitive startAfter deps into beforeBarrier", () => {
+		const order = planSpawnOrder(
+			{
+				proxy: worker(),
+				firebase: worker({ startAfter: ["proxy"] }),
+				api: worker(),
+				web: worker({ startAfter: ["api"], needsPublicUrls: true }),
+			},
+			true,
+			["firebase"],
+		);
+		expect(names(order.beforeBarrier)).toEqual([["proxy"], ["firebase"]]);
+		expect(names(order.beforeTunnels)).toEqual([["api"]]);
+		expect(names(order.afterTunnels)).toEqual([["web"]]);
+	});
+
+	it("leaves beforeBarrier empty when barrierApps are outside the start set (reused)", () => {
+		const order = planSpawnOrder(
+			{ api: worker(), web: worker({ startAfter: ["firebase"] }) },
+			false,
+			["firebase"],
+		);
+		expect(order.beforeBarrier).toEqual([]);
+		expect(names(order.beforeTunnels)).toEqual([["api", "web"]]);
+	});
+
+	it("fails loudly when a barrier app waits for public URLs under defer", () => {
+		expect(() =>
+			planSpawnOrder(
+				{
+					tunnelled: worker({ needsPublicUrls: true }),
+					firebase: worker({ startAfter: ["tunnelled"] }),
+					web: worker(),
+				},
+				true,
+				["firebase"],
+			),
+		).toThrow("needsPublicUrls");
+	});
 });

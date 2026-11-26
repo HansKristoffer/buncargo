@@ -750,4 +750,37 @@ describe("the persisted boundary", () => {
 		);
 		expect(await sessions()).toEqual(["s1"]);
 	});
+
+	it("updates and clears exports and suffix across claim, describe, reopen and patchRun", async () => {
+		const initial = makeRun({
+			sessionId: "exp-1",
+			suffix: "ci-1",
+			exports: { A: "1" },
+		});
+		await publishRun(initial);
+		let stored = (await loadRuns()).find((run) => run.sessionId === "exp-1");
+		expect(stored?.exports).toEqual({ A: "1" });
+		expect(stored?.suffix).toBe("ci-1");
+
+		// Reclaiming with updated exports replaces stale ones.
+		await releaseRun("exp-1");
+		await publishRun(makeRun({ sessionId: "exp-1", exports: { B: "2" } }));
+		stored = (await loadRuns()).find((run) => run.sessionId === "exp-1");
+		expect(stored?.exports).toEqual({ B: "2" });
+		expect(stored?.suffix).toBeUndefined();
+
+		// Describe without exports clears stale claim exports.
+		await describeRun(makeRun({ sessionId: "exp-1" }));
+		stored = (await loadRuns()).find((run) => run.sessionId === "exp-1");
+		expect(stored?.exports).toBeUndefined();
+
+		// patchRun sets and clears exports cleanly.
+		await patchRun("exp-1", { exports: { C: "3" } });
+		stored = (await loadRuns()).find((run) => run.sessionId === "exp-1");
+		expect(stored?.exports).toEqual({ C: "3" });
+
+		await patchRun("exp-1", { exports: {} });
+		stored = (await loadRuns()).find((run) => run.sessionId === "exp-1");
+		expect(stored?.exports).toBeUndefined();
+	});
 });

@@ -14,21 +14,23 @@ and `dev-tunnels.ts` hold the pieces it orchestrates.
   `CliError`. A CLI run from `src/` is never replaced: that is someone testing the source. It
   reads files only; a matching version costs a few `stat`s.
 - Before that decision, a checkout installs itself (`checkout-install.ts`): when a `package.json`
-  from the working directory up lists buncargo and the first `bun.lock` above it has no
-  `node_modules` beside it, or one installed from another lockfile, the guard runs
-  `bun install --frozen-lockfile` there and decides again, so the fresh install can still hand
+  from the working directory up lists buncargo and the first lockfile (`bun.lock`,
+  `pnpm-lock.yaml`, `yarn.lock`, or `package-lock.json`) above it has no `node_modules` beside it,
+  or one installed from another lockfile, the guard runs that package manager's frozen-lockfile
+  install (`detectPackageManager`) there and decides again, so the fresh install can still hand
   over. A missing `node_modules` installs for every command (none of the project's buncargo runs
   without it); a stale one only for the commands that run the project's code
   (`refreshesStaleInstall`). `stop`, `status` and BuncargoBar's buttons must neither reinstall
   under a running run nor fail on a broken lockfile. "Installed from" is `install-stamp.ts`'s hash
-  of `bun.lock`: Bun 1.4 writes nothing into `node_modules` on a no-op install, so no file of its own can say, and
-  `git checkout` rewrites the lockfile's time without its content. A checkout with no stamp
-  falls back to `node_modules` being newer than `bun.lock`, so one installed by hand is left
-  alone. The install's stdout goes to stderr (a `--json` command's stdout stays one document),
-  waits on a per-checkout lock (several agents in one fresh worktree install once), and runs
-  with `BUNCARGO_INSTALLING=1`, so a buncargo in a postinstall script does not start another.
-  The guard never installs from source or after a hand-over. An install that replaces the
-  package this process runs from re-executes it, since the rest of its modules load lazily.
+  of the active lockfile (the detected package manager's lockfile): Bun 1.4 writes nothing into
+  `node_modules` on a no-op install, so no file of its own can say, and `git checkout` rewrites
+  the lockfile's time without its content. A checkout with no stamp falls back to `node_modules`
+  being newer than the lockfile, so one installed by hand is left alone. The install's stdout goes
+  to stderr (a `--json` command's stdout stays one document), waits on a per-checkout lock
+  (several agents in one fresh worktree install once), and runs with `BUNCARGO_INSTALLING=1`, so a
+  buncargo in a postinstall script does not start another. The guard never installs from source or
+  after a hand-over. An install that replaces the package this process runs from re-executes it,
+  since the rest of its modules load lazily.
 - Every command module exports one `defineCommand({ spec, exits, json?, run })` (`command-spec.ts`),
   or a `defineGroup` of them for subcommands (`files`, `ports`, `hosts`, …). The spec is the only
   description of what the command accepts: `parseArgs(spec, argv)` reads it (over `node:util`
@@ -130,7 +132,11 @@ and `dev-tunnels.ts` hold the pieces it orchestrates.
 ## Other commands
 
 - `commands/run.ts` is `exec` for `config.tasks` (which injects the app's secrets), with
-  `requiredServices` started through `env.withServices`. It claims with the CLI's idle
+  `requiredServices` started through `env.withServices`. Both `run` and `exec` (and `loadLiveEnv`
+  for `env`) load through `commands/load-env.ts` (`loadCommandEnv`), which inherits the checkout's
+  active run `profile`, live ports, active named URLs, and captures from `runs.json` when
+  `--profile` is omitted (falling back cleanly if the recorded profile was removed from
+  `dev.config.ts`). It claims with the CLI's idle
   hold, not the library's keep-forever default. Extra argv goes through `withAppendedArgs`
   (`sh -c '<cmd> "$@"'`), so nothing is re-parsed. Tasks are published into the run entry for
   BuncargoBar's run button, which calls `buncargo run` *unscoped*: `--root`/`--run` name a run, and
@@ -155,6 +161,17 @@ and `dev-tunnels.ts` hold the pieces it orchestrates.
   through `withBindProbe` and the claims before writing the claim. `release`
   drops another checkout's claims under the claims lock, refusing while that checkout has a live or
   held run.
+- `commands/links.ts` is the `links` group (`links`, `links pin <name> <path>`,
+  `links unpin <name>`) over `core/links.ts`: inspects configured cross-repo links (`--json`,
+  `--profile`, `--check`), pins a link alias to a specific checkout/worktree in
+  `<root>/.buncargo/links.json` (refusing self-pins and live checkouts running a different
+  project), and clears pins back to auto-discovery. `run-cli.ts` runs the link check ahead of
+  side-effecting steps (`--replace-stale`, port allocation, named hosts, interactive prompts) and
+  forwards optional link warnings to both the TUI Overview and `DetachedReport` (`linkWarnings`).
+  With `--with-links` (`dev-links.ts`), `dev` spawns missing `required: true` upstream links via
+  `buncargo dev --detach` (without `--with-links`, preventing cycles, and stripping
+  `BUNCARGO_DETACHED`) before validating links, and starts missing optional downstream links once
+  this checkout's apps are flushed as ready in `runs.json`.
 - `commands/send.ts` types into an app over the same request-file channel as `restart`
   (`restart-requests.ts`, one file per kind: a line per request, renamed aside before it is read).
   The run delivers it to `output.screens`, so only an app with a pseudo-terminal reads keys. Each

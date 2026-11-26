@@ -337,6 +337,8 @@ export interface ServiceConfigBase<
 	user?: string;
 	/** Password (default: 'postgres' for postgres, 'root' for mysql, 'clickhouse' for clickhouse) */
 	password?: string;
+	/** Query parameters appended to a built-in connection URL (e.g. `{ sslmode: "disable" }`). */
+	urlParams?: Readonly<Record<string, string>>;
 	/** Explicit env vars this service contributes to the shared env surface */
 	env?: TEnv;
 	/** Constant values merged into the shared env (e.g. SMTP_HOST, API keys) */

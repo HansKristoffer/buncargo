@@ -13,6 +13,7 @@ import {
 	formatCheckSlotHolder,
 } from "../../../core/check-slots";
 import { readEnvOverrides } from "../../../core/env-overrides";
+import { resolveLinksFromRuns } from "../../../core/links";
 import { describeStrayLoopbackUrl } from "../../../core/loopback-env";
 import {
 	classifyPortOccupant,
@@ -26,6 +27,7 @@ import { internalsOf } from "../../../environment";
 import type {
 	AnyDevEnvironment,
 	BuncargoContainer,
+	LinkInspection,
 	PortContainerOwner,
 } from "../../../types";
 import { BASE_EXITS, defineCommand } from "../../command-spec";
@@ -119,9 +121,8 @@ async function readStatus(): Promise<StatusJson> {
 					}))
 			: { error: listing.error };
 
-	const runs = (await readLiveRuns().catch(() => [])).filter(
-		(run) => run.root === env.root,
-	);
+	const allLiveRuns = await readLiveRuns().catch(() => []);
+	const runs = allLiveRuns.filter((run) => run.root === env.root);
 
 	// The public URLs the live runs publish: each run's tunnels, which close
 	// with it, and the URLs its apps printed.
@@ -154,6 +155,9 @@ async function readStatus(): Promise<StatusJson> {
 		// No free block at all: `dev` takes back an idle one, or names the holders.
 		plannedOffset = undefined;
 	}
+
+	const { inspections: linkInspections, links: resolvedLinks } =
+		resolveLinksFromRuns(env.root, internalsOf(env).linksConfig, allLiveRuns);
 
 	return {
 		// First: what an agent reads `status` for, and `| head` keeps the top.
@@ -199,9 +203,11 @@ async function readStatus(): Promise<StatusJson> {
 		// `buncargo env set` keys, applied to every run of this checkout. Names
 		// only: one may hide a secret; `env --get KEY` reads a value.
 		envOverrides: Object.keys(readEnvOverrides(env.root)),
-		strayLoopbackUrls: strayLoopbackUrls(env as AnyDevEnvironment).map(
-			(stray) => ({ ...stray, message: describeStrayLoopbackUrl(stray) }),
-		),
+		links: [...linkInspections],
+		strayLoopbackUrls: strayLoopbackUrls(
+			env as AnyDevEnvironment,
+			resolvedLinks,
+		).map((stray) => ({ ...stray, message: describeStrayLoopbackUrl(stray) })),
 	} satisfies StatusJson;
 }
 
@@ -279,6 +285,34 @@ export function appStatusLines(
 	];
 }
 
+function formatStatusLink(item: LinkInspection): string {
+	return typedSwitch(item.status, {
+		linked: () =>
+			item.link
+				? `${item.link.projectName} (${item.source}) ${item.link.root}`
+				: `linked (${item.source})`,
+		"missing-endpoints": () => {
+			const missing = [...item.missingApps, ...item.missingServices].join(", ");
+			const target = item.link
+				? `${item.link.projectName} (${item.source}) ${item.link.root}`
+				: item.project;
+			return `${target} (missing: ${missing})`;
+		},
+		ambiguous: () =>
+			`ambiguous (${item.candidates.length} running, run \`buncargo links pin ${item.name} <path>\`)`,
+		disabled: () => "disabled (profile)",
+		"not-running": () => {
+			if (item.pinProjectMismatch && item.pinnedRoot) {
+				return `wrong project at ${item.pinnedRoot} (running "${item.pinProjectMismatch}", expected "${item.project}")`;
+			}
+			if (item.pinMissing && item.pinnedRoot) {
+				return `not-running (pinned path missing: ${item.pinnedRoot})`;
+			}
+			return item.source === "pinned" ? "not-running (pinned)" : "not-running";
+		},
+	});
+}
+
 function printStatus(status: StatusJson): void {
 	for (const line of appStatusLines(status.runs)) log.line(line);
 
@@ -345,6 +379,14 @@ function printStatus(status: StatusJson): void {
 		);
 	}
 
+	if (status.links.length > 0) {
+		log.line();
+		log.line("links:");
+		for (const item of status.links) {
+			log.line(`  ${item.name}: ${formatStatusLink(item)}`);
+		}
+	}
+
 	const slots = status.checkSlots;
 	if (slots.enabled && (slots.holders.length > 0 || slots.waiting > 0)) {
 		log.line();
@@ -362,8 +404,11 @@ function printStatus(status: StatusJson): void {
 		log.line();
 
 		const health = run.health === "degraded" ? " (degraded)" : "";
+		const profile = run.profile ? ` [profile: ${run.profile}]` : "";
 		// Its apps are at the top.
-		log.line(`run ${run.sessionId}${health}: ${run.apps.length} apps`);
+		log.line(
+			`run ${run.sessionId}${profile}${health}: ${run.apps.length} apps`,
+		);
 		for (const service of run.services) {
 			if (service.problem) {
 				log.line(`  ${service.name}: ${service.problem.detail}`);

@@ -5,6 +5,7 @@ import type {
 	EnvVarsContext,
 	OverlayEnvVarNames,
 } from "./config";
+import type { LinkConfig } from "./links";
 import type { ServiceConfig } from "./service";
 
 /**
@@ -60,7 +61,7 @@ export interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	captures?: Readonly<Record<string, CaptureConfig>>;
 	/**
 	 * Restart this app when one of these values changes after it started:
-	 * `captured.<name>` or `publicUrls.<app>`.
+	 * `captured.<name>`, `publicUrls.<app>`, or `links.<alias>`.
 	 */
 	restartOn?: readonly string[];
 	/**
@@ -100,10 +101,11 @@ export interface AppOptions<TStatic extends EnvValues = EnvValues> {
 	staticEnv?: TStatic;
 	/**
 	 * Fetch this app's Infisical secrets once, in buncargo, and inject them.
+	 * Pass one scope or an array of scopes layered in order (later scopes win).
 	 * Merged below the developer's own environment and below computed env vars.
 	 * Set false to skip this app, including startup prefetch.
 	 */
-	secrets?: SecretsScopeConfig | false;
+	secrets?: SecretsScopeInput | false;
 	/** Own the TTY (stdin) with `--no-tui`. Only one app may be interactive. Ignored by the TUI. */
 	interactive?: boolean;
 	/**
@@ -187,7 +189,7 @@ export interface CaptureConfig {
  * Infisical CLI, which hangs when several run at once.
  */
 export interface SecretsScopeConfig {
-	/** Infisical project id. Required, here or in the config-level defaults. */
+	/** Infisical project id. Defaults to `workspaceId` in `<root>/.infisical.json` when present. */
 	projectId?: string;
 	/**
 	 * Infisical organization the project belongs to. A CLI session is scoped
@@ -202,11 +204,15 @@ export interface SecretsScopeConfig {
 	/** Folder, matching the app's own secret path. Default: `"/"`. */
 	path?: string;
 	/**
-	 * Inject only these keys from the scope. A key someone adds to the shared
-	 * Infisical environment then reaches no checkout until it is listed here.
+	 * Inject only keys matching these exact names or glob patterns (`*`, `?`).
+	 * A key someone adds to the shared Infisical environment then reaches no
+	 * checkout until it matches an entry here.
 	 */
 	only?: readonly string[];
-	/** Never inject these keys, such as a mail provider's key that sends real mail. */
+	/**
+	 * Never inject keys matching these exact names or glob patterns (`*`, `?`),
+	 * such as `FB_PRIVATE_KEY_*` or a mail provider's key that sends real mail.
+	 */
 	exclude?: readonly string[];
 	/**
 	 * Keys that must be present after the fetch. A missing one stops the app
@@ -215,9 +221,13 @@ export interface SecretsScopeConfig {
 	required?: readonly string[];
 }
 
+/** One Infisical scope, or several layered in order (later scopes win). */
+export type SecretsScopeInput =
+	SecretsScopeConfig | readonly SecretsScopeConfig[];
+
 /** What reading an app's secrets scope needs: a resolved app or one as written. */
 export interface SecretsHolder {
-	secrets?: SecretsScopeConfig | false;
+	secrets?: SecretsScopeInput | false;
 }
 
 /** A long-running owned process. Readiness means spawned and still alive. */
@@ -304,6 +314,7 @@ export type TypedAppDefinitions<
 	TApps extends Record<string, AppConfig>,
 	TAddedServices extends string = never,
 	TAddedApps extends string = never,
+	TLinks extends Record<string, LinkConfig> = Record<string, LinkConfig>,
 > = {
 	[K in keyof TApps]: [TApps[K]] extends [never]
 		? TApps[K]
@@ -322,7 +333,11 @@ export type TypedAppDefinitions<
 							ComputedUrls<TServices, TypedAppDefinitions<TServices, TApps>>
 						>,
 						ctx: NoInfer<
-							EnvVarsContext<TServices, TypedAppDefinitions<TServices, TApps>>
+							EnvVarsContext<
+								TServices,
+								TypedAppDefinitions<TServices, TApps>,
+								TLinks
+							>
 						>,
 					) => DeclaredAppEnvVars<TApps[K]>;
 				};

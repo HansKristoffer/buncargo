@@ -393,11 +393,42 @@ function _probeIntegrationAddedKeys() {
 				devCommand: "next dev",
 				startAfter: ["firebase"],
 				requiredApps: ["shopify"],
+				secrets: [
+					{ path: "/web" },
+					{ environment: "prod", path: "/functions", only: ["UNLEASH_KEY"] },
+				],
 			},
 		},
-		profiles: { full: { apps: ["web", "firebase", "shopify"] } },
+		seed: {
+			command: "plantr",
+			afterApps: ["firebase"],
+		},
+		profiles: {
+			full: {
+				apps: ["web", "firebase", "shopify"],
+				env: (ports) => ({ WEB_COPY: ports.web }),
+				secrets: { environment: "dev" },
+			},
+			cloud: {
+				env: { FIRESTORE_EMULATOR_HOST: undefined },
+				secrets: false,
+			},
+		},
 		integrations: [firebase(), shopify()],
 	});
+	const seedWithoutFirebase = defineDevConfig({
+		projectPrefix: "seed-no-firebase",
+		services: {},
+		apps: { web: { port: 3000, devCommand: "next dev" } },
+		seed: {
+			command: "plantr",
+			// @ts-expect-error - no integration in this config adds "firebase"
+			afterApps: ["firebase"],
+		},
+	});
+	type _FirebaseAndShopifyIsAny = Expect<
+		Equal<typeof firebaseAndShopify extends AnyDevConfig ? true : false, true>
+	>;
 	const misspelt = defineDevConfig({
 		projectPrefix: "misspelt",
 		services: {},
@@ -410,5 +441,122 @@ function _probeIntegrationAddedKeys() {
 	type _OwnAppsOnly = Expect<
 		Equal<keyof NonNullable<typeof firebaseAndShopify.apps>, "web">
 	>;
-	return [withSupabase, withoutSupabase, functionsOff, functionsOn, misspelt];
+	return [
+		withSupabase,
+		withoutSupabase,
+		functionsOff,
+		functionsOn,
+		seedWithoutFirebase,
+		misspelt,
+	];
+}
+
+// Cross-repo links narrow `ctx.links`, `env.links` and `profiles.<name>.links`
+// to the config's declared link aliases.
+function _probeLinksInference() {
+	const linked = defineDevConfig({
+		projectPrefix: "kanpla",
+		services: {},
+		links: {
+			backend: {
+				project: "kanpla-backend",
+				path: "../backend",
+				apps: ["core"],
+			},
+		},
+		exportEnv: ["NEXT_PUBLIC_FIREBASE_CONFIG"],
+		apps: {
+			api: {
+				port: 1000,
+				devCommand: "pnpm dev",
+				envVars: (_ports, _urls, ctx) => ({
+					BB_CORE_URL: ctx.links.backend?.urls.core,
+					// @ts-expect-error - "typo" is not a configured link alias
+					NOPE: ctx.links.typo?.urls.core,
+				}),
+			},
+		},
+		env: (_ports, _urls, ctx) => ({
+			NEXT_PUBLIC_BB_CORE_URL: ctx.links.backend?.urls.core,
+			// @ts-expect-error - "typo" is not a configured link alias
+			BAD_LINK: ctx.links.typo?.urls.core,
+		}),
+		hooks: {
+			afterServers: async (ctx) => {
+				const _url: string | undefined = ctx.links.backend?.urls.core;
+				// @ts-expect-error - "typo" is not a configured link alias
+				const _bad = ctx.links.typo;
+				void [_url, _bad];
+			},
+		},
+		profiles: {
+			cloud: {
+				links: { backend: false },
+			},
+			badProfile: {
+				// @ts-expect-error - "unknown" is not a configured link alias
+				links: { unknown: false },
+			},
+		},
+	});
+
+	type _LinkedConfigIsAny = Expect<
+		Equal<typeof linked extends AnyDevConfig ? true : false, true>
+	>;
+	const linkedEnv = createDevEnvironment(linked);
+	type _LinkedEnvIsAny = Expect<
+		Equal<typeof linkedEnv extends AnyDevEnvironment ? true : false, true>
+	>;
+	const coreUrl: string | undefined = linkedEnv.links.backend?.urls.core;
+	// @ts-expect-error - "typo" is not a configured link alias
+	const badEnvLink = linkedEnv.links.typo;
+
+	// A config without `links` narrows `ctx.links`, `env.links` and `profiles.*.links`
+	// to `Record<never, never>`, rejecting arbitrary typos.
+	const unlinked = defineDevConfig({
+		projectPrefix: "unlinked",
+		services: {},
+		env: (_ports, _urls, ctx) => ({
+			// @ts-expect-error - no links configured on this config
+			BAD: ctx.links.typo?.urls.api,
+		}),
+		profiles: {
+			p: {
+				// @ts-expect-error - no links configured on this config
+				links: { typo: false },
+			},
+		},
+	});
+	const unlinkedEnv = createDevEnvironment(unlinked);
+	// @ts-expect-error - no links configured on this config
+	const badUnlinked = unlinkedEnv.links.typo;
+
+	// `mergeConfigs` preserves base links and adds override links.
+	const mergedLinks = mergeConfigs(linked, {
+		links: {
+			emails: { project: "kanpla-emails" },
+		},
+		env: (_ports, _urls, ctx) => ({
+			CORE: ctx.links.backend?.urls.core,
+			EMAILS: ctx.links.emails?.urls.emails,
+			// @ts-expect-error - "missing" is in neither base nor override links
+			MISSING: ctx.links.missing?.urls.core,
+		}),
+	});
+	const mergedLinksEnv = createDevEnvironment(mergedLinks);
+	const mergedBackend: string | undefined =
+		mergedLinksEnv.links.backend?.urls.core;
+	const mergedEmails: string | undefined =
+		mergedLinksEnv.links.emails?.urls.emails;
+	// @ts-expect-error - "missing" is not a merged link alias
+	const badMergedLink = mergedLinksEnv.links.missing;
+
+	return [
+		coreUrl,
+		badEnvLink,
+		badUnlinked,
+		mergedBackend,
+		mergedEmails,
+		badMergedLink,
+	];
 }

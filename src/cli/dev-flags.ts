@@ -53,7 +53,8 @@ export const DEV_SPEC = {
 		profile: {
 			kind: "string",
 			value: "<name>",
-			description: "Run a profile's apps (default: the profile named default)",
+			description:
+				"Apply a profile's apps, env and secrets overrides (default: the profile named default)",
 		},
 		attach: {
 			kind: "string",
@@ -62,7 +63,13 @@ export const DEV_SPEC = {
 		},
 		"no-watch": {
 			kind: "boolean",
-			description: "Do not restart apps when their watched files change",
+			description:
+				"Do not restart apps or re-run watched tasks when their files change",
+		},
+		"with-links": {
+			kind: "boolean",
+			description:
+				"Start missing linked repos in the background (required links before startup, optional links after)",
 		},
 		detach: {
 			kind: "boolean",
@@ -160,7 +167,7 @@ export const DEV_SPEC = {
 		},
 		{
 			command: "bun dev --profile=full",
-			description: "Run the apps of profiles.full",
+			description: "Apply profiles.full (apps, env and secrets)",
 		},
 		{
 			command: "bun dev --detach --json",
@@ -189,6 +196,10 @@ export const DEV_SPEC = {
 		{
 			command: "bun dev --takeover",
 			description: "Move apps running in another terminal into this one",
+		},
+		{
+			command: "bun dev --with-links",
+			description: "Start missing linked repos in the background",
 		},
 	],
 } as const satisfies CommandSpec;
@@ -263,6 +274,11 @@ export function ignoredFlagWarnings(values: DevValues): string[] {
 			`--takeover is ignored with ${mode}: it starts no app to take over.`,
 		);
 	}
+	if (values["with-links"] && (values["up-only"] || values.migrate)) {
+		ignored.push(
+			`--with-links is ignored with ${mode}: cross-repo links are only used on full starts.`,
+		);
+	}
 
 	return ignored;
 }
@@ -296,6 +312,11 @@ export function assertDevArgs(args: DevArgs): void {
 	if (values["replace-stale"] && (values.down || values.reset)) {
 		errors.push(
 			"--replace-stale clears the way for a start; it cannot be combined with --down or --reset.",
+		);
+	}
+	if (values["with-links"] && (values.down || values.reset)) {
+		errors.push(
+			"--with-links starts missing linked repos; it cannot be combined with --down or --reset.",
 		);
 	}
 	if (values.tui && values["no-tui"]) {

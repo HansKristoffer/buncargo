@@ -1,10 +1,14 @@
 import { assertValidConfig } from "../config";
-import { applyIntegrations } from "../config/integrations";
+import {
+	applyIntegrations,
+	applyProfileIntegrations,
+} from "../config/integrations";
 import { resolveConfig } from "../config/resolve";
 import { labelledCaptures } from "../core/captured-values";
 import { waitForDevServers, waitForServer } from "../core/network";
 import { findMonorepoRoot } from "../core/ports";
 import { resolvePrimaryApp } from "../core/primary-app";
+import { applyInfisicalProjectConfig } from "../core/secrets/index";
 import { createPrismaRunner } from "../prisma";
 import type {
 	AppConfig,
@@ -13,6 +17,7 @@ import type {
 	DevConfig,
 	DevEnvironment,
 	EnvValues,
+	LinkConfig,
 	PrismaRunner,
 	ResolvedDevConfig,
 	ServiceConfig,
@@ -35,6 +40,8 @@ type EnvironmentOptions = {
 	suffix?: string;
 	containerRuntime?: string;
 	root?: string;
+	/** Active profile name (`profiles.<name>`), applying its `env` and `secrets` overrides. */
+	profile?: string;
 } & SuffixedEnvironmentOptions;
 
 /**
@@ -61,16 +68,17 @@ export function createDevEnvironment<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 	TEnv extends EnvValues = EnvValues,
+	TLinks extends Record<string, LinkConfig> = Record<never, never>,
 >(
-	config: DevConfig<TServices, TApps, TEnv>,
+	config: DevConfig<TServices, TApps, TEnv, TLinks>,
 	options: EnvironmentOptions = {},
-): DevEnvironment<TServices, TApps, TEnv> {
+): DevEnvironment<TServices, TApps, TEnv, TLinks> {
 	// The typed view, applied once: everything below reads the config with
 	// its keys unknown, and builds the same object either way.
 	return createEnvironment(
 		config as DevConfig<AnyServices, AnyApps>,
 		options,
-	) as unknown as DevEnvironment<TServices, TApps, TEnv>;
+	) as unknown as DevEnvironment<TServices, TApps, TEnv, TLinks>;
 }
 
 function createEnvironment(
@@ -81,14 +89,116 @@ function createEnvironment(
 	// re-applies them to the original, which is pure and gives the same result.
 	// They read project files from the checkout, wherever this process runs.
 	const root = options.root ?? findMonorepoRoot();
-	const applied = applyIntegrations(config, { root });
-	assertValidConfig(applied);
-	const resolved: ResolvedDevConfig = resolveConfig(applied);
+	const withProjectSecrets = applyInfisicalProjectConfig(config, root);
+	const baseApplied = applyInfisicalProjectConfig(
+		applyIntegrations(withProjectSecrets, { root }),
+		root,
+	);
+	assertValidConfig(baseApplied);
+
+	const profileName =
+		options.profile ?? (config.profiles?.default ? "default" : undefined);
+	const profileOverride = profileName
+		? config.profiles?.[profileName]
+		: undefined;
+	let applied = baseApplied;
+	if (profileOverride?.integrations !== undefined) {
+		applied = applyInfisicalProjectConfig(
+			applyProfileIntegrations(withProjectSecrets, {
+				root,
+				profile: profileName,
+			}),
+			root,
+		);
+		assertValidConfig(applied);
+		const profileErrors: string[] = [];
+		for (const appName of profileOverride.apps ?? []) {
+			if (!applied.apps?.[appName]) {
+				profileErrors.push(
+					`profiles.${profileName} includes unknown app "${appName}"`,
+				);
+			}
+		}
+		if (
+			profileOverride.egressGuard &&
+			typeof profileOverride.egressGuard === "object" &&
+			profileOverride.egressGuard.apps
+		) {
+			for (const appName of profileOverride.egressGuard.apps) {
+				if (!applied.apps?.[appName]) {
+					profileErrors.push(
+						`profiles.${profileName}.egressGuard.apps includes unknown app "${appName}"`,
+					);
+				}
+			}
+		}
+		if (profileErrors.length > 0) {
+			throw new Error(
+				`Invalid dev config:\n${profileErrors.map((e) => `  - ${e}`).join("\n")}`,
+			);
+		}
+	}
+
+	const resolved: ResolvedDevConfig = resolveConfig(applied, {
+		profile: options.profile,
+	});
 
 	const ctx = createDevEnvContext(resolved, { ...options, root });
 	const envVars = createEnvVarsApi(ctx);
 	// The entry an app run publishes is built from the environment itself.
-	const runClaim = createRunClaimApi(ctx, () => env);
+	const runClaim = createRunClaimApi(
+		{
+			projectName: ctx.projectName,
+			projectSuffix: ctx.projectSuffix,
+			profile: profileName,
+			root: ctx.root,
+			worktree: ctx.worktree,
+			services: ctx.services,
+			ports: ctx.ports,
+			urls: ctx.urls,
+			loopbackUrls: ctx.loopbackUrls,
+			get selectedServiceKeys() {
+				return ctx.selectedServiceKeys;
+			},
+			get hasSelectedServices() {
+				return ctx.hasSelectedServices;
+			},
+			get runtime() {
+				return ctx.runtime;
+			},
+			get runtimeBinary() {
+				return ctx.runtimeBinary;
+			},
+			config: ctx.config,
+			exportedEnv: (selection) => envVars.exportedEnv(selection),
+		},
+		() => ({
+			sessionId: env.sessionId,
+			containerRuntime: ctx.hasSelectedServices
+				? env.containerRuntime
+				: undefined,
+			containerRuntimeBinary: ctx.hasSelectedServices
+				? env.containerRuntimeBinary
+				: undefined,
+			projectPrefix: env.projectPrefix,
+			projectName: env.projectName,
+			projectSuffix: ctx.projectSuffix,
+			profile: profileName,
+			root: env.root,
+			isWorktree: env.isWorktree,
+			ports: env.ports,
+			urls: env.urls,
+			loopbackUrls: env.loopbackUrls,
+			publicUrls: env.publicUrls,
+			services: env.services,
+			integrations: env.integrations,
+			workspaceId: env.workspaceId,
+			details: env.details,
+			exportedEnv: (selection) => envVars.exportedEnv(selection),
+			hosts: env.hosts,
+			resolvePrimaryApp: env.resolvePrimaryApp,
+		}),
+	);
 	const coordinator = new LifecycleCoordinator();
 	const serviceWatch = createServiceWatch(ctx, runClaim.sessionId);
 	const recordCapture = createCaptureRecorder(ctx, envVars);
@@ -98,9 +208,47 @@ function createEnvironment(
 		ports: ctx.ports,
 		projectName: ctx.projectName,
 		unsetEnv: resolved.unsetEnv,
+		egressGuard: resolved.egressGuard,
+		linksConfig: resolved.links,
+		allApps: ctx.apps,
+		tasks: resolved.tasks,
+		hasGeneratedFiles: (resolved.generatedFiles?.length ?? 0) > 0,
+		hasActiveEgressProxy: () => ctx.egressProxyUrl !== undefined,
+		setEgressProxy: ctx.setEgressProxy,
 		runtime: () => ctx.runtime,
 		appEnv: (name, production) => envVars.buildAppEnvVars(name, production),
+		buildTaskEnv: async (task, production, signal) => {
+			const computed = task.app
+				? envVars.buildAppEnvVars(task.app, production)
+				: envVars.buildEnvVars(production);
+			const secrets = await envVars.resolveSecrets(undefined, {
+				app: task.app,
+				signal,
+				computed,
+			});
+			return { ...secrets, ...computed };
+		},
 		runHook: createServerHookRunner(ctx, envVars),
+		onAppReady: async (name, signal) => {
+			const appConfig = ctx.apps[name];
+			if (!appConfig) return;
+			for (const integration of resolved.integrations ?? []) {
+				await integration.onAppReady?.({
+					name,
+					config: appConfig,
+					port: ctx.ports[name],
+					ports: ctx.ports,
+					urls: ctx.urls,
+					loopbackUrls: ctx.loopbackUrls,
+					root: ctx.root,
+					workspaceId: ctx.workspaceId,
+					...(resolved.activeApps !== undefined
+						? { activeApps: resolved.activeApps }
+						: {}),
+					signal,
+				});
+			}
+		},
 		waitForHealth: (apps, productionBuild, signal) =>
 			withLossNotice(missingContainers, () =>
 				waitForDevServers(apps, ctx.ports, {
@@ -138,6 +286,9 @@ function createEnvironment(
 		urls: ctx.urls,
 		loopbackUrls: ctx.loopbackUrls,
 		publicUrls: ctx.publicUrls,
+		get links() {
+			return ctx.links;
+		},
 		workspaceId: ctx.workspaceId,
 		services: ctx.services,
 		apps: ctx.apps,
@@ -269,12 +420,22 @@ function createEnvironment(
 					cwd: resolved.seed.cwd,
 					beforeApps: resolved.seed.beforeApps,
 					requiredServices: resolved.seed.requiredServices,
+					afterApps: resolved.seed.afterApps,
 				}
 			: undefined,
+		activeProfile: profileName,
+		withProfile: (profile) =>
+			createEnvironment(config, { ...options, profile }),
 		setupChecks: resolved.setupChecks,
 		preflight: resolved.preflight,
 		tasks: resolved.tasks,
+		linksConfig: resolved.links,
+		egressGuard: resolved.egressGuard,
+		activeApps: resolved.activeApps,
+		inspectLinks: ctx.inspectLinks,
+		exportedEnv: (selection) => envVars.exportedEnv(selection),
 		setNamedHostsActive: ctx.setNamedHostsActive,
+		adoptLivePorts: ctx.adoptLivePorts,
 		ensureComposeFile: ctx.ensureComposeFile,
 		composeModel: ctx.composeModel,
 		planPortOffset: ctx.planPortOffset,

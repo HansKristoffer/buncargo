@@ -183,6 +183,7 @@ struct Run: Codable, Identifiable, Hashable {
     let root: String
     var worktree: String?
     var branch: String?
+    var profile: String?
     let pid: Int
     let startedAt: String
     let updatedAt: String

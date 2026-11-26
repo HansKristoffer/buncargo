@@ -3,9 +3,16 @@
 `src/core/secrets/` fetches each Infisical folder once per process, the way `hanzio/secrets`
 does, with the same defaults (EU `siteUrl`). Hanzio's public loader only returns named keys, so it
 is ported here rather than depended on; sharing code needs hanzio to export an all-keys fetch and
-take buncargo's machine-wide CLI lock. `scope.ts` is pure (resolution, `collectScopes`, the
-`only`/`exclude` filter), `auth.ts` signs in, `fetch.ts` lists and caches, `app-secrets.ts` hands
-values to apps and commands.
+take buncargo's machine-wide CLI lock. `scope.ts` is pure (single and layered `SecretsScopeInput`
+resolution via `resolveScopes`, `mergeSecretsConfig`, `requiredSecretKeys`, `collectScopes`, and the
+wildcard-capable `only`/`exclude` filter supporting `*` and `?` globs). `project-config.ts` holds
+the filesystem I/O for `<root>/.infisical.json` (`readInfisicalProjectId` /
+`applyInfisicalProjectConfig`) so `scope.ts` stays pure for config helpers. When a
+profile supplies an array of layered `secrets` scopes, apps declaring their own `path` keep the
+profile's extra overlay scopes rather than dropping them. `auth.ts` signs in, `fetch.ts` lists and
+caches, `app-secrets.ts` hands values to apps and commands in declared layer order (later layers
+override earlier ones). Profile `secrets` overrides are applied in `config/resolve.ts` before
+`applySecretDefaults`, so apps inherit the active profile's environment or opt-out (`secrets: false`).
 
 **Never log a value, and never echo the CLI's output or a response body in an error.** A failure
 warns once and continues, except a missing session (below). There is deliberately no command that

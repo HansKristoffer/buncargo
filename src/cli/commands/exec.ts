@@ -3,11 +3,11 @@ import {
 	processCheckSlot,
 	withCheckSlot,
 } from "../../core/check-slots";
-import { loadDevEnv } from "../../loader";
 import { BASE_EXITS, defineCommand } from "../command-spec";
 import { argumentsError } from "../errors";
 import { runForwardingSignals } from "../signal-forward";
 import { databaseExists, databaseOverrides } from "./exec-database";
+import { loadCommandEnv } from "./load-env";
 
 export const execCommand = defineCommand({
 	spec: {
@@ -30,6 +30,12 @@ export const execCommand = defineCommand({
 				value: "<name>",
 				description:
 					"Point the variables that name this checkout's Postgres database at database <name>",
+			},
+			profile: {
+				kind: "string",
+				value: "<name>",
+				description:
+					"Apply a profile's env and secrets overrides (default: the active run's profile, or default)",
 			},
 			slot: {
 				kind: "boolean",
@@ -56,10 +62,11 @@ async function exec(parsed: {
 	app: string | undefined;
 	cwd: string | undefined;
 	db: string | undefined;
+	profile: string | undefined;
 	slot: boolean;
 	command: string[];
 }): Promise<number> {
-	const env = await loadDevEnv();
+	const env = await loadCommandEnv({ profile: parsed.profile });
 	const databaseEnv =
 		parsed.db === undefined
 			? undefined

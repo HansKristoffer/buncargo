@@ -5,8 +5,12 @@ User-facing summary: [runtime maintenance](../runtime-maintenance.md).
 ## One liveness record
 
 There is **one** liveness record: `~/.buncargo/runs.json` (`src/core/run-registry.ts`). It holds
-per-session identity, process birth identity, the selected services, runtime, binary and aliases,
-and owned versus reused apps. An app row's `publicUrl` is a tunnel's or one the app printed
+per-session identity, process birth identity, the active `profile` name (when set), the selected
+services, runtime, binary and aliases, and owned versus reused apps. `cli/commands/load-env.ts`
+reads live entries to inherit the active run's profile and live ports in `buncargo run`, `exec`,
+and `env`, and `core/sibling-lookup.ts` (`lookupRunningApp` / `lookupRunningService`) reads them
+synchronously for ad-hoc cross-repo endpoint discovery (branch-first, then newest, overridable via
+`BUNCARGO_LINK_<PROJECT_PREFIX>`). An app row's `publicUrl` is a tunnel's or one the app printed
 (`captures`); `tunnelUrl` marks the tunnel's, and a run reusing that app inherits only it. Several sessions in one root coexist. Updates are serialized and
 terminal states cannot regress to ready. Read-only consumers filter live entries without writing;
 writers prune. `stop --run` selects an exact session.
@@ -32,10 +36,12 @@ the file three times and fork `ps` on macOS. A pid another process reused keeps 
 sweep, which compares identities, finds it gone; the prune never drops an entry that might be live.
 
 - `environment/run-claim.ts` publishes a run's entry *before* its first container exists, so the
-  sweep can never see a fresh stack as unowned. The entry carries the idle hold, the runtime and
-  the pinned binary, which is why the sweep needs no config. The library claims too, not only the
-  CLI, and `start()` ensures the watchdog right after claiming (`StartOptions.watchdog: false` opts
-  out, for tests; the claim happens either way).
+  sweep can never see a fresh stack as unowned. The entry carries the idle hold, the runtime, the
+  pinned binary, service endpoints (`port`/`url`/`loopbackUrl`) and any allow-listed non-secret
+  `exports`, which is why both the sweep and cross-repo links (`src/core/links.ts`) need no config
+  from the other checkout. The library claims too, not only the CLI, and `start()` ensures the
+  watchdog right after claiming (`StartOptions.watchdog: false` opts out, for tests; the claim
+  happens either way).
 - Releasing sets `lifecycle` to `released` once (the first release wins, however many teardown paths reach it)
   and keeps the entry; a run with no services is withdrawn instead. An explicit `stop()` *retires*
   instead of releasing, because it has just torn the containers down: its own session goes, and

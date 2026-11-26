@@ -1,6 +1,6 @@
-import type { AppConfig, SecretsScopeConfig } from "./app";
+import type { AppConfig, SecretsScopeInput } from "./app";
 import type { PortOffsetProvenance } from "./cli";
-import type { GeneratedFileConfig, ProfileConfig } from "./commands";
+import type { GeneratedFileConfig } from "./commands";
 import type {
 	AppEnvVars,
 	ComputedEnvVars,
@@ -12,6 +12,7 @@ import type {
 	ExposedKeys,
 } from "./computed";
 import type {
+	AnyProfileConfig,
 	CheckoutFile,
 	DevConfig,
 	DevConfigLike,
@@ -26,6 +27,7 @@ import type {
 	StopOptions,
 	WithServicesOptions,
 } from "./lifecycle";
+import type { LinkConfig, ResolvedLink, ResolvedLinks } from "./links";
 import type { PrismaRunner, SeedOutcome, SeedRunOptions } from "./preparation";
 import type { ResolvedApps, ResolvedServices } from "./resolved";
 import type { ContainerRuntimeName, ServiceConfig } from "./service";
@@ -92,6 +94,7 @@ export interface DevEnvironment<
 	TServices extends Record<string, ServiceConfig>,
 	TApps extends Record<string, AppConfig>,
 	TEnv extends EnvValues = EnvValues,
+	TLinks extends Record<string, LinkConfig> = Record<string, LinkConfig>,
 > {
 	/** Docker project name (includes suffix if set) */
 	readonly projectName: string;
@@ -110,6 +113,8 @@ export interface DevEnvironment<
 	readonly loopbackUrls: ComputedLoopbackUrls<TServices, TApps>;
 	/** Public tunnel URLs for exposed services/apps (when active) */
 	readonly publicUrls: ComputedPublicUrls<TServices, TApps>;
+	/** Live state of linked repos declared under `links`, by alias. */
+	readonly links: ResolvedLinks<TLinks>;
 	/** Stable id of this checkout, which apps see as `BUNCARGO_WORKSPACE_ID`. */
 	readonly workspaceId: string;
 	/** The config's services, resolved: one kind each, every default filled. */
@@ -147,11 +152,11 @@ export interface DevEnvironment<
 	/** Labelled values for humans: labelled captures, then every integration's `describe`. */
 	details(): Record<string, string>;
 	/** The config-level Infisical scope (`secrets`), when configured. */
-	readonly secrets?: SecretsScopeConfig | false;
+	readonly secrets?: SecretsScopeInput | false;
 	/** `options.onAppFailure` from config, for `buncargo dev` */
 	readonly onAppFailure?: "keep-others" | "stop-run";
 	/** `profiles` from config, for `buncargo dev --profile`; may name integration apps. */
-	readonly profiles?: Readonly<Record<string, ProfileConfig>>;
+	readonly profiles?: Readonly<Record<string, AnyProfileConfig>>;
 
 	/** Start the dev environment (containers + optional servers) */
 	start(
@@ -317,7 +322,7 @@ export interface DevEnvironment<
 	withSuffix(
 		suffix: string,
 		options?: SuffixedEnvironmentOptions,
-	): DevEnvironment<TServices, TApps, TEnv>;
+	): DevEnvironment<TServices, TApps, TEnv, TLinks>;
 }
 
 /** Options for {@link DevEnvironment.withSuffix}. */
@@ -349,10 +354,12 @@ export interface AnyDevEnvironment extends Omit<
 	DevEnvironment<
 		Record<string, ServiceConfig>,
 		Record<string, AppConfig>,
-		EnvValues
+		EnvValues,
+		Record<string, LinkConfig>
 	>,
-	"openPublicTunnels" | "withSuffix"
+	"openPublicTunnels" | "withSuffix" | "links"
 > {
+	readonly links: Readonly<Record<string, ResolvedLink | undefined>>;
 	openPublicTunnels(options?: {
 		names?: string[];
 		waitForHealthy?: string[];
@@ -381,6 +388,11 @@ export interface AnyDevEnvironment extends Omit<
  * ```
  */
 export type DevEnvironmentFor<TConfig extends DevConfigLike> =
-	TConfig extends DevConfig<infer TServices, infer TApps, infer TEnv>
-		? DevEnvironment<TServices, TApps, TEnv>
+	TConfig extends DevConfig<
+		infer TServices,
+		infer TApps,
+		infer TEnv,
+		infer TLinks
+	>
+		? DevEnvironment<TServices, TApps, TEnv, TLinks>
 		: AnyDevEnvironment;

@@ -6,8 +6,10 @@ import type {
 	DevConfig,
 	DevOptions,
 	DockerComposeGenerationOptions,
+	EgressGuardConfig,
 	EnvFileOptions,
 	HostsOptions,
+	LinkConfig,
 	PrismaConfig,
 	ProfileConfig,
 	SecretsScopeConfig,
@@ -35,6 +37,8 @@ export const CONFIG_KEYS = {
 	projectPrefix: "string",
 	services: "shape",
 	apps: "shape",
+	links: "shape",
+	exportEnv: "shape",
 	env: "function",
 	hooks: "shape",
 	migrations: "shape",
@@ -42,6 +46,7 @@ export const CONFIG_KEYS = {
 	prisma: "shape",
 	options: "shape",
 	secrets: "shape",
+	egressGuard: "shape",
 	unsetEnv: "shape",
 	docker: "shape",
 	setupChecks: "shape",
@@ -105,6 +110,7 @@ export const SERVICE_KEYS = {
 	database: "string",
 	user: "string",
 	password: "string",
+	urlParams: "shape",
 	env: "shape",
 	staticEnv: "shape",
 	buckets: "shape",
@@ -161,6 +167,7 @@ export const PRISMA_KEYS = {
 
 export const SEED_KEYS = {
 	requiredServices: "shape",
+	afterApps: "shape",
 	beforeApps: "boolean",
 	command: "string",
 	cwd: "string",
@@ -203,11 +210,35 @@ export const TASK_KEYS = {
 	app: "string",
 	cwd: "string",
 	requiredServices: "shape",
+	onAppReady: "shape",
+	watch: "shape",
 } as const satisfies Record<keyof TaskConfig, FieldCheck>;
+
+export const LINK_KEYS = {
+	project: "string",
+	path: "string",
+	required: "boolean",
+	apps: "shape",
+	services: "shape",
+	onChange: "shape",
+	profile: "string",
+} as const satisfies Record<keyof LinkConfig, FieldCheck>;
+
+export const EGRESS_GUARD_KEYS = {
+	enabled: "boolean",
+	allow: "shape",
+	mode: "shape",
+	apps: "shape",
+} as const satisfies Record<keyof EgressGuardConfig, FieldCheck>;
 
 export const PROFILE_KEYS = {
 	apps: "shape",
 	description: "string",
+	env: "shape",
+	secrets: "shape",
+	links: "shape",
+	egressGuard: "shape",
+	integrations: "shape",
 } as const satisfies Record<keyof ProfileConfig, FieldCheck>;
 
 /**

@@ -80,6 +80,7 @@ function printRun(run: RunEntry, idle: string | undefined): void {
 	log.line(`  ${label}${branch}  pid ${run.pid}`);
 	log.line(`    root: ${run.root}`);
 	if (run.sessionId) log.line(`    run: ${run.sessionId}`);
+	if (run.profile) log.line(`    profile: ${run.profile}`);
 	if (idle) log.line(`    detached: ${idle}`);
 
 	for (const app of run.apps) {

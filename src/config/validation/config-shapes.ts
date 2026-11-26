@@ -1,11 +1,14 @@
 import { isString } from "hanzio";
 import { checkoutFileErrors } from "../../core/checkout-files/spec";
+import { validateWatchShape } from "./entry-shapes";
 import {
 	CONFIG_KEYS,
 	DOCKER_KEYS,
+	EGRESS_GUARD_KEYS,
 	ENV_FILE_KEYS,
 	HOSTS_KEYS,
 	keysChecked,
+	LINK_KEYS,
 	OPTIONS_KEYS,
 	PRISMA_KEYS,
 	PROFILE_KEYS,
@@ -62,6 +65,7 @@ function validateSectionShapes(
 		errors.push(...unknownKeyErrors(value.seed, "seed", SEED_KEYS));
 		for (const type of ["string", "function", "boolean"] as const)
 			fields(value.seed, "seed.", keysChecked(SEED_KEYS, type), type);
+		checks.secretsScope(value.seed.secrets, "seed.secrets");
 	}
 
 	if (object(value.hooks))
@@ -80,41 +84,19 @@ function validateListShapes(
 			errors.push("migrations must be an array");
 		else
 			for (const [index, migration] of value.migrations.entries())
-				if (record(migration, `migrations.${index}`))
+				if (record(migration, `migrations.${index}`)) {
 					fields(
 						migration,
 						`migrations.${index}.`,
 						["name", "command", "cwd"],
 						"string",
 					);
+					checks.secretsScope(migration.secrets, `migrations.${index}.secrets`);
+				}
 	}
 
 	if (value.integrations !== undefined) {
-		if (!Array.isArray(value.integrations))
-			errors.push("integrations must be an array");
-		else
-			for (const [index, entry] of value.integrations.entries()) {
-				const path = `integrations.${index}`;
-				if (!record(entry, path)) continue;
-				if (
-					typeof entry.name !== "string" ||
-					!/^[a-z][a-z0-9-]*$/.test(entry.name)
-				)
-					errors.push(`${path}.name must be a lowercase name`);
-				for (const key of [
-					"config",
-					"describe",
-					"appEnv",
-					"describeApp",
-					"bannerHint",
-				])
-					check(
-						entry[key],
-						`${path}.${key}`,
-						typeof entry[key] === "function",
-						"a function",
-					);
-			}
+		validateIntegrationsShape(value.integrations, "integrations", checks);
 	}
 
 	check(
@@ -170,6 +152,72 @@ function validateListShapes(
 	}
 }
 
+/** Validate an `integrations` array (top-level or per-profile). */
+function validateIntegrationsShape(
+	value: unknown,
+	pathPrefix: string,
+	checks: ShapeChecks,
+): void {
+	const { errors, record, check } = checks;
+	if (!Array.isArray(value)) {
+		errors.push(`${pathPrefix} must be an array`);
+		return;
+	}
+	for (const [index, entry] of value.entries()) {
+		const path = `${pathPrefix}.${index}`;
+		if (!record(entry, path)) continue;
+		if (typeof entry.name !== "string" || !/^[a-z][a-z0-9-]*$/.test(entry.name))
+			errors.push(`${path}.name must be a lowercase name`);
+		for (const key of [
+			"config",
+			"describe",
+			"exportEnv",
+			"appEnv",
+			"onAppReady",
+			"secretScopes",
+			"describeApp",
+			"bannerHint",
+		])
+			check(
+				entry[key],
+				`${path}.${key}`,
+				typeof entry[key] === "function",
+				"a function",
+			);
+	}
+}
+
+/** Validate `egressGuard` on the top-level config or a profile. */
+function validateEgressGuardShape(
+	value: unknown,
+	path: string,
+	checks: ShapeChecks,
+): void {
+	const { errors, record, check, strings, fields } = checks;
+	if (value === undefined || typeof value === "boolean") return;
+	if (!record(value, path)) return;
+	errors.push(...unknownKeyErrors(value, path, EGRESS_GUARD_KEYS));
+	fields(value, `${path}.`, ["enabled"], "boolean");
+	check(
+		value.allow,
+		`${path}.allow`,
+		strings(value.allow),
+		"an array of host patterns",
+	);
+	check(
+		value.mode,
+		`${path}.mode`,
+		value.mode === "block" || value.mode === "warn",
+		'"block" or "warn"',
+	);
+	check(
+		value.apps,
+		`${path}.apps`,
+		strings(value.apps),
+		"an array of app names",
+	);
+}
+
 /** `tasks` and `profiles`: named entries that share a name rule. */
 function validateNamedEntryShapes(
 	value: Record<string, unknown>,
@@ -196,8 +244,39 @@ function validateNamedEntryShapes(
 			fields(entry, `${path}.`, ["description"], "string");
 
 			if (kind === "profiles") {
-				if (!strings(entry.apps) || entry.apps.length === 0)
-					errors.push(`${path}.apps must be a nonempty array of app names`);
+				if (entry.apps !== undefined) {
+					if (!strings(entry.apps) || entry.apps.length === 0)
+						errors.push(`${path}.apps must be a nonempty array of app names`);
+				}
+				if (entry.env !== undefined && typeof entry.env !== "function") {
+					checks.envValues(entry.env, `${path}.env`);
+				}
+				checks.secretsScope(entry.secrets, `${path}.secrets`);
+				validateProfileLinksShape(entry.links, `${path}.links`, checks);
+				validateEgressGuardShape(
+					entry.egressGuard,
+					`${path}.egressGuard`,
+					checks,
+				);
+				if (entry.integrations !== undefined && entry.integrations !== false) {
+					validateIntegrationsShape(
+						entry.integrations,
+						`${path}.integrations`,
+						checks,
+					);
+				}
+				if (
+					entry.apps === undefined &&
+					entry.env === undefined &&
+					entry.secrets === undefined &&
+					entry.links === undefined &&
+					entry.egressGuard === undefined &&
+					entry.integrations === undefined
+				) {
+					errors.push(
+						`${path} must set at least one of apps, env, secrets, links, egressGuard, or integrations`,
+					);
+				}
 				continue;
 			}
 			if (typeof entry.command !== "string" || !entry.command)
@@ -209,6 +288,14 @@ function validateNamedEntryShapes(
 				strings(entry.requiredServices),
 				"an array of nonempty strings",
 			);
+			if (entry.onAppReady !== undefined) {
+				if (!strings(entry.onAppReady) || entry.onAppReady.length === 0) {
+					errors.push(
+						`${path}.onAppReady must be a nonempty array of app names`,
+					);
+				}
+			}
+			validateWatchShape(entry.watch, `${path}.watch`, checks);
 		}
 	}
 }
@@ -255,33 +342,172 @@ function validateOptionsShape(
 	)
 		errors.push('options.onAppFailure must be "keep-others" or "stop-run"');
 
-	for (const name of ["hosts", "envFile"]) {
-		const option = options[name];
-		if (option === undefined || typeof option === "boolean") continue;
-		if (!record(option, `options.${name}`)) continue;
-
-		if (name === "hosts") {
+	const hostsOption = options.hosts;
+	if (hostsOption !== undefined && typeof hostsOption !== "boolean") {
+		if (record(hostsOption, "options.hosts")) {
 			errors.push(
 				...unknownKeyErrors(
-					option,
+					hostsOption,
 					"options.hosts",
 					HOSTS_KEYS,
 					RENAMED_KEYS["options.hosts"],
 				),
 			);
-			fields(option, "options.hosts.", ["tld"], "string");
+			fields(hostsOption, "options.hosts.", ["tld"], "string");
 			check(
-				option.services,
+				hostsOption.services,
 				"options.hosts.services",
-				option.services === true || strings(option.services),
+				hostsOption.services === true || strings(hostsOption.services),
 				"true or an array of service names",
 			);
+		}
+	}
+
+	const validateEnvFileEntry = (
+		entry: unknown,
+		path: string,
+	): string | undefined => {
+		if (typeof entry === "string") {
+			if (entry.trim() === "") {
+				errors.push(`${path} must be a nonempty path`);
+				return undefined;
+			}
+			return entry.trim();
+		}
+		if (!record(entry, path)) return undefined;
+		errors.push(...unknownKeyErrors(entry, path, ENV_FILE_KEYS));
+		fields(entry, `${path}.`, ["path", "createFrom"], "string");
+		fields(entry, `${path}.`, ["values"], "function");
+		if (typeof entry.path === "string" && entry.path.trim() === "") {
+			errors.push(`${path}.path must be a nonempty path`);
+			return undefined;
+		}
+		return typeof entry.path === "string" ? entry.path.trim() : ".env";
+	};
+
+	const envFileOption = options.envFile;
+	if (envFileOption !== undefined && typeof envFileOption !== "boolean") {
+		if (Array.isArray(envFileOption)) {
+			if (envFileOption.length === 0) {
+				errors.push(
+					"options.envFile must be a nonempty array of paths or envFile options",
+				);
+			} else {
+				const seen = new Set<string>();
+				for (const [index, entry] of envFileOption.entries()) {
+					const target = validateEnvFileEntry(
+						entry,
+						`options.envFile.${index}`,
+					);
+					if (target !== undefined) {
+						const normalized = target.replace(/^\.\//, "");
+						if (seen.has(normalized)) {
+							errors.push(`options.envFile lists "${target}" twice`);
+						}
+						seen.add(normalized);
+					}
+				}
+			}
 		} else {
+			validateEnvFileEntry(envFileOption, "options.envFile");
+		}
+	}
+}
+
+function validateLinksShape(value: unknown, checks: ShapeChecks): void {
+	const { errors, record, check, strings, fields } = checks;
+	if (value === undefined || !record(value, "links")) return;
+
+	for (const [name, entry] of Object.entries(value)) {
+		const path = `links.${name}`;
+		if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+			errors.push(`${path} has an invalid name`);
+		}
+		if (!record(entry, path)) continue;
+		errors.push(...unknownKeyErrors(entry, path, LINK_KEYS));
+		if (typeof entry.project !== "string" || !entry.project) {
+			errors.push(`${path}.project must be a nonempty string`);
+		} else if (!/^[a-z][a-z0-9-]*$/.test(entry.project)) {
 			errors.push(
-				...unknownKeyErrors(option, "options.envFile", ENV_FILE_KEYS),
+				`${path}.project must start with a letter and contain only lowercase letters, numbers, and hyphens`,
 			);
-			fields(option, "options.envFile.", ["path", "createFrom"], "string");
-			fields(option, "options.envFile.", ["values"], "function");
+		}
+		if (entry.path !== undefined) {
+			if (typeof entry.path !== "string" || entry.path.trim() === "") {
+				errors.push(`${path}.path must be a nonempty string`);
+			}
+		}
+		fields(entry, `${path}.`, ["required"], "boolean");
+		check(
+			entry.apps,
+			`${path}.apps`,
+			strings(entry.apps),
+			"an array of nonempty strings",
+		);
+		check(
+			entry.services,
+			`${path}.services`,
+			strings(entry.services),
+			"an array of nonempty strings",
+		);
+		check(
+			entry.onChange,
+			`${path}.onChange`,
+			entry.onChange === "restart" || entry.onChange === "ignore",
+			'"restart" or "ignore"',
+		);
+		if (entry.profile !== undefined) {
+			if (typeof entry.profile !== "string" || entry.profile.trim() === "") {
+				errors.push(`${path}.profile must be a nonempty string`);
+			}
+		}
+	}
+}
+
+function validateProfileLinksShape(
+	value: unknown,
+	path: string,
+	checks: ShapeChecks,
+): void {
+	const { errors, record, check, strings, fields } = checks;
+	if (value === undefined || !record(value, path)) return;
+
+	for (const [name, override] of Object.entries(value)) {
+		const entryPath = `${path}.${name}`;
+		if (override === false || override === undefined) continue;
+		if (!record(override, entryPath)) continue;
+		unknownKeys(
+			override,
+			entryPath,
+			["required", "apps", "services", "onChange", "profile"],
+			errors,
+		);
+		fields(override, `${entryPath}.`, ["required"], "boolean");
+		check(
+			override.apps,
+			`${entryPath}.apps`,
+			strings(override.apps),
+			"an array of nonempty strings",
+		);
+		check(
+			override.services,
+			`${entryPath}.services`,
+			strings(override.services),
+			"an array of nonempty strings",
+		);
+		check(
+			override.onChange,
+			`${entryPath}.onChange`,
+			override.onChange === "restart" || override.onChange === "ignore",
+			'"restart" or "ignore"',
+		);
+		if (override.profile !== undefined) {
+			if (
+				typeof override.profile !== "string" ||
+				override.profile.trim() === ""
+			) {
+				errors.push(`${entryPath}.profile must be a nonempty string`);
+			}
 		}
 	}
 }
@@ -301,7 +527,15 @@ export function validateSupplementShapes(
 		strings(value.unsetEnv),
 		"an array of variable names",
 	);
+	check(
+		value.exportEnv,
+		"exportEnv",
+		strings(value.exportEnv),
+		"an array of variable names",
+	);
 
+	validateLinksShape(value.links, checks);
+	validateEgressGuardShape(value.egressGuard, "egressGuard", checks);
 	validateSectionShapes(value, checks);
 	validateListShapes(value, checks);
 	validateTypecheckShape(value.typecheck, checks);

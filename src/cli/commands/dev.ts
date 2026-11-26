@@ -57,6 +57,7 @@ export const devCommand = defineCommand({
 			const env = await timer.measure("config and ports", async () =>
 				(await import("../../loader")).loadDevEnv({
 					containerRuntime: parsed.values.runtime,
+					profile: parsed.values.profile,
 				}),
 			);
 

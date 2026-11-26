@@ -115,6 +115,19 @@ export function validateServices(
 					`Service "${name}" sets ${field}, which only a preset reads. Use docker: service.<preset>({ ${field} }), or put it in the image's environment and urlTemplate.`,
 				);
 
+		if (service.urlParams !== undefined) {
+			const resolvedService = resolved.get(name);
+			const isPostgres =
+				!service.external &&
+				resolvedService?.kind === "container" &&
+				resolvedService.preset === "postgres";
+			if (!isPostgres) {
+				errors.push(
+					`Service "${name}" sets urlParams, which only service.postgres() supports.`,
+				);
+			}
+		}
+
 		if (
 			dockerConfig?.kind === "preset" &&
 			!isDockerPresetName(dockerConfig.preset)

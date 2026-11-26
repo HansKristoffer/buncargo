@@ -75,6 +75,8 @@ interface DockerServicePresetDefaults {
 interface PresetUrlContext extends UrlBuilderContext {
 	/** Set for presets that declare {@link DefineDockerServiceInput.credentials}. */
 	credentials?: ServiceCredentials;
+	/** Optional query parameters appended to the generated URL. */
+	urlParams?: Readonly<Record<string, string>>;
 }
 
 export interface DockerServicePreset<

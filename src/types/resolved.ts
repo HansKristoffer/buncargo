@@ -1,5 +1,6 @@
 import type { AppConfig, AppOptions } from "./app";
 import type { DevConfig, EnvValues } from "./config";
+import type { LinkConfig, ResolvedLinkConfig } from "./links";
 import type {
 	BuiltInHealthCheck,
 	DockerComposeServiceRaw,
@@ -204,6 +205,14 @@ export type ResolvedApps<TApps = Record<string, unknown>> = {
 	[K in keyof TApps]: ResolvedApp;
 };
 
+/** Normalized egress guard settings on a resolved config, present only when enabled. */
+export interface ResolvedEgressGuardConfig {
+	readonly enabled: true;
+	readonly allow: readonly string[];
+	readonly mode: "block" | "warn";
+	readonly apps?: readonly string[];
+}
+
 /**
  * A config with its integrations applied, validated, and its services and
  * apps resolved: what a dev environment holds. `TServices` and `TApps` stay
@@ -216,7 +225,15 @@ export type ResolvedDevConfig<
 	>,
 	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
 	TEnv extends EnvValues = EnvValues,
-> = Omit<DevConfig<TServices, TApps, TEnv>, "services" | "apps"> & {
+	TLinks extends Record<string, LinkConfig> = Record<string, LinkConfig>,
+> = Omit<
+	DevConfig<TServices, TApps, TEnv, TLinks>,
+	"services" | "apps" | "links" | "egressGuard"
+> & {
 	services: ResolvedServices<TServices>;
 	apps: ResolvedApps<TApps>;
+	links?: Readonly<Record<string, ResolvedLinkConfig>>;
+	egressGuard?: ResolvedEgressGuardConfig;
+	/** Set when the active profile restricts the config to a subset of apps (expanded with dependencies). */
+	activeApps?: ReadonlySet<string>;
 };

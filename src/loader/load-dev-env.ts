@@ -74,6 +74,8 @@ interface LoadDevEnvOptions {
 	fresh?: boolean;
 	/** `--runtime`, taking precedence over env and config. */
 	containerRuntime?: string;
+	/** `--profile`, applying the named profile's `env` and `secrets` overrides. */
+	profile?: string;
 	/**
 	 * Bring `options.checkoutFiles` up to date before `envFiles` are read.
 	 * Default true; false for commands that only inspect (`doctor`).
@@ -113,7 +115,12 @@ export async function loadDevEnv<TConfig extends DevConfigLike = AnyDevConfig>(
 
 	const root = realpathSync(findMonorepoRoot(dirname(configPath)));
 	const variables: EnvironmentVariables = { ...process.env };
-	const identity = JSON.stringify([configPath, root, requested ?? null]);
+	const identity = JSON.stringify([
+		configPath,
+		root,
+		requested ?? null,
+		options?.profile ?? null,
+	]);
 	const shared =
 		!options?.reload && !options?.fresh && isConfigCacheable(configPath);
 	if (shared) {
@@ -206,7 +213,7 @@ async function importAndBuild(
 			Record<string, ServiceConfig>,
 			Record<string, AppConfig>
 		>,
-		{ containerRuntime: requested, root },
+		{ containerRuntime: requested, root, profile: options?.profile },
 	);
 	builtUnder.set(env, variables);
 	if (isCurrentRevision && !options?.fresh) setCachedDevEnv(env, identity);

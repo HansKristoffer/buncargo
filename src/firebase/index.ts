@@ -1,17 +1,33 @@
 import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, normalize, resolve } from "node:path";
+import { tmpdir, totalmem } from "node:os";
+import { dirname, join, normalize, resolve } from "node:path";
 import { isRecord, safeJsonParse } from "hanzio";
 import { publicEnvCopies } from "../core/integration-cli";
 import { findMonorepoRoot } from "../core/ports";
 import { isProcessAlive } from "../core/process/lifecycle";
+import {
+	describeSecretsError,
+	isScopeList,
+	loadScopeSecrets,
+	missingKeys,
+	readInfisicalProjectId,
+	requiredSecretKeys,
+	resolveScopes,
+	stopsTheRun,
+	warnSecretsOnce,
+} from "../core/secrets/index";
 import { shellQuote } from "../core/shell-quote";
+import { projectStateFilePath } from "../core/state-paths";
+import { formatWarn } from "../core/style";
 import { workspaceId } from "../core/workspace-identity";
 import type {
 	AppConfig,
 	BuncargoIntegration,
 	EnvValues,
+	HookContext,
 	IntegrationConfig,
+	SecretsScopeInput,
+	ServiceConfig,
 } from "../types";
 import { firebaseChecks } from "./checks";
 import { firebaseCli } from "./cli";
@@ -27,10 +43,24 @@ import {
 	uiEnabled,
 } from "./emulators";
 import {
+	type FunctionsEnvHandle,
+	renderFunctionsEnvFile,
+	resolveFunctionsSourceDir,
+	writeFunctionsEnvFile,
+} from "./functions-env";
+import {
+	emulatorCloudSdkDir,
+	isBrokenJavaHome,
+	mergeJavaToolOptions,
+	resolveJavaHeap,
+} from "./jvm";
+import {
+	FIREBASE_CONFIG_FILE,
 	FIREBASE_GENERATED_CONFIG_FILE,
 	type FirebaseProject,
 	readFirebaseProject,
 } from "./project";
+import { ensurePubsubTopics } from "./pubsub";
 
 /**
  * `buncargo/firebase`: the Firebase Emulator Suite, one per checkout.
@@ -53,10 +83,20 @@ export {
 	type FirebaseEmulator,
 } from "./emulators";
 export {
+	BUNCARGO_FUNCTIONS_ENV_HEADER,
+	isReservedFunctionsEnvKey,
+	isValidFunctionsEnvKey,
+	renderFunctionsEnvFile,
+	resolveFunctionsSourceDir,
+	serializeFunctionsEnvEntry,
+} from "./functions-env";
+export {
+	FIREBASE_CONFIG_FILE,
 	FIREBASE_GENERATED_CONFIG_FILE,
 	type FirebaseProject,
 	readFirebaseProject,
 } from "./project";
+export { ensurePubsubTopics } from "./pubsub";
 
 /** The app the emulator suite runs as. */
 export const FIREBASE_APP = "firebase";
@@ -70,9 +110,39 @@ const DEFAULT_STOP_GRACE_MS = 60_000;
 /** The first start downloads the emulators' jars. */
 const READY_TIMEOUT_MS = 180_000;
 
+/** Options for rendering a Cloud Functions `.env` file before emulators start. */
+export interface FirebaseFunctionsEnvOptions {
+	/**
+	 * Output path relative to the Firebase workdir. Default:
+	 * `<functions.source>/.env` (read from `firebase.json`, falling back to
+	 * `functions/.env`).
+	 */
+	path?: string;
+	/** Infisical scope (or layered scopes) to fetch and render into `.env`. */
+	secrets?: SecretsScopeInput;
+	/**
+	 * Extra static or computed values merged on top of fetched secrets.
+	 * Firebase reserved keys and `exclude` patterns are still stripped.
+	 */
+	values?:
+		| EnvValues
+		| ((
+				ctx: HookContext<
+					Record<string, ServiceConfig>,
+					Record<string, AppConfig>
+				>,
+		  ) => EnvValues);
+	/** Exact key names or glob patterns (`*`, `?`) stripped from the file (e.g. `FB_PRIVATE_KEY_*`). */
+	exclude?: readonly string[];
+	/** Keep the generated `.env` on disk after stop (default: `false`, removes or restores backup). */
+	keepOnExit?: boolean;
+}
+
 export interface FirebaseIntegrationOptions {
 	/** The directory holding `firebase.json`, relative to the monorepo root. Default: the root */
 	workdir?: string;
+	/** Firebase config file relative to `workdir`. Default: `"firebase.json"`. */
+	configFile?: string;
 	/**
 	 * The project the emulators run as. Default: `.firebaserc`'s default
 	 * project, else `demo-<projectPrefix>`. A `demo-` id can never reach a real
@@ -99,6 +169,32 @@ export interface FirebaseIntegrationOptions {
 	persist?: string | false;
 	/** How long the suite gets to export its data on stop. Default: 60000 */
 	stopGraceMs?: number;
+	/**
+	 * JVM max heap injected via `JAVA_TOOL_OPTIONS` (`-Xmx<size>`) for the
+	 * `firebase` app. `"auto"` uses half of system RAM in GiB (floored, clamped
+	 * to `1g..8g`); or pass an explicit size like `"6g"`. Preserves existing
+	 * `JAVA_TOOL_OPTIONS` and skips if `-Xmx` is already set.
+	 */
+	javaHeap?: "auto" | (string & {});
+	/**
+	 * Clear `GOOGLE_APPLICATION_CREDENTIALS` and point `CLOUDSDK_CONFIG` at an
+	 * empty directory inside the emulator temp dir for the `firebase` app,
+	 * sibling apps, and exported link env, so developer `gcloud` / ADC
+	 * credentials never leak into local demo emulators.
+	 * Default: `true` when `projectId` starts with `"demo-"`, else `false`.
+	 */
+	isolateCredentials?: boolean;
+	/**
+	 * Pub/Sub topics created idempotently against the Pub/Sub emulator as soon
+	 * as `firebase` becomes ready, before downstream `startAfter` apps or
+	 * `seed.afterApps` run.
+	 */
+	pubsubTopics?: readonly string[];
+	/**
+	 * Render a filtered, `0o600`-mode `.env` file for the Cloud Functions
+	 * emulator before servers start (and restore/remove it on exit).
+	 */
+	functionsEnv?: FirebaseFunctionsEnvOptions;
 }
 
 /**
@@ -158,23 +254,136 @@ function removeStaleHubLocators(dir: string): void {
 	}
 }
 
+interface FirebaseRootState {
+	readonly project: FirebaseProject;
+	readonly selected: FirebaseEmulator[];
+	readonly resolvedProjectId: string;
+	readonly configSecrets: SecretsScopeInput | false | undefined;
+}
+
+function attachProjectIdIfMissing(
+	input: SecretsScopeInput,
+	projectId: string,
+): SecretsScopeInput {
+	if (isScopeList(input)) {
+		const [first, ...rest] = input;
+		if (!first || first.projectId) return input;
+		return [{ ...first, projectId }, ...rest];
+	}
+	return input.projectId ? input : { ...input, projectId };
+}
+
 export function firebase(
 	options: FirebaseIntegrationOptions = {},
 ): BuncargoIntegration<{ apps: typeof FIREBASE_APP }> {
 	const workdirOption = options.workdir;
+	const configFile = options.configFile ?? FIREBASE_CONFIG_FILE;
+	const resolvedJavaHeap = resolveJavaHeap(options.javaHeap, totalmem());
+	// Beside the configured file: `--config` makes its directory the project
+	// directory where `functions.source` and rules paths resolve from.
+	const generatedConfigInWorkdir = normalize(
+		join(dirname(configFile), FIREBASE_GENERATED_CONFIG_FILE),
+	);
 	const workdirOf = (root: string) => resolve(root, workdirOption ?? ".");
 	const dataDir =
 		options.persist === false
 			? undefined
 			: (options.persist ?? FIREBASE_DEFAULT_DATA_DIR);
 
-	// Set in `config()`, which runs before anything below is called.
-	let project: FirebaseProject | undefined;
-	let selected: FirebaseEmulator[] = [];
+	// Keyed by checkout root so sharing one `firebase()` instance across
+	// `withProfile()`, `withSuffix()`, or multiple checkouts never clobbers state.
+	const stateByRoot = new Map<string, FirebaseRootState>();
+	const activeFunctionsEnvByPath = new Map<string, FunctionsEnvHandle>();
+	let lastRoot: string | undefined;
 
-	const projectOf = (root: string) => {
-		project ??= readFirebaseProject(workdirOf(root));
-		return project;
+	const projectOf = (root: string): FirebaseProject => {
+		const existing = stateByRoot.get(root);
+		if (existing) return existing.project;
+		return readFirebaseProject(workdirOf(root), configFile);
+	};
+
+	const stateOf = (root: string): FirebaseRootState | undefined =>
+		stateByRoot.get(root) ?? (lastRoot ? stateByRoot.get(lastRoot) : undefined);
+
+	const shouldIsolateCredentials = (root?: string) => {
+		const state = root
+			? stateOf(root)
+			: lastRoot
+				? stateOf(lastRoot)
+				: undefined;
+		const activeProjectId =
+			state?.resolvedProjectId ??
+			options.projectId ??
+			state?.project.defaultProject;
+		return (
+			options.isolateCredentials ??
+			activeProjectId?.startsWith("demo-") ??
+			false
+		);
+	};
+
+	const isActiveForProfile = (activeApps: ReadonlySet<string> | undefined) =>
+		activeApps === undefined || activeApps.has(FIREBASE_APP);
+
+	const functionsEnvRelPath = (root: string): string | undefined => {
+		const fnEnv = options.functionsEnv;
+		if (!fnEnv) return undefined;
+		const currentProject = projectOf(root);
+		const targetRel =
+			fnEnv.path ??
+			join(
+				dirname(configFile),
+				resolveFunctionsSourceDir(currentProject.raw),
+				".env",
+			);
+		return normalize(join(workdirOption ?? ".", targetRel));
+	};
+
+	const functionsEnvAbsPath = (root: string): string | undefined => {
+		const fnEnv = options.functionsEnv;
+		if (!fnEnv) return undefined;
+		const currentProject = projectOf(root);
+		const targetRel =
+			fnEnv.path ??
+			join(
+				dirname(configFile),
+				resolveFunctionsSourceDir(currentProject.raw),
+				".env",
+			);
+		return resolve(workdirOf(root), targetRel);
+	};
+
+	const cleanupFunctionsEnv = (root?: string) => {
+		if (options.functionsEnv?.keepOnExit) return;
+		if (root) {
+			const targetPath = functionsEnvAbsPath(root);
+			if (targetPath) {
+				const handle = activeFunctionsEnvByPath.get(targetPath);
+				if (handle) {
+					activeFunctionsEnvByPath.delete(targetPath);
+					handle.restore();
+				}
+				return;
+			}
+		}
+		for (const [path, handle] of activeFunctionsEnvByPath) {
+			activeFunctionsEnvByPath.delete(path);
+			handle.restore();
+		}
+	};
+
+	const defaultsForFunctionsSecrets = (
+		root: string,
+		overrideDefaults: SecretsScopeInput | false | undefined,
+	): SecretsScopeInput | false | undefined => {
+		const base =
+			overrideDefaults !== undefined
+				? overrideDefaults
+				: stateOf(root)?.configSecrets;
+		if (base === false) return false;
+		if (base !== undefined) return base;
+		const fromFile = readInfisicalProjectId(root);
+		return fromFile ? { projectId: fromFile } : undefined;
 	};
 
 	return {
@@ -182,15 +391,21 @@ export function firebase(
 
 		config(config, ctx) {
 			const root = ctx?.root ?? findMonorepoRoot();
-			const read = readFirebaseProject(workdirOf(root));
-			project = read;
-			selected = selectEmulators(read.raw, options.emulators);
+			lastRoot = root;
+			const read = readFirebaseProject(workdirOf(root), configFile);
+			const selected = selectEmulators(read.raw, options.emulators);
 			const raw = read.raw;
 
 			const projectId =
 				options.projectId ??
 				read.defaultProject ??
 				`demo-${config.projectPrefix}`;
+			stateByRoot.set(root, {
+				project: read,
+				selected,
+				resolvedProjectId: projectId,
+				configSecrets: config.secrets,
+			});
 			const base = anchorPort(raw);
 
 			// Every port moves by the offset the app's own port did.
@@ -201,7 +416,7 @@ export function firebase(
 				shellQuote(firebaseCli.resolve([workdirOf(root), root])),
 				"emulators:start",
 				"--config",
-				FIREBASE_GENERATED_CONFIG_FILE,
+				shellQuote(generatedConfigInWorkdir),
 				"--project",
 				shellQuote(projectId),
 				...(selected.length > 0 ? ["--only", selected.join(",")] : []),
@@ -224,9 +439,16 @@ export function firebase(
 				readyWhen: /All emulators ready/,
 				healthTimeout: READY_TIMEOUT_MS,
 				stopGraceMs: options.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
+				captures: {
+					firebaseOom: {
+						pattern: /java\.lang\.OutOfMemoryError[^\r\n]*/,
+						as: "event",
+					},
+				},
 			};
 
 			const userEnv = config.env;
+
 			return {
 				...config,
 				apps,
@@ -234,22 +456,26 @@ export function firebase(
 					...(config.generatedFiles ?? []),
 					{
 						path: normalize(
-							join(workdirOption ?? ".", FIREBASE_GENERATED_CONFIG_FILE),
+							join(workdirOption ?? ".", generatedConfigInWorkdir),
 						),
 						gitignore: true,
-						render: (ctx) =>
+						render: (renderCtx) =>
 							`${JSON.stringify(
 								generatedFirebaseConfig(
 									raw,
 									selected,
-									emulatorPorts(raw, selected, offsetOf(ctx.ports)),
+									emulatorPorts(raw, selected, offsetOf(renderCtx.ports)),
+									projectId,
 								),
 								null,
 								2,
 							)}\n`,
 					},
 				],
-				env: (ports, urls, ctx): EnvValues => {
+				env: (ports, urls, envCtx): EnvValues => {
+					if (!isActiveForProfile(envCtx.activeApps)) {
+						return userEnv?.(ports, urls, envCtx) ?? {};
+					}
 					const env = emulatorEnv(
 						selected,
 						emulatorPorts(
@@ -268,7 +494,7 @@ export function firebase(
 							),
 							options.publicEnvPrefix,
 						),
-						...userEnv?.(ports, urls, ctx),
+						...userEnv?.(ports, urls, envCtx),
 					};
 				},
 			} as IntegrationConfig;
@@ -276,40 +502,267 @@ export function firebase(
 
 		// The hub announces itself in `$TMPDIR/hub-<project id>.json`. With one
 		// shared temp dir, two checkouts on the same project id read each
-		// other's hub, so each gets its own.
-		appEnv: (app) =>
-			app.name === FIREBASE_APP
-				? { TMPDIR: emulatorTmpDir(app.root) }
-				: undefined,
+		// other's hub, so each gets its own. Demo projects also isolate Google
+		// credentials across `firebase` and sibling apps, optional `javaHeap`
+		// adds `-Xmx`, and a broken `JAVA_HOME` is cleared for `firebase`.
+		appEnv: (app) => {
+			if (!isActiveForProfile(app.activeApps)) return undefined;
+
+			const tmpDir = emulatorTmpDir(app.root);
+			const isolate = shouldIsolateCredentials(app.root);
+
+			if (app.name !== FIREBASE_APP) {
+				if (!isolate) return undefined;
+				return {
+					GOOGLE_APPLICATION_CREDENTIALS: "",
+					CLOUDSDK_CONFIG: emulatorCloudSdkDir(tmpDir),
+				};
+			}
+
+			const env: Record<string, string> = {
+				TMPDIR: tmpDir,
+			};
+
+			const javaToolOptions = mergeJavaToolOptions(
+				process.env.JAVA_TOOL_OPTIONS,
+				resolvedJavaHeap,
+			);
+			if (javaToolOptions !== undefined) {
+				env.JAVA_TOOL_OPTIONS = javaToolOptions;
+			}
+
+			if (isBrokenJavaHome(process.env.JAVA_HOME)) {
+				env.JAVA_HOME = "";
+			}
+
+			if (isolate) {
+				env.GOOGLE_APPLICATION_CREDENTIALS = "";
+				env.CLOUDSDK_CONFIG = emulatorCloudSdkDir(tmpDir);
+			}
+
+			return env;
+		},
+
+		secretScopes: ({ selectedApps, root, defaults }) => {
+			if (defaults === false) return [];
+			if (
+				!options.functionsEnv?.secrets ||
+				!selectedApps.includes(FIREBASE_APP)
+			) {
+				return [];
+			}
+			const effectiveRoot = root ?? lastRoot;
+			const selected = effectiveRoot
+				? (stateOf(effectiveRoot)?.selected ??
+					selectEmulators(projectOf(effectiveRoot).raw, options.emulators))
+				: [];
+			if (!selected.includes("functions")) return [];
+
+			const fromFile = effectiveRoot
+				? readInfisicalProjectId(effectiveRoot)
+				: undefined;
+			const scope =
+				fromFile && defaults === undefined
+					? attachProjectIdIfMissing(options.functionsEnv.secrets, fromFile)
+					: options.functionsEnv.secrets;
+			return [scope];
+		},
+
+		onAppReady: async (app) => {
+			if (app.name !== FIREBASE_APP) return;
+			const state = stateOf(app.root);
+			if (
+				!options.pubsubTopics?.length ||
+				!state ||
+				!state.selected.includes("pubsub")
+			) {
+				return;
+			}
+
+			const base = anchorPort(state.project.raw);
+			const offset = (app.ports[FIREBASE_APP] ?? base) - base;
+			const ports = emulatorPorts(state.project.raw, state.selected, offset);
+			const pubsubPort = ports.port.pubsub;
+			const pubsubHost = ports.host.pubsub ?? "127.0.0.1";
+			if (pubsubPort === undefined) return;
+
+			await ensurePubsubTopics({
+				host: pubsubHost,
+				port: pubsubPort,
+				projectId: state.resolvedProjectId,
+				topics: options.pubsubTopics,
+				signal: app.signal,
+			});
+		},
 
 		hooks: {
 			async beforeServers(ctx) {
+				if (ctx.selectedApps && !ctx.selectedApps.includes(FIREBASE_APP)) {
+					return;
+				}
 				const dir = emulatorTmpDir(ctx.root);
 				mkdirSync(dir, { recursive: true });
+				if (shouldIsolateCredentials(ctx.root)) {
+					mkdirSync(emulatorCloudSdkDir(dir), { recursive: true });
+				}
 				removeStaleHubLocators(dir);
+
+				const fnEnv = options.functionsEnv;
+				const state = stateOf(ctx.root);
+				const selected =
+					state?.selected ??
+					selectEmulators(projectOf(ctx.root).raw, options.emulators);
+				if (!fnEnv || !selected.includes("functions")) return;
+
+				const targetPath = functionsEnvAbsPath(ctx.root);
+				if (!targetPath) return;
+
+				const mergedValues: EnvValues = {};
+				const secretDefaults = defaultsForFunctionsSecrets(
+					ctx.root,
+					ctx.secrets,
+				);
+				if (fnEnv.secrets && secretDefaults !== false) {
+					const scopes = resolveScopes(fnEnv.secrets, secretDefaults);
+					const layers = await Promise.all(
+						scopes.map(async (scope) => {
+							try {
+								return await loadScopeSecrets(scope, { signal: ctx.signal });
+							} catch (error) {
+								if (stopsTheRun(error)) throw error;
+								warnSecretsOnce(scope, describeSecretsError(error));
+								return {};
+							}
+						}),
+					);
+					const fetchedSecrets: Record<string, string> = {};
+					for (const layer of layers) Object.assign(fetchedSecrets, layer);
+					Object.assign(mergedValues, fetchedSecrets);
+
+					const required = requiredSecretKeys(fnEnv.secrets);
+					if (required.length > 0) {
+						const missing = missingKeys(required, {
+							...process.env,
+							...fetchedSecrets,
+						});
+						if (missing.length > 0) {
+							throw new Error(
+								`Required Firebase functionsEnv secrets are missing: ${missing.join(", ")}. Add them to Infisical or export them in your shell.`,
+							);
+						}
+					}
+				}
+				if (fnEnv.values) {
+					const extra =
+						typeof fnEnv.values === "function"
+							? fnEnv.values(ctx)
+							: fnEnv.values;
+					Object.assign(mergedValues, extra);
+				}
+
+				const rendered = renderFunctionsEnvFile(mergedValues, {
+					exclude: fnEnv.exclude,
+					isolateCredentials: shouldIsolateCredentials(ctx.root),
+				});
+				activeFunctionsEnvByPath.get(targetPath)?.restore();
+				const handle = writeFunctionsEnvFile(targetPath, rendered.content, {
+					backupDir: projectStateFilePath(
+						ctx.root,
+						"firebase-functions-env-backup",
+					),
+				});
+				activeFunctionsEnvByPath.set(targetPath, handle);
+			},
+
+			async afterServersStop(ctx) {
+				cleanupFunctionsEnv(ctx?.root);
+			},
+
+			async beforeStop(ctx) {
+				cleanupFunctionsEnv(ctx?.root);
+			},
+
+			onCapture(event) {
+				if (event.app !== FIREBASE_APP || event.name !== "firebaseOom") return;
+				const hint = resolvedJavaHeap
+					? `Raise firebase({ javaHeap }) above ${resolvedJavaHeap}`
+					: 'Set firebase({ javaHeap: "auto" }) in dev.config.ts';
+				console.warn(
+					formatWarn(
+						`Firebase emulator ran out of JVM heap (${event.value}). ${hint}.`,
+					),
+				);
 			},
 		},
 
-		bannerHint: (app) =>
-			app.name === FIREBASE_APP && selected.length > 0
-				? selected.join(", ")
-				: undefined,
+		bannerHint: (app) => {
+			if (app.name !== FIREBASE_APP) return undefined;
+			const selected = stateOf(app.root)?.selected ?? [];
+			return selected.length > 0 ? selected.join(", ") : undefined;
+		},
 
-		setupChecks: firebaseChecks({
-			project: projectOf,
-			workdir: workdirOf,
-			emulators: (root) =>
-				selectEmulators(projectOf(root).raw, options.emulators),
-			dataDir: () => dataDir && normalize(join(workdirOption ?? ".", dataDir)),
-		}),
+		get setupChecks() {
+			return firebaseChecks({
+				project: projectOf,
+				workdir: workdirOf,
+				emulators: (root) =>
+					selectEmulators(projectOf(root).raw, options.emulators),
+				dataDir: () =>
+					dataDir && normalize(join(workdirOption ?? ".", dataDir)),
+				...(options.functionsEnv
+					? { functionsEnvPath: (root: string) => functionsEnvRelPath(root) }
+					: {}),
+				configFile,
+				root: lastRoot,
+				appName: FIREBASE_APP,
+			});
+		},
 
 		describe: (ctx) => {
+			if (!isActiveForProfile(ctx.activeApps)) return {};
+			const state = stateOf(ctx.root);
 			const url = (ctx.urls as Record<string, string>)[FIREBASE_APP];
 			const rows: Record<string, string> = {};
-			if (url && project && uiEnabled(project.raw)) {
+			if (url && state && uiEnabled(state.project.raw)) {
 				rows["Firebase Emulator UI"] = url;
 			}
 			return rows;
+		},
+
+		// Only publish emulator hosts to linked checkouts when this run actually
+		// starts or reuses the `firebase` app; a run without it leaves no dead
+		// emulator endpoints in `runs.json`.
+		exportEnv: (ctx) => {
+			const state = stateOf(ctx.root);
+			if (!state) return undefined;
+			if (!ctx.selectedApps?.includes(FIREBASE_APP)) return undefined;
+
+			const base = anchorPort(state.project.raw);
+			const ports = ctx.ports as Record<string, number>;
+			const offset = (ports[FIREBASE_APP] ?? base) - base;
+			const env = emulatorEnv(
+				state.selected,
+				emulatorPorts(state.project.raw, state.selected, offset),
+				state.resolvedProjectId,
+			);
+			const isolation: Record<string, string> = shouldIsolateCredentials(
+				ctx.root,
+			)
+				? {
+						GOOGLE_APPLICATION_CREDENTIALS: "",
+						CLOUDSDK_CONFIG: emulatorCloudSdkDir(emulatorTmpDir(ctx.root)),
+					}
+				: {};
+			return {
+				...env,
+				...publicEnvCopies(
+					Object.fromEntries(
+						FIREBASE_PUBLIC_ENV.map((name) => [name, env[name]]),
+					),
+					options.publicEnvPrefix,
+				),
+				...isolation,
+			};
 		},
 	};
 }

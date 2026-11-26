@@ -8,15 +8,16 @@ function capturedWith(
 	apps: Readonly<Record<string, CapturingApp>>,
 	captured: Readonly<Record<string, string>>,
 	key: "label" | "env",
+	options: { excludeSecret?: boolean } = {},
 ): [string, string][] {
+	const skipSecret = key === "label" || options.excludeSecret === true;
 	return Object.values(apps).flatMap((app) =>
 		Object.entries(app.captures ?? {}).flatMap<[string, string]>(
 			([name, capture]) => {
 				const target = capture[key];
 				const value = captured[name];
 
-				// A secret is still captured for its `env` name, just never labelled.
-				if (key === "label" && capture.secret) return [];
+				if (skipSecret && capture.secret) return [];
 
 				return target && value ? [[target, value]] : [];
 			},
@@ -38,4 +39,27 @@ export function capturedEnv(
 	captured: Readonly<Record<string, string>>,
 ): Record<string, string> {
 	return Object.fromEntries(capturedWith(apps, captured, "env"));
+}
+
+/** Non-secret captured values under their `env` name, safe for `runs.json` exports. */
+export function publicCapturedEnv(
+	apps: Readonly<Record<string, CapturingApp>>,
+	captured: Readonly<Record<string, string>>,
+): Record<string, string> {
+	return Object.fromEntries(
+		capturedWith(apps, captured, "env", { excludeSecret: true }),
+	);
+}
+
+/** Env var names populated by `secret: true` captures across all configured apps. */
+export function secretCaptureEnvKeys(
+	apps: Readonly<Record<string, CapturingApp>>,
+): Set<string> {
+	const keys = new Set<string>();
+	for (const app of Object.values(apps)) {
+		for (const capture of Object.values(app.captures ?? {})) {
+			if (capture.secret && capture.env) keys.add(capture.env);
+		}
+	}
+	return keys;
 }

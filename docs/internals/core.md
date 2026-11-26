@@ -17,10 +17,31 @@ Cross-cutting utilities in `src/core/` that most features touch.
   module: no connect tokens, but the full environment.
 - `state-paths.ts` owns both state directories: `~/.buncargo` (machine-wide: routes, runs,
   certificates, downloaded tools) and `<root>/.buncargo` (per-checkout: tunnel
-  registry, typecheck artifacts), plus the `sudo`-aware home resolution and chown that make the
+  registry, `env.json` overrides, `links.json` cross-repo pins, typecheck artifacts), plus the `sudo`-aware home resolution and chown that make the
   first one correct when the root daemon writes it. Tests relocate it by pointing `HOME` elsewhere,
   deliberately *not* through a dedicated override: a second mechanism outranking `HOME` leaks
   between test files that already isolate this way.
+- `links.ts` owns cross-repo linking: per-checkout pins in `<root>/.buncargo/links.json`, pure
+  resolution against live `runs.json` entries (grouping multiple live sessions per checkout root,
+  refusing to guess when two worktrees of a linked project run unpinned, never loading the other
+  repo's config so bidirectional links stay cycle-free and fast), settled readiness fingerprints
+  (`linkReadyFingerprint`, ignoring `"starting"` transitions), reactive restart selection
+  (`appsToRestartForLinks`), non-secret `exportEnv` allow-list filtering (never persisting
+  Infisical secrets or `.env` files), and linked-port collection so `strayLoopbackUrls` and
+  `buildEnvFingerprint` recognize linked repos' ports.
+- `link-watch.ts` watches `~/.buncargo` (for atomic `runs.json` renames) and `<root>/.buncargo`
+  (for `links.json` pin changes) once startup waves settle, debouncing rapid writes and firing
+  only when a link's `linkReadyFingerprint` transitions.
+- `package-manager.ts` is the single owner for detecting a checkout's package manager (`bun`,
+  `pnpm`, `yarn`, `npm`) from lockfiles (`bun.lock`, `bun.lockb`, `pnpm-lock.yaml`, `yarn.lock`,
+  `package-lock.json`), `pnpm-workspace.yaml`, or `package.json#packageManager`, returning
+  frozen-install, dev-add and script-run commands so non-Bun and rootless repos work across
+  `version-guard`, `checkout-install`, `core-checks`, `typecheck` and integration setup checks.
+- `egress-guard/` implements the built-in local deny-by-default outbound HTTP/CONNECT proxy
+  (`egressGuard`): `rules.ts` holds pure allowlist/loopback/RFC1918 matching and proxy env
+  generation (`HTTP_PROXY`, `HTTPS_PROXY`, `grpc_proxy`, `NO_PROXY`, `NODE_USE_ENV_PROXY=1`);
+  `proxy.ts` runs an ephemeral `127.0.0.1:0` proxy for the run's lifetime, blocking or warning
+  on non-allowlisted outbound traffic.
 
 ## Persisted files and locks
 

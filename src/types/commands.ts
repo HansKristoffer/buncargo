@@ -1,4 +1,9 @@
+import type { AppConfig, AppWatchConfig, SecretsScopeInput } from "./app";
+import type { EgressGuardOption, EnvValues, EnvVarsBuilder } from "./config";
 import type { AnyDevEnvironment } from "./environment";
+import type { BuncargoIntegration, IntegrationAdds } from "./integrations";
+import type { LinkConfig, ProfileLinkOverride, ResolvedLink } from "./links";
+import type { ServiceConfig } from "./service";
 
 /** What a {@link SetupCheck} is handed. */
 export interface CheckContext {
@@ -6,6 +11,8 @@ export interface CheckContext {
 	root: string;
 	/** The loaded environment: its apps, ports and `exec` in the checkout env. */
 	env: AnyDevEnvironment;
+	/** Set when the active profile restricts the run to a subset of apps. */
+	activeApps?: ReadonlySet<string>;
 }
 
 /**
@@ -83,6 +90,18 @@ export interface TaskConfig<
 	cwd?: string;
 	/** Started (with their Compose dependencies) when they are not running. */
 	requiredServices?: readonly TServiceKey[];
+	/**
+	 * Run automatically during `buncargo dev` once every named app is healthy
+	 * on initial boot, and re-run whenever any of those apps restarts and
+	 * becomes healthy again. Single-flight coalesced and non-fatal on failure.
+	 */
+	onAppReady?: readonly TAppKey[];
+	/**
+	 * Re-run this finite task automatically during `buncargo dev` whenever
+	 * watched files change (exit code 0 counts as success; disabled by
+	 * `--no-watch`). Single-flight coalesced and non-fatal on failure.
+	 */
+	watch?: AppWatchConfig;
 }
 
 /** What a generated file's `render` sees. */
@@ -96,6 +115,8 @@ export interface GeneratedFileContext {
 	publicUrls: Readonly<Record<string, string | undefined>>;
 	/** Values apps printed (`captures`); empty until captured. */
 	captured: Readonly<Record<string, string>>;
+	/** Live state of linked repos declared under `links`, by alias. */
+	links: Readonly<Record<string, ResolvedLink | undefined>>;
 	/** The process environment with the checkout's shared env on top. */
 	env: Readonly<Record<string, string | undefined>>;
 }
@@ -360,9 +381,51 @@ export interface PredeployFailure {
 	failedPrismaMigration?: string;
 }
 
-/** A named app selection for `buncargo dev --profile=<name>`. */
-export interface ProfileConfig<TAppKey extends string = string> {
-	/** Apps to run, plus their `requiredApps`, exactly like `--apps`. */
-	apps: readonly TAppKey[];
+/** Shared fields of {@link ProfileConfig}. */
+interface ProfileConfigBase<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+	TLinks extends Record<string, LinkConfig>,
+> {
 	description?: string;
+	/** Shared env overlay (static values or builder) applied on top of `config.env` when this profile is active. */
+	env?: EnvValues | EnvVarsBuilder<TServices, TApps, EnvValues, TLinks>;
+	/** Infisical scope override merged over config-level `secrets` (or `false` to disable secrets) when this profile is active. */
+	secrets?: SecretsScopeInput | false;
+	/** Per-link overrides for this profile (`false` disables a link; object overrides `required`, `apps`, `services`, `onChange`, `profile`). */
+	links?: [Extract<keyof TLinks, string>] extends [never]
+		? Record<string, never>
+		: Partial<Record<Extract<keyof TLinks, string>, ProfileLinkOverride>>;
+	/** Egress guard override for this profile (`false` disables a top-level `egressGuard`). */
+	egressGuard?: EgressGuardOption;
 }
+
+/** A named profile for `buncargo dev --profile=<name>` (app selection, env, secrets, egressGuard, integrations and link overrides). */
+export type ProfileConfig<
+	TAppKey extends string = string,
+	TServices extends Record<string, ServiceConfig> = Record<
+		string,
+		ServiceConfig
+	>,
+	TApps extends Record<string, AppConfig> = Record<string, AppConfig>,
+	TLinks extends Record<string, LinkConfig> = Record<string, LinkConfig>,
+> = ProfileConfigBase<TServices, TApps, TLinks> &
+	(
+		| {
+				/** Apps to run, plus their `requiredApps`, exactly like `--apps`. Omit to keep all apps. */
+				apps?: readonly TAppKey[];
+				/** Disable every top-level integration when set to `false`. */
+				integrations?: false;
+		  }
+		| {
+				/**
+				 * Integration overrides for this profile: replaces top-level
+				 * integrations with the same `name` and appends any new ones (e.g. to
+				 * run `firebase()` without `functions`, or add `firebase()` in one
+				 * profile). Apps contributed by those integrations may be listed in `apps`.
+				 */
+				integrations: readonly BuncargoIntegration<IntegrationAdds>[];
+				/** Apps to run, plus their `requiredApps`, including apps contributed by profile `integrations`. */
+				apps?: readonly (TAppKey | (string & {}))[];
+		  }
+	);

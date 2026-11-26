@@ -624,6 +624,24 @@ describe("validateConfig", () => {
 			);
 		});
 	});
+
+	describe("options.envFile validation", () => {
+		it("rejects empty/whitespace envFile paths and duplicate targets", () => {
+			const emptyPath = createValidConfig();
+			emptyPath.options = { envFile: { path: "   " } };
+			expect(validateConfig(emptyPath)).toContain(
+				"options.envFile.path must be a nonempty path",
+			);
+
+			const dupes = createValidConfig();
+			dupes.options = {
+				envFile: ["apps/web/.env", { path: "./apps/web/.env" }],
+			};
+			expect(validateConfig(dupes)).toContain(
+				'options.envFile lists "./apps/web/.env" twice',
+			);
+		});
+	});
 });
 
 describe("mergeConfigs", () => {
@@ -774,6 +792,7 @@ describe("mergeConfigs", () => {
 			portOffset: 0,
 			publicUrls: {},
 			loopbackUrls: { postgres: "http://localhost:5432" },
+			links: {},
 		};
 
 		expect(result.env?.({ postgres: 5432 }, { postgres: "" }, ctx)).toEqual({
@@ -1410,6 +1429,144 @@ describe("checks, tasks and profiles", () => {
 		// @ts-expect-error - "web" is not a configured app
 		defineDevConfig(withProfile);
 	});
+
+	it("accepts profiles with env and/or secrets overrides and optional apps", () => {
+		expect(
+			validateConfig({
+				...base,
+				secrets: { projectId: "p1", environment: "local" },
+				profiles: {
+					local: {
+						apps: ["api"],
+						env: { MODE: "local" },
+						secrets: { environment: "local" },
+					},
+					cloud: {
+						env: () => ({ MODE: "cloud", EMULATOR: undefined }),
+						secrets: [
+							{ environment: "dev", path: "/backend" },
+							{ environment: "prod", path: "/functions", only: ["UNLEASH_A"] },
+						],
+					},
+					offline: { secrets: false },
+				},
+			}),
+		).toEqual([]);
+
+		expect(
+			validateConfig({
+				...base,
+				profiles: {
+					nothing: { description: "empty" },
+					badEnv: { env: { X: true } },
+					badSecrets: { secrets: [] },
+				},
+			}),
+		).toEqual([
+			"profiles.nothing must set at least one of apps, env, secrets, links, egressGuard, or integrations",
+			"profiles.badEnv.env.X must be a string or finite number",
+			"profiles.badSecrets.secrets must be a nonempty array of secret scopes",
+		]);
+	});
+
+	it("validates layered secrets scopes and seed.afterApps", () => {
+		expect(
+			validateConfig({
+				...base,
+				secrets: [
+					{ projectId: "p1", environment: "dev", path: "/shared" },
+					{ environment: "prod", path: "/flags", only: ["FLAG_A"] },
+				],
+				apps: {
+					api: {
+						port: 3000,
+						devCommand: "bun dev",
+						secrets: [
+							{ path: "/api" },
+							{ environment: "prod", path: "/functions", only: ["UNLEASH"] },
+						],
+					},
+				},
+				migrations: [
+					{
+						name: "m1",
+						command: "bun migrate",
+						secrets: [{ path: "/m1" }, { environment: "prod", only: ["K"] }],
+					},
+				],
+				seed: {
+					command: "bun seed",
+					afterApps: ["api"],
+					secrets: [{ path: "/seed" }, { environment: "prod", only: ["K"] }],
+				},
+			}),
+		).toEqual([]);
+
+		expect(
+			validateConfig({
+				...base,
+				apps: {
+					api: {
+						port: 3000,
+						devCommand: "bun dev",
+						secrets: [{ path: "/api" }],
+					},
+				},
+				seed: {
+					command: "bun seed",
+					afterApps: ["missing"],
+				},
+			}),
+		).toEqual([
+			'App "api" sets secrets without a projectId. Set apps.api.secrets.projectId, or secrets.projectId for every app.',
+			"seed.afterApps must name configured apps",
+		]);
+
+		expect(
+			validateConfig({
+				...base,
+				apps: {
+					optional: { port: 3000, devCommand: "bun dev", essential: false },
+					tunnelled: {
+						port: 3001,
+						devCommand: "bun dev",
+						needsPublicUrls: true,
+					},
+					afterTunnel: {
+						port: 3002,
+						devCommand: "bun dev",
+						startAfter: ["tunnelled"],
+					},
+				},
+				seed: {
+					command: "bun seed",
+					afterApps: ["optional", "afterTunnel"],
+				},
+			}),
+		).toEqual([
+			'seed.afterApps cannot include "optional" because apps.optional.essential is false',
+			'seed.afterApps cannot include "afterTunnel" because it waits for public URLs (needsPublicUrls); set seed.beforeApps: false or remove needsPublicUrls',
+		]);
+
+		// Non-blocking seed.afterApps may wait on a needsPublicUrls app.
+		expect(
+			validateConfig({
+				...base,
+				apps: {
+					tunnelled: {
+						port: 3001,
+						devCommand: "bun dev",
+						needsPublicUrls: true,
+					},
+				},
+				seed: {
+					command: "bun seed",
+					afterApps: ["tunnelled"],
+					beforeApps: false,
+				},
+			}),
+		).toEqual([]);
+	});
 });
 
 describe("disabled secrets", () => {
@@ -1481,5 +1638,132 @@ describe("validateConfig actions", () => {
 			`apps.shopify.actions[2].key "p" is declared twice`,
 			`apps.shopify.actions[2].open "nope" is not one of apps.shopify.captures`,
 		]);
+	});
+});
+
+describe("validateConfig links and exportEnv", () => {
+	it("accepts links with sibling relative paths, profile link overrides, and exportEnv", () => {
+		expect(
+			validateConfig({
+				projectPrefix: "kanpla",
+				services: {},
+				links: {
+					backend: {
+						project: "kanpla-backend",
+						path: "../backend",
+						required: false,
+						apps: ["core", "emails"],
+						services: ["postgres"],
+						onChange: "restart",
+						profile: "local",
+					},
+				},
+				apps: {
+					api: {
+						port: 3000,
+						devCommand: "bun dev",
+						restartOn: ["links.backend"],
+					},
+				},
+				exportEnv: ["NEXT_PUBLIC_FIREBASE_CONFIG"],
+				profiles: {
+					cloud: { links: { backend: false } },
+					full: {
+						links: {
+							backend: {
+								required: true,
+								apps: ["core"],
+								onChange: "ignore",
+								profile: "full",
+							},
+						},
+					},
+				},
+			}),
+		).toEqual([]);
+	});
+
+	it("rejects invalid link fields, unknown profile link names, and secret capture exports", () => {
+		const errors = validateConfig({
+			projectPrefix: "kanpla",
+			services: {},
+			links: {
+				bad: {
+					project: "Bad_Prefix",
+					path: "",
+					onChange: "bogus",
+					profile: "",
+					unknown: true,
+				},
+			},
+			apps: {
+				api: {
+					port: 3000,
+					devCommand: "bun dev",
+					restartOn: ["links.unknownLink"],
+					captures: {
+						webhookSecret: {
+							pattern: /secret=(\S+)/,
+							as: "value",
+							env: "WEBHOOK_SECRET",
+							secret: true,
+						},
+					},
+				},
+			},
+			exportEnv: ["WEBHOOK_SECRET"],
+			profiles: {
+				cloud: { links: { missing: false } },
+			},
+		});
+		expect(errors).toContain(
+			"links.bad.unknown is not an option (project, path, required, apps, services, onChange, profile)",
+		);
+		expect(errors).toContain(
+			"links.bad.project must start with a letter and contain only lowercase letters, numbers, and hyphens",
+		);
+		expect(errors).toContain("links.bad.path must be a nonempty string");
+		expect(errors).toContain(
+			'links.bad.onChange must be "restart" or "ignore"',
+		);
+		expect(errors).toContain("links.bad.profile must be a nonempty string");
+	});
+
+	it("rejects unknown profile link references and secret capture exports semantically", () => {
+		const errors = validateConfig({
+			projectPrefix: "kanpla",
+			services: {},
+			links: {
+				backend: { project: "kanpla-backend" },
+			},
+			apps: {
+				api: {
+					port: 3000,
+					devCommand: "bun dev",
+					restartOn: ["links.unknownLink"],
+					captures: {
+						webhookSecret: {
+							pattern: /secret=(\S+)/,
+							as: "value",
+							env: "WEBHOOK_SECRET",
+							secret: true,
+						},
+					},
+				},
+			},
+			exportEnv: ["WEBHOOK_SECRET"],
+			profiles: {
+				cloud: { links: { missing: false } },
+			},
+		});
+		expect(errors).toContain(
+			'profiles.cloud.links includes unknown link "missing"',
+		);
+		expect(errors).toContain(
+			'exportEnv cannot include "WEBHOOK_SECRET" because capture "api.webhookSecret" is marked secret',
+		);
+		expect(errors).toContain(
+			'apps.api.restartOn "links.unknownLink" references unknown link "unknownLink"',
+		);
 	});
 });

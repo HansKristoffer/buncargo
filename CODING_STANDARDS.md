@@ -26,9 +26,17 @@ of these anywhere else has written a second owner: flag it and name the first.
 | Whether a checkout is deleted (only `ENOENT` or `ENOTDIR` is) | `src/core/checkout-presence.ts` |
 | Who removed a stack or volume, or stopped a service | `src/core/removal-log.ts` |
 | A checkout's `buncargo env set` overrides | `src/core/env-overrides.ts` |
+| Canonical checkout path resolution across symlinks | `src/core/canonical-path.ts` |
+| Cross-repo links, pins (`.buncargo/links.json`), link readiness fingerprints and non-secret `exportEnv` | `src/core/links.ts` |
+| Reactive cross-repo link watching (`runs.json` + `.buncargo/links.json`) | `src/core/link-watch.ts` |
+| Ad-hoc sibling-project run lookup (`lookupRunningApp` / `lookupRunningService`) | `src/core/sibling-lookup.ts` |
+| Reading the current Git branch from `.git/HEAD` | `src/core/git-branch.ts` |
+| Reactive one-shot codegen tasks (`onAppReady` / `watch`) | `src/core/process/reactive-tasks.ts` |
+| Package manager detection (`bun` / `pnpm` / `yarn` / `npm`) and lockfile/install commands | `src/core/package-manager.ts` |
+| Local deny-by-default outbound HTTP/CONNECT egress proxy (`egressGuard`) | `src/core/egress-guard/index.ts` |
 | Exclusive leases as a run takes and explains them | `src/core/app-leases.ts` |
 | A run's entry and app rows in `runs.json` | `src/core/run-publish.ts` |
-| Reading `runs.json` | `loadRuns` in `src/core/run-registry.ts`; `readLiveCapturesSync` there is the one synchronous reader, for `getEnvVar` |
+| Reading `runs.json` | `loadRuns` in `src/core/run-registry.ts`; `readLiveRunsSync` / `readLiveCapturesSync` there are the synchronous readers, for `getEnvVar` and cross-repo links |
 | Whether a checkout's named URLs are live | `liveNamedHosts` in `src/core/hosts/registry.ts` |
 | A container's state (running, paused, …) and whether it is live or serving | `src/container-runtime/container-state.ts` |
 | What the sweep removes | `decideSweep` in `src/container-runtime/sweep.ts` |

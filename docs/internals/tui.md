@@ -73,6 +73,9 @@ and `run-tui.ts` is the controller.
   SIGINT listeners is wrapped meanwhile: one added under the pager is held aside too, or the
   Ctrl-C that closes the pager would fire it, and one removed while held aside (the run ended
   under the pager) would otherwise be put back when the pager closes.
+- Reactive task panes (`taskNames` in `RunTuiOptions`) sit alongside apps in the sidebar with their
+  `detail` label (`idle`, `running`, `ok`, `exit <n>`), show `r run` in the footer, ignore `Enter`
+  (no interact mode), and route `r` through `controls.restart(name)` to trigger a run on demand.
 - Mouse reporting (SGR with drags, `?1000`/`?1002`/`?1006`) is part of entering and leaving the
   screen, so every restore path turns it off too. The wheel scrolls the shown pane, also in
   interact mode, where mouse reports are stripped rather than typed into an app that never asked

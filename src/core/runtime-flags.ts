@@ -96,10 +96,12 @@ export function barOfferOptedOut(
 }
 
 /** `BUNCARGO_PORT_OFFSET` - hard port offset that skips hashing and probing. */
+export const PORT_OFFSET_ENV = "BUNCARGO_PORT_OFFSET";
+
 export function portOffsetOverride(
 	env: NodeJS.ProcessEnv = process.env,
 ): number | undefined {
-	const raw = env.BUNCARGO_PORT_OFFSET;
+	const raw = env[PORT_OFFSET_ENV];
 	if (!raw) return undefined;
 	const offset = Number(raw);
 	if (!Number.isInteger(offset) || offset < 0 || offset > 10_000) {
@@ -500,4 +502,17 @@ export const CONNECT_TOKENS_ENV = "BUNCARGO_CONNECT_TOKENS";
 
 export function frpTestsEnabled(env: NodeJS.ProcessEnv = process.env) {
 	return env.BUNCARGO_TEST_FRP === "1";
+}
+
+/**
+ * `BUNCARGO_LINK_<PROJECT_PREFIX>` - pin a sibling project's live run lookup
+ * (`lookupRunningApp` / `lookupRunningService`) to a specific branch, worktree
+ * name, `projectName`, or checkout path.
+ */
+export function siblingRunOverride(
+	projectPrefix: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	const stem = projectPrefix.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+	return readTrimmed(env, `BUNCARGO_LINK_${stem}`);
 }

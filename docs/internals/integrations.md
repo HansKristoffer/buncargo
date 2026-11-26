@@ -7,8 +7,13 @@ User-facing guide: [integrations](../integrations.md).
 `BuncargoIntegration` objects applied by `config/integrations.ts` (`applyIntegrations`) in order before validation. It composes hooks (the
 config's first), appends checks, and is idempotent (a symbol marks an applied config).
 
-Core reaches integrations only through `appEnv`, `describeApp`, `bannerHint`, `describe`,
-`setupChecks` and `commands`. Expo lives entirely there: without `expo()` no app is Expo.
+Core reaches integrations only through `appEnv`, `onAppReady`, `secretScopes`, `describeApp`,
+`bannerHint`, `describe`, `exportEnv`, `setupChecks` and `commands`. Expo lives entirely there:
+without `expo()` no app is Expo. Profiles may override integrations via
+`profiles.<name>.integrations` (`false` to drop all integrations, or an array overriding matching
+integrations by `name` via `mergeProfileIntegrations`). When a profile restricts `apps`,
+`resolved.activeApps` (expanded transitively across `requiredApps` / `startAfter`) lets
+integrations gate env vars, credential isolation and setup checks automatically.
 `cli/integration-commands.ts` dispatches `buncargo <name> <cmd>`, preferring the configured
 instance (its options) and falling back to the built-ins, so `expo sim` works without a config.
 
@@ -100,11 +105,16 @@ limit comes from. Compose ignores those containers on `down`: they have no
 The Emulator Suite is a process, not containers, so it is an app rather than a stack, and it is not
 held between runs. What it depends on in `firebase-tools` (checked against 15.34):
 
-- Ports live only in `firebase.json`; there is no env override. `--config <file>` makes the file's
-  directory the project directory, and `functions.source` is joined onto that directory, so an
-  absolute path breaks it. The per-checkout copy therefore sits beside `firebase.json`
-  (`firebase.buncargo.json`), not under `.buncargo/`. An unset hub, UI, logging, Eventarc or Tasks
-  port makes the CLI pick a free one, so every port is written out.
+- Ports live only in the Firebase config (`configFile`, default `firebase.json`); there is no env
+  override. `--config <file>` makes the file's directory the project directory, and
+  `functions.source` is joined onto that directory, so an absolute path breaks it. The per-checkout
+  copy therefore sits beside `configFile` (`firebase.buncargo.json`), not under `.buncargo/`, and
+  `.firebaserc` is checked beside `configFile` before falling back to `workdir`. An unset hub, UI,
+  logging, Eventarc or Tasks port makes the CLI pick a free one, so every port is written out.
+- When `projectId` starts with `"demo-"` and `storage` is a multi-target array
+  (`[{ target, rules }, ...]`), `generatedFirebaseConfig` collapses it to a single `{ rules }`
+  object (preferring `target: "default"`, else the first entry with `rules`) so `firebase
+  emulators:start --project demo-*` does not fail on missing `.firebaserc` targets.
 - Adding `emulators.<name>` to the copy would make that emulator a target. Only the selected
   emulators get one, and `--only` always names them. Eventarc and Tasks are skipped by the CLI's
   target loop and only listen beside Functions, so they are safe to write whenever Functions runs.
@@ -113,6 +123,31 @@ held between runs. What it depends on in `firebase-tools` (checked against 15.34
   own project id, so the id the apps' SDK config uses stays the project's. It is a short directory
   under the system's (`bcfb-<checkout hash>`), not under the checkout: the Functions emulator puts
   its Unix socket there, and a worktree's path pushes it past the 103-byte limit on macOS.
+- When `javaHeap` is set (`"auto"` = `clamp(floor(totalmem / 2 GiB), 1, 8)` or an explicit size
+  such as `"6g"`), `appEnv` injects `-Xmx<size>` into `JAVA_TOOL_OPTIONS` while preserving existing
+  flags and skipping if `-Xmx` is already set. When `process.env.JAVA_HOME` points to a missing
+  `bin/java` executable, `appEnv` clears `JAVA_HOME=""` for the `firebase` app so a stale shell
+  path never breaks emulator startup. A built-in `firebaseOom` capture detects JVM
+  `OutOfMemoryError` output and logs an actionable warning pointing at `javaHeap`.
+- When `isolateCredentials` is on (default `true` for `demo-*` projects), `appEnv` sets
+  `GOOGLE_APPLICATION_CREDENTIALS=""` and points `CLOUDSDK_CONFIG` at an empty `gcloud` directory
+  under the checkout's emulator temp dir (created in `hooks.beforeServers`) across the `firebase`
+  app, sibling apps, and `exportEnv` so developer `gcloud`/ADC sessions cannot leak into local
+  demo emulators. All emulator env vars, credential isolation and setup checks are automatically
+  skipped when the active profile omits `"firebase"` from `activeApps`.
+- `pubsubTopics`: created idempotently against the Pub/Sub emulator (`src/firebase/pubsub.ts`) in
+  `onAppReady` as soon as `firebase` reports ready, before downstream `startAfter` apps or
+  `seed.afterApps` run.
+- `functionsEnv`: rendered atomically with `0o600` permissions beside `functions.source` before
+  servers start (`src/firebase/functions-env.ts`), combining optional Infisical scopes (declared
+  via `secretScopes` so `secrets check` / `prefetch-secrets` include them) and explicit `values`,
+  stripping Firebase reserved keys and credentials, and backing up/restoring any pre-existing
+  `.env` on `hooks.afterServersStop`.
+- `checks.ts` parses `java -version` (handling legacy `1.8.x` -> `8` and modern `17.x`/`21.x`) and
+  validates against the installed `firebase-tools` major version for all JVM emulators
+  (`firestore`, `database`, `storage`, `pubsub`): Java `< 11` always fails; Java `11..20` warns
+  on `firebase-tools` 13.x (or unknown) and fails on 14+; Java `>= 21` passes. CLI install hints
+  use the checkout's detected package manager (`detectPackageManager`).
 - Emulator ports are the app's `extraPorts`. They are spaced like the offset step (9099, 9199,
   9299…), so moving them by the offset alone put one checkout's Auth on the next one's Storage;
   claimed and probed with the block, a block that lands on another's emulators moves on.
@@ -125,3 +160,7 @@ held between runs. What it depends on in `firebase-tools` (checked against 15.34
   pids are the CLI's own and recorded nowhere, so nothing here can end them.
 - The data directory defaults to `.firebase-emulator-data` beside `firebase.json`, not under the
   per-checkout `.buncargo/`, which is disposable state; nothing in buncargo removes it.
+- `exportEnv(ctx)` publishes the active emulator host vars, project IDs, and `publicEnvPrefix`
+  copies to `runs.json` `exports` for cross-repo links, and only when `firebase` is in
+  `ctx.selectedApps`, so a run that did not start the emulators leaves no dead emulator endpoints
+  in the registry.

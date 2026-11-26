@@ -19,10 +19,16 @@ describe("selectProfileApps", () => {
 	});
 
 	// Without a default profile a bare `dev` runs every app.
-	it("selects everything without profiles", () => {
+	it("selects everything without profiles or when a profile omits apps", () => {
 		expect(selectProfileApps({}, undefined)).toBeUndefined();
 		expect(
 			selectProfileApps({ profiles: { full: { apps: ["a"] } } }, undefined),
+		).toBeUndefined();
+		expect(
+			selectProfileApps(
+				{ profiles: { cloud: { env: { MODE: "cloud" } } } },
+				"cloud",
+			),
 		).toBeUndefined();
 	});
 
