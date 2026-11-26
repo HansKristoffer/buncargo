@@ -362,3 +362,17 @@ export function unselectedEmulatorEnv(
 			.map(([, variable]) => [variable, UNREACHABLE_EMULATOR_HOST]),
 	);
 }
+
+/**
+ * The browser SDK's `initializeApp` config for an emulated project. The
+ * emulators never check the API key, and the client uploads nothing without
+ * a default bucket, even to the Storage emulator.
+ */
+export function firebaseWebConfig(projectId: string): string {
+	return JSON.stringify({
+		projectId,
+		apiKey: "fake-api-key",
+		authDomain: "localhost",
+		storageBucket: `${projectId}.appspot.com`,
+	});
+}

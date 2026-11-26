@@ -275,6 +275,32 @@ describe("firebase()", () => {
 		).toBe("127.0.0.1:9");
 	});
 
+	it("writes the browser SDK's config for the emulated project into webConfigEnv", () => {
+		const env = createDevEnvironment(
+			{
+				...config,
+				integrations: [
+					firebase({
+						projectId: "demo-kanpla",
+						webConfigEnv: "NEXT_PUBLIC_FIREBASE_CONFIG",
+					}),
+				],
+			},
+			{ root },
+		);
+		const vars = env.buildEnvVars() as Record<string, string>;
+		expect(JSON.parse(vars.NEXT_PUBLIC_FIREBASE_CONFIG)).toEqual({
+			projectId: "demo-kanpla",
+			apiKey: "fake-api-key",
+			authDomain: "localhost",
+			storageBucket: "demo-kanpla.appspot.com",
+		});
+		const without = createDevEnvironment(config, { root }).buildEnvVars();
+		expect(
+			(without as Record<string, string>).NEXT_PUBLIC_FIREBASE_CONFIG,
+		).toBeUndefined();
+	});
+
 	it("writes the copy of firebase.json the CLI is started on", () => {
 		const env = createDevEnvironment(config, { root });
 		const file = env.generatedFiles?.find(

@@ -124,6 +124,9 @@ held between runs. What it depends on in `firebase-tools` (checked against 15.34
   `127.0.0.1:9`, the discard port, where nothing answers. It is the default only for `demo-*`
   projects (`unselectedEmulators`), since any other id reaches the real product for what is not
   emulated, and a project may mean that.
+- `webConfigEnv` writes `firebaseWebConfig(projectId)`: the emulators never check the API key, and
+  the browser SDK uploads nothing without a default bucket, even to the Storage emulator, so the
+  JSON carries a fake key and `<projectId>.appspot.com`.
 - The hub writes `hub-<project id>.json` in `os.tmpdir()`, and a second suite on the same id reads
   the first one's (the CLI only warns). Each checkout's suite gets its own `TMPDIR` rather than its
   own project id, so the id the apps' SDK config uses stays the project's. It is a short directory

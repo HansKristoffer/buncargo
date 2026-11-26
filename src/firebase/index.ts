@@ -37,6 +37,7 @@ import {
 	emulatorPorts,
 	FIREBASE_PUBLIC_ENV,
 	type FirebaseEmulator,
+	firebaseWebConfig,
 	generatedFirebaseConfig,
 	selectEmulators,
 	suitePorts,
@@ -82,6 +83,7 @@ export {
 	FIREBASE_DEFAULT_PORTS,
 	FIREBASE_EMULATORS,
 	type FirebaseEmulator,
+	firebaseWebConfig,
 	UNREACHABLE_EMULATOR_HOST,
 } from "./emulators";
 export {
@@ -174,6 +176,14 @@ export interface FirebaseIntegrationOptions {
 	 * `"unset"`.
 	 */
 	unselectedEmulators?: "unreachable" | "unset";
+	/**
+	 * Variable to write the browser SDK's config into, as JSON for
+	 * `initializeApp`: the emulated `projectId`, a fake `apiKey`,
+	 * `authDomain: "localhost"` and `storageBucket: "<projectId>.appspot.com"`
+	 * (`"NEXT_PUBLIC_FIREBASE_CONFIG"`). Written as named, without
+	 * `publicEnvPrefix`.
+	 */
+	webConfigEnv?: string;
 	/**
 	 * Keep the emulators' data between runs: imported on start, exported on
 	 * stop and restart. A directory relative to the workdir, or false to start
@@ -511,6 +521,9 @@ export function firebase(
 
 					return {
 						...env,
+						...(options.webConfigEnv
+							? { [options.webConfigEnv]: firebaseWebConfig(projectId) }
+							: {}),
 						...publicEnvCopies(
 							Object.fromEntries(
 								FIREBASE_PUBLIC_ENV.map((name) => [name, env[name]]),
