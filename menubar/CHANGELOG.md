@@ -1,5 +1,12 @@
 # Changelog
 
+## [15.1.0](https://github.com/HansKristoffer/buncargo/compare/bar-v15.0.0...bar-v15.1.0) (2026-11-26)
+
+
+### Features
+
+* **cli:** add cross-repo links, reactive tasks and profile overrides ([#152](https://github.com/HansKristoffer/buncargo/issues/152)) ([4ac8351](https://github.com/HansKristoffer/buncargo/commit/4ac835163b38e71a4439bc56bbdc424561583689))
+
 ## [15.0.0](https://github.com/HansKristoffer/buncargo/compare/bar-v14.3.0...bar-v15.0.0) (2026-11-14)
 
 
