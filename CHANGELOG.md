@@ -1,5 +1,12 @@
 # Changelog
 
+## [17.1.0](https://github.com/HansKristoffer/buncargo/compare/v17.0.0...v17.1.0) (2026-11-26)
+
+
+### Features
+
+* **cli:** remove the workarounds in Kanpla's buncargo setup ([#153](https://github.com/HansKristoffer/buncargo/issues/153)) ([941f2cc](https://github.com/HansKristoffer/buncargo/commit/941f2cc207cbc7619807380734b5621630fa8489))
+
 ## [17.0.0](https://github.com/HansKristoffer/buncargo/compare/v16.1.0...v17.0.0) (2026-11-26)
 
 
