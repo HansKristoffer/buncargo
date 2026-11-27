@@ -1443,7 +1443,8 @@ describe("startDevServers apps started after startup", () => {
 			// Already the run's: a second start takes on nothing.
 			expect(await run.controls.start(late)).toEqual([]);
 
-			await eventually(() => run.output.tail("mobile").includes("mobile up"));
+			// Its output can arrive before its spawn is recorded: wait for that.
+			await eventually(() => run.spawned.includes("mobile"));
 			expect(run.spawned).toEqual(["keeper", "base", "mobile"]);
 			expect(run.output.states.get("base")?.state).toBe("ready");
 

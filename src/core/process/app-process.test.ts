@@ -74,7 +74,14 @@ app.once("exit", async () => {
 		/** What reached the terminal. */
 		printed: () => printed,
 		close: () => {
-			if (isProcessAlive(-pty.pid)) process.kill(-pty.pid, "SIGKILL");
+			try {
+				if (isProcessAlive(-pty.pid)) process.kill(-pty.pid, "SIGKILL");
+			} catch (error) {
+				// macOS answers EPERM for a group whose last members are still
+				// exiting: nothing is left to kill.
+				const code = error instanceof Error && "code" in error && error.code;
+				if (code !== "EPERM") throw error;
+			}
 		},
 	};
 }
