@@ -33,7 +33,12 @@ export interface DevOutputSource {
 export async function openDevOutput(
 	env: DevOutputSource,
 	apps: Record<string, ResolvedApp>,
-	options: { tui: "auto" | "on" | "off"; tasks?: readonly string[] },
+	options: {
+		tui: "auto" | "on" | "off";
+		tasks?: readonly string[];
+		/** Apps the run left out, which the TUI lists to start and `restart` starts. */
+		leftOut?: readonly string[];
+	},
 ): Promise<{
 	output: RunOutput;
 	start(): void;
@@ -48,7 +53,8 @@ export async function openDevOutput(
 
 	const names = Object.keys(apps);
 	const taskNames = options.tasks ?? [];
-	const panes = [...names, ...taskNames];
+	const leftOut = new Set(options.leftOut);
+	const panes = [...names, ...taskNames, ...leftOut];
 	const terminal = isInteractive();
 	if (options.tui === "on" && !terminal) {
 		log.warn("--tui needs a terminal; printing prefixed lines instead.");
@@ -68,6 +74,7 @@ export async function openDevOutput(
 			output,
 			apps: panes,
 			taskNames: new Set(taskNames),
+			leftOut,
 			urlFor: (app) => environmentOpenUrl(env, app),
 			actions,
 			logPath: (app) => (app ? logs?.file(app) : logs?.dir),
@@ -107,7 +114,7 @@ export async function openDevOutput(
 	const stopRestarts = watchRestartRequests(
 		env.root,
 		env.sessionId,
-		(app) => restartReply(output, app),
+		(app) => restartReply(output, app, leftOut),
 		() => output.controls !== undefined,
 	);
 
@@ -144,11 +151,36 @@ export async function openDevOutput(
 	};
 }
 
-/** What came of `buncargo restart <app>`, for the command waiting on it. */
+/**
+ * What came of `buncargo restart <app>`, for the command waiting on it. An
+ * app the run left out (`leftOut`) is started instead.
+ */
 export async function restartReply(
-	output: Pick<RunOutput, "controls" | "states">,
+	output: Pick<RunOutput, "controls" | "states" | "startApp">,
 	app: string,
+	leftOut: ReadonlySet<string>,
 ): Promise<RestartReply> {
+	// Taken on and not up yet: asking again is not a restart of it.
+	if (leftOut.has(app) && output.states.get(app)?.state === "starting") {
+		return { status: "started", apps: [] };
+	}
+
+	if (!output.states.has(app) && leftOut.has(app)) {
+		// Not a refusal: asked again once the run's own apps are up, it starts.
+		if (!output.startApp) {
+			return {
+				status: "failed",
+				reason:
+					"the run is still starting its own apps; ask again once they are up",
+			};
+		}
+		try {
+			return await output.startApp(app);
+		} catch (error) {
+			return { status: "failed", reason: getErrorMessage(error) };
+		}
+	}
+
 	if (!output.states.has(app) || !output.controls) {
 		return { status: "not-ours", reason: `this run started no app "${app}"` };
 	}

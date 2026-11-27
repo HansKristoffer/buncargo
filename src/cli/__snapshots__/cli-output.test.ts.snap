@@ -716,24 +716,28 @@ exports[`buncargo CLI output restart --help 1`] = `
 
 Usage: buncargo restart <app>... [options]
 
-Restart one app of a running dev (e.g. a stopped non-essential one)
+Restart one app of a running dev, or start one it left out
 
 Arguments:
-  <app>  An app of the run
+  <app>  An app of the run, or one it left out
 
 Options:
   --root=<path>    Checkout whose run to act on (default: this one)
   --run=<session>  One run session from buncargo runs
+  --json           One JSON document on stdout
   --help, -h       Show this help message
 
 Exit codes:
-  0  the app's process was replaced
-  1  the replacement failed, the run did not answer, or bad arguments
-  2  no run of this checkout started the app
-  3  refused: the run takes no requests (a script's start()) or the app is not its own
+  0  the app's process was replaced, or the start of a left-out app began
+  1  the replacement failed, the run did not answer or is still starting its own apps, several runs could start a left-out app, or bad arguments
+  2  no run of this checkout started the app or can start it
+  3  refused: the run takes no requests (a script's start()), the app is not its own, or a left-out app needs a service the run did not start, a lease another run holds or a terminal for its preflight
+
+JSON output: RestartJson (--json)
 
 Examples:
   bunx buncargo restart shopify  Start a stopped app of this checkout's run again
+  bunx buncargo restart mobile   Start an app the run left out (not in its --apps or profile)
 
 
 --- stderr
@@ -1086,7 +1090,7 @@ COMMANDS:
   ls                                        List every buncargo environment on this machine
   runs [options]                            Show the dev runs active on this machine
   stop [<name>...] [options]                Stop one app or service, or a whole run
-  restart <app>... [options]                Restart one app of a running dev (e.g. a stopped non-essential one)
+  restart <app>... [options]                Restart one app of a running dev, or start one it left out
   send <app> [<keys>...] [options]          Type into an app that has a terminal (e.g. Expo's i)
   logs [<app>] [options]                    Read app output from the current or last run
   ports [pin <offset> | release [options]]  Show this checkout's ports and every claim; pin one, or release a stale one (pin | release)
@@ -1164,7 +1168,7 @@ COMMANDS:
   ls                                        List every buncargo environment on this machine
   runs [options]                            Show the dev runs active on this machine
   stop [<name>...] [options]                Stop one app or service, or a whole run
-  restart <app>... [options]                Restart one app of a running dev (e.g. a stopped non-essential one)
+  restart <app>... [options]                Restart one app of a running dev, or start one it left out
   send <app> [<keys>...] [options]          Type into an app that has a terminal (e.g. Expo's i)
   logs [<app>] [options]                    Read app output from the current or last run
   ports [pin <offset> | release [options]]  Show this checkout's ports and every claim; pin one, or release a stale one (pin | release)
@@ -1242,7 +1246,7 @@ COMMANDS:
   ls                                        List every buncargo environment on this machine
   runs [options]                            Show the dev runs active on this machine
   stop [<name>...] [options]                Stop one app or service, or a whole run
-  restart <app>... [options]                Restart one app of a running dev (e.g. a stopped non-essential one)
+  restart <app>... [options]                Restart one app of a running dev, or start one it left out
   send <app> [<keys>...] [options]          Type into an app that has a terminal (e.g. Expo's i)
   logs [<app>] [options]                    Read app output from the current or last run
   ports [pin <offset> | release [options]]  Show this checkout's ports and every claim; pin one, or release a stale one (pin | release)
@@ -1320,7 +1324,7 @@ COMMANDS:
   ls                                        List every buncargo environment on this machine
   runs [options]                            Show the dev runs active on this machine
   stop [<name>...] [options]                Stop one app or service, or a whole run
-  restart <app>... [options]                Restart one app of a running dev (e.g. a stopped non-essential one)
+  restart <app>... [options]                Restart one app of a running dev, or start one it left out
   send <app> [<keys>...] [options]          Type into an app that has a terminal (e.g. Expo's i)
   logs [<app>] [options]                    Read app output from the current or last run
   ports [pin <offset> | release [options]]  Show this checkout's ports and every claim; pin one, or release a stale one (pin | release)
@@ -1431,8 +1435,8 @@ command that runs another passes its code on. Other codes, by command:
   ci               2  --migrate-check: the schema has changes no migration contains (before any command runs)
   stop             2  a named app or service matched nothing
   stop             3  refused: left running (needs a confirmation or --force, or its process could not be identified)
-  restart          2  no run of this checkout started the app
-  restart          3  refused: the run takes no requests (a script's start()) or the app is not its own
+  restart          2  no run of this checkout started the app or can start it
+  restart          3  refused: the run takes no requests (a script's start()), the app is not its own, or a left-out app needs a service the run did not start, a lease another run holds or a terminal for its preflight
   send             2  no run of this checkout started the app
   send             3  the app cannot take keys (no terminal of its own, or not running)
   ports release    3  a run started there meanwhile kept a claim
@@ -1447,6 +1451,7 @@ JSON documents, by the type that describes each:
   secrets check   SecretsCheckJson (--json)
   env             EnvJson
   runs            RunsJson (--json)
+  restart         RestartJson (--json)
   status          StatusJson (--json)
   gc              GcJson (--json)
 
@@ -1534,7 +1539,7 @@ COMMANDS:
   ls                                        List every buncargo environment on this machine
   runs [options]                            Show the dev runs active on this machine
   stop [<name>...] [options]                Stop one app or service, or a whole run
-  restart <app>... [options]                Restart one app of a running dev (e.g. a stopped non-essential one)
+  restart <app>... [options]                Restart one app of a running dev, or start one it left out
   send <app> [<keys>...] [options]          Type into an app that has a terminal (e.g. Expo's i)
   logs [<app>] [options]                    Read app output from the current or last run
   ports [pin <offset> | release [options]]  Show this checkout's ports and every claim; pin one, or release a stale one (pin | release)

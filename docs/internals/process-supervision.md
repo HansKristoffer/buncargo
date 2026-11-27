@@ -118,6 +118,39 @@ unowned. `AppSupervision.register` reports the exit of a child that is already g
 emits `exit` to it: otherwise a crash at boot failed the whole start, the one thing
 `essential: false` promises not to do.
 
+## Apps started after startup
+
+A session's controls (`SessionControls`, handed to `onReadyWatch` once the waves settle) include
+`start(apps)`: apps the run left out at startup join it. `AppSupervision.add` supervises them, as
+`optional`, since the run went on without them; their secrets load before any is added, so a
+missing one takes on none. Each row reads `starting` from the moment it is added, before it
+spawns. They spawn in the background, one `startAfter` layer at a time, each layer ready before
+the next; the last is checked on the side like a restart. One that does not come up is parked,
+and every app still to spawn after it is failed with no process (generation 0), naming it; an
+error nothing expected (a watcher the OS refuses is only announced) fails the late apps, never
+the run. A restart of such an app is its first spawn (`restartApp` sees generation 0 and
+`down`), one at a time per app (`firstSpawns`), so fixing the prerequisite and pressing `r`
+brings it up once.
+
+`pipeline.ts` wraps it as `LateStart` (`onLateStart`), refused once the session is ending (its
+entry is being released, and a claim would publish it again): the apps' leases and rows first (one more
+`claimApps`, which lists the reused apps again, or the entry would drop them), the egress proxy if
+the run had none and one of them is guarded, then the session. A lease refusal, or a start that
+throws, gives the leases back and publishes the entry again without the rows, or `wait` and `ls`
+read them as starting for good. `cli/dev-late-start.ts` decides what a request means, one request
+at a time (`bindLateStarts`), so a second `r` during a first start's claim finds the app part of
+the run and answers that it is already starting: the app with its `requiredApps` the run has not
+started, all `essential: false` (so a held lease skips rather than throws), refused when it needs
+a service the run did not start, since adding containers to a running stack is a new start, or
+when a `preflight` step of theirs the start did not run fails without a terminal
+(`runLatePreflight`: a login cannot be asked for over the TUI). Their ports are classified first,
+as startup's are (`servedElsewhere`, `classifyCliApps`): spawning skips straight to
+`prepareAppPort`, which kills a holder under the checkout, so without it a late start killed the
+same app running in another run of the checkout. The app itself answering elsewhere is refused; a
+required app answering elsewhere is used there; a port held by something else refuses it.
+Reactive tasks are selected at startup and do not grow with it, and the link watcher is armed at
+startup only: a late app's reactive links restart it only when a startup app already armed it.
+
 ## Stop grace
 
 Every SIGTERM an app gets is followed by SIGKILL after its `stopGraceMs` (`AppSupervision.graceFor`,

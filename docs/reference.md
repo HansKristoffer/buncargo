@@ -40,6 +40,7 @@ bunx buncargo stop postgres       # Stop one service's container
 bunx buncargo stop --all          # Stop this checkout's whole run
 bunx buncargo stop                # Same as stop --all
 bunx buncargo restart shopify     # Start a stopped app of a running dev again
+bunx buncargo restart mobile      # Start an app the running dev left out
 bunx buncargo logs                # Every app's output from the current or last run
 bunx buncargo logs shopify --errors -f --since=5m
 bunx buncargo expo sim            # Open the Expo app in this checkout's own simulator
@@ -913,7 +914,7 @@ URLs), not its live footer.
 | `Esc` | Back to the Overview |
 | `e` | Overview: errors and warnings only |
 | `o` | Open the app's URL (the Overview offers a picker) |
-| `r` | Restart the selected app (or run the selected reactive task on demand) |
+| `r` | Restart the selected app (or run the selected reactive task on demand). On an app the run left out (`off`), start it |
 | `l` | The app's log in `$PAGER` (the Overview: the run's log directory); `q` or `Ctrl-C` closes it and the run keeps going |
 | Mouse wheel, `PgUp` `PgDn` | Scroll the Overview or the selected app's scrollback |
 | `End` / `Home` | Back to the live output / the oldest line kept |
@@ -958,6 +959,38 @@ TUI or `buncargo restart <app>` starts it again without re-running anything
 else. It never holds startup up: it is health-checked on the side, and one that
 never answers is stopped and shown as failed. In stream mode the run prints the
 app's last error lines and the restart command.
+
+### Starting an app the run left out
+
+`--apps` and profiles (a `default` one included) start only some apps. The TUI
+lists the rest under them as `off`, and `r` on one starts it in the running
+run, with its `requiredApps` the run has not started; `buncargo restart <app>`
+does the same from another terminal. It joins the run as an `essential: false`
+app, since the run went on without it: its exit never ends the run, and `r`
+starts it again. Its `startAfter` apps come up first. It runs on the run's own
+services: an app that needs a service the run did not start is refused, with
+the `dev --apps=` that starts them all. A lease another run holds refuses it
+too, without a prompt over the TUI (`--takeover` on the run still takes it
+over), and so does a `preflight` step of its own that needs a terminal, such as
+an expired Shopify CLI session. An app already answering on its port outside the
+run (another run of the checkout, a terminal) is never started twice: asking for
+it is refused, a required app answering there is used where it runs, and a port
+held by something else refuses the start. `status` lists only apps no live run
+of the checkout runs. Asking again while it starts answers that it is starting. `buncargo stop <app>` stops it again, and it
+stops with the run. Integrations that tailor the environment to a profile's apps (the
+`firebase()` emulator variables) keep the profile's view, so start such an app
+with the profile or `--apps` instead.
+
+Once its own apps are up, the run says which apps it left out (each with the
+services it lacks) in the Overview, in stream mode and in its log. `buncargo
+status` lists them under the run's apps as `off`, with the command that starts
+each, and `status --json` has them in each run's `startable`: the `apps` it
+would start, its `missingServices`, and the `command` (`buncargo restart
+<app>`, or the `buncargo dev --apps=` to start a new run with it).
+
+```ts
+profiles: { default: { apps: ["web"] } }, // `mobile` is off until `r` starts it
+```
 
 ### When an app does not come up
 
@@ -1352,11 +1385,22 @@ reporting nothing to stop.
 `buncargo restart <app>` asks the `buncargo dev` run that started the app to
 replace it, and returns once that run answers, so
 `buncargo restart api && buncargo wait --app=api` waits for the new process.
-Exit codes are `0` the app's process was replaced, `1` the replacement failed
-(the error says why) or the run did not answer in time, `2` no run of the
-checkout started the app, and `3` refused, with nothing restarted: a script's
-`start()` takes no restart requests (restart the app from that script instead),
-or the app runs in another terminal and was reused.
+An app the run left out (not in its `--apps` or profile) is started in it
+instead ([Starting an app the run left out](#starting-an-app-the-run-left-out));
+with more than one run of the checkout, `--run=<session>` says which.
+`--json` prints one `RestartJson` document instead of lines: `exitCode`, and per
+app asked, up to the first that did not restart, its `outcome` (`restarted`,
+`started`, `failed`, `not-found` or `refused`), `message`, `hints`, and for
+`started` the `apps` it starts.
+Exit codes are `0` the app's process was replaced or the left-out app's start
+began, `1` the replacement failed (the error says why), the run did not answer
+in time, several runs could start the app, or the run was still starting its
+own apps (ask again), `2` no run of the checkout
+started the app or has it in its config, and `3` refused, with nothing
+restarted: a script's `start()` takes no restart requests (restart the app from
+that script instead), the app runs in another terminal and was reused, or a
+left-out app needs a service the run did not start, a lease another run
+holds, or a preflight step that needs a terminal.
 
 An app gets its `stopGraceMs` (5 seconds unless set) to exit after SIGTERM
 before it is killed. Stopping a whole run waits 5 seconds plus the longest
@@ -2117,7 +2161,7 @@ Closing the terminal sends `SIGHUP`; cleanup is awaited and idempotent.
 
 A config imports `buncargo`; code that drives an environment imports `buncargo/api`.
 
-`buncargo/api` also exports a type for each document the CLI prints with `--json`, so a script can type what it parses: `DetachedResultJson` (`dev --detach --json`), `RunsJson`, `StatusJson`, `EnvJson`, `SecretsCheckJson` (`secrets check --json`), `FilesStatusJson` and `CheckPlanJson` (`check --list --json`).
+`buncargo/api` also exports a type for each document the CLI prints with `--json`, so a script can type what it parses: `DetachedResultJson` (`dev --detach --json`), `RunsJson`, `StatusJson` (and `StartableAppJson`), `RestartJson`, `EnvJson`, `SecretsCheckJson` (`secrets check --json`), `FilesStatusJson` and `CheckPlanJson` (`check --list --json`).
 
 ```typescript
 import { loadDevEnv } from "buncargo/api";
@@ -2130,7 +2174,7 @@ const webEnv = env.buildAppEnvVars("web");
 await env.stop();
 ```
 
-`start()` prepares the selected services and spawns, supervises and health-checks the selected apps, but it is not `buncargo dev`, and leaves out what the CLI adds around a run. It takes the same [`exclusive` leases](#exclusive-leases) as `dev`, but cannot ask or take one over: a lease another run holds leaves an `essential: false` app out, with a warning, and makes `start()` throw for an essential one. It does not activate named hosts, so `env.urls` stay `http://localhost:<port>`. It runs neither the fast `setupChecks` nor integration `preflight` steps such as the Shopify login, and it does not share apps and services with [remote recipients](#remote-services) (`BUNCARGO_CONNECT_TOKENS`). It records its apps and services in the run registry as `dev` does, so `buncargo ls`, `stop` and BuncargoBar show and stop them, and the entry goes when `stop()` stops the apps or the process exits; `restart`, `send` and `logs` reach only a `buncargo dev` run, because nothing in a script answers them and it writes no per-run logs. An app that never becomes ready fails the whole `start()` rather than being parked, and tunnels open only when you call `openPublicTunnels()`. Use `buncargo dev`, or `runCli` from a script, when you need any of these.
+`start()` prepares the selected services and spawns, supervises and health-checks the selected apps, but it is not `buncargo dev`, and leaves out what the CLI adds around a run. It takes the same [`exclusive` leases](#exclusive-leases) as `dev`, but cannot ask or take one over: a lease another run holds leaves an `essential: false` app out, with a warning, and makes `start()` throw for an essential one. It does not activate named hosts, so `env.urls` stay `http://localhost:<port>`. It runs neither the fast `setupChecks` nor integration `preflight` steps such as the Shopify login, and it does not share apps and services with [remote recipients](#remote-services) (`BUNCARGO_CONNECT_TOKENS`). It records its apps and services in the run registry as `dev` does, so `buncargo ls`, `stop` and BuncargoBar show and stop them, and the entry goes when `stop()` stops the apps or the process exits; `restart`, `send` and `logs` reach only a `buncargo dev` run, because nothing in a script answers them and it writes no per-run logs, and only `dev` starts an app it left out. An app that never becomes ready fails the whole `start()` rather than being parked, and tunnels open only when you call `openPublicTunnels()`. Use `buncargo dev`, or `runCli` from a script, when you need any of these.
 
 `env.buildEnvFingerprint("web")` is a digest of `buildAppEnvVars("web")` that is the same in every checkout and on every machine: it leaves out ports, IP addresses, the project name, the workspace id and the checkout root. Key a build cache on it to share one build between worktrees or CI runners. It is only correct when the build bakes in none of those values, so leave a URL with a port out of the build's env first.
 

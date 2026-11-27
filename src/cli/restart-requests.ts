@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { promiseTimeout } from "hanzio";
+import type { StartReply } from "../core/process/run-output";
 import { getProjectStateDir } from "../core/state-paths";
 
 /**
@@ -198,10 +199,12 @@ export function withdrawRestartRequest(
 /**
  * The run's answer to one restart: the app's process was replaced, the
  * replacement failed, or the app is not the run's to restart (reused from
- * another terminal, or the run is ending).
+ * another terminal, or the run is ending). For an app the run left out:
+ * its start began (with the apps it requires), or the run refused it.
  */
 export type RestartReply =
 	| { status: "began" }
+	| StartReply
 	| { status: "failed"; reason: string }
 	| { status: "not-ours"; reason: string };
 

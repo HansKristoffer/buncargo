@@ -12,7 +12,11 @@ import { startFakeInfisical } from "../secrets/fake-infisical.testing";
 import { clearScopeSecretsCache } from "../secrets/index";
 import { freePorts, useTempHome } from "../test-env.testing";
 import type { AppLife } from "./app-lifecycle";
-import { startDevServers, stopDevServers } from "./dev-servers";
+import {
+	type SessionControls,
+	startDevServers,
+	stopDevServers,
+} from "./dev-servers";
 import { signalProcessTree } from "./port-owner";
 import { RunOutput } from "./run-output";
 
@@ -1375,6 +1379,123 @@ describe("startDevServers readyWhen and interactive apps without a terminal", ()
 			await until(() => lines.includes("tty true"));
 			output.screens.get("expo")?.input("i");
 			await until(() => lines.includes("key i"));
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15000);
+});
+
+describe("startDevServers apps started after startup", () => {
+	const keeper = {
+		kind: "worker" as const,
+		devCommand: "bun -e 'setInterval(() => {}, 60000)'",
+	};
+
+	async function session(root: string) {
+		const output = new RunOutput({ terminals: "pipe" });
+		const spawned: string[] = [];
+		let controls: SessionControls | undefined;
+		const pids = await startDevServers(
+			resolveApps({ keeper }),
+			root,
+			{},
+			{},
+			{
+				verbose: false,
+				waitForExit: false,
+				keepOthersOnFailure: true,
+				output,
+				onReadyWatch: (given) => {
+					controls = given;
+				},
+				onAppPhase: (name, life, previous) => {
+					if (life.pid !== undefined && life.pid !== previous.pid) {
+						spawned.push(name);
+					}
+				},
+			},
+		);
+		if (!controls) throw new Error("no session controls");
+		return { output, spawned, pids, controls };
+	}
+
+	it("starts apps the run left out a startAfter layer at a time, and spares them", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-late-start-"));
+		let pids: Record<string, number> = {};
+		try {
+			const run = await session(root);
+			pids = run.pids;
+			const late = resolveApps({
+				base: {
+					kind: "worker",
+					readyWhen: /base up/,
+					devCommand: `bun -e 'setTimeout(() => console.log("base up"), 200); setInterval(() => {}, 60000)'`,
+				},
+				mobile: {
+					kind: "worker",
+					startAfter: ["base"],
+					devCommand: `bun -e 'console.log("mobile up"); setTimeout(() => process.exit(1), 300)'`,
+				},
+			});
+
+			expect(await run.controls.start(late)).toEqual(["base", "mobile"]);
+			// Already the run's: a second start takes on nothing.
+			expect(await run.controls.start(late)).toEqual([]);
+
+			// Its output can arrive before its spawn is recorded: wait for that.
+			await eventually(() => run.spawned.includes("mobile"));
+			expect(run.spawned).toEqual(["keeper", "base", "mobile"]);
+			expect(run.output.states.get("base")?.state).toBe("ready");
+
+			// Its crash is spared: the run keeps going.
+			await eventually(
+				() => run.output.states.get("mobile")?.state === "failed",
+			);
+			expect(run.output.states.get("mobile")?.restartable).toBe(true);
+			expect(processExists(pids.keeper)).toBe(true);
+		} finally {
+			await stopDevServers(pids);
+			await rm(root, { recursive: true, force: true });
+		}
+	}, 15000);
+
+	it("fails what was still to start when a prerequisite never came up, and a restart is its first spawn", async () => {
+		const root = await mkdtemp(join(tmpdir(), "buncargo-late-start-fail-"));
+		let pids: Record<string, number> = {};
+		try {
+			const run = await session(root);
+			pids = run.pids;
+			await run.controls.start(
+				resolveApps({
+					base: {
+						kind: "worker",
+						readyWhen: /never printed/,
+						healthTimeout: 300,
+						devCommand: keeper.devCommand,
+					},
+					mobile: {
+						kind: "worker",
+						startAfter: ["base"],
+						devCommand: `bun -e 'console.log("mobile up"); setInterval(() => {}, 60000)'`,
+					},
+				}),
+			);
+
+			await eventually(
+				() => run.output.states.get("mobile")?.state === "failed",
+			);
+			expect(run.output.states.get("mobile")?.detail).toBe(
+				"mobile did not start: base did not come up",
+			);
+			expect(run.spawned).not.toContain("mobile");
+			expect(processExists(pids.keeper)).toBe(true);
+
+			// Two at once (`r` and `buncargo restart`) spawn it once.
+			const restart = () => run.output.controls?.restart("mobile");
+			expect(await Promise.all([restart(), restart()])).toEqual([true, true]);
+			await eventually(() => run.output.tail("mobile").includes("mobile up"));
+			expect(run.spawned.filter((name) => name === "mobile")).toHaveLength(1);
 		} finally {
 			await stopDevServers(pids);
 			await rm(root, { recursive: true, force: true });

@@ -101,16 +101,20 @@ export function renderScreenRow(
 	return `${out}\u001b[0m${" ".repeat(width - used)}`;
 }
 
-const GLYPH: Record<AppState, string> = {
+/** An app's row: its state, or `off`, an app the run left out and has not started. */
+type SidebarState = AppState | "off";
+
+const GLYPH: Record<SidebarState, string> = {
 	starting: pc.yellow("◌"),
 	ready: pc.green("●"),
 	stopped: pc.dim("○"),
 	failed: pc.red("✗"),
+	off: pc.dim("·"),
 };
 
 interface SidebarEntry {
 	name: string;
-	state?: AppState;
+	state?: SidebarState;
 	/** "exit 1", shown for a stopped or failed app. */
 	detail?: string;
 	unread: boolean;
@@ -135,7 +139,9 @@ export function renderSidebar(
 		const state = entry.state ?? "starting";
 		const label = entry.detail ?? state;
 		const mark = entry.unread ? pc.red("!") : " ";
-		const name = active ? entry.name : colorizeName(entry.name);
+		let name = colorizeName(entry.name);
+		if (active) name = entry.name;
+		else if (state === "off") name = pc.dim(entry.name);
 		const left = ` ${GLYPH[state]} ${name}`;
 		const right = `${pc.dim(label)}${mark}`;
 		const gap = width - Bun.stringWidth(left) - Bun.stringWidth(right);

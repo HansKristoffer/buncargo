@@ -1,7 +1,7 @@
 import { writeSync } from "node:fs";
 import { format } from "node:util";
 import type { IMarker } from "@xterm/headless";
-import { clamp } from "hanzio";
+import { clamp, getErrorMessage } from "hanzio";
 import pc from "picocolors";
 import { openUrl } from "../../core/open-url";
 import {
@@ -48,6 +48,11 @@ interface RunTuiOptions {
 	apps: readonly string[];
 	/** Subset of `apps` entries that are finite reactive tasks (shown with `r run` and no interact mode). */
 	taskNames?: ReadonlySet<string>;
+	/**
+	 * Subset of `apps` the run left out: listed as not started until `r`
+	 * starts one (`RunOutput.startApp`), then shown like any other app.
+	 */
+	leftOut?: ReadonlySet<string>;
 	/** The URL `o` opens for an app (what BuncargoBar's open does). */
 	urlFor(app: string): string | undefined;
 	actions?: readonly TuiAction[];
@@ -236,6 +241,7 @@ export class RunTui {
 	private readonly stdout: NodeJS.WriteStream;
 	private readonly appSet: ReadonlySet<string>;
 	private readonly taskSet: ReadonlySet<string>;
+	private readonly leftOut: ReadonlySet<string>;
 	private readonly onInput = (data: Buffer | string) =>
 		this.input(String(data));
 	private readonly onResize = () => this.layout(true);
@@ -255,6 +261,47 @@ export class RunTui {
 		this.stdout = options.stdout ?? process.stdout;
 		this.appSet = new Set(options.apps);
 		this.taskSet = options.taskNames ?? new Set();
+		this.leftOut = options.leftOut ?? new Set();
+	}
+
+	/** Left out by the run, and not started since. */
+	private notStarted(app: string | undefined): boolean {
+		return (
+			app !== undefined &&
+			this.leftOut.has(app) &&
+			!this.options.output.states.has(app)
+		);
+	}
+
+	/** A footer message that arrives after the key that asked for it. */
+	private say(text: string): void {
+		this.message = text;
+		this.invalidate();
+	}
+
+	private startLeftOut(app: string): void {
+		const start = this.options.output.startApp;
+		if (!start) {
+			this.message = `${app} can start once the run's own apps are up`;
+			return;
+		}
+
+		this.message = `Starting ${app}…`;
+		void start(app).then(
+			(reply) => {
+				// The rest of a refusal is in the Overview.
+				if (reply.status === "refused") {
+					const [firstLine] = reply.reason.split("\n", 1);
+					this.say(firstLine ?? "");
+				} else if (reply.apps.length === 0) {
+					this.say(`${app} is already starting`);
+				} else if (reply.apps.length > 1) {
+					this.say(`Starting ${reply.apps.join(", ")}…`);
+				}
+			},
+			(error: unknown) =>
+				this.say(`${app} could not start: ${getErrorMessage(error)}`),
+		);
 	}
 
 	/** Pane size every app's terminal gets. */
@@ -575,7 +622,9 @@ export class RunTui {
 				}
 				return;
 			case "o":
-				if (app) {
+				if (this.notStarted(app)) {
+					this.message = `${app} is not started; r starts it`;
+				} else if (app) {
 					const url = this.taskSet.has(app)
 						? undefined
 						: this.options.urlFor(app);
@@ -588,7 +637,9 @@ export class RunTui {
 				}
 				return;
 			case "r":
-				if (app) {
+				if (app && this.notStarted(app)) {
+					this.startLeftOut(app);
+				} else if (app) {
 					const restart = this.options.output.controls?.restart;
 					if (restart) void restart(app).catch(() => {});
 					const isTask = this.taskSet.has(app);
@@ -954,7 +1005,7 @@ export class RunTui {
 
 	private urlTargets(): [string, string][] {
 		return this.options.apps.flatMap((app) => {
-			if (this.taskSet.has(app)) return [];
+			if (this.taskSet.has(app) || this.notStarted(app)) return [];
 			const url = this.options.urlFor(app);
 			return url ? [[app, url] as [string, string]] : [];
 		});
@@ -1005,7 +1056,7 @@ export class RunTui {
 				const state = output.states.get(name);
 				return {
 					name,
-					state: state?.state,
+					state: this.notStarted(name) ? "off" : state?.state,
 					detail: state?.detail,
 					unread: this.unread.has(name),
 				};
@@ -1082,6 +1133,15 @@ export class RunTui {
 			);
 		}
 
+		if (this.notStarted(app)) {
+			const rows = [
+				fit(` ${colorizeName(app)} is not part of this run yet.`, pane.cols),
+				fit(pc.dim(` Press ${pc.bold("r")} to start it.`), pane.cols),
+			];
+			while (rows.length < pane.rows) rows.push(" ".repeat(pane.cols));
+			return rows;
+		}
+
 		// No terminal for this app: show the lines it printed.
 		const screen = output.screens.get(app);
 		if (!screen) {
@@ -1137,7 +1197,10 @@ export class RunTui {
 				: "";
 			title = ` Overview${filter}${scrolledBack(this.scroll.get("") ?? 0)}`;
 		} else {
-			const url = this.taskSet.has(app) ? undefined : this.options.urlFor(app);
+			const url =
+				this.taskSet.has(app) || this.notStarted(app)
+					? undefined
+					: this.options.urlFor(app);
 			const address = url ? `  ${pc.cyan(url)}` : "";
 			const interacting =
 				this.mode.kind === "interact"
@@ -1159,25 +1222,32 @@ export class RunTui {
 			);
 		}
 
-		const isTask = app !== undefined && this.taskSet.has(app);
-		const hints = app
-			? [
-					"↑↓ select",
-					...(isTask ? [] : ["enter interact"]),
-					...(!isTask && this.options.urlFor(app) ? ["o open"] : []),
-					isTask ? "r run" : "r restart",
-					"l log",
-					"esc overview",
-					"q quit",
-				]
-			: ["↑↓ select", "e errors", "o open", "l logs", "q quit"];
 		return renderFooter(
-			hints.map((hint) => {
+			this.hints(app).map((hint) => {
 				const [key, ...rest] = hint.split(" ");
 				return `${pc.bold(key ?? "")} ${rest.join(" ")}`;
 			}),
 			this.liveActions(),
 			cols,
 		);
+	}
+
+	/** The footer's keys for the selected app, or the Overview's. */
+	private hints(app: string | undefined): string[] {
+		if (!app) return ["↑↓ select", "e errors", "o open", "l logs", "q quit"];
+		if (this.notStarted(app)) {
+			return ["↑↓ select", "r start", "esc overview", "q quit"];
+		}
+
+		const isTask = this.taskSet.has(app);
+		return [
+			"↑↓ select",
+			...(isTask ? [] : ["enter interact"]),
+			...(!isTask && this.options.urlFor(app) ? ["o open"] : []),
+			isTask ? "r run" : "r restart",
+			"l log",
+			"esc overview",
+			"q quit",
+		];
 	}
 }

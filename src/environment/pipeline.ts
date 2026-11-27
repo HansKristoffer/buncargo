@@ -1,4 +1,4 @@
-import { mapValues, startTimer } from "hanzio";
+import { anySignal, mapValues, startTimer } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../container-runtime";
 import type { SkippedLeaseApp } from "../core/app-leases";
 import {
@@ -12,7 +12,10 @@ import { watchLinks } from "../core/link-watch";
 import { appsToRestartForLinks, hasReactiveLinks } from "../core/links";
 import { selectReactiveTasks } from "../core/process";
 import { buildApps } from "../core/process/build";
-import type { StartDevServersOptions } from "../core/process/dev-servers";
+import type {
+	SessionControls,
+	StartDevServersOptions,
+} from "../core/process/dev-servers";
 import type { CapturedValue } from "../core/process/output-capture";
 import { loadAppSecrets } from "../core/secrets/index";
 import { formatDone, formatWarn } from "../core/style";
@@ -68,8 +71,12 @@ export interface Prepared {
 interface Claimed {
 	readonly prepared: Prepared;
 	readonly apps: Record<string, ResolvedApp>;
-	/** Apps already running in another terminal that this run reuses. */
-	readonly reusedNames: readonly string[];
+	/**
+	 * Apps already running in another terminal that this run reuses, as its
+	 * entry lists them: every later claim lists them again.
+	 */
+	readonly reused: Record<string, ResolvedApp>;
+	readonly attached?: string;
 	/** `essential: false` apps left out: another run holds their lease. */
 	readonly skipped: readonly SkippedLeaseApp[];
 }
@@ -105,7 +112,26 @@ type SpawnOptions = Omit<
 	prepare?: (signal: AbortSignal) => Promise<void>;
 	/** The apps and an overlapping seed are all ready. */
 	onSeedReady?: () => void;
+	/**
+	 * Once startup has settled: how to start apps the run left out (the TUI's
+	 * `r` on one, `buncargo restart`). Never asked before then.
+	 */
+	onLateStart?: (start: LateStart) => void;
 };
+
+/**
+ * Start apps a running session left out: their leases (by `leasePolicy`,
+ * which is never asked at a terminal here) and rows first, then the apps,
+ * which spawn in the background. Resolves with the apps it took on, or the
+ * lease that refused them, in which case it took on none.
+ */
+export type LateStart = (
+	apps: Record<string, ResolvedApp>,
+	options: { leasePolicy: LeasePolicy; signal?: AbortSignal },
+) => Promise<
+	| { status: "started"; apps: readonly string[] }
+	| { status: "refused"; skipped: SkippedLeaseApp }
+>;
 
 /** What the app phases read from their environment. */
 export interface AppPipelineDeps {
@@ -194,7 +220,8 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 		return {
 			prepared,
 			apps: claimed.apps,
-			reusedNames: Object.keys(options.reused ?? {}),
+			reused: options.reused ?? {},
+			attached: options.attached,
 			skipped: claimed.skipped,
 		};
 	}
@@ -234,7 +261,7 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 			...Object.entries(apps)
 				.filter(([, app]) => app.devCommand !== false)
 				.map(([name]) => name),
-			...claimed.reusedNames,
+			...Object.keys(claimed.reused),
 		]);
 		const selectedServiceSet = new Set(prepared.selection.requiredServiceKeys);
 		const reactiveTaskMap = selectReactiveTasks(
@@ -253,7 +280,7 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 								apps: deps.allApps ?? apps,
 								buildEnv: (task: TaskConfig, taskSignal: AbortSignal) =>
 									buildTaskEnv(task, productionBuild, taskSignal),
-								initialReadyApps: claimed.reusedNames,
+								initialReadyApps: Object.keys(claimed.reused),
 							}
 						: undefined));
 
@@ -270,12 +297,18 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 
 		let startedProxy: EgressGuardProxy | undefined;
 		const guard = deps.egressGuard;
-		const needsEgressProxy =
-			guard?.enabled === true &&
-			!deps.hasActiveEgressProxy?.() &&
-			(Object.keys(apps).some((name) => guardsApp(guard, name)) ||
-				Object.values(reactiveTaskMap).some((task) => guardsTask(guard, task)));
-		if (needsEgressProxy && guard) {
+		// Before the apps it guards spawn: they read its address from their env.
+		const ensureEgressProxy = async (
+			guarded: readonly string[],
+			tasks: readonly TaskConfig[],
+		) => {
+			const needsEgressProxy =
+				guard?.enabled === true &&
+				!deps.hasActiveEgressProxy?.() &&
+				(guarded.some((name) => guardsApp(guard, name)) ||
+					tasks.some((task) => guardsTask(guard, task)));
+			if (!needsEgressProxy || !guard) return;
+
 			startedProxy = await startEgressGuardProxy({
 				allow: guard.allow,
 				mode: guard.mode,
@@ -287,7 +320,55 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 				},
 			});
 			await deps.setEgressProxy(startedProxy);
-		}
+		};
+		await ensureEgressProxy(Object.keys(apps), Object.values(reactiveTaskMap));
+
+		/** See {@link LateStart}. */
+		const startLate =
+			(controls: SessionControls, session: AbortSignal): LateStart =>
+			async (more, options) => {
+				// Never once the session is ending: its entry is being released,
+				// and a claim now would publish it again.
+				session.throwIfAborted();
+				const signal = anySignal(options.signal, session);
+				const { leasePolicy } = options;
+				const late = await claimApps(prepared, {
+					apps: more,
+					reused: claimed.reused,
+					attached: claimed.attached,
+					leasePolicy,
+					signal,
+				});
+				// Its leases back, and its rows off the entry: published again
+				// without them, or `wait` and `ls` read them as starting for good.
+				const giveBack = async () => {
+					await deps.claim.abandonApps(late.apps);
+					if (session.aborted) return;
+					await claimApps(prepared, {
+						apps: {},
+						reused: claimed.reused,
+						attached: claimed.attached,
+						leasePolicy,
+					}).catch(() => {});
+				};
+
+				const [skipped] = late.skipped;
+				if (skipped) {
+					await giveBack();
+					return { status: "refused", skipped };
+				}
+
+				try {
+					await ensureEgressProxy(Object.keys(late.apps), []);
+					const started = await controls.start(late.apps);
+					// The link watcher, if startup armed it, restarts the apps it finds here.
+					Object.assign(apps, late.apps);
+					return { status: "started", apps: started };
+				} catch (error) {
+					await giveBack();
+					throw error;
+				}
+			};
 
 		// `allowHostsOf`: each guarded app's hosts, once its secrets are in its env.
 		const reportedKeys = new Set<string>();
@@ -366,6 +447,7 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 					},
 					onReadyWatch: (controls, watchSignal) => {
 						options.onReadyWatch?.(controls, watchSignal);
+						options.onLateStart?.(startLate(controls, watchSignal));
 						const linksConfig = deps.linksConfig;
 						if (!linksConfig) return;
 						const activeLinks = Object.values(linksConfig).some(

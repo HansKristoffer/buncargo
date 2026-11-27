@@ -5,6 +5,10 @@ import type { AnyDevEnvironment, PreflightStep } from "../types";
 import { CliError } from "./errors";
 import * as log from "./log";
 
+/** A step runs for a start of `apps` when it names none or one of them. */
+const runsFor = (step: PreflightStep, apps: readonly string[]) =>
+	!step.apps || step.apps.some((app) => apps.includes(app));
+
 /**
  * Run the config's and integrations' `preflight` steps, in order, with the
  * real terminal: before the TUI takes the screen, so a step can prompt or
@@ -15,8 +19,8 @@ export async function runPreflight(
 	configured: readonly PreflightStep[] | undefined,
 	selectedApps: readonly string[],
 ): Promise<void> {
-	const steps = (configured ?? []).filter(
-		(step) => !step.apps || step.apps.some((app) => selectedApps.includes(app)),
+	const steps = (configured ?? []).filter((step) =>
+		runsFor(step, selectedApps),
 	);
 	// A CI job can have a terminal, and still nobody to log in.
 	const interactive = isInteractive() && !isCI();
@@ -28,5 +32,28 @@ export async function runPreflight(
 			throw new CliError(`${step.name}: ${message}`);
 		}
 		log.done(step.name);
+	}
+}
+
+/**
+ * The steps that apps a running `dev` starts late bring and its own start
+ * did not run, without a terminal: the TUI owns it. A step that needs one (a
+ * login) throws with what to run instead.
+ */
+export async function runLatePreflight(
+	env: AnyDevEnvironment,
+	configured: readonly PreflightStep[] | undefined,
+	lateApps: readonly string[],
+	startedApps: readonly string[],
+): Promise<void> {
+	const steps = (configured ?? []).filter(
+		(step) => runsFor(step, lateApps) && !runsFor(step, startedApps),
+	);
+	for (const step of steps) {
+		try {
+			await step.run({ root: env.root, env, interactive: false });
+		} catch (error) {
+			throw new CliError(`${step.name}: ${getErrorMessage(error)}`);
+		}
 	}
 }

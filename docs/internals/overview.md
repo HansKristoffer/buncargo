@@ -15,7 +15,7 @@ shells every mutation out to `buncargo stop`.
 `runDevFlow` does more than `start()`, by decision rather than oversight: named hosts
 (`cli/dev-hosts.ts`; `start()` leaves `env.urls` on `localhost:port`), the fast checks and
 integration `preflight` steps, connect sharing, the per-run logs and the requests `restart`,
-`send` and `logs` act on, and parking an app that never came up. Each one belongs to a long-lived
+`send` and `logs` act on, parking an app that never came up, and starting an app the run left out. Each one belongs to a long-lived
 run that a person or agent started: it asks at a terminal (preflight, takeover), claims
 machine-wide state held by that process until it exits (host routes, connect), or describes that
 process to other tools. A library `start()` runs inside a test or script buncargo does not own,

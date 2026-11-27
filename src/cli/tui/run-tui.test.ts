@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { RunOutput } from "../../core/process/run-output";
+import { RunOutput, type StartReply } from "../../core/process/run-output";
 import { RunTui } from "./run-tui";
 
 /** Poll a condition until it holds or the deadline passes. */
@@ -910,6 +910,73 @@ describe("RunTui state", () => {
 				),
 			);
 			expect(triggered).toEqual(["gen:client"]);
+		} finally {
+			tui.stop();
+		}
+	});
+	it("lists an app the run left out as not started, and starts it on `r`", async () => {
+		const terminal = fakeTerminal();
+		const output = new RunOutput({ terminals: "pipe" });
+		output.state("api", { state: "ready" });
+		const started: string[] = [];
+		const answers: StartReply[] = [
+			{
+				status: "refused",
+				reason:
+					"mobile needs redis, which this run did not start.\nThe rest of it.",
+			},
+			{ status: "started", apps: ["metro", "mobile"] },
+		];
+		const tui = new RunTui({
+			output,
+			apps: ["api", "mobile"],
+			leftOut: new Set(["mobile"]),
+			urlFor: (app) => `https://${app}.shop.localhost`,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		const footerAfter = async (since: number, text: string) =>
+			until(() =>
+				Bun.stripANSI(terminal.writes.slice(since).join("")).includes(text),
+			);
+		try {
+			tui.start();
+			type(tui, "jj");
+			await until(() => drawn(terminal).includes("r start"));
+			const view = drawn(terminal);
+			expect(view).toContain("off");
+			expect(view).toContain("mobile is not part of this run yet");
+			expect(view).not.toContain("https://mobile.shop.localhost");
+			expect(view).not.toContain("enter interact");
+
+			// Before the run binds the start: says so, starts nothing.
+			let since = terminal.writes.length;
+			type(tui, "r");
+			await footerAfter(since, "can start once the run's own apps are up");
+
+			output.startApp = async (name) => {
+				started.push(name);
+				return answers.shift() ?? { status: "started", apps: [name] };
+			};
+			since = terminal.writes.length;
+			type(tui, "r");
+			await footerAfter(
+				since,
+				"mobile needs redis, which this run did not start.",
+			);
+
+			since = terminal.writes.length;
+			type(tui, "r");
+			await footerAfter(since, "Starting metro, mobile…");
+			expect(started).toEqual(["mobile", "mobile"]);
+
+			// Started: an app like any other, restarted by `r`. Any key (a
+			// redraw here) ends the message the footer shows meanwhile.
+			output.state("mobile", { state: "starting" });
+			since = terminal.writes.length;
+			type(tui, "\u000c");
+			await footerAfter(since, "r restart");
 		} finally {
 			tui.stop();
 		}

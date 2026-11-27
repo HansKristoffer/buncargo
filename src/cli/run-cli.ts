@@ -95,6 +95,7 @@ import {
 	releaseNamedHosts,
 } from "./dev-hosts";
 import { listenForInterrupts } from "./dev-interrupts";
+import { bindLateStarts, leftOutApps } from "./dev-late-start";
 import {
 	cliLeasePolicy,
 	leaseSkipLines,
@@ -119,7 +120,7 @@ import {
 	classifyCliApps,
 	unhealthyAppMessage,
 } from "./port-reuse";
-import { runPreflight } from "./preflight";
+import { runLatePreflight, runPreflight } from "./preflight";
 import {
 	type DevFailureContext,
 	describeAppFailure,
@@ -1249,9 +1250,19 @@ async function runDevFlow<
 			new Set(plan.requiredServiceKeys),
 		),
 	);
+	// What the run can still start on request (the TUI's `r`, `buncargo
+	// restart`): every app it left out. A run that spawns nothing has no
+	// session to take one on.
+	const leftOut = holds
+		? []
+		: leftOutApps(
+				env.apps,
+				new Set([...classifiedApps.startNames, ...classifiedApps.reusedNames]),
+			);
 	const view = await openDevOutput(env, classifiedApps.startApps, {
 		tui: tuiMode(args.values),
 		tasks: reactiveTaskNames,
+		leftOut,
 	});
 	failureContext.output = view.output;
 	// What preparation said before this output opened goes to the run's log and
@@ -1480,6 +1491,47 @@ async function runDevFlow<
 			// Nothing to wait for without --expose, so needsPublicUrls apps
 			// join wave 1 and get health-checked like everything else.
 			deferPublicUrlApps: exposeRequested(args.values),
+			onLateStart: (start) => {
+				if (leftOut.length === 0) return;
+
+				const { output } = view;
+				bindLateStarts(output, {
+					apps: env.apps,
+					services: env.services,
+					runServices: new Set(plan.requiredServiceKeys),
+					running: () => [
+						...[...output.states.keys()].filter((name) => name in env.apps),
+						...classifiedApps.reusedNames,
+					],
+					servedElsewhere: async (apps) => {
+						const classified = await classifyCliApps(apps, env.ports, {
+							signal,
+							waitForServer: (url, timeout) =>
+								withSignal(env.waitForServer(url, timeout), signal),
+							context: { root: env.root, projectName: env.projectName },
+							runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
+							skipContainers: !hasServices,
+						});
+						const [sick] = classified.unhealthy;
+						if (sick) throw new CliError(unhealthyAppMessage(sick));
+						return classified.reusedNames;
+					},
+					preflight: (names) =>
+						runLatePreflight(
+							env as unknown as AnyDevEnvironment,
+							pipeline.preflight,
+							names,
+							Object.keys(appsForDev),
+						),
+					start,
+					// Never a prompt over the TUI; `--takeover` still takes one over.
+					leasePolicy: cliLeasePolicy({
+						takeover: () => takeover,
+						interactive: false,
+					}),
+					signal,
+				});
+			},
 		});
 		return undefined;
 	} finally {

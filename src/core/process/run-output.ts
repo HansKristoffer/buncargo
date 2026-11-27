@@ -45,6 +45,11 @@ export interface AppStateDetail {
 	rerunCommand?: string;
 }
 
+/** What came of asking a run to start an app it left out. */
+export type StartReply =
+	| { status: "started"; apps: readonly string[] }
+	| { status: "refused"; reason: string };
+
 export interface RunOutputListener {
 	line?(line: OutputLine): void;
 	state?(app: string, state: AppStateDetail): void;
@@ -198,6 +203,13 @@ export class RunOutput {
 	 * the replacement failed.
 	 */
 	controls?: { restart(name: string): Promise<boolean> };
+	/**
+	 * Bound by the run once its startup has settled: start `name`, an app it
+	 * left out, with the apps it requires. Resolves once the start has begun
+	 * (claimed, and spawning in the background), or with why the run cannot
+	 * start it; rejects when it failed.
+	 */
+	startApp?: (name: string) => Promise<StartReply>;
 	readonly screens = new Map<string, AppScreen>();
 	readonly states = new Map<string, AppStateDetail>();
 	/** Captured values per app, by capture name. */

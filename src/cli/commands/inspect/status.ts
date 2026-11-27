@@ -32,7 +32,13 @@ import type {
 } from "../../../types";
 import { BASE_EXITS, defineCommand } from "../../command-spec";
 import { strayLoopbackUrls } from "../../core-checks";
-import type { StatusJson } from "../../json-documents";
+import {
+	devCommandWith,
+	leftOutApps,
+	planLateStart,
+	runsThatCanStart,
+} from "../../dev-late-start";
+import type { StartableAppJson, StatusJson } from "../../json-documents";
 import * as log from "../../log";
 import { loadLiveEnv } from "../load-env";
 
@@ -123,6 +129,7 @@ async function readStatus(): Promise<StatusJson> {
 
 	const allLiveRuns = await readLiveRuns().catch(() => []);
 	const runs = allLiveRuns.filter((run) => run.root === env.root);
+	const canStart = new Set(runsThatCanStart(runs));
 
 	// The public URLs the live runs publish: each run's tunnels, which close
 	// with it, and the URLs its apps printed.
@@ -163,7 +170,22 @@ async function readStatus(): Promise<StatusJson> {
 		// First: what an agent reads `status` for, and `| head` keeps the top.
 		// The live runs of this checkout, with each app's status, pid and URL,
 		// and `degraded` while a service container is down under it.
-		runs: runs.map((run) => ({ ...run, health: runHealth(run) })),
+		runs: runs.map((run) => ({
+			...run,
+			health: runHealth(run),
+			startable: canStart.has(run)
+				? startableIn(env, run, {
+						// One another run lists is not left out: it runs there.
+						elsewhere: new Set(
+							runs
+								.filter((other) => other !== run)
+								.flatMap((other) => other.apps.map((app) => app.name)),
+						),
+						// With several, `restart` must be told which run starts it.
+						pickRun: canStart.size > 1,
+					})
+				: [],
+		})),
 		project: env.projectName,
 		root: env.root,
 		portOffset: env.portOffset,
@@ -233,6 +255,36 @@ async function readContainerListing(runtime: ContainerRuntimeAdapter): Promise<
 	}
 }
 
+/**
+ * The apps `run` (one of {@link runsThatCanStart}) left out and can start,
+ * leaving out those `elsewhere` runs: each with what it brings, the services
+ * it lacks, and the command that starts it.
+ */
+export function startableIn(
+	config: Pick<AnyDevEnvironment, "apps" | "services">,
+	run: Pick<RunEntry, "apps" | "services" | "sessionId">,
+	options: { elsewhere: ReadonlySet<string>; pickRun: boolean },
+): StartableAppJson[] {
+	const running = new Set(run.apps.map((app) => app.name));
+	const services = new Set(run.services.map((service) => service.name));
+	const runFlag = options.pickRun ? ` --run=${run.sessionId}` : "";
+	const leftOut = leftOutApps(config.apps, running).filter(
+		(name) => !options.elsewhere.has(name),
+	);
+	return leftOut.map((name) => {
+		const plan = planLateStart(config, { running, services }, name);
+		return {
+			name,
+			apps: Object.keys(plan.apps),
+			missingServices: plan.missingServices,
+			command:
+				plan.missingServices.length === 0
+					? `buncargo restart ${name}${runFlag}`
+					: devCommandWith(running, name),
+		};
+	});
+}
+
 /** How many of this checkout's removal records `status` shows. */
 const RECENT_STOPS = 5;
 
@@ -263,15 +315,33 @@ export function describePlannedOffset(input: {
 
 /**
  * One line per app of this checkout's live runs, `name  status  url`, aligned:
- * the first thing `status` prints, so `| head` shows it.
+ * the first thing `status` prints, so `| head` shows it. Then each app a run
+ * left out, `off`, with the command that starts it.
  */
 export function appStatusLines(
-	runs: readonly Pick<RunEntry, "apps">[],
+	runs: readonly (Pick<RunEntry, "apps"> & {
+		startable: readonly StartableAppJson[];
+	})[],
 ): string[] {
-	const apps = runs.flatMap((run) => run.apps);
-	if (apps.length === 0) {
+	const listed = runs.flatMap((run) => run.apps);
+	if (listed.length === 0) {
 		return ["apps: no live run (start one with `buncargo dev --detach`)"];
 	}
+
+	const off = new Map(
+		runs.flatMap((run) => run.startable).map((app) => [app.name, app]),
+	);
+	const apps = [
+		...listed,
+		...[...off.values()].map((app) => ({
+			name: app.name,
+			status: "off",
+			openUrl:
+				app.missingServices.length === 0
+					? app.command
+					: `needs ${app.missingServices.join(", ")}: ${app.command}`,
+		})),
+	];
 
 	const nameWidth = Math.max(...apps.map((app) => app.name.length));
 	const statusWidth = Math.max(...apps.map((app) => app.status.length));

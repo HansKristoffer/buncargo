@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from "bun:test";
+import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import {
 	existsSync,
 	mkdtempSync,
@@ -16,6 +16,7 @@ import {
 } from "../../core/run-registry";
 import { getProjectStateDir } from "../../core/state-paths";
 import { useTempHome } from "../../core/test-env.testing";
+import type { RestartJson } from "../json-documents";
 import {
 	type RestartReply,
 	requestRestart,
@@ -64,7 +65,7 @@ const request = () =>
 	join(getProjectStateDir(root), "restart", "restart-session");
 const apiRow = async () => (await loadRuns())[0]?.apps[0];
 const restart = (names: string[], timeouts = DEV) =>
-	restartApps({ root, session: undefined, names }, timeouts);
+	restartApps({ root, session: undefined, names, json: false }, timeouts);
 
 /** This test process answering as the `dev` run would. */
 async function withRun(
@@ -109,8 +110,143 @@ it("exits 3 when the run refuses, and 1 when the replacement failed", async () =
 	);
 });
 
-it("exits 2 for an app no run of the checkout started", async () => {
-	expect(await restart(["nope"])).toBe(RESTART_EXIT.notFound);
+it("exits 2 for an app the run neither started nor left out", async () => {
+	await withRun(
+		(app) => ({
+			status: "not-ours",
+			reason: `this run started no app "${app}"`,
+		}),
+		async () => {
+			expect(await restart(["nope"])).toBe(RESTART_EXIT.notFound);
+		},
+	);
+});
+
+it("exits 2 when no run of the checkout spawned apps", async () => {
+	const elsewhere = realpathSync(
+		mkdtempSync(join(tmpdir(), "buncargo-restart-other-")),
+	);
+	try {
+		const exit = await restartApps(
+			{ root: elsewhere, session: undefined, names: ["mobile"], json: false },
+			NOBODY,
+		);
+		expect(exit).toBe(RESTART_EXIT.notFound);
+	} finally {
+		rmSync(elsewhere, { recursive: true, force: true });
+	}
+});
+
+it("asks the run to start an app it left out: 0 once the start began, 3 when it refuses", async () => {
+	const asked: string[] = [];
+	const answers: RestartReply[] = [
+		{ status: "started", apps: ["api-worker", "mobile"] },
+		{
+			status: "refused",
+			reason:
+				"mobile needs redis, which this run did not start.\nEnd the run and start it with them.",
+		},
+	];
+	await withRun(
+		(app) => {
+			asked.push(app);
+			return answers.shift() ?? { status: "began" };
+		},
+		async () => {
+			expect(await restart(["mobile"])).toBe(RESTART_EXIT.ok);
+			expect(await restart(["mobile"])).toBe(RESTART_EXIT.refused);
+		},
+	);
+	expect(asked).toEqual(["mobile", "mobile"]);
+});
+
+it("prints one JSON document with each answer, stopping at the first that did not restart", async () => {
+	const printed: string[] = [];
+	const spy = spyOn(console, "log").mockImplementation((line) => {
+		printed.push(String(line));
+	});
+	const answers: RestartReply[] = [
+		{ status: "began" },
+		{ status: "started", apps: ["metro", "mobile"] },
+		{
+			status: "refused",
+			reason: "search needs redis.\nbuncargo dev --apps=api,search",
+		},
+	];
+	try {
+		await withRun(
+			() => answers.shift() ?? { status: "began" },
+			async () => {
+				const exit = await restartApps(
+					{
+						root,
+						session: undefined,
+						names: ["api", "mobile", "search", "never-asked"],
+						json: true,
+					},
+					DEV,
+				);
+				expect(exit).toBe(RESTART_EXIT.refused);
+			},
+		);
+	} finally {
+		spy.mockRestore();
+	}
+
+	expect(printed).toHaveLength(1);
+	const document: RestartJson = JSON.parse(printed[0] ?? "");
+	expect(document).toEqual({
+		version: 1,
+		exitCode: RESTART_EXIT.refused,
+		results: [
+			{
+				app: "api",
+				outcome: "restarted",
+				message: "Restarted api.",
+				hints: [],
+			},
+			{
+				app: "mobile",
+				outcome: "started",
+				message: `Started metro, mobile in the run (pid ${process.pid}).`,
+				hints: [],
+				apps: ["metro", "mobile"],
+			},
+			{
+				app: "search",
+				outcome: "refused",
+				message: "The run did not start search: search needs redis.",
+				hints: ["buncargo dev --apps=api,search"],
+			},
+		],
+	});
+});
+
+it("asks for --run when several runs of the checkout could start a left-out app", async () => {
+	await publishRun({
+		...buildRunEntry({
+			sessionId: "second-session",
+			projectPrefix: "shop",
+			projectName: "shop",
+			root,
+			isWorktree: false,
+		}),
+		apps: [
+			{
+				name: "web",
+				port: 7200,
+				url: "http://localhost:7200",
+				loopbackUrl: "http://localhost:7200",
+				status: "starting",
+			},
+		],
+	});
+	await patchRun("second-session", {
+		apps: [{ name: "web", pid: process.pid, status: "ready" }],
+	});
+
+	expect(await restart(["mobile"], NOBODY)).toBe(RESTART_EXIT.failed);
+	expect(existsSync(request())).toBe(false);
 });
 
 it("exits 3 and withdraws the request when the run takes none, leaving its row alone", async () => {
