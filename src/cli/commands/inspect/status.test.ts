@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { resolveApps, resolveServices } from "../../../config/resolve";
 import { ROUTES_FILENAME } from "../../../core/hosts/paths";
 import { CI_ENV_VARS } from "../../../core/runtime-flags";
 import {
@@ -17,7 +18,12 @@ import {
 	fakeDocker,
 } from "../../../docker/fake-docker.testing";
 import type { StatusJson } from "../../json-documents";
-import { appStatusLines, describePlannedOffset, runHealth } from "./status";
+import {
+	appStatusLines,
+	describePlannedOffset,
+	runHealth,
+	startableIn,
+} from "./status";
 
 const cli = resolve(import.meta.dir, "../../bin.ts");
 let dir: string;
@@ -181,6 +187,73 @@ it("starts the plain status with one aligned line per app", () => {
 	]);
 	expect(appStatusLines([])).toEqual([
 		"apps: no live run (start one with `buncargo dev --detach`)",
+	]);
+});
+
+it("lists the apps a run left out, with what each brings and the command that starts it", () => {
+	const config = {
+		apps: resolveApps({
+			api: { port: 3000, devCommand: "bun api.ts" },
+			mobile: {
+				port: 8081,
+				devCommand: "bunx expo start",
+				requiredApps: ["api", "metro"],
+			},
+			metro: { port: 8082, devCommand: "bun metro.ts" },
+			search: {
+				port: 3002,
+				devCommand: "bun search.ts",
+				requiredServices: ["redis"],
+			},
+			docs: { port: 3003, devCommand: false },
+		}),
+		services: resolveServices({ redis: { port: 6379 } }),
+	};
+	const run = {
+		sessionId: "s1",
+		apps: [{ name: "api", status: "ready" as const, pid: 42 }],
+		services: [],
+	};
+
+	const startable = startableIn(config, run, { pickRun: false });
+	expect(startable).toEqual([
+		{
+			name: "mobile",
+			apps: ["metro", "mobile"],
+			missingServices: [],
+			command: "buncargo restart mobile",
+		},
+		{
+			name: "metro",
+			apps: ["metro"],
+			missingServices: [],
+			command: "buncargo restart metro",
+		},
+		{
+			name: "search",
+			apps: ["search"],
+			missingServices: ["redis"],
+			command: "buncargo dev --apps=api,search",
+		},
+	]);
+	expect(startableIn(config, run, { pickRun: true })[0]?.command).toBe(
+		"buncargo restart mobile --run=s1",
+	);
+	// A run that spawned nothing has no session to start one in.
+	expect(
+		startableIn(
+			config,
+			{ ...run, apps: [{ name: "api", status: "reused" as const }] },
+			{ pickRun: false },
+		),
+	).toEqual([]);
+
+	expect(appStatusLines([{ ...run, startable }])).toEqual([
+		"apps:",
+		"  api     ready",
+		"  mobile  off    buncargo restart mobile",
+		"  metro   off    buncargo restart metro",
+		"  search  off    needs redis: buncargo dev --apps=api,search",
 	]);
 });
 

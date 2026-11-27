@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveApps } from "../config/resolve";
-import { RunOutput } from "../core/process/run-output";
+import { RunOutput, type StartReply } from "../core/process/run-output";
 import * as prompt from "../core/prompt";
 import { openDevOutput, restartReply } from "./dev-output";
 import { RunTui } from "./tui/run-tui";
@@ -73,6 +73,48 @@ it("answers a restart request with what the supervisor made of it", async () => 
 		reason: "port 3000 is taken",
 	});
 	expect(await restartReply(output, "web")).toMatchObject({
+		status: "not-ours",
+	});
+});
+
+it("answers a restart request for an app the run left out by starting it", async () => {
+	const output = new RunOutput({ terminals: "pipe" });
+	output.controls = { restart: async () => true };
+	const leftOut = new Set(["mobile"]);
+
+	// Not until the run's own apps are up and it binds the start: worth
+	// asking again, so not a refusal.
+	expect(await restartReply(output, "mobile", leftOut)).toMatchObject({
+		status: "failed",
+	});
+
+	const replies: (() => Promise<StartReply>)[] = [
+		async () => ({ status: "started", apps: ["metro", "mobile"] }),
+		async () => ({ status: "refused", reason: "mobile needs redis" }),
+		async () => {
+			throw new Error("Required secrets are missing");
+		},
+	];
+	output.startApp = async () => {
+		const next = replies.shift();
+		if (!next) throw new Error("asked more often than answered");
+		return next();
+	};
+
+	expect(await restartReply(output, "mobile", leftOut)).toEqual({
+		status: "started",
+		apps: ["metro", "mobile"],
+	});
+	expect(await restartReply(output, "mobile", leftOut)).toEqual({
+		status: "refused",
+		reason: "mobile needs redis",
+	});
+	expect(await restartReply(output, "mobile", leftOut)).toEqual({
+		status: "failed",
+		reason: "Required secrets are missing",
+	});
+	// Not one it left out: as before.
+	expect(await restartReply(output, "web", leftOut)).toMatchObject({
 		status: "not-ours",
 	});
 });

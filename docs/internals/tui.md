@@ -76,6 +76,13 @@ and `run-tui.ts` is the controller.
 - Reactive task panes (`taskNames` in `RunTuiOptions`) sit alongside apps in the sidebar with their
   `detail` label (`idle`, `running`, `ok`, `exit <n>`), show `r run` in the footer, ignore `Enter`
   (no interact mode), and route `r` through `controls.restart(name)` to trigger a run on demand.
+- Apps the run left out (`leftOut` in `RunTuiOptions`, from `leftOutApps` in `run-cli.ts`) sit
+  below the others as `off` until they have a state: no URL, no interact mode, `r start` in the
+  footer, routed through `output.startApp`, which the run binds once its startup has settled
+  (before that, `r` says so and starts nothing). The answer arrives after the key, so it is put in
+  the footer with `say()`; a refusal's first line goes there and the whole of it to the Overview.
+  `restartReply` routes `buncargo restart` for one of them the same way. Binding it announces
+  the left-out apps once (`leftOutNotice`), so the Overview says what `r` can start.
 - Mouse reporting (SGR with drags, `?1000`/`?1002`/`?1006`) is part of entering and leaving the
   screen, so every restore path turns it off too. The wheel scrolls the shown pane, also in
   interact mode, where mouse reports are stripped rather than typed into an app that never asked

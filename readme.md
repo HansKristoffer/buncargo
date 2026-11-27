@@ -17,7 +17,7 @@ Local development environments are fragile: hand-written compose files, scattere
 - **Port allocation**: hash of `projectPrefix` + worktree, then probe and claim the block in `~/.buncargo/offsets.json`
 - **Built-in presets**: Postgres, Redis, ClickHouse
 - **Dev server orchestration**: reuse healthy apps, kill own orphans, fail on foreign port owners
-- **Terminal UI**: the default in a terminal (`--no-tui` for prefixed lines): every app in its own terminal pane, full-screen apps (Shopify CLI, Expo) render natively, an Overview interleaves the rest
+- **Terminal UI**: the default in a terminal (`--no-tui` for prefixed lines): every app in its own terminal pane, full-screen apps (Shopify CLI, Expo) render natively, an Overview interleaves the rest; apps `--apps` or the profile left out are listed `off`, and `r` starts one in the running run
 - **Non-essential apps and logs**: `essential: false` apps stop without ending the run (`r` restarts); every run's output in `.buncargo/logs`, read with `buncargo logs`
 - **Phased public tunnels**: start backend, wait for health, open tunnels, then start apps that need `*_PUBLIC_URL`
 - **Checkout files**: gitignored `.env.local` files reach every worktree and clone from one copy per machine, without overwriting local edits (`buncargo files`)

@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { anySignal, mapValues, typedSwitch } from "hanzio";
+import { anySignal, mapValues, pick, toError, typedSwitch } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../../container-runtime/types";
 import type { ResolvedApp, TaskConfig } from "../../types";
 import { abortableSleep, abortError } from "../deadline";
@@ -26,7 +26,7 @@ import {
 	runPrebuild,
 	spawnManagedApp,
 } from "./app-process";
-import { AppSupervision } from "./app-supervision";
+import { AppSupervision, type SupervisedApp } from "./app-supervision";
 import { watchApp } from "./app-watch";
 import { createCaptureRestarts } from "./capture-restarts";
 import {
@@ -186,16 +186,25 @@ export interface StartDevServersOptions {
 	reactiveTasks?: ReactiveTasksInput | false;
 	/**
 	 * Called after startup waves settle and before `onReady`, giving callers
-	 * restart/announce hooks for external watchers (such as cross-repo links).
+	 * the session's controls: restart/announce hooks for external watchers
+	 * (such as cross-repo links), and starting apps the run left out.
 	 */
-	onReadyWatch?: (
-		controls: {
-			restart(name: string, reason?: string): Promise<boolean>;
-			announce(target: string, text: string): void;
-			ownedApps(): readonly string[];
-		},
-		signal: AbortSignal,
-	) => void;
+	onReadyWatch?: (controls: SessionControls, signal: AbortSignal) => void;
+}
+
+/** What a caller may ask of a session once its startup waves have settled. */
+export interface SessionControls {
+	restart(name: string, reason?: string): Promise<boolean>;
+	announce(target: string, text: string): void;
+	ownedApps(): readonly string[];
+	/**
+	 * Start apps this run left out at startup, as `essential: false` ones: the
+	 * run went on without them, so their going down never ends it. Each layer
+	 * of `startAfter` is ready before the next spawns. Resolves with the apps
+	 * it took on once they are supervised, before they spawn; throws, taking
+	 * on none, when their secrets cannot be loaded or the run is ending.
+	 */
+	start(apps: Record<string, ResolvedApp>): Promise<readonly string[]>;
 }
 
 function resolveAppEnv(
@@ -494,35 +503,34 @@ export async function startDevServers(
 	let overlapTask: ReturnType<typeof createDeferredTask> | undefined;
 	let reactiveTasks: ReactiveTaskRunner | undefined;
 
-	const supervisor = new AppSupervision(
-		mapValues(startable, (config, name) => ({
-			optional: !config.essential,
-			worker: config.port === undefined,
-			checked: readinessCheck(config) !== "none",
-			attached: name === attachedName,
-			port: config.port === undefined ? undefined : ports[name],
-			graceMs: config.stopGraceMs,
-			startAfter: config.startAfter,
-		})),
-		{
-			signal: anySignal(options.signal, interrupts.signal),
-			shutdownGraceMs: options.shutdownGraceMs,
-			keepOthersOnFailure: options.keepOthersOnFailure,
-			requiredBy: afterAppsTask
-				? [{ label: afterAppsTask.label, apps: afterAppsTask.apps }]
-				: undefined,
-			onPhase: (name, life, previous, event) => {
-				if (life.phase === "ready" && previous.phase !== "ready") {
-					overlapTask?.onAppReady(name);
-				}
-				reactiveTasks?.onAppPhase(name, life.phase, previous.phase);
-				showPhase(name, life, previous, event);
-				return options.onAppPhase?.(name, life, previous);
-			},
-			onNotice: (name, text) =>
-				output.announce(name, text, { raw: formatWarn(text), level: "warn" }),
+	const supervised = (config: ResolvedApp, name: string): SupervisedApp => ({
+		optional: !config.essential,
+		worker: config.port === undefined,
+		checked: readinessCheck(config) !== "none",
+		attached: name === attachedName,
+		port: config.port === undefined ? undefined : ports[name],
+		graceMs: config.stopGraceMs,
+		startAfter: config.startAfter,
+	});
+
+	const supervisor = new AppSupervision(mapValues(startable, supervised), {
+		signal: anySignal(options.signal, interrupts.signal),
+		shutdownGraceMs: options.shutdownGraceMs,
+		keepOthersOnFailure: options.keepOthersOnFailure,
+		requiredBy: afterAppsTask
+			? [{ label: afterAppsTask.label, apps: afterAppsTask.apps }]
+			: undefined,
+		onPhase: (name, life, previous, event) => {
+			if (life.phase === "ready" && previous.phase !== "ready") {
+				overlapTask?.onAppReady(name);
+			}
+			reactiveTasks?.onAppPhase(name, life.phase, previous.phase);
+			showPhase(name, life, previous, event);
+			return options.onAppPhase?.(name, life, previous);
 		},
-	);
+		onNotice: (name, text) =>
+			output.announce(name, text, { raw: formatWarn(text), level: "warn" }),
+	});
 
 	if (reactiveTasksInput && Object.keys(reactiveTasksInput.tasks).length > 0) {
 		reactiveTasks = new ReactiveTaskRunner({
@@ -594,9 +602,25 @@ export async function startDevServers(
 		else show();
 	}
 
+	const firstSpawns = new Map<string, Promise<boolean>>();
 	// A replaced app is ready again the way it was the first time: checked
 	// on the side, so a failing restart never stalls the others.
 	const restartApp = async (name: string, reason?: string) => {
+		// Never spawned (a later layer whose prerequisite did not come up, or
+		// its port was held): a restart is its first spawn, one at a time.
+		const spawning = firstSpawns.get(name);
+		if (spawning) return spawning;
+
+		const life = supervisor.has(name) ? supervisor.life(name) : undefined;
+		const config = startable[name];
+		if (life?.generation === 0 && life.phase === "down" && config) {
+			const first = spawnLate({ [name]: config })
+				.then(() => supervisor.life(name).generation > 0)
+				.finally(() => firstSpawns.delete(name));
+			firstSpawns.set(name, first);
+			return first;
+		}
+
 		const replaced = await supervisor.restart(name, reason);
 		if (replaced) checkOnTheSide(name, true);
 
@@ -913,6 +937,154 @@ export async function startDevServers(
 			.finally(() => drift?.abort());
 	}
 
+	/**
+	 * An app's `watch` watcher. Only for an app this run spawned: a reused
+	 * one has nothing here to restart.
+	 */
+	function watchFiles(name: string): void {
+		const config = startable[name];
+		if (options.watch === false || !config?.watch) return;
+		if (pids[name] === undefined) return;
+
+		watchApp({
+			name,
+			dir: config.cwd ? resolve(root, config.cwd) : root,
+			config: config.watch,
+			signal: supervisor.signal,
+			onChange: (reason) => {
+				void restartApp(name, reason).catch(() => {});
+			},
+		});
+	}
+
+	/** {@link watchFiles} for an app started late: a watcher it cannot have is said, not fatal. */
+	function watchLateFiles(name: string): void {
+		try {
+			watchFiles(name);
+		} catch (error) {
+			const text = `Not watching ${name}'s files: ${toError(error).message}`;
+			output.announce(name, text, { raw: formatWarn(text), level: "warn" });
+		}
+	}
+
+	/** See {@link SessionControls.start}. */
+	async function startLate(
+		apps: Record<string, ResolvedApp>,
+	): Promise<readonly string[]> {
+		supervisor.signal.throwIfAborted();
+		const fresh = Object.fromEntries(
+			Object.entries(startableApps(apps, productionBuild)).filter(
+				([name]) => !supervisor.has(name),
+			),
+		);
+		if (Object.keys(fresh).length === 0) return [];
+
+		const loaded = await loadStartSecrets(
+			fresh,
+			(name) => resolveAppEnv(envVarsByApp, name),
+			{ signal: supervisor.signal },
+		);
+		supervisor.signal.throwIfAborted();
+
+		// Another start may have taken one on while the secrets loaded.
+		const names: string[] = [];
+		for (const [name, config] of Object.entries(fresh)) {
+			if (supervisor.has(name)) continue;
+			names.push(name);
+			secrets[name] = loaded[name] ?? {};
+			startable[name] = config;
+			supervisor.add(name, { ...supervised(config, name), optional: true });
+			// Its row says so before it spawns, which may wait on a layer.
+			output.state(name, { state: "starting" });
+		}
+
+		// The run went on without them: whatever goes wrong fails them, not it.
+		void spawnLate(pick(fresh, names)).catch(async (error) => {
+			if (supervisor.signal.aborted) return;
+			const pending = names.filter(
+				(name) => supervisor.life(name).phase !== "down",
+			);
+			await supervisor.fail(pending.map((name) => toAppFailure(name, error)));
+		});
+		return names;
+	}
+
+	/**
+	 * Spawn apps taken on after startup, a `startAfter` layer at a time. One
+	 * that does not come up is parked like any spared app, and what was still
+	 * to spawn after it is failed, naming it.
+	 */
+	async function spawnLate(apps: Record<string, ResolvedApp>): Promise<void> {
+		const order = planSpawnOrder(apps, false);
+		const layers = [
+			...order.beforeBarrier,
+			...order.beforeTunnels,
+			...order.afterTunnels,
+		]
+			.map((layer) => Object.keys(layer))
+			.filter((names): names is [string, ...string[]] => names.length > 0);
+
+		const notStarted = (names: readonly string[], cause: string) =>
+			names.map(
+				(name) =>
+					new AppFailure(
+						name,
+						"start",
+						`${name} did not start: ${cause} did not come up`,
+					),
+			);
+		const later = (index: number) => layers.slice(index + 1).flat();
+
+		for (const [index, names] of layers.entries()) {
+			try {
+				await spawnWave(pick(apps, names), () => false);
+			} catch (error) {
+				if (supervisor.signal.aborted) return;
+
+				const failure = toAppFailure(names[0], error);
+				const unspawned = names.filter(
+					(name) =>
+						name !== failure.app && supervisor.life(name).generation === 0,
+				);
+				await supervisor.fail([
+					failure,
+					...notStarted([...unspawned, ...later(index)], failure.app),
+				]);
+				return;
+			}
+
+			for (const name of names) watchLateFiles(name);
+
+			if (index === layers.length - 1) {
+				for (const name of names) checkOnTheSide(name, true);
+				return;
+			}
+
+			const drift = watchDrift(names);
+			try {
+				const results = await supervisor.race(
+					Promise.allSettled(names.map(appReady)),
+				);
+				const failures = names.flatMap((name, at) => {
+					const result = results[at];
+					return result?.status === "rejected"
+						? [toAppFailure(name, result.reason)]
+						: [];
+				});
+				if (failures.length > 0) {
+					const cause = failures.map((failure) => failure.app).join(", ");
+					await supervisor.fail([
+						...failures,
+						...notStarted(later(index), cause),
+					]);
+					return;
+				}
+			} finally {
+				drift.abort();
+			}
+		}
+	}
+
 	async function startWave(wave: Record<string, ResolvedApp>): Promise<void> {
 		const names = Object.keys(wave);
 		if (names.length === 0) return;
@@ -1004,22 +1176,7 @@ export async function startDevServers(
 		}
 
 		// After startup, so a save mid-start cannot race the first health check.
-		// Only apps this run spawned: a reused one has nothing here to restart.
-		if (options.watch !== false) {
-			for (const [name, config] of Object.entries(startable)) {
-				if (!config.watch || pids[name] === undefined) continue;
-
-				watchApp({
-					name,
-					dir: config.cwd ? resolve(root, config.cwd) : root,
-					config: config.watch,
-					signal: supervisor.signal,
-					onChange: (reason) => {
-						void restartApp(name, reason).catch(() => {});
-					},
-				});
-			}
-		}
+		for (const name of Object.keys(startable)) watchFiles(name);
 
 		// Arm reactive task file watchers (unless --no-watch) and any tasks
 		// whose prerequisite apps were already healthy via reuse.
@@ -1034,6 +1191,7 @@ export async function startDevServers(
 					output.announce(target, text, { raw: formatStep(text) }),
 				ownedApps: () =>
 					Object.keys(startable).filter((name) => pids[name] !== undefined),
+				start: startLate,
 			},
 			supervisor.signal,
 		);

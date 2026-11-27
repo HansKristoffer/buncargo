@@ -115,6 +115,18 @@ const TOPICS: readonly Topic[] = [
   start (it says why), 2 when no run started the app, 3 when the run refused
   (a script's \`start()\` takes no requests, or the app runs in another
   terminal): nothing was restarted.
+- An app the running \`dev\` left out (not in its \`--apps\` or profile) is
+  started in that run by \`bunx buncargo restart <app>\` (\`r\` on it in the
+  TUI), with the \`requiredApps\` it has not started; then
+  \`wait --app=<app>\` waits for it. It never ends the run if it goes down.
+  Exit 3 means the run refused: the app needs a service the run did not
+  start (it names the \`dev --apps=\` to restart with), another run holds
+  its lease, or its preflight needs a terminal (a login). Exit 1 while the
+  run is still starting its own apps: ask again once they are up.
+  \`stop <app>\` stops it again. \`status\` lists them first (above).
+  \`restart --json\` prints one document: per app its \`outcome\`
+  (\`restarted\`, \`started\`, \`failed\`, \`not-found\`, \`refused\`), \`message\`
+  and \`hints\`, and for \`started\` the \`apps\` it starts.
 - Stopping can take as long as an app's \`stopGraceMs\`: up to a minute for
   an app that saves data as it exits, such as the Firebase emulators. Let it
   finish; killing it loses that data.
@@ -208,7 +220,9 @@ const TOPICS: readonly Topic[] = [
   as one object. A run whose service container stopped under it has
   \`health: "degraded"\` and the service's \`problem\`; \`plannedOffset\` set
   means the next \`dev\` moves the ports, so start the run before testing
-  against them.
+  against them. Apps a run left out are listed \`off\` with the command that
+  starts each; in \`--json\`, each run's \`startable\` (\`apps\` it starts,
+  \`missingServices\`, \`command\`).
 - \`bunx buncargo env set KEY=VALUE\` overrides a variable for every run, exec,
   task, \`env\` and \`sql\` of this checkout (\`env unset KEY\` drops it). Use it
   for a mode the stack should keep (\`env set HUBSPOT_MODE=simulator\`) or when

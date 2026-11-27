@@ -52,10 +52,33 @@ export interface RunsJson {
 	leases: LeaseEntry[];
 }
 
+/**
+ * An app a running `dev` left out (not in its `--apps` or profile), which
+ * `command` starts.
+ */
+export interface StartableAppJson {
+	name: string;
+	/** What starting it starts, in order: it and the `requiredApps` the run has not. */
+	apps: string[];
+	/** Services it needs that the run did not start; empty when it can start in the run. */
+	missingServices: string[];
+	/**
+	 * `buncargo restart <app>` when it can start in the run; otherwise the
+	 * `buncargo dev --apps=` that starts a new run with it, once this one ends.
+	 */
+	command: string;
+}
+
 /** `buncargo status --json`: this checkout's runs, ports, containers and URLs. */
 export interface StatusJson {
-	/** First, so `| head` keeps them: each with `degraded` while a service is down under it. */
-	runs: (RunEntry & { health: "ok" | "degraded" })[];
+	/**
+	 * First, so `| head` keeps them: each with `degraded` while a service is
+	 * down under it, and the apps it left out and can start (`startable`).
+	 */
+	runs: (RunEntry & {
+		health: "ok" | "degraded";
+		startable: StartableAppJson[];
+	})[];
 	project: string;
 	root: string;
 	portOffset: number;
@@ -86,6 +109,32 @@ export interface StatusJson {
 	/** Cross-repo links declared in config, with live target and status. */
 	links: LinkInspection[];
 	strayLoopbackUrls: (StrayLoopbackUrl & { message: string })[];
+}
+
+/** `buncargo restart --json`: what the run answered for each app. */
+export interface RestartJson {
+	version: 1;
+	exitCode: number;
+	/** One per app asked for, in order, up to the first that did not restart. */
+	results: RestartResultJson[];
+}
+
+export interface RestartResultJson {
+	app: string;
+	/**
+	 * `restarted`: its process was replaced. `started`: the start of an app
+	 * the run left out began (`apps`; none when it was already starting).
+	 * `failed`: it did not come back, the run did not answer, or the app is
+	 * ambiguous between runs. `not-found`: no run started it or can.
+	 * `refused`: the run would not (see `message`).
+	 */
+	outcome: "restarted" | "started" | "failed" | "not-found" | "refused";
+	/** What `restart` prints without `--json`. */
+	message: string;
+	/** What to do next. */
+	hints: string[];
+	/** For `started`: what it starts, it and the `requiredApps` the run had not. */
+	apps?: string[];
 }
 
 /** `buncargo links --json`: cross-repo links and their live status. */

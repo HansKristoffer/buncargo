@@ -141,6 +141,24 @@ export class AppSupervision {
 		return this.controller.signal;
 	}
 
+	/** Whether `name` is one of this run's apps, spawned or not. */
+	has(name: string): boolean {
+		return this.apps.has(name);
+	}
+
+	/** Supervise an app the run left out at startup, before it spawns. */
+	add(name: string, spec: SupervisedApp): void {
+		if (this.apps.has(name)) {
+			throw new Error(`App "${name}" is already supervised by this run`);
+		}
+
+		this.apps.set(name, {
+			spec,
+			life: initialLife(spec),
+			process: new AbortController(),
+		});
+	}
+
 	life(name: string): AppLife {
 		return this.entry(name).life;
 	}

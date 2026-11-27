@@ -10,8 +10,11 @@ export type {
 	FilesStatusJson,
 	GcJson,
 	LinksJson,
+	RestartJson,
+	RestartResultJson,
 	RunsJson,
 	SecretsCheckJson,
+	StartableAppJson,
 	StatusJson,
 } from "../cli/json-documents";
 export { runCli } from "../cli/run-cli";

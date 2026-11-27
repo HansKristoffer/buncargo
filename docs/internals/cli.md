@@ -186,10 +186,21 @@ and `dev-tunnels.ts` hold the pieces it orchestrates.
   row the command marked stayed `starting` and `restart && wait --app` hung. Like `send`, each
   request carries an id the run answers in `restart/<session>.replies/<id>`: `began` once the
   supervisor replaced the process, `failed` with why, or `not-ours` for an app it did not spawn.
+  An app the run left out is started instead (`dev-late-start.ts`): `started` with the apps it
+  took on (none when it is already starting), or `refused` (a missing service, a held lease, a
+  preflight that needs a terminal); asked before the run's own apps are up, it answers `failed`,
+  since asking again works. With no run listing the app, the command asks the one run of the
+  checkout that spawned apps, preferring a run that already has the app's row, and asks for
+  `--run` when there are several; that run's `not-ours` then means no such app (exit 2).
   The command first waits for the request file to be taken (`dev` reads it from before its first
   app spawns, so a pid means a reader if there is one); a request nobody takes is withdrawn and
   the command exits 3. The answer waits out the app's `stopGraceMs`, since the old process
-  stops before the new one spawns.
+  stops before the new one spawns. Each app's answer becomes one `RestartResultJson`
+  (`restartApp`), printed as lines or, with `--json`, collected into one `RestartJson`.
+- `commands/inspect/status.ts` lists each spawning run's left-out apps (`startableIn`), planned by
+  the same `planLateStart` the run uses (`dev-late-start.ts`), from the config and the run's rows
+  and services rather than a registry field: the run has nothing to publish that its rows don't
+  say. A script's `start()` run is listed too, and `restart` then exits 3 for it.
 - `commands/inspect/file-table.ts` reads the machine's open-file table (`sysctl` /
   `/proc/sys/fs/file-nr`); `doctor` runs the full `lsof` for the top holders only past half full,
   because it takes seconds on a crowded machine.
