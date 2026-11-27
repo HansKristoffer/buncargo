@@ -1,5 +1,13 @@
 # Changelog
 
+## [17.2.0](https://github.com/HansKristoffer/buncargo/compare/v17.1.0...v17.2.0) (2026-11-27)
+
+
+### Features
+
+* **cli:** start an app the run left out without restarting dev ([#156](https://github.com/HansKristoffer/buncargo/issues/156)) ([961cc07](https://github.com/HansKristoffer/buncargo/commit/961cc079d8667ac71accabe7f16eb30fe02cd56a))
+* **cli:** upgrade interactive TUI, supervision, and startup speed ([#158](https://github.com/HansKristoffer/buncargo/issues/158)) ([a76b004](https://github.com/HansKristoffer/buncargo/commit/a76b0042830504fbcbfe71dde5449d80b2f1e1c7))
+
 ## [17.1.0](https://github.com/HansKristoffer/buncargo/compare/v17.0.0...v17.1.0) (2026-11-26)
 
 
