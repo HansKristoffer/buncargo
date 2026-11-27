@@ -122,7 +122,11 @@ const TOPICS: readonly Topic[] = [
   Exit 3 means the run refused: the app needs a service the run did not
   start (it names the \`dev --apps=\` to restart with), another run holds
   its lease, or its preflight needs a terminal (a login). Exit 1 while the
-  run is still starting its own apps: ask again once they are up.
+  run is still starting its own apps (ask again once they are up), or that
+  several runs of the checkout could start it (pick one with \`--run=<session>\`).
+  An app already running elsewhere (another run, another terminal) is never
+  started twice: asking for it is refused, and a required app running
+  elsewhere is used there. Asking again while it starts exits 0.
   \`stop <app>\` stops it again. \`status\` lists them first (above).
   \`restart --json\` prints one document: per app its \`outcome\`
   (\`restarted\`, \`started\`, \`failed\`, \`not-found\`, \`refused\`), \`message\`

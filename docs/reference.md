@@ -972,7 +972,11 @@ services: an app that needs a service the run did not start is refused, with
 the `dev --apps=` that starts them all. A lease another run holds refuses it
 too, without a prompt over the TUI (`--takeover` on the run still takes it
 over), and so does a `preflight` step of its own that needs a terminal, such as
-an expired Shopify CLI session. `buncargo stop <app>` stops it again, and it
+an expired Shopify CLI session. An app already answering on its port outside the
+run (another run of the checkout, a terminal) is never started twice: asking for
+it is refused, a required app answering there is used where it runs, and a port
+held by something else refuses the start. `status` lists only apps no live run
+of the checkout runs. Asking again while it starts answers that it is starting. `buncargo stop <app>` stops it again, and it
 stops with the run. Integrations that tailor the environment to a profile's apps (the
 `firebase()` emulator variables) keep the profile's view, so start such an app
 with the profile or `--apps` instead.

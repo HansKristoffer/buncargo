@@ -36,6 +36,7 @@ import {
 	devCommandWith,
 	leftOutApps,
 	planLateStart,
+	runsThatCanStart,
 } from "../../dev-late-start";
 import type { StartableAppJson, StatusJson } from "../../json-documents";
 import * as log from "../../log";
@@ -128,8 +129,7 @@ async function readStatus(): Promise<StatusJson> {
 
 	const allLiveRuns = await readLiveRuns().catch(() => []);
 	const runs = allLiveRuns.filter((run) => run.root === env.root);
-	// With more than one, `restart` needs to be told which run starts an app.
-	const spawning = runs.filter(spawnedApps).length;
+	const canStart = new Set(runsThatCanStart(runs));
 
 	// The public URLs the live runs publish: each run's tunnels, which close
 	// with it, and the URLs its apps printed.
@@ -173,7 +173,18 @@ async function readStatus(): Promise<StatusJson> {
 		runs: runs.map((run) => ({
 			...run,
 			health: runHealth(run),
-			startable: startableIn(env, run, { pickRun: spawning > 1 }),
+			startable: canStart.has(run)
+				? startableIn(env, run, {
+						// One another run lists is not left out: it runs there.
+						elsewhere: new Set(
+							runs
+								.filter((other) => other !== run)
+								.flatMap((other) => other.apps.map((app) => app.name)),
+						),
+						// With several, `restart` must be told which run starts it.
+						pickRun: canStart.size > 1,
+					})
+				: [],
 		})),
 		project: env.projectName,
 		root: env.root,
@@ -244,25 +255,23 @@ async function readContainerListing(runtime: ContainerRuntimeAdapter): Promise<
 	}
 }
 
-/** Only a run that spawned apps has a session to start one in, as `restart` picks it. */
-const spawnedApps = (run: Pick<RunEntry, "apps">) =>
-	run.apps.some((app) => app.pid !== undefined);
-
 /**
- * The apps `run` left out and can start: each with what it brings, the
- * services it lacks, and the command that starts it.
+ * The apps `run` (one of {@link runsThatCanStart}) left out and can start,
+ * leaving out those `elsewhere` runs: each with what it brings, the services
+ * it lacks, and the command that starts it.
  */
 export function startableIn(
 	config: Pick<AnyDevEnvironment, "apps" | "services">,
 	run: Pick<RunEntry, "apps" | "services" | "sessionId">,
-	options: { pickRun: boolean },
+	options: { elsewhere: ReadonlySet<string>; pickRun: boolean },
 ): StartableAppJson[] {
-	if (!spawnedApps(run)) return [];
-
 	const running = new Set(run.apps.map((app) => app.name));
 	const services = new Set(run.services.map((service) => service.name));
 	const runFlag = options.pickRun ? ` --run=${run.sessionId}` : "";
-	return leftOutApps(config.apps, running).map((name) => {
+	const leftOut = leftOutApps(config.apps, running).filter(
+		(name) => !options.elsewhere.has(name),
+	);
+	return leftOut.map((name) => {
 		const plan = planLateStart(config, { running, services }, name);
 		return {
 			name,
@@ -311,7 +320,7 @@ export function describePlannedOffset(input: {
  */
 export function appStatusLines(
 	runs: readonly (Pick<RunEntry, "apps"> & {
-		startable?: readonly StartableAppJson[];
+		startable: readonly StartableAppJson[];
 	})[],
 ): string[] {
 	const listed = runs.flatMap((run) => run.apps);
@@ -320,7 +329,7 @@ export function appStatusLines(
 	}
 
 	const off = new Map(
-		runs.flatMap((run) => run.startable ?? []).map((app) => [app.name, app]),
+		runs.flatMap((run) => run.startable).map((app) => [app.name, app]),
 	);
 	const apps = [
 		...listed,

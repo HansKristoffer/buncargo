@@ -1503,6 +1503,19 @@ async function runDevFlow<
 						...[...output.states.keys()].filter((name) => name in env.apps),
 						...classifiedApps.reusedNames,
 					],
+					servedElsewhere: async (apps) => {
+						const classified = await classifyCliApps(apps, env.ports, {
+							signal,
+							waitForServer: (url, timeout) =>
+								withSignal(env.waitForServer(url, timeout), signal),
+							context: { root: env.root, projectName: env.projectName },
+							runtime: hasServices ? containerRuntimeForEnv(env) : undefined,
+							skipContainers: !hasServices,
+						});
+						const [sick] = classified.unhealthy;
+						if (sick) throw new CliError(unhealthyAppMessage(sick));
+						return classified.reusedNames;
+					},
 					preflight: (names) =>
 						runLatePreflight(
 							env as unknown as AnyDevEnvironment,

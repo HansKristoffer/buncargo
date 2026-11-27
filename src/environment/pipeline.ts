@@ -361,7 +361,7 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 				try {
 					await ensureEgressProxy(Object.keys(late.apps), []);
 					const started = await controls.start(late.apps);
-					// The link watcher restarts the apps it finds here.
+					// The link watcher, if startup armed it, restarts the apps it finds here.
 					Object.assign(apps, late.apps);
 					return { status: "started", apps: started };
 				} catch (error) {

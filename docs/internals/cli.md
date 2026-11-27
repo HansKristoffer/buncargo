@@ -190,8 +190,10 @@ and `dev-tunnels.ts` hold the pieces it orchestrates.
   took on (none when it is already starting), or `refused` (a missing service, a held lease, a
   preflight that needs a terminal); asked before the run's own apps are up, it answers `failed`,
   since asking again works. With no run listing the app, the command asks the one run of the
-  checkout that spawned apps, preferring a run that already has the app's row, and asks for
-  `--run` when there are several; that run's `not-ours` then means no such app (exit 2).
+  checkout that spawned apps (`runsThatCanStart`, which `status` uses too), preferring a run that
+  already has the app's row, and asks for `--run` when there are several; that run's `not-ours`
+  then means no such app (exit 2). A left-out app still `starting` answers `started` with none, so
+  a retry is not a restart of it.
   The command first waits for the request file to be taken (`dev` reads it from before its first
   app spawns, so a pid means a reader if there is one); a request nobody takes is withdrawn and
   the command exits 3. The answer waits out the app's `stopGraceMs`, since the old process

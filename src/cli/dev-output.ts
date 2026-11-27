@@ -158,8 +158,13 @@ export async function openDevOutput(
 export async function restartReply(
 	output: Pick<RunOutput, "controls" | "states" | "startApp">,
 	app: string,
-	leftOut: ReadonlySet<string> = new Set(),
+	leftOut: ReadonlySet<string>,
 ): Promise<RestartReply> {
+	// Taken on and not up yet: asking again is not a restart of it.
+	if (leftOut.has(app) && output.states.get(app)?.state === "starting") {
+		return { status: "started", apps: [] };
+	}
+
 	if (!output.states.has(app) && leftOut.has(app)) {
 		// Not a refusal: asked again once the run's own apps are up, it starts.
 		if (!output.startApp) {

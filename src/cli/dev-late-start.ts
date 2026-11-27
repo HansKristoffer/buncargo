@@ -2,6 +2,7 @@ import { getErrorMessage, mapValues } from "hanzio";
 import { describeLeaseRefusal } from "../core/app-leases";
 import { startableApps } from "../core/process/dev-servers";
 import type { RunOutput, StartReply } from "../core/process/run-output";
+import type { RunEntry } from "../core/run-registry";
 import { formatStep, formatWarn } from "../core/style";
 import type { LeasePolicy } from "../environment/app-leases";
 import type { LateStart } from "../environment/pipeline";
@@ -70,6 +71,17 @@ export function devCommandWith(
 	return `buncargo dev --apps=${[...running, name].join(",")}`;
 }
 
+/**
+ * The runs of a checkout that can start an app they left out: those that
+ * spawned apps, since a `dev` reads requests from before its first spawn.
+ * `status` lists what they can start and `restart` asks one of them.
+ */
+export function runsThatCanStart<TRun extends Pick<RunEntry, "apps">>(
+	runs: readonly TRun[],
+): TRun[] {
+	return runs.filter((run) => run.apps.some((app) => app.pid !== undefined));
+}
+
 export interface LateStartRun {
 	/** Every configured app. */
 	apps: Readonly<Record<string, ResolvedApp>>;
@@ -78,6 +90,15 @@ export interface LateStartRun {
 	runServices: ReadonlySet<string>;
 	/** The apps this run runs now: started, reused or taken on since. */
 	running(): readonly string[];
+	/**
+	 * Which of these apps already answer on their port outside this run
+	 * (another run, another terminal), as startup reuses them; throws when a
+	 * port is held by something it cannot reuse. Never stops a process that
+	 * serves.
+	 */
+	servedElsewhere(
+		apps: Record<string, ResolvedApp>,
+	): Promise<readonly string[]>;
 	/** The `preflight` steps these apps bring, without a terminal; throws why not. */
 	preflight(names: readonly string[]): Promise<void>;
 	start: LateStart;
@@ -97,10 +118,9 @@ export async function startLeftOutApp(
 			reason: `"${name}" is not an app with a dev command`,
 		};
 	}
+	// Taken on by an earlier request: asking again is not an error.
 	const running = new Set(run.running());
-	if (running.has(name)) {
-		return { status: "refused", reason: `${name} is already part of this run` };
-	}
+	if (running.has(name)) return { status: "started", apps: [] };
 
 	const plan = planLateStart(run, { running, services: run.runServices }, name);
 	if (plan.missingServices.length > 0) {
@@ -111,12 +131,29 @@ export async function startLeftOutApp(
 		};
 	}
 
+	// Its own port answering elsewhere: starting it here would kill that one.
+	// A required app served elsewhere is used there, as at startup.
+	let elsewhere: readonly string[];
+	try {
+		elsewhere = await run.servedElsewhere(plan.apps);
+	} catch (error) {
+		return { status: "refused", reason: getErrorMessage(error) };
+	}
+	if (elsewhere.includes(name)) {
+		return {
+			status: "refused",
+			reason: `${name} already runs outside this run, on its port. Use it there, or stop it (buncargo stop ${name}) and start it again here.`,
+		};
+	}
+
 	// Spared like any `essential: false` app, its lease included: one held
 	// elsewhere is a refusal here, never a prompt over the TUI.
-	const toStart = mapValues(plan.apps, (config) => ({
-		...config,
-		essential: false,
-	}));
+	const toStart = mapValues(
+		Object.fromEntries(
+			Object.entries(plan.apps).filter(([other]) => !elsewhere.includes(other)),
+		),
+		(config) => ({ ...config, essential: false }),
+	);
 	try {
 		await run.preflight(Object.keys(toStart));
 	} catch (error) {

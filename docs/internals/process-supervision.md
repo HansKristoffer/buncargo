@@ -139,11 +139,17 @@ the run had none and one of them is guarded, then the session. A lease refusal, 
 throws, gives the leases back and publishes the entry again without the rows, or `wait` and `ls`
 read them as starting for good. `cli/dev-late-start.ts` decides what a request means, one request
 at a time (`bindLateStarts`), so a second `r` during a first start's claim finds the app part of
-the run: the app with its `requiredApps` the run has not started, all `essential: false` (so a
-held lease skips rather than throws), refused when it needs a service the run did not start,
-since adding containers to a running stack is a new start, or when a `preflight` step of theirs
-the start did not run fails without a terminal (`runLatePreflight`: a login cannot be asked for
-over the TUI). Reactive tasks are selected at startup and do not grow with it.
+the run and answers that it is already starting: the app with its `requiredApps` the run has not
+started, all `essential: false` (so a held lease skips rather than throws), refused when it needs
+a service the run did not start, since adding containers to a running stack is a new start, or
+when a `preflight` step of theirs the start did not run fails without a terminal
+(`runLatePreflight`: a login cannot be asked for over the TUI). Their ports are classified first,
+as startup's are (`servedElsewhere`, `classifyCliApps`): spawning skips straight to
+`prepareAppPort`, which kills a holder under the checkout, so without it a late start killed the
+same app running in another run of the checkout. The app itself answering elsewhere is refused; a
+required app answering elsewhere is used there; a port held by something else refuses it.
+Reactive tasks are selected at startup and do not grow with it, and the link watcher is armed at
+startup only: a late app's reactive links restart it only when a startup app already armed it.
 
 ## Stop grace
 

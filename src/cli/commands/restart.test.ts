@@ -65,7 +65,7 @@ const request = () =>
 	join(getProjectStateDir(root), "restart", "restart-session");
 const apiRow = async () => (await loadRuns())[0]?.apps[0];
 const restart = (names: string[], timeouts = DEV) =>
-	restartApps({ root, session: undefined, names }, timeouts);
+	restartApps({ root, session: undefined, names, json: false }, timeouts);
 
 /** This test process answering as the `dev` run would. */
 async function withRun(
@@ -128,7 +128,7 @@ it("exits 2 when no run of the checkout spawned apps", async () => {
 	);
 	try {
 		const exit = await restartApps(
-			{ root: elsewhere, session: undefined, names: ["mobile"] },
+			{ root: elsewhere, session: undefined, names: ["mobile"], json: false },
 			NOBODY,
 		);
 		expect(exit).toBe(RESTART_EXIT.notFound);

@@ -2,6 +2,7 @@ import { findMonorepoRoot } from "../../core/ports";
 import { DEFAULT_STOP_GRACE_MS } from "../../core/process/terminate";
 import { findRunsByRoot, type RunEntry } from "../../core/run-registry";
 import { defineCommand } from "../command-spec";
+import { runsThatCanStart } from "../dev-late-start";
 import type { RestartJson, RestartResultJson } from "../json-documents";
 import * as log from "../log";
 import {
@@ -57,7 +58,7 @@ export async function restartApps(
 		root: string;
 		session: string | undefined;
 		names: readonly string[];
-		json?: boolean;
+		json: boolean;
 	},
 	timeouts: RestartTimeouts,
 ): Promise<number> {
@@ -115,9 +116,7 @@ async function restartApp(
 	const listing = runs.find((entry) =>
 		entry.apps.some((app) => app.name === name),
 	);
-	const spawning = runs.filter((entry) =>
-		entry.apps.some((app) => app.pid !== undefined),
-	);
+	const spawning = runsThatCanStart(runs);
 	if (!running && !listing && spawning.length > 1) {
 		return result(
 			"failed",

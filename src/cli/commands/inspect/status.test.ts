@@ -178,6 +178,7 @@ it("starts the plain status with one aligned line per app", () => {
 					},
 					{ name: "worker", status: "failed" },
 				],
+				startable: [],
 			},
 		]),
 	).toEqual([
@@ -215,7 +216,8 @@ it("lists the apps a run left out, with what each brings and the command that st
 		services: [],
 	};
 
-	const startable = startableIn(config, run, { pickRun: false });
+	const alone = { elsewhere: new Set<string>(), pickRun: false };
+	const startable = startableIn(config, run, alone);
 	expect(startable).toEqual([
 		{
 			name: "mobile",
@@ -236,17 +238,15 @@ it("lists the apps a run left out, with what each brings and the command that st
 			command: "buncargo dev --apps=api,search",
 		},
 	]);
-	expect(startableIn(config, run, { pickRun: true })[0]?.command).toBe(
-		"buncargo restart mobile --run=s1",
-	);
-	// A run that spawned nothing has no session to start one in.
 	expect(
-		startableIn(
-			config,
-			{ ...run, apps: [{ name: "api", status: "reused" as const }] },
-			{ pickRun: false },
+		startableIn(config, run, { ...alone, pickRun: true })[0]?.command,
+	).toBe("buncargo restart mobile --run=s1");
+	// Another run of the checkout runs `mobile`: starting it here would kill it.
+	expect(
+		startableIn(config, run, { ...alone, elsewhere: new Set(["mobile"]) }).map(
+			(app) => app.name,
 		),
-	).toEqual([]);
+	).toEqual(["metro", "search"]);
 
 	expect(appStatusLines([{ ...run, startable }])).toEqual([
 		"apps:",

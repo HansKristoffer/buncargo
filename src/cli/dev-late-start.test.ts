@@ -40,6 +40,7 @@ function run(
 		apps: Object.keys(toStart),
 	}),
 	preflight: LateStartRun["preflight"] = async () => {},
+	servedElsewhere: LateStartRun["servedElsewhere"] = async () => [],
 ): LateStartRun & {
 	asked: Record<string, ResolvedApp>[];
 	inRun: Set<string>;
@@ -51,6 +52,7 @@ function run(
 		services,
 		runServices: new Set(["postgres"]),
 		running: () => [...inRun],
+		servedElsewhere,
 		preflight,
 		start: (toStart, options) => {
 			asked.push(toStart);
@@ -104,10 +106,6 @@ it("refuses what it cannot start without asking the run", async () => {
 	expect(await startLeftOutApp(late, "nope")).toMatchObject({
 		status: "refused",
 	});
-	expect(await startLeftOutApp(late, "web")).toEqual({
-		status: "refused",
-		reason: "web is already part of this run",
-	});
 	expect(late.asked).toEqual([]);
 });
 
@@ -151,6 +149,36 @@ it("refuses an app whose preflight cannot pass without a terminal", async () => 
 	expect(late.asked).toEqual([]);
 });
 
+// Its port answering in another run: a start here would have killed that one.
+it("never starts an app served outside the run, and uses a required app served there", async () => {
+	const servedBy =
+		(names: string[]): LateStartRun["servedElsewhere"] =>
+		async (planned) =>
+			Object.keys(planned).filter((name) => names.includes(name));
+
+	const mobileElsewhere = run(undefined, undefined, servedBy(["mobile"]));
+	expect(await startLeftOutApp(mobileElsewhere, "mobile")).toEqual({
+		status: "refused",
+		reason:
+			"mobile already runs outside this run, on its port. Use it there, or stop it (buncargo stop mobile) and start it again here.",
+	});
+	expect(mobileElsewhere.asked).toEqual([]);
+
+	const proxyElsewhere = run(undefined, undefined, servedBy(["metroProxy"]));
+	expect(await startLeftOutApp(proxyElsewhere, "mobile")).toEqual({
+		status: "started",
+		apps: ["mobile"],
+	});
+
+	const held = run(undefined, undefined, async () => {
+		throw new Error('App "mobile" cannot use port 8081: held by nginx');
+	});
+	expect(await startLeftOutApp(held, "mobile")).toEqual({
+		status: "refused",
+		reason: 'App "mobile" cannot use port 8081: held by nginx',
+	});
+});
+
 // Two `r` presses while the first start was still claiming both claimed it.
 it("starts one request at a time, so a second finds the app already part of the run", async () => {
 	const claimed = Promise.withResolvers<void>();
@@ -170,10 +198,7 @@ it("starts one request at a time, so a second finds the app already part of the 
 		status: "started",
 		apps: ["metroProxy", "mobile"],
 	});
-	expect(await second).toEqual({
-		status: "refused",
-		reason: "mobile is already part of this run",
-	});
+	expect(await second).toEqual({ status: "started", apps: [] });
 	expect(late.asked).toHaveLength(1);
 });
 
