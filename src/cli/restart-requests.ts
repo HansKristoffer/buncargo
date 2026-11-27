@@ -26,10 +26,8 @@ import { getProjectStateDir } from "../core/state-paths";
  * handler, would kill it.
  */
 
-/** Fallback cadence when `fs.watch` is unavailable or errors out. */
+/** Fallback cadence in case the platform watcher drops an event or cannot attach. */
 const FALLBACK_POLL_MS = 2000;
-/** Low-frequency safety net while `fs.watch` is healthy, in case the OS drops an event. */
-const WATCHER_BACKSTOP_MS = 30_000;
 /** Retry cadence only while a request file arrived before `ready()` became true. */
 const UNREADY_RETRY_MS = 50;
 /** Starting backoff for client waits (`awaitRestartTaken`, `awaitReply`). */
@@ -113,36 +111,27 @@ function watchRequests(
 		if (!stopped && existsSync(file)) queueMicrotask(drain);
 	};
 
-	let fallback: ReturnType<typeof setInterval> | undefined;
-	const startFallback = (ms: number) => {
-		if (fallback) clearInterval(fallback);
-		if (stopped) return;
-		fallback = setInterval(drain, ms);
-		fallback.unref?.();
-	};
-
 	try {
 		mkdirSync(dir, { recursive: true });
 		watcher = watch(dir, { persistent: false }, (_event, filename) => {
 			if (!filename || String(filename) === sessionId) drain();
 		});
 		watcher.on("error", () => {
-			// Fall back to the faster poll only when the OS watcher errors out.
+			// Fallback timer below keeps working if the OS watcher errors out.
 			watcher?.close();
 			watcher = undefined;
-			startFallback(FALLBACK_POLL_MS);
 		});
-		startFallback(WATCHER_BACKSTOP_MS);
 	} catch {
-		// Unwatchable filesystem: poll so requests still arrive.
-		startFallback(FALLBACK_POLL_MS);
+		// Unwatchable filesystem: the fallback interval below still delivers requests.
 	}
 
+	const fallback = setInterval(drain, FALLBACK_POLL_MS);
+	fallback.unref?.();
 	queueMicrotask(drain);
 
 	return () => {
 		stopped = true;
-		if (fallback) clearInterval(fallback);
+		clearInterval(fallback);
 		if (unreadyTimer) clearTimeout(unreadyTimer);
 		watcher?.close();
 		rmSync(file, { force: true });

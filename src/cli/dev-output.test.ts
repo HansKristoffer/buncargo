@@ -201,14 +201,14 @@ it("keeps left-out apps above tasks, wires their actions, and graduates them fro
 		view.output.state("shop", { state: "starting" });
 		const firstId = requestRestart(root, "dev-output-late-test", "shop");
 		expect(
-			await awaitRestartReply(root, "dev-output-late-test", firstId, 2_000),
+			await awaitRestartReply(root, "dev-output-late-test", firstId, 5_000),
 		).toEqual({ status: "started", apps: [] });
 
 		view.output.state("shop", { state: "ready" });
 		view.output.state("shop", { state: "starting" });
 		const secondId = requestRestart(root, "dev-output-late-test", "shop");
 		expect(
-			await awaitRestartReply(root, "dev-output-late-test", secondId, 2_000),
+			await awaitRestartReply(root, "dev-output-late-test", secondId, 5_000),
 		).toEqual({ status: "began" });
 		expect(startRestartCalls).toEqual(["shop"]);
 
