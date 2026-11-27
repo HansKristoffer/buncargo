@@ -1,6 +1,6 @@
 import { mapValues } from "hanzio";
-import { resolveEgressGuard } from "../core/egress-guard";
-import { applyProfileLinkOverrides } from "../core/links";
+import { resolveEgressGuard } from "../core/egress-guard/rules";
+import { applyProfileLinkOverrides } from "../core/link-config";
 import { isCI } from "../core/runtime-flags";
 import { applySecretDefaults, mergeSecretsConfig } from "../core/secrets/scope";
 import {
@@ -373,7 +373,7 @@ export function resolveConfig<
 	},
 >(
 	config: TConfig,
-	options?: { profile?: string },
+	options?: { profile?: string; onlyApps?: readonly string[] },
 ): Omit<TConfig, "services" | "apps" | "links" | "egressGuard"> & {
 	services: ResolvedServices<TConfig["services"]>;
 	apps: ResolvedApps<NonNullable<TConfig["apps"]>>;
@@ -399,7 +399,12 @@ export function resolveConfig<
 		resolveApps(config.apps),
 		effectiveSecrets,
 	);
-	const activeApps = expandProfileActiveApps(resolvedApps, activeProfile?.apps);
+	// Explicit app selection (`buncargo dev firebase`) activates the named apps
+	// and their prerequisites even when `profiles.default.apps` omits them.
+	const activeApps = expandProfileActiveApps(
+		resolvedApps,
+		options?.onlyApps ?? activeProfile?.apps,
+	);
 
 	return {
 		...config,

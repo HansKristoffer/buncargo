@@ -448,6 +448,47 @@ export async function waitForAllServices(
 		options.signal?.addEventListener("abort", cancel, { once: true });
 	}
 	waitOptions.signal = controller.signal;
+	// Share concurrent container listings across services polling on the same tick.
+	// Use `Object.create` rather than object spread so prototype methods on class
+	// adapters (such as `DockerRuntimeAdapter.status` / `logs`) stay intact.
+	const baseRuntime = waitOptions.runtime;
+	let inflightContainers:
+		| Promise<Awaited<ReturnType<ContainerRuntimeAdapter["containers"]>>>
+		| undefined;
+	const sharedRuntime: ContainerRuntimeAdapter = Object.assign(
+		Object.create(baseRuntime) as ContainerRuntimeAdapter,
+		{
+			containers(signal?: AbortSignal) {
+				if (!inflightContainers) {
+					inflightContainers = baseRuntime
+						.containers(controller.signal)
+						.finally(() => {
+							inflightContainers = undefined;
+						});
+				}
+				if (!signal || signal === controller.signal) return inflightContainers;
+				return new Promise((resolve, reject) => {
+					if (signal.aborted) {
+						reject(signal.reason);
+						return;
+					}
+					const onAbort = () => reject(signal.reason);
+					signal.addEventListener("abort", onAbort, { once: true });
+					inflightContainers?.then(
+						(value) => {
+							signal.removeEventListener("abort", onAbort);
+							resolve(value);
+						},
+						(error) => {
+							signal.removeEventListener("abort", onAbort);
+							reject(error);
+						},
+					);
+				});
+			},
+		},
+	);
+	waitOptions.runtime = sharedRuntime;
 
 	let showedWait = false;
 	const cancelWait = verbose

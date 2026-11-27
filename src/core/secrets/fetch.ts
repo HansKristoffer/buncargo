@@ -115,6 +115,10 @@ export async function fetchScopeSecrets(
 	const env = options.env ?? process.env;
 	const credentials = machineCredentials(env, scope.siteUrl);
 	const key = `${folderKey(scope)}|${credentialKey(credentials)}`;
+	const cached = cache.peek(key);
+	if (cached !== undefined) {
+		return filterScopeKeys(scope, cached);
+	}
 	const timeoutMs = options.timeoutMs ?? LOAD_TIMEOUT_MS;
 	const timeout = AbortSignal.timeout(timeoutMs);
 	const waitSignal = anySignal(options.signal, timeout);

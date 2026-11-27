@@ -1,6 +1,29 @@
 import { getErrorMessage } from "hanzio";
-import type { CheckContext, SetupCheck } from "../types";
+import type {
+	AnyDevEnvironment,
+	CheckContext,
+	ResolvedEgressGuardConfig,
+	SetupCheck,
+} from "../types";
 import { CliError } from "./errors";
+
+/** Build the {@link CheckContext} shared by `dev`, `setup`, and `doctor`. */
+export function buildCheckContext(
+	env: AnyDevEnvironment,
+	internals: {
+		activeApps?: ReadonlySet<string>;
+		egressGuard?: ResolvedEgressGuardConfig;
+	},
+): CheckContext {
+	return {
+		root: env.root,
+		env,
+		...(internals.activeApps !== undefined
+			? { activeApps: internals.activeApps }
+			: {}),
+		...(internals.egressGuard ? { egressGuard: internals.egressGuard } : {}),
+	};
+}
 
 /**
  * One check's result. Only a failure has a severity, resolved from the

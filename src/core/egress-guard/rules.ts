@@ -80,13 +80,25 @@ export function normalizeHost(raw: string): string {
 	return trimmed.replace(/\.$/, "");
 }
 
-/** Whether `host` is an IPv4 loopback (`127.0.0.0/8`) or RFC1918 private address. */
-function isPrivateIpv4(host: string): boolean {
+/** Parse a strict dotted-quad IPv4 literal into its four octets. */
+function parseIpv4(host: string): [number, number, number, number] | undefined {
 	const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-	if (!match) return false;
-	const octets = match.slice(1).map((part) => Number.parseInt(part, 10));
-	if (octets.some((n) => n < 0 || n > 255)) return false;
-	const [a, b] = octets;
+	if (!match) return undefined;
+	const a = Number.parseInt(match[1] ?? "", 10);
+	const b = Number.parseInt(match[2] ?? "", 10);
+	const c = Number.parseInt(match[3] ?? "", 10);
+	const d = Number.parseInt(match[4] ?? "", 10);
+	if (a > 255 || b > 255 || c > 255 || d > 255) return undefined;
+	return [a, b, c, d];
+}
+
+/** Whether `host` is an IPv4 loopback (`127.0.0.0/8`), RFC1918, or non-IMDS link-local address. */
+function isPrivateIpv4(host: string): boolean {
+	const octets = parseIpv4(host);
+	if (!octets) return false;
+	const [a, b, c, d] = octets;
+	// Cloud metadata service (GCP/AWS/Azure IMDS) is never treated as local/private.
+	if (a === 169 && b === 254 && c === 169 && d === 254) return false;
 	return (
 		a === 127 ||
 		a === 10 ||
@@ -102,10 +114,10 @@ export function isLoopbackHost(rawHost: string): boolean {
 	return (
 		host === "localhost" ||
 		host === "127.0.0.1" ||
-		host.startsWith("127.") ||
 		host === "::1" ||
 		host === "0.0.0.0" ||
-		host.endsWith(".localhost")
+		host.endsWith(".localhost") ||
+		parseIpv4(host)?.[0] === 127
 	);
 }
 
@@ -113,9 +125,68 @@ export function isLoopbackHost(rawHost: string): boolean {
 function isPrivateOrLoopbackHost(rawHost: string): boolean {
 	const host = normalizeHost(rawHost);
 	if (isLoopbackHost(host) || isPrivateIpv4(host)) return true;
-	return (
-		host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:")
-	);
+	// Require `:` so domain names starting with `fc`/`fd` (e.g. `fcm.googleapis.com`)
+	// are never mistaken for IPv6 ULA literals.
+	if (!host.includes(":")) return false;
+	return /^f[cd][0-9a-f]{2}:|^fe[89ab][0-9a-f]:/.test(host);
+}
+
+interface CompiledAllowRule {
+	readonly host: string;
+	readonly wildcard: boolean;
+	readonly port?: number;
+}
+
+/** Pre-parse `allow` entries once for hot-path checks in the egress proxy. */
+export function compileAllowRules(
+	allow: readonly string[],
+): (rawHost: string, port: number | undefined) => boolean {
+	const rules: CompiledAllowRule[] = [];
+	for (const rawRule of allow) {
+		const trimmed = rawRule.trim().toLowerCase();
+		if (!trimmed) continue;
+
+		// Split an optional trailing `:port` (ignoring unbracketed IPv6 and bracketed IPv6 without port).
+		let ruleHostPart = trimmed;
+		let rulePort: number | undefined;
+		const lastColon = trimmed.lastIndexOf(":");
+		if (
+			lastColon > 0 &&
+			!trimmed.endsWith("]") &&
+			(trimmed.startsWith("[") || trimmed.indexOf(":") === lastColon) &&
+			/^\d+$/.test(trimmed.slice(lastColon + 1))
+		) {
+			ruleHostPart = trimmed.slice(0, lastColon);
+			rulePort = Number.parseInt(trimmed.slice(lastColon + 1), 10);
+		}
+
+		if (ruleHostPart.startsWith("*.")) {
+			const bare = normalizeHost(ruleHostPart.slice(2));
+			if (!bare) continue;
+			rules.push({ host: bare, wildcard: true, port: rulePort });
+			continue;
+		}
+
+		const host = normalizeHost(ruleHostPart);
+		if (host) rules.push({ host, wildcard: false, port: rulePort });
+	}
+
+	return (rawHost, port) => {
+		const host = normalizeHost(rawHost);
+		if (!host) return false;
+		if (isPrivateOrLoopbackHost(host)) return true;
+
+		for (const rule of rules) {
+			if (rule.port !== undefined && port !== rule.port) continue;
+			if (rule.wildcard) {
+				if (host === rule.host || host.endsWith(`.${rule.host}`)) return true;
+			} else if (host === rule.host) {
+				return true;
+			}
+		}
+
+		return false;
+	};
 }
 
 /**
@@ -131,40 +202,7 @@ export function isHostAllowed(
 	port: number | undefined,
 	allow: readonly string[],
 ): boolean {
-	const host = normalizeHost(rawHost);
-	if (!host) return false;
-	if (isPrivateOrLoopbackHost(host)) return true;
-
-	for (const rawRule of allow) {
-		const trimmed = rawRule.trim().toLowerCase();
-		if (!trimmed) continue;
-
-		// Split an optional trailing `:port` (ignoring IPv6 bracketed literals without port).
-		let ruleHostPart = trimmed;
-		let rulePort: number | undefined;
-		const lastColon = trimmed.lastIndexOf(":");
-		if (
-			lastColon > 0 &&
-			!trimmed.endsWith("]") &&
-			/^\d+$/.test(trimmed.slice(lastColon + 1))
-		) {
-			ruleHostPart = trimmed.slice(0, lastColon);
-			rulePort = Number.parseInt(trimmed.slice(lastColon + 1), 10);
-		}
-
-		if (rulePort !== undefined && port !== rulePort) continue;
-
-		if (ruleHostPart.startsWith("*.")) {
-			const bare = normalizeHost(ruleHostPart.slice(2));
-			if (!bare) continue;
-			if (host === bare || host.endsWith(`.${bare}`)) return true;
-			continue;
-		}
-
-		if (host === normalizeHost(ruleHostPart)) return true;
-	}
-
-	return false;
+	return compileAllowRules(allow)(rawHost, port);
 }
 
 /** Default loopback entries bypassed from the egress proxy. */

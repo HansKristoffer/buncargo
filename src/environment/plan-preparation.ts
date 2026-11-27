@@ -1,4 +1,4 @@
-import { selectReactiveTasks } from "../core/process";
+import { selectReactiveTasks } from "../core/process/reactive-tasks";
 import { resolvePrismaConfig } from "../prisma/config";
 import { migrationsFor } from "../prisma/migrations-for";
 import type {

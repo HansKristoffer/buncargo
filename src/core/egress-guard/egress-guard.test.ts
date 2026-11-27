@@ -125,7 +125,12 @@ describe("egressGuard rules", () => {
 		expect(isHostAllowed("172.32.0.1", 443, [])).toBe(false);
 		expect(isHostAllowed("192.168.1.42", 8080, [])).toBe(true);
 		expect(isHostAllowed("169.254.1.10", 80, [])).toBe(true);
+		expect(isHostAllowed("169.254.169.254", 80, [])).toBe(false);
+		expect(isHostAllowed("127.example.com", 443, [])).toBe(false);
+		expect(isHostAllowed("fcm.googleapis.com", 443, [])).toBe(false);
+		expect(isHostAllowed("fd.example.com", 443, [])).toBe(false);
 		expect(isHostAllowed("fd00::1", 443, [])).toBe(true);
+		expect(isHostAllowed("fe80::1", 443, [])).toBe(true);
 		expect(isHostAllowed("app.unleash-hosted.com", 443, allow)).toBe(true);
 		expect(isHostAllowed("APP.UNLEASH-HOSTED.COM.", 443, allow)).toBe(true);
 		expect(isHostAllowed("foo.storage.googleapis.com.", 443, allow)).toBe(true);
@@ -134,6 +139,13 @@ describe("egressGuard rules", () => {
 		expect(isHostAllowed("custom.internal", 8443, allow)).toBe(true);
 		expect(isHostAllowed("custom.internal", 443, allow)).toBe(false);
 		expect(isHostAllowed("api.mailjet.com", 443, allow)).toBe(false);
+		expect(isHostAllowed("2001:db8::443", 80, ["2001:db8::443"])).toBe(true);
+		expect(isHostAllowed("2001:db8::443", 8443, ["[2001:db8::443]:8443"])).toBe(
+			true,
+		);
+		expect(isHostAllowed("2001:db8::443", 80, ["[2001:db8::443]:8443"])).toBe(
+			false,
+		);
 	});
 
 	it("builds deduplicated NO_PROXY lists and proxy env vars", () => {

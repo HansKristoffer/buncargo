@@ -141,15 +141,38 @@ describe("AppScreen", () => {
 		const screen = new AppScreen(40, 5, (line) => lines.push(line), noDrops);
 		const block = (from: number, count: number) =>
 			Array.from({ length: count }, (_, i) => `line ${from + i}\r\n`).join("");
-		await feed(screen, block(0, 5000));
+		await feed(screen, block(0, 1000));
 		// One chunk that trims away everything the screen had committed.
-		await feed(screen, block(5000, 15_000));
-		await feed(screen, block(20_000, 5000));
+		await feed(screen, block(1000, 5000));
+		await feed(screen, block(6000, 1000));
 		// The burst's head is gone from the buffer; the rest is all there.
-		expect(lines).toContain("line 12000");
-		expect(lines.at(-1)).toBe("line 24999");
+		expect(lines).toContain("line 4000");
+		expect(lines.at(-1)).toBe("line 6999");
 		expect(new Set(lines).size).toBe(lines.length);
-		expect(lines.slice(-5000)[0]).toBe("line 20000");
+		expect(lines.slice(-1000)[0]).toBe("line 6000");
+		screen.dispose();
+	});
+
+	it("clears screen and scrollback while continuing to emit new lines", async () => {
+		const lines: string[] = [];
+		const screen = new AppScreen(40, 5, (line) => lines.push(line), noDrops);
+		await feed(screen, "old 1\r\nold 2\r\n");
+		expect(await screen.clear()).toBe(true);
+		expect(screen.term.buffer.normal.baseY).toBe(0);
+		await feed(screen, "fresh\r\n");
+		expect(lines.at(-1)).toBe("fresh");
+		screen.dispose();
+	});
+
+	it("refuses to clear an alternate-screen app without duplicating normal-buffer logs", async () => {
+		const lines: string[] = [];
+		const screen = new AppScreen(40, 5, (line) => lines.push(line), noDrops);
+		await feed(screen, "before alt\r\n");
+		await feed(screen, "\u001b[?1049hfull-screen ui\r\n");
+		expect(await screen.clear()).toBe(false);
+		await feed(screen, "\u001b[?1049lafter alt\r\n");
+		expect(lines.filter((line) => line === "before alt")).toHaveLength(1);
+		expect(lines).toContain("after alt");
 		screen.dispose();
 	});
 });

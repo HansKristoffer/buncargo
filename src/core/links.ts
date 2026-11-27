@@ -12,7 +12,6 @@ import { isOneOf, isString, typedSwitch } from "hanzio";
 import type {
 	LinkCandidate,
 	LinkInspection,
-	ProfileLinkOverride,
 	ResolvedApp,
 	ResolvedLink,
 	ResolvedLinkConfig,
@@ -24,9 +23,10 @@ import { object, recordOf } from "./json-shape";
 import { loopbackUrlPort } from "./loopback-env";
 import { readJsonDocumentSync, writeJsonDocument } from "./registry-file";
 import { type RunEntry, readLiveRuns, readLiveRunsSync } from "./run-registry";
+import { shellQuote } from "./shell-quote";
 import { projectStateFilePath } from "./state-paths";
 
-export { canonicalCheckoutPath };
+export { applyProfileLinkOverrides } from "./link-config";
 
 const LINKS_FILENAME = "links.json";
 
@@ -65,49 +65,6 @@ export async function updateLinkPins(
 		await writeJsonDocument(path, { version: 1, pins: sorted });
 		return sorted;
 	});
-}
-
-/**
- * Apply an active profile's `links` overrides to the config's `links`.
- * A `false` override keeps the entry with `disabled: true` so inspection
- * (`buncargo links`, `status`) shows why it is inactive.
- */
-export function applyProfileLinkOverrides(
-	links: Readonly<Record<string, ResolvedLinkConfig>> | undefined,
-	overrides:
-		Readonly<Record<string, ProfileLinkOverride | undefined>> | undefined,
-): Readonly<Record<string, ResolvedLinkConfig>> | undefined {
-	if (!links) return undefined;
-	if (!overrides || Object.keys(overrides).length === 0) return links;
-
-	const result: Record<string, ResolvedLinkConfig> = {};
-	for (const [name, spec] of Object.entries(links)) {
-		const override = overrides[name];
-		if (override === undefined) {
-			result[name] = spec;
-		} else if (override === false) {
-			result[name] = { ...spec, disabled: true };
-		} else {
-			result[name] = {
-				...spec,
-				disabled: false,
-				...(override.required !== undefined
-					? { required: override.required }
-					: {}),
-				...(override.apps !== undefined ? { apps: override.apps } : {}),
-				...(override.services !== undefined
-					? { services: override.services }
-					: {}),
-				...(override.onChange !== undefined
-					? { onChange: override.onChange }
-					: {}),
-				...(override.profile !== undefined
-					? { profile: override.profile }
-					: {}),
-			};
-		}
-	}
-	return result;
 }
 
 interface LiveCheckoutGroup {
@@ -175,7 +132,8 @@ function groupLiveRunsByCheckout(
 				if (service.publicUrl !== undefined) {
 					publicUrls[service.name] = service.publicUrl;
 				}
-				serviceStatuses[service.name] = service.status;
+				serviceStatuses[service.name] =
+					service.problem !== undefined ? "degraded" : service.status;
 				if (service.status === "stopped" || service.problem !== undefined) {
 					unhealthyServices.add(service.name);
 				} else {
@@ -446,7 +404,7 @@ export function linkStartupIssues(inspections: readonly LinkInspection[]): {
 			ambiguous: () => {
 				const choices = item.candidates.map(formatCandidate).join(", ");
 				const [first] = item.candidates;
-				const examplePath = first ? first.root : "<path>";
+				const examplePath = first ? shellQuote(first.root) : "<path>";
 				const pinCmd = `bunx buncargo links pin ${item.name} ${examplePath}`;
 				const message = `Link "${item.name}" (project "${item.project}") matched ${item.candidates.length} running checkouts: ${choices}. Pin one with \`${pinCmd}\`.`;
 				if (item.required) errors.push(message);
@@ -469,7 +427,7 @@ export function linkStartupIssues(inspections: readonly LinkInspection[]): {
 
 				const where = item.targetRoot ? ` in ${item.targetRoot}` : "";
 				const startHint = item.targetRoot
-					? `Start it with \`cd ${item.targetRoot} && bunx buncargo dev --detach\`, or pin another checkout with \`bunx buncargo links pin ${item.name} <path>\`.`
+					? `Start it with \`cd ${shellQuote(item.targetRoot)} && bunx buncargo dev --detach\`, or pin another checkout with \`bunx buncargo links pin ${item.name} <path>\`.`
 					: `Start a checkout of "${item.project}" with \`bunx buncargo dev --detach\`, or pin one with \`bunx buncargo links pin ${item.name} <path>\`.`;
 				errors.push(
 					`Required link "${item.name}" (project "${item.project}") is not running${where}. ${startHint}`,
@@ -495,7 +453,7 @@ export function linkStartupIssues(inspections: readonly LinkInspection[]): {
 				const location = item.targetRoot ?? item.project;
 				if (allStarting) {
 					errors.push(
-						`Required link "${item.name}" (${location}) is still starting ${parts.join("; ")}. Wait for it with \`cd ${location} && bunx buncargo wait\` before starting.`,
+						`Required link "${item.name}" (${location}) is still starting ${parts.join("; ")}. Wait for it with \`cd ${shellQuote(location)} && bunx buncargo wait\` before starting.`,
 					);
 					return;
 				}

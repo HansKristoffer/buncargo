@@ -19,10 +19,10 @@ import {
 	resolveCheckoutView,
 	sharedEnv,
 } from "./checkout-view";
-import { resolveLiveLinksSync } from "./links";
+import { resolveLinksFromRuns } from "./links";
 import { unallocatedPortsMessage } from "./port-exhaustion";
 import { asComputedUrls, findMonorepoRoot } from "./ports";
-import { readLiveCapturesSync } from "./run-registry";
+import { readLiveRunsSync } from "./run-registry";
 
 /**
  * Get an environment variable value from the config.
@@ -84,17 +84,25 @@ export function getEnvVar<
 		options?.profile,
 	);
 
-	// Live state is read on every call: a run that starts or ends between two
+	// Live state is read once per call: a run that starts or ends between two
 	// loads of a config changes it.
 	const live = readLiveNamedUrls(root, view.hostPlan, view.portPlan.ports);
 	const hosts = namedHostsRuntime(resolved.options?.hosts, view.hostPlan, live);
 	const served = live?.hostnames ? new Set(live.hostnames) : undefined;
 	const urls = asComputedUrls(namedUrls(view.plainUrls, hosts, served));
-	const { links } = resolveLiveLinksSync(root, resolved.links);
+	const liveRuns = readLiveRunsSync();
+	const { links } = resolveLinksFromRuns(root, resolved.links, liveRuns);
+	const captured: Record<string, string> = Object.assign(
+		{},
+		...liveRuns
+			.filter((run) => run.root === root)
+			.sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+			.map((run) => run.captures ?? {}),
+	);
 
 	const envVars = sharedEnv(
 		{ ...view, config: resolved, portOffset: view.portPlan.offset, urls },
-		{ publicUrls: {}, captured: readLiveCapturesSync(root), hosts, links },
+		{ publicUrls: {}, captured, hosts, links },
 	);
 	return envVars[name] as GetEnvVarValue<TEnv, TName>;
 }
@@ -107,6 +115,16 @@ type AnyConfig = Omit<
 	apps?: Record<string, AppConfig>;
 };
 
+type EnvSnapshot = Readonly<Record<string, string | undefined>>;
+
+function sameEnv(a: EnvSnapshot, b: EnvSnapshot): boolean {
+	const keys = Object.keys(a);
+	return (
+		keys.length === Object.keys(b).length &&
+		keys.every((key) => Object.hasOwn(b, key) && a[key] === b[key])
+	);
+}
+
 /**
  * The last view each config resolved to, with the environment and root it
  * was resolved under: a `vite.config.ts` asking for several names reads the
@@ -116,7 +134,9 @@ type AnyConfig = Omit<
 const views = new WeakMap<
 	AnyConfig,
 	{
-		key: string;
+		root: string;
+		profile: string | undefined;
+		env: EnvSnapshot;
 		resolved: CheckoutConfig<
 			Record<string, ServiceConfig>,
 			Record<string, AppConfig>
@@ -133,12 +153,15 @@ function checkoutViewFor(
 	root: string,
 	profile: string | undefined,
 ) {
-	const environment = Object.entries(process.env).sort(([a], [b]) =>
-		a < b ? -1 : 1,
-	);
-	const key = JSON.stringify([root, profile ?? null, environment]);
 	const cached = views.get(config);
-	if (cached?.key === key) return cached;
+	if (
+		cached &&
+		cached.root === root &&
+		cached.profile === profile &&
+		sameEnv(cached.env, process.env)
+	) {
+		return cached;
+	}
 
 	// What a run sees: integrations add apps, services, env and the primary
 	// app (Shopify's frontend) before anything is computed.
@@ -155,7 +178,7 @@ function checkoutViewFor(
 		console.warn(unallocatedPortsMessage(root));
 	}
 
-	const entry = { key, resolved, view };
+	const entry = { root, profile, env: { ...process.env }, resolved, view };
 	views.set(config, entry);
 	return entry;
 }

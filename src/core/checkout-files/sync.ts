@@ -120,8 +120,6 @@ export interface CheckoutFilesReport {
 type Log = (line: string) => void;
 
 export interface CheckoutFilesOptions {
-	/** Relocates `~/.buncargo` the way `HOME` does. */
-	home?: string;
 	/** Status lines; never values. Defaults to stderr. */
 	log?: Log;
 }
@@ -216,10 +214,13 @@ function checkoutPath(root: string, path: string): string {
 }
 
 /** A checkout file as it is on disk, refusing what buncargo must not touch. */
-function readLocal(root: string, path: string): Local {
+function readLocal(
+	root: string,
+	path: string,
+	realRoot = realpathSync(root),
+): Local {
 	const full = checkoutPath(root, path);
 	// A symlinked parent directory would put the file outside the checkout.
-	const realRoot = realpathSync(root);
 	let ancestor = dirname(full);
 	while (!existsSync(ancestor)) ancestor = dirname(ancestor);
 	const real = realpathSync(ancestor);
@@ -328,14 +329,13 @@ interface Opened {
 export function openCheckoutFiles(
 	root: string,
 	specs: readonly CheckoutFileSpec[],
-	options: CheckoutFilesOptions = {},
 ): Opened {
 	const repoKey = resolveRepoKey(root);
 	if (!repoKey)
 		throw new Error(
 			`${root} is not in a git repository, and checkout files need one.`,
 		);
-	return readOpened(root, specs, repoKey, storeDir(repoKey, options.home));
+	return readOpened(root, specs, repoKey, storeDir(repoKey));
 }
 
 function readOpened(
@@ -346,19 +346,31 @@ function readOpened(
 ): Opened {
 	const manifest = readStoreManifest(dir);
 	const state = readCheckoutState(root);
+	const realRoot = realpathSync(root);
 	const views = specs.map((spec): View => {
-		const local = readLocal(root, spec.path);
+		const local = readLocal(root, spec.path, realRoot);
+		const localData = local.data;
+		const localHash = localData ? sha256(localData) : undefined;
 		const entry = manifest?.files[spec.path];
+		// When the checkout file already matches the manifest's sha256, it is
+		// in sync: skip reading the store blob and template file from disk.
+		const inSync =
+			localData !== undefined &&
+			localHash !== undefined &&
+			entry !== undefined &&
+			entry.sha256 === localHash;
 		const store: StoreCopy | undefined = entry && {
 			hash: entry.sha256,
 			machine: entry.machine,
-			...readStoreData(dir, spec.path, entry),
+			...(inSync
+				? { kind: "ok" as const, data: localData }
+				: readStoreData(dir, spec.path, entry)),
 		};
-		const template = readTemplate(root, spec);
+		const template = inSync ? undefined : readTemplate(root, spec, realRoot);
 		return {
 			spec,
 			local,
-			localHash: local.data ? sha256(local.data) : undefined,
+			localHash,
 			base: state[spec.path]?.base,
 			store,
 			templateHash: template ? sha256(template) : undefined,
@@ -436,9 +448,8 @@ export function selectSpecs(
 export function inspectCheckoutFiles(
 	root: string,
 	specs: readonly CheckoutFileSpec[],
-	options: CheckoutFilesOptions = {},
 ): CheckoutFilesReport {
-	const opened = openCheckoutFiles(root, specs, options);
+	const opened = openCheckoutFiles(root, specs);
 	return reportOf(
 		root,
 		opened,
@@ -452,8 +463,11 @@ export function inspectCheckoutFiles(
 function readTemplate(
 	root: string,
 	spec: CheckoutFileSpec,
+	realRoot?: string,
 ): Buffer | undefined {
-	return spec.template ? readLocal(root, spec.template).data : undefined;
+	return spec.template
+		? readLocal(root, spec.template, realRoot).data
+		: undefined;
 }
 
 const lastReports = new Map<string, CheckoutFilesReport>();
@@ -498,7 +512,7 @@ export async function syncCheckoutFiles(
 ): Promise<CheckoutFilesReport> {
 	const log = options.log ?? defaultLog;
 	const selected = selectSpecs(specs, options.paths);
-	let opened = openCheckoutFiles(root, selected, options);
+	let opened = openCheckoutFiles(root, selected);
 
 	if (options.ci && !opened.manifest) {
 		// Nothing to sync from, and a CI job's files are its own business.
@@ -671,7 +685,7 @@ export async function saveCheckoutFiles(
 ): Promise<{ failed: string[] }> {
 	const log = options.log ?? defaultLog;
 	const selected = selectSpecs(specs, options.paths);
-	const first = openCheckoutFiles(root, selected, options);
+	const first = openCheckoutFiles(root, selected);
 	const failed: string[] = [];
 	await withStoreLock(first.dir, () => {
 		const opened = readOpened(root, selected, first.repoKey, first.dir);
@@ -745,7 +759,7 @@ export async function mergeCheckoutFile(
 ): Promise<MergeResult> {
 	const log = options.log ?? defaultLog;
 	const selected = selectSpecs(specs, [path]);
-	const first = openCheckoutFiles(root, selected, options);
+	const first = openCheckoutFiles(root, selected);
 	return withStoreLock(first.dir, () => {
 		const opened = readOpened(root, selected, first.repoKey, first.dir);
 		const view = opened.views[0];

@@ -9,7 +9,7 @@ import {
 	warnSecretsOnce,
 } from "./fetch";
 import {
-	collectScopes,
+	type CollectedScope,
 	type InfisicalScope,
 	resolveScopes,
 	scopeKey,
@@ -44,13 +44,19 @@ export async function loadAppSecrets(
 	});
 	if (appScopes.length === 0) return {};
 
-	const scopes = collectScopes(
-		Object.entries(apps).flatMap(([name, app]) =>
-			app.secrets ? [[name, app.secrets] as const] : [],
-		),
-		undefined,
-		env,
-	);
+	const scopeMap = new Map<string, CollectedScope>();
+	for (const [name, resolved] of appScopes) {
+		for (const scope of resolved) {
+			const key = scopeKey(scope);
+			const known = scopeMap.get(key);
+			if (known) {
+				if (!known.usedBy.includes(name)) known.usedBy.push(name);
+			} else {
+				scopeMap.set(key, { scope, usedBy: [name] });
+			}
+		}
+	}
+	const scopes = [...scopeMap.values()];
 	if (scopes.length === 0) return {};
 
 	const fetchedByScope = new Map<string, Record<string, string>>();

@@ -172,7 +172,7 @@ command prefix.
 - `command` and `entrypoint` both go through `commandWords`, because Compose splits their string
   form into words. Passing the string through whole hands the image one long argument: the
   typesense preset writes `command` as a string, and unsplit it printed its usage and exited
-  instead of starting. The split is `splitCommandLine`, which honors quotes and backslashes;
+  instead of starting. The split is `splitCommandLine` (in `src/core/shell-quote.ts`), which honors quotes and backslashes;
   splitting on whitespace alone turns `sh -c "echo hi"` into four broken tokens.
 - `ports`, `volumes` and `environment` are read in the short forms `DockerComposeServiceRaw`
   types (string lists, a value per variable). The long forms used to be translated too, reachable

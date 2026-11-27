@@ -25,7 +25,7 @@ export function readInfisicalProjectId(root: string): string | undefined {
 	}
 }
 
-function fillScopeProjectId(
+export function fillScopeProjectId(
 	input: SecretsScopeInput | false | undefined,
 	projectId: string,
 ): SecretsScopeInput | false | undefined {
@@ -36,6 +36,26 @@ function fillScopeProjectId(
 		return [{ ...first, projectId }, ...rest];
 	}
 	return input.projectId ? input : { ...input, projectId };
+}
+
+function hasAnySecretsField(config: {
+	secrets?: SecretsScopeInput | false;
+	apps?: Record<string, { secrets?: SecretsScopeInput | false }>;
+	seed?: { secrets?: SecretsScopeInput | false };
+	migrations?: { secrets?: SecretsScopeInput | false }[];
+	profiles?: Record<string, { secrets?: SecretsScopeInput | false }>;
+}): boolean {
+	if (config.secrets) return true;
+	if (config.seed?.secrets) return true;
+	if (config.migrations?.some((m) => Boolean(m.secrets))) return true;
+	if (config.apps && Object.values(config.apps).some((a) => Boolean(a.secrets)))
+		return true;
+	if (
+		config.profiles &&
+		Object.values(config.profiles).some((p) => Boolean(p.secrets))
+	)
+		return true;
+	return false;
 }
 
 /**
@@ -52,8 +72,12 @@ export function applyInfisicalProjectConfig<
 		migrations?: { secrets?: SecretsScopeInput | false }[];
 		profiles?: Record<string, { secrets?: SecretsScopeInput | false }>;
 	},
->(config: T, root: string): T {
-	const projectId = readInfisicalProjectId(root);
+>(config: T, root: string, preloadedProjectId?: string | null): T {
+	if (!hasAnySecretsField(config)) return config;
+	const projectId =
+		preloadedProjectId !== undefined
+			? (preloadedProjectId ?? undefined)
+			: readInfisicalProjectId(root);
 	if (!projectId) return config;
 
 	const topDisabled = config.secrets === false;

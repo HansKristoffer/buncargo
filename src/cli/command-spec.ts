@@ -127,8 +127,8 @@ export type AnyCommand = Command | CommandGroup;
 
 export function defineCommand<const S extends CommandSpec>(
 	command: Command<S>,
-): Command<S> {
-	return command;
+): Command {
+	return command as unknown as Command;
 }
 
 export function defineGroup(group: CommandGroup): CommandGroup {

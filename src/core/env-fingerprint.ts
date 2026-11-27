@@ -20,14 +20,17 @@ export function portableEnvFingerprint(
 	const names = specific.names
 		.filter(Boolean)
 		.sort((a, b) => b.length - a.length);
+	const uniquePorts = [...new Set(specific.ports)].filter(Number.isFinite);
+	const portPattern =
+		uniquePorts.length > 0
+			? new RegExp(`\\b(?:${uniquePorts.join("|")})\\b`, "g")
+			: undefined;
 
 	const portable = (value: string) => {
 		let out = value;
 		for (const name of names) out = out.replaceAll(name, "<name>");
 		out = out.replace(IPV4, "<ip>");
-		for (const port of specific.ports) {
-			out = out.replace(new RegExp(`\\b${port}\\b`, "g"), "<port>");
-		}
+		if (portPattern) out = out.replace(portPattern, "<port>");
 		return out;
 	};
 

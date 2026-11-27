@@ -95,8 +95,8 @@
   },
   "scripts": {
     "build": "rm -rf dist && bun run build:js && bun run build:daemon && bun scripts/fix-sourcemap-sources.ts dist && bun run build:types",
-    "build:daemon": "bun build ./src/cli/hostsd.ts --outdir ./dist --target bun --sourcemap=linked && bun build ./src/cli/connectd.ts --outdir ./dist --target bun --sourcemap=linked",
-    "build:js": "bun build ./src/index.ts ./src/api/index.ts ./src/cli/bin.ts ./src/core/watchdog-runner.ts ./src/vite/index.ts ./src/next/index.ts ./src/expo/index.ts ./src/shopify/index.ts ./src/supabase/index.ts ./src/firebase/index.ts ./src/client/index.ts ./src/runtime/index.ts --outdir ./dist --root ./src --target node --packages external --splitting --sourcemap=linked",
+    "build:daemon": "bun build ./src/cli/hostsd.ts --outdir ./dist --target bun --minify --sourcemap=linked && bun build ./src/cli/connectd.ts --outdir ./dist --target bun --minify --sourcemap=linked",
+    "build:js": "bun build ./src/index.ts ./src/api/index.ts ./src/cli/bin.ts ./src/core/watchdog-runner.ts ./src/vite/index.ts ./src/next/index.ts ./src/expo/index.ts ./src/shopify/index.ts ./src/supabase/index.ts ./src/firebase/index.ts ./src/client/index.ts ./src/runtime/index.ts --outdir ./dist --root ./src --target node --packages external --splitting --minify-syntax --sourcemap=linked",
     "build:types": "tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
     "prepare": "git config core.hooksPath .githooks || true",

@@ -146,7 +146,9 @@ per port.
   and `/proc/<pid>/cwd` on Linux, zero subprocesses; `lsof -Fpcn` on macOS), and
   `createPortOwnerSnapshot` in `port-owner.ts` answers "who holds this port" for many ports from
   it. When a caller already listed containers and they cover every asked port (the warm container
-  path), the host listener read is skipped altogether. A dev run asks that question in four places
+  path), or when a quick local bind probe proves every asked port free (leaving privileged
+  `EACCES`/`unprobeable` ports such as `:443` in the lookup set so squatters are still caught),
+  the host listener read is skipped altogether. A dev run asks that question in four places
   (the allocator, the service preflight, `classifyCliApps` and the spawner) and each answer used to
   cost an `lsof`, a container listing, a `ps` and a second `lsof`, so a small config forked about
   thirty times before the first server started. `status`, `doctor` and `ports pin` read one async

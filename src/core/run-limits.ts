@@ -363,8 +363,13 @@ export function createRunLimiter(
 			(run) => !run.detached && roots.has(run.root),
 		);
 		const alive = await deps.liveness([...runs, ...terminalRuns]);
-		const proxy = deps.readProxyActivity(now);
-		const connections = await deps.readConnections(now);
+		const tracksIdle = runs.some((run) => run.idleLimitMs !== undefined);
+		const proxy = tracksIdle
+			? deps.readProxyActivity(now)
+			: new Map<string, number>();
+		const connections = tracksIdle
+			? await deps.readConnections(now)
+			: undefined;
 
 		const due: Array<{ run: RunEntry; reason: RunStopReason; detail: string }> =
 			[];

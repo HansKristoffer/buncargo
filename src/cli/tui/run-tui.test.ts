@@ -620,6 +620,42 @@ describe("RunTui selection", () => {
 			tui.stop();
 		}
 	});
+
+	it("copies the exact text selected on a wrapped Overview continuation row", async () => {
+		const { copied, terminal, output, tui } = selectionHarness();
+		try {
+			tui.start();
+			const pad = "x".repeat(45);
+			output.line("api", `${pad}TARGET_TOKEN`);
+			const since = terminal.writes.length;
+			type(tui, "w");
+			await until(() =>
+				Bun.stripANSI(terminal.writes.slice(since).join("")).includes(
+					"Line wrap on",
+				),
+			);
+			await until(() => drawn(terminal).includes("TARGET_TOKEN"));
+
+			const paneStart = 18 + 2;
+			const frameRows = (tui as unknown as { frame: string[] }).frame;
+			const continuationRow = frameRows.findIndex((row) =>
+				Bun.stripANSI(row).includes("TARGET_TOKEN"),
+			);
+			expect(continuationRow).toBeGreaterThanOrEqual(2);
+			const stripped = Bun.stripANSI(frameRows[continuationRow] ?? "");
+			const startCol = stripped.indexOf("TARGET_TOKEN") - (paneStart - 1);
+			const endCol = startCol + "TARGET_TOKEN".length - 1;
+			type(
+				tui,
+				press(paneStart + startCol, continuationRow + 1) +
+					drag(paneStart + endCol, continuationRow + 1) +
+					release(paneStart + endCol, continuationRow + 1),
+			);
+			expect(copied).toEqual(["TARGET_TOKEN"]);
+		} finally {
+			tui.stop();
+		}
+	});
 });
 
 describe("RunTui state", () => {
@@ -870,6 +906,7 @@ describe("RunTui state", () => {
 				triggered.push(name);
 				return true;
 			},
+			stop: async () => false,
 		};
 		output.state("gen:client", {
 			state: "stopped",
@@ -914,7 +951,7 @@ describe("RunTui state", () => {
 			tui.stop();
 		}
 	});
-	it("lists an app the run left out as not started, and starts it on `r`", async () => {
+	it("lists an app the run left out as not started, and starts it on `r` or `s`", async () => {
 		const terminal = fakeTerminal();
 		const output = new RunOutput({ terminals: "pipe" });
 		output.state("api", { state: "ready" });
@@ -966,8 +1003,9 @@ describe("RunTui state", () => {
 				"mobile needs redis, which this run did not start.",
 			);
 
+			// Pressing `s` on a left-out `off` app starts it just like `r`.
 			since = terminal.writes.length;
-			type(tui, "r");
+			type(tui, "s");
 			await footerAfter(since, "Starting metro, mobile…");
 			expect(started).toEqual(["mobile", "mobile"]);
 
@@ -977,6 +1015,341 @@ describe("RunTui state", () => {
 			since = terminal.writes.length;
 			type(tui, "\u000c");
 			await footerAfter(since, "r restart");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("preserves multi-line structured error blocks and stack frames under `e` errors-only", async () => {
+		const { tui, output, terminal, frame } = setup(["api"]);
+		try {
+			tui.start();
+			output.line("api", "[INFO] request.start {");
+			output.line("api", '  error_type: "none",');
+			output.line("api", "}");
+			output.line("api", "[ERROR] job.failed {");
+			output.line("api", "  id: 42,");
+			output.line("api", "}");
+			output.line("api", "Error: boom");
+			output.line("api", "    at handleRequest (src/server.ts:12:5)");
+			output.line("api", "GET /health 200");
+
+			const since = terminal.writes.length;
+			type(tui, "e");
+			const view = await frame("errors and warnings only", since);
+			expect(view).toContain("id: 42");
+			expect(view).toContain("at handleRequest");
+			expect(view).not.toContain("GET /health 200");
+			expect(view).not.toContain('error_type: "none"');
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("supports live `/` search in Overview and app panes with `n`/`N` and `Esc`", async () => {
+		const { tui, output, terminal, frame } = setup(["api"]);
+		try {
+			tui.start();
+			output.line("api", "booted ok");
+			output.line("api", "invoice #991 created");
+			output.line("api", "health check ok");
+
+			// Overview search filters and highlights matches.
+			let since = terminal.writes.length;
+			type(tui, "/invoice\r");
+			const overviewHit = await frame("/invoice (1 matches)", since);
+			expect(overviewHit).toContain("invoice #991");
+			expect(overviewHit).not.toContain("health check ok");
+
+			// Esc clears search while staying in Overview.
+			since = terminal.writes.length;
+			type(tui, "\u001b");
+			const cleared = await frame("health check ok", since);
+			expect(cleared).not.toContain("/invoice");
+
+			// App pane search scans xterm buffer and steps with n/N.
+			await write(
+				output,
+				`${lines(0, 30)}needle-early\r\n${lines(30, 40)}needle-late\r\n`,
+			);
+			type(tui, "1");
+			since = terminal.writes.length;
+			type(tui, "/needle\r");
+			const appHit = await frame("/needle (2/2)", since);
+			expect(appHit).toContain("needle-late");
+
+			since = terminal.writes.length;
+			type(tui, "n");
+			const olderHit = await frame("/needle (1/2)", since);
+			expect(olderHit).toContain("needle-early");
+
+			// First Esc clears search without leaving the api pane.
+			since = terminal.writes.length;
+			type(tui, "\u001b");
+			await until(
+				() =>
+					!Bun.stripANSI(
+						(tui as unknown as { frame: string[] }).frame[0] ?? "",
+					).includes("/needle"),
+			);
+			expect(
+				Bun.stripANSI((tui as unknown as { frame: string[] }).frame[0] ?? ""),
+			).toContain("api");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("toggles stop/start with `s` and reports reused or failed restart/stop outcomes", async () => {
+		const { tui, output, terminal, frame } = setup(["api", "reused"]);
+		const events: string[] = [];
+		output.state("api", { state: "ready" });
+		output.state("reused", { state: "ready" });
+		output.controls = {
+			restart: async (name) => {
+				events.push(`restart:${name}`);
+				if (name === "reused") return false;
+				output.state(name, { state: "ready" });
+				return true;
+			},
+			stop: async (name) => {
+				events.push(`stop:${name}`);
+				if (name === "reused") return false;
+				output.state(name, { state: "stopped", detail: "stopped" });
+				return true;
+			},
+		};
+		try {
+			tui.start();
+			type(tui, "1"); // jump to api
+			let since = terminal.writes.length;
+			type(tui, "s");
+			await frame("Stopped api", since);
+			expect(events).toEqual(["stop:api"]);
+
+			// Pressing `s` while stopped starts it back up.
+			since = terminal.writes.length;
+			type(tui, "s");
+			await frame("Starting api…", since);
+			expect(events).toEqual(["stop:api", "restart:api"]);
+
+			// Reused app reports honest refusal on `r` and `s`.
+			type(tui, "2"); // jump to reused
+			since = terminal.writes.length;
+			type(tui, "r");
+			await frame("reused from another terminal", since);
+			since = terminal.writes.length;
+			type(tui, "s");
+			await frame("reused from another terminal", since);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("supports clear (`c`), copy URL (`y`), wrap (`w`), sidebar toggle (`b`), info (`i`), and gives declared actions priority over `g`", async () => {
+		const copied: string[] = [];
+		const terminal = fakeTerminal();
+		const output = new RunOutput({ terminals: "pipe" });
+		const tui = new RunTui({
+			output,
+			apps: ["api", "web"],
+			profile: "local",
+			info: () => [" Custom Env Line: postgres:5432"],
+			urlFor: (app) => `https://${app}.myapp.localhost`,
+			actions: [{ app: "api", key: "g", label: "GraphiQL", open: "graphiql" }],
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+			copy: (text) => {
+				copied.push(text);
+				return "clipboard";
+			},
+		});
+		const frame = async (text: string, since = 0) => {
+			const after = () => Bun.stripANSI(terminal.writes.slice(since).join(""));
+			await until(() => after().includes(text));
+			return after();
+		};
+		try {
+			tui.start();
+			output.line("api", "hello before clear");
+			output.capture("api", {
+				name: "graphiql",
+				value: "https://graphiql.example.test",
+				as: "value",
+			});
+
+			// Profile badge and DEC 2026 sync markers appear in rendered frames.
+			await frame("hello before clear");
+			expect(terminal.writes.join("")).toContain("\u001b[?2026h");
+			expect(drawn(terminal)).toContain("local");
+
+			// `w` toggles soft wrap.
+			let since = terminal.writes.length;
+			type(tui, "w");
+			await frame("Line wrap on", since);
+
+			// `c` clears Overview.
+			since = terminal.writes.length;
+			type(tui, "c");
+			await frame("Cleared Overview", since);
+			expect((tui as unknown as { lines: unknown[] }).lines).toHaveLength(0);
+
+			// `b` collapses sidebar and widens paneSize().
+			const widthWithSidebar = tui.paneSize().cols;
+			type(tui, "b");
+			expect(tui.paneSize().cols).toBeGreaterThan(widthWithSidebar);
+			type(tui, "[");
+			expect(tui.paneSize().cols).toBe(widthWithSidebar);
+
+			// `i` opens info overlay with env summary + keybindings, and `i` closes it.
+			since = terminal.writes.length;
+			type(tui, "i");
+			const infoView = await frame("Custom Env Line: postgres:5432", since);
+			expect(infoView).toContain("Keybindings");
+			type(tui, "i");
+
+			// `2` jumps straight to `web` and `y` copies its URL.
+			type(tui, "2");
+			since = terminal.writes.length;
+			type(tui, "y");
+			await frame("Copied web URL", since);
+			expect(copied).toEqual(["https://web.myapp.localhost"]);
+
+			// Declared action `g` wins over scroll-to-top `g`.
+			since = terminal.writes.length;
+			type(tui, "g");
+			await frame("graphiql.example.test", since);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("skips redrawing an active app pane when an unrelated background app prints", async () => {
+		const { tui, output, frame } = setup(["api", "worker"]);
+		const internal = tui as unknown as {
+			dirty: boolean;
+			timer?: ReturnType<typeof setTimeout>;
+		};
+		try {
+			tui.start();
+			await write(output, "api ready\r\n");
+			type(tui, "1"); // view api
+			await frame("api ready");
+			expect(internal.dirty).toBe(false);
+			expect(internal.timer).toBeUndefined();
+
+			// Ordinary background output does not schedule a redraw while viewing `api`.
+			output.line("worker", "background info line 1");
+			output.line("worker", "background info line 2");
+			expect(internal.dirty).toBe(false);
+			expect(internal.timer).toBeUndefined();
+
+			// A new error in the background flips its unread `!` badge and triggers a redraw.
+			output.line("worker", "Error: background boom");
+			expect(internal.dirty).toBe(true);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("opens a chronologically merged log file in $PAGER when `l` is pressed in Overview", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "buncargo-tui-merged-log-"));
+		const saved = process.env.PAGER;
+		const capturedFile = join(dir, "captured.txt");
+		const pager = join(dir, "pager.sh");
+		writeFileSync(
+			pager,
+			`#!/bin/sh\ncp "$1" ${JSON.stringify(capturedFile)}\n`,
+		);
+		chmodSync(pager, 0o755);
+		writeFileSync(
+			join(dir, "api.log"),
+			"2026-11-27T10:00:01.000Z api first\n2026-11-27T10:00:03.000Z api third\n",
+		);
+		writeFileSync(
+			join(dir, "web.log"),
+			"2026-11-27T10:00:02.000Z web second\n",
+		);
+		process.env.PAGER = pager;
+		const terminal = fakeTerminal();
+		const tui = new RunTui({
+			output: new RunOutput({ terminals: "pipe" }),
+			apps: ["api", "web"],
+			urlFor: () => undefined,
+			logPath: () => dir,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		try {
+			tui.start();
+			type(tui, "l");
+			await until(() => {
+				try {
+					return Bun.file(capturedFile).size > 0;
+				} catch {
+					return false;
+				}
+			});
+			const merged = await Bun.file(capturedFile).text();
+			const rows = merged.trim().split("\n");
+			expect(rows[0]).toContain("api");
+			expect(rows[0]).toContain("api first");
+			expect(rows[1]).toContain("web");
+			expect(rows[1]).toContain("web second");
+			expect(rows[2]).toContain("api third");
+		} finally {
+			tui.stop();
+			if (saved === undefined) delete process.env.PAGER;
+			else process.env.PAGER = saved;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps exact frame dimensions on narrow/short terminals and caches info overlay reads", async () => {
+		let infoCalls = 0;
+		const terminal = fakeTerminal();
+		terminal.stdout.columns = 32;
+		terminal.stdout.rows = 4;
+		const output = new RunOutput({ terminals: "pipe" });
+		const tui = new RunTui({
+			output,
+			apps: ["api", "web"],
+			info: () => {
+				infoCalls++;
+				return [" Env summary line"];
+			},
+			urlFor: () => undefined,
+			quit: () => {},
+			stdin: terminal.stdin,
+			stdout: terminal.stdout,
+		});
+		const frame = async (text: string, since = 0) => {
+			const after = () => Bun.stripANSI(terminal.writes.slice(since).join(""));
+			await until(() => after().includes(text));
+			return after();
+		};
+		try {
+			tui.start();
+			output.line("web", "narrow boot");
+			await frame("narrow boot");
+			const rows = (tui as unknown as { frame: string[] }).frame;
+			expect(rows).toHaveLength(4);
+			for (const row of rows) {
+				expect(Bun.stringWidth(row)).toBe(32);
+			}
+			// Footer is preserved at row 3 even when terminal height is 4.
+			expect(Bun.stripANSI(rows[3] ?? "")).toContain("select");
+
+			// Info overlay caches `info()` instead of calling it on every log line.
+			const since = terminal.writes.length;
+			type(tui, "i");
+			await frame("Env summary line", since);
+			const callsAfterOpen = infoCalls;
+			output.line("web", "chatter 1");
+			output.line("web", "chatter 2");
+			expect(infoCalls).toBe(callsAfterOpen);
 		} finally {
 			tui.stop();
 		}

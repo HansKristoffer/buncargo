@@ -901,24 +901,31 @@ screen is what garbles a full-screen app like Shopify CLI or Expo.
 | Stream | otherwise (CI, agents, piped output, `--no-tui`) | Prefixed lines (`➜ api …`). Apps get pipes, so full-screen tools print plain lines on their own |
 
 In the TUI every app runs under its own pseudo-terminal sized to the pane, with
-an xterm.js screen and 10,000 lines of scrollback, so a full-screen app renders
+an xterm.js screen and 3,000 lines of scrollback (full rotated logs stay on disk for `l`), so a full-screen app renders
 natively and the others are one keypress away. The Overview gets the lines a
 full-screen app scrolls past and its status events (ready, stopped, captured
 URLs), not its live footer.
 
 | Key | Action |
 | --- | --- |
-| `↑` `↓` / `k` `j` | Select the Overview or an app |
+| `↑` `↓` / `k` `j` | Select the Overview, an app, or a reactive task |
+| `0`–`9` | Jump directly to the Overview (`0`) or pane `1`–`9` |
 | `Enter` | Interact: keys go to the selected app (Shopify's `p`/`q`, Expo's menu) |
 | `Esc` (or `Ctrl-]`) | Leave interact mode. An app therefore never receives a bare Esc; arrow keys and Alt combinations still reach it |
-| `Esc` | Back to the Overview |
-| `e` | Overview: errors and warnings only |
-| `o` | Open the app's URL (the Overview offers a picker) |
+| `Esc` | Clear active search, close info overlay, or return to the Overview |
+| `/` | Live search in Overview (filters + highlights) or the selected app pane (`n` / `N` cycle matches) |
+| `e` | Overview: errors and warnings only (keeping multi-line error blocks and stack frames whole) |
+| `w` | Overview: toggle soft line wrapping |
+| `o` / `y` | Open or copy the app's URL (the Overview offers a picker) |
 | `r` | Restart the selected app (or run the selected reactive task on demand). On an app the run left out (`off`), start it |
-| `l` | The app's log in `$PAGER` (the Overview: the run's log directory); `q` or `Ctrl-C` closes it and the run keeps going |
-| Mouse wheel, `PgUp` `PgDn` | Scroll the Overview or the selected app's scrollback |
-| `End` / `Home` | Back to the live output / the oldest line kept |
-| Click in the sidebar | Select the Overview or an app |
+| `s` | Stop or start the selected app without ending the run (starts an `off` app, or cancels a running reactive task) |
+| `c` | Clear the current pane |
+| `l` | Open the app's log in `$PAGER` (the Overview opens a chronologically merged log); `q` or `Ctrl-C` closes it and the run keeps going |
+| `b` / `[` | Collapse or expand the sidebar |
+| `i` / `?` | Toggle the environment info and keybinding overlay (services, ports, URLs, links, profile) |
+| Mouse wheel, `PgUp` `PgDn`, `Ctrl-U` `Ctrl-D` | Scroll the Overview or the selected app's scrollback |
+| `End` / `Home`, `G` / `g` | Back to the live output / the oldest line kept (declared app actions like Shopify's `g` take priority) |
+| Click in the sidebar | Select the Overview, an app, or a task (sidebar scrolls automatically in short terminals) |
 | Drag in the pane | Select text; releasing copies it to the clipboard |
 | `q` | Quit the run |
 

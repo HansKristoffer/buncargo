@@ -6,6 +6,7 @@ import {
 	replaceStaleStacksOn,
 } from "../container-runtime";
 import { describeLeaseRefusal } from "../core/app-leases";
+import { environmentOpenUrl } from "../core/app-url";
 import { withSignal } from "../core/deadline";
 import {
 	getRoutesPath,
@@ -14,9 +15,10 @@ import {
 } from "../core/hosts";
 import { releaseLeases } from "../core/leases";
 import { linkStartupIssues, resolveLiveLinksAsync } from "../core/links";
-import { selectReactiveTasks } from "../core/process";
 import { stopDevServers } from "../core/process/dev-servers";
 import { stripTerminalOutput } from "../core/process/output-capture";
+import { selectReactiveTasks } from "../core/process/reactive-tasks";
+import type { RunOutput } from "../core/process/run-output";
 import {
 	askConfirm,
 	isInteractive,
@@ -66,16 +68,19 @@ import type {
 } from "../types";
 import { checkMenuBarAppUpdate, offerMenuBarApp } from "./bar-offer";
 import {
+	buildCheckContext,
 	checkFailureError,
 	describeCheckFailures,
 	isWarning,
 	runChecks,
 } from "./checks";
 import { formatCommandHelp } from "./command-spec";
-import { devCommand } from "./commands/dev";
 import { allChecks } from "./core-checks";
 import { createDevConnect, type DevConnect } from "./dev-connect";
 import {
+	DEV_EXITS,
+	DEV_JSON,
+	DEV_SPEC,
 	type DevArgs,
 	destructiveModeGate,
 	exposeRequested,
@@ -103,7 +108,7 @@ import {
 	warnSkippedLeaseApps,
 } from "./dev-leases";
 import { planLinkedStarts, startLinkedCheckouts } from "./dev-links";
-import { openDevOutput } from "./dev-output";
+import { formatTuiInfoLines, openDevOutput } from "./dev-output";
 import {
 	acceptTakeover,
 	initialTakeover,
@@ -260,7 +265,13 @@ function devArgsOf(
 	try {
 		const parsed = parseDevArgs(options.args ?? process.argv.slice(2));
 		if (!parsed.help) return parsed;
-		console.log(formatCommandHelp(devCommand));
+		console.log(
+			formatCommandHelp({
+				spec: DEV_SPEC,
+				exits: DEV_EXITS,
+				json: DEV_JSON,
+			}),
+		);
 		return 0;
 	} catch (error) {
 		if (!(error instanceof CliError)) throw error;
@@ -377,6 +388,27 @@ async function runDevCommand<
 			if (envInternals.activeProfile !== requestedProfile) {
 				activeEnv = envInternals.withProfile(requestedProfile);
 			}
+		}
+
+		// Ensure explicit CLI apps (e.g. programmatic `runCli(env, { args: ["firebase"] })`)
+		// and `seed.afterApps` prerequisites for `--seed` are included in `activeApps`
+		// even when the active profile omits them.
+		const explicitApps = requestedApps(args);
+		const activeInternals = internalsOf(activeEnv);
+		const requiredActiveApps =
+			explicitApps ??
+			(args.values.seed && activeInternals.seed?.afterApps?.length
+				? [
+						...(activeInternals.activeApps ?? []),
+						...activeInternals.seed.afterApps,
+					]
+				: undefined);
+		if (
+			requiredActiveApps !== undefined &&
+			activeInternals.activeApps !== undefined &&
+			requiredActiveApps.some((app) => !activeInternals.activeApps?.has(app))
+		) {
+			activeEnv = activeInternals.withOnlyApps(requiredActiveApps);
 		}
 
 		tunnels = createTunnelCoordinator(
@@ -686,16 +718,7 @@ async function runDevFlow<
 		}).filter((check) => check.fast !== false);
 		const failed = (
 			await timer.measure("checks", () =>
-				runChecks(checks, {
-					root: env.root,
-					env: anyEnv,
-					...(pipeline.activeApps !== undefined
-						? { activeApps: pipeline.activeApps }
-						: {}),
-					...(pipeline.egressGuard
-						? { egressGuard: pipeline.egressGuard }
-						: {}),
-				}),
+				runChecks(checks, buildCheckContext(anyEnv, pipeline)),
 			)
 		).filter((result) => !result.ok);
 		// The steps below take no signal: a Ctrl-C during one is seen at the
@@ -724,6 +747,54 @@ async function runDevFlow<
 		prepareOptions.prepare === "all" &&
 		pipeline.linksConfig !== undefined &&
 		Object.keys(pipeline.linksConfig).length > 0;
+	const linkedStartCallbacks = (opts: {
+		required?: boolean;
+		output?: RunOutput;
+	}) => {
+		const adjective = opts.required ? "required linked" : "linked";
+		return {
+			onStart: (target: {
+				name: string;
+				targetRoot: string;
+				profile?: string;
+			}) => {
+				const profileSuffix = target.profile
+					? ` (--profile=${target.profile})`
+					: "";
+				const text = `Starting ${adjective} repo "${target.name}" in ${target.targetRoot}${profileSuffix}...`;
+				if (opts.output) {
+					opts.output.announce("buncargo", text, {
+						raw: formatStep(`🔗 ${text}`),
+					});
+				} else {
+					log.info(`🔗 ${text}`);
+				}
+			},
+			onDone: (target: { name: string }) => {
+				const text = `Linked repo "${target.name}" is up`;
+				if (opts.output) {
+					opts.output.announce("buncargo", text, { raw: formatDone(text) });
+				} else {
+					log.done(text);
+				}
+			},
+			onWarning: (message: string) => {
+				if (opts.output) {
+					opts.output.announce("buncargo", message, {
+						raw: formatWarn(message),
+						level: "warn",
+					});
+				} else {
+					log.warn(message);
+				}
+				detached?.recordDetachedReport(env.root, (report) => ({
+					...report,
+					linkWarnings: [...(report.linkWarnings ?? []), message],
+				}));
+			},
+		};
+	};
+
 	if (checkingLinks) {
 		let { inspections } = await resolveLiveLinksAsync(
 			env.root,
@@ -738,17 +809,7 @@ async function runDevFlow<
 			if (upstream.length > 0) {
 				await startLinkedCheckouts(upstream, {
 					signal,
-					onStart: (target) => {
-						const profileSuffix = target.profile
-							? ` (--profile=${target.profile})`
-							: "";
-						log.info(
-							`🔗 Starting required linked repo "${target.name}" in ${target.targetRoot}${profileSuffix}...`,
-						);
-					},
-					onDone: (target) => {
-						log.done(`Linked repo "${target.name}" is up`);
-					},
+					...linkedStartCallbacks({ required: true }),
 				});
 				({ inspections } = await resolveLiveLinksAsync(
 					env.root,
@@ -1213,22 +1274,7 @@ async function runDevFlow<
 			if (downstream.length > 0) {
 				await startLinkedCheckouts(downstream, {
 					signal,
-					onStart: (target) => {
-						const profileSuffix = target.profile
-							? ` (--profile=${target.profile})`
-							: "";
-						log.info(
-							`🔗 Starting linked repo "${target.name}" in ${target.targetRoot}${profileSuffix}...`,
-						);
-					},
-					onDone: (target) => log.done(`Linked repo "${target.name}" is up`),
-					onWarning: (message) => {
-						log.warn(message);
-						detached?.recordDetachedReport(env.root, (report) => ({
-							...report,
-							linkWarnings: [...(report.linkWarnings ?? []), message],
-						}));
-					},
+					...linkedStartCallbacks({}),
 				});
 			}
 		}
@@ -1263,6 +1309,44 @@ async function runDevFlow<
 		tui: tuiMode(args.values),
 		tasks: reactiveTaskNames,
 		leftOut,
+		allApps: env.apps,
+		profile: pipeline.activeProfile,
+		info: (output) => {
+			let hostsMode: string | undefined;
+			if (env.hosts?.active) {
+				hostsMode =
+					env.hosts.mode === "tailscale"
+						? "tailscale"
+						: `https://*.${env.hosts.tld}`;
+			}
+			const infoApps = [
+				...new Set([
+					...Object.keys(classifiedApps.startApps),
+					...Object.keys(classifiedApps.reusedApps),
+					...leftOut,
+				]),
+			];
+			return formatTuiInfoLines({
+				projectName: env.projectName,
+				root: env.root,
+				portOffset: env.portOffset,
+				profile: pipeline.activeProfile,
+				hostsMode,
+				egressGuard: pipeline.egressGuard,
+				ports: env.ports,
+				urls: env.urls,
+				loopbackUrls: env.loopbackUrls,
+				publicUrls: env.publicUrls,
+				serviceKeys: plan.requiredServiceKeys,
+				appNames: infoApps,
+				reusedNames: new Set(classifiedApps.reusedNames),
+				leftOutNames: new Set(leftOut),
+				taskNames: reactiveTaskNames,
+				urlFor: (app) => environmentOpenUrl(env, app),
+				output,
+				links: pipeline.inspectLinks(),
+			});
+		},
 	});
 	failureContext.output = view.output;
 	// What preparation said before this output opened goes to the run's log and
@@ -1338,7 +1422,14 @@ async function runDevFlow<
 				production?: boolean;
 			}) =>
 				pipeline.exportedEnv({
-					apps: Object.keys(appsForDev),
+					apps: [
+						...new Set([
+							...Object.keys(appsForDev),
+							...[...view.output.states.keys()].filter(
+								(name) => name in env.apps,
+							),
+						]),
+					],
 					services: plan.requiredServiceKeys,
 					production: false,
 					...selection,
@@ -1385,31 +1476,7 @@ async function runDevFlow<
 						const runDownstream = () =>
 							startLinkedCheckouts(downstream, {
 								signal: readySignal ?? signal,
-								onStart: (target) => {
-									const profileSuffix = target.profile
-										? ` (--profile=${target.profile})`
-										: "";
-									const text = `Starting linked repo "${target.name}" in ${target.targetRoot}${profileSuffix}...`;
-									view.output.announce("buncargo", text, {
-										raw: formatStep(`🔗 ${text}`),
-									});
-								},
-								onDone: (target) => {
-									const text = `Linked repo "${target.name}" is up`;
-									view.output.announce("buncargo", text, {
-										raw: formatDone(text),
-									});
-								},
-								onWarning: (message) => {
-									view.output.announce("buncargo", message, {
-										raw: formatWarn(message),
-										level: "warn",
-									});
-									detached?.recordDetachedReport(env.root, (report) => ({
-										...report,
-										linkWarnings: [...(report.linkWarnings ?? []), message],
-									}));
-								},
+								...linkedStartCallbacks({ output: view.output }),
 							}).catch(() => {});
 						downstreamLinksTask = runDownstream();
 					}
@@ -1468,8 +1535,10 @@ async function runDevFlow<
 				// A non-zero code is the app falling over, often the first
 				// sign its database was removed under it.
 				const exit = life.end?.exit;
-				if (life.phase === "down" && exit !== previous.end?.exit) {
+				if (life.phase === "down" && previous.phase !== "down") {
 					options.runningApps.delete(name);
+				}
+				if (life.phase === "down" && exit !== previous.end?.exit) {
 					if (exit && exit.code !== null && exit.code !== 0) void explainLoss();
 				}
 				// Activation claimed the first spawn's route; a restart claims
@@ -1495,6 +1564,7 @@ async function runDevFlow<
 				if (leftOut.length === 0) return;
 
 				const { output } = view;
+				const preflightedApps = new Set(Object.keys(appsForDev));
 				bindLateStarts(output, {
 					apps: env.apps,
 					services: env.services,
@@ -1514,16 +1584,28 @@ async function runDevFlow<
 						});
 						const [sick] = classified.unhealthy;
 						if (sick) throw new CliError(unhealthyAppMessage(sick));
-						return classified.reusedNames;
+						return {
+							reused: classified.reusedNames,
+							portOwners: classified.portOwners,
+						};
 					},
-					preflight: (names) =>
-						runLatePreflight(
+					preflight: async (names) => {
+						const ran = await runLatePreflight(
 							env as unknown as AnyDevEnvironment,
 							pipeline.preflight,
 							names,
-							Object.keys(appsForDev),
-						),
-					start,
+							[...preflightedApps],
+						);
+						for (const name of names) preflightedApps.add(name);
+						return ran;
+					},
+					start: async (more, options) => {
+						for (const name of Object.keys(more)) {
+							const warning = await reclaimAppRoute(env, name);
+							if (warning) output.event(name, warning, "warn");
+						}
+						return start(more, options);
+					},
 					// Never a prompt over the TUI; `--takeover` still takes one over.
 					leasePolicy: cliLeasePolicy({
 						takeover: () => takeover,

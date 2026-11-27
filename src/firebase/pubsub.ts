@@ -6,6 +6,8 @@ import { anySignal } from "hanzio";
 
 /** Per-request timeout when provisioning topics against the local Pub/Sub emulator. */
 const TOPIC_REQUEST_TIMEOUT_MS = 15_000;
+/** Max concurrent topic PUTs against the local Pub/Sub emulator. */
+const TOPIC_CONCURRENCY = 8;
 
 export interface EnsurePubsubTopicsInput {
 	readonly host: string;
@@ -36,7 +38,7 @@ export async function ensurePubsubTopics(
 	const urlHost = formatHostForUrl(input.host);
 	const baseUrl = `http://${urlHost}:${input.port}/v1/projects/${encodeURIComponent(input.projectId)}/topics`;
 
-	for (const topic of unique) {
+	const provisionOne = async (topic: string): Promise<void> => {
 		input.signal?.throwIfAborted();
 		const url = `${baseUrl}/${encodeURIComponent(topic)}`;
 		const requestSignal = anySignal(
@@ -52,6 +54,7 @@ export async function ensurePubsubTopics(
 				signal: requestSignal,
 			});
 		} catch (error) {
+			input.signal?.throwIfAborted();
 			const detail = error instanceof Error ? error.message : String(error);
 			throw new Error(
 				`Could not create Pub/Sub topic "${topic}" on emulator ${urlHost}:${input.port}: ${detail}`,
@@ -68,5 +71,16 @@ export async function ensurePubsubTopics(
 				`Pub/Sub emulator rejected topic "${topic}" with HTTP ${response.status}${body ? `: ${body.trim()}` : ""}`,
 			);
 		}
-	}
+	};
+
+	const workers = Math.min(TOPIC_CONCURRENCY, unique.length);
+	let next = 0;
+	await Promise.all(
+		Array.from({ length: workers }, async () => {
+			while (next < unique.length) {
+				const topic = unique[next++];
+				if (topic !== undefined) await provisionOne(topic);
+			}
+		}),
+	);
 }

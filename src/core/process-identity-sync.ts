@@ -58,8 +58,6 @@ export function parsePsBirths(stdout: string): Map<number, string> {
 	return births;
 }
 
-const STABLE_PS_ENV = { ...process.env, LC_ALL: "C", TZ: "UTC" };
-
 function psBirths(pids: readonly number[]): Map<number, string> {
 	try {
 		recordStartupMetric("subprocesses");
@@ -70,7 +68,7 @@ function psBirths(pids: readonly number[]): Map<number, string> {
 			{
 				encoding: "utf8",
 				timeout: 1000,
-				env: STABLE_PS_ENV,
+				env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
 				stdio: ["ignore", "pipe", "ignore"],
 			},
 		);

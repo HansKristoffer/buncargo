@@ -67,7 +67,12 @@ import { describeSwept } from "../../../core/watchdog-loop";
 import { internalsOf } from "../../../environment";
 import { loadDevEnv } from "../../../loader";
 import type { AnyDevEnvironment, BuncargoVolume } from "../../../types";
-import { describeCheckFailures, isWarning, runChecks } from "../../checks";
+import {
+	buildCheckContext,
+	describeCheckFailures,
+	isWarning,
+	runChecks,
+} from "../../checks";
 import { BASE_EXITS, defineCommand } from "../../command-spec";
 import { allChecks } from "../../core-checks";
 import * as log from "../../log";
@@ -90,14 +95,7 @@ async function checkSetupChecks(
 	const checks = allChecks(anyEnv, internals.setupChecks, {
 		egressGuardEnabled: internals.egressGuard?.enabled,
 	});
-	const results = await runChecks(checks, {
-		root: env.root,
-		env: anyEnv,
-		...(internals.activeApps !== undefined
-			? { activeApps: internals.activeApps }
-			: {}),
-		...(internals.egressGuard ? { egressGuard: internals.egressGuard } : {}),
-	});
+	const results = await runChecks(checks, buildCheckContext(anyEnv, internals));
 
 	for (const result of results) {
 		const [line] = describeCheckFailures([result]);

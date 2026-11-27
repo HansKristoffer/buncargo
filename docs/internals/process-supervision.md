@@ -100,7 +100,12 @@ said more), and dropped once a newer generation exists.
 
 `AppSupervision.restart` runs restarts of one app one after another (a request before the first
 has begun joins it): two at once would both retire the same child and the second replacement fails
-on the port. In the run registry a new pid is a new process generation, the one update allowed to
+on the port. `AppSupervision.stopApp` is serialized on the same per-app chain: it aborts the app's
+`process` signal with `AppStopped`, retires its child, and applies `{ type: "stopped" }` to park
+the app without ending the run (refusing an essential app still gating an initial startup wave so
+`startAfter` dependents are never bypassed). Automatic restarts (`watch`, `restartOn`, reactive
+links) skip an intentionally stopped app so file edits do not resurrect it; manual restarts (`r`,
+`s`, `buncargo restart`) still start it again. In the run registry a new pid is a new process generation, the one update allowed to
 take a `stopped`/`failed` app back to `starting`. A restart that retires the old process and cannot
 spawn its replacement fails the app (`kind: "restart"`): a retired process's exit is never
 reported, so nothing else would move the app's row and registry entry off `restarting`. It is
@@ -174,6 +179,9 @@ failure (reporting `detail: "exit <n>"` and `rerunCommand: "buncargo run <name>"
 and `.buncargo/logs/<run>/<name>.log` without ending the dev session), triggered on initial app
 readiness and every restart via `AppSupervision`'s `onPhase`, on watched file changes via `watchApp`
 (skipped under `--no-watch`), and manually via `output.controls.restart(taskName)` (TUI `r`).
+`ReactiveTaskRunner.cancel(name)` (wired to `output.controls.stop` / TUI `s`) aborts a running task's
+per-run controller, drops any queued follow-up run, and transitions it to `stopped` without failing
+or ending the session.
 `signal-tree.ts` and `find-detached-app.ts` stay separated from `port-owner.ts` and
 `detached-app.ts` so `terminate.ts` and `exec.ts` never pull container runtimes into the
 config-authoring entry (`src/index.ts`).

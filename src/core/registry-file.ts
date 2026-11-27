@@ -75,17 +75,17 @@ export async function readJsonDocument<T>(
 	}
 }
 
-export function writeJsonDocumentSync(
+export function writeTextFileSync(
 	path: string,
-	document: unknown,
+	text: string,
 	options: { afterWrite?: (path: string) => void; mode?: number } = {},
 ): void {
 	mkdirSync(dirname(path), { recursive: true });
 	const temp = tempPathFor(path);
 	try {
-		writeFileSync(temp, serialize(document), {
+		writeFileSync(temp, text, {
 			encoding: "utf-8",
-			mode: options.mode ?? 0o600,
+			...(options.mode !== undefined ? { mode: options.mode } : {}),
 			flag: "wx",
 		});
 		renameSync(temp, path);
@@ -96,6 +96,17 @@ export function writeJsonDocumentSync(
 	// After the rename the file carries the temp file's ownership, so a
 	// root-run daemon has to hand it back to the invoking user here.
 	options.afterWrite?.(path);
+}
+
+export function writeJsonDocumentSync(
+	path: string,
+	document: unknown,
+	options: { afterWrite?: (path: string) => void; mode?: number } = {},
+): void {
+	writeTextFileSync(path, serialize(document), {
+		afterWrite: options.afterWrite,
+		mode: options.mode ?? 0o600,
+	});
 }
 
 export async function writeJsonDocument(
@@ -233,7 +244,7 @@ export function defineListRegistry<T>(options: {
 		return entries.filter(isEntry);
 	};
 
-	function checkVersion(path: string, raw: string): unknown {
+	function parseChecked(path: string, raw: string): unknown {
 		const parsed = safeJsonParse(raw);
 		if (!parsed.ok) return undefined;
 		const value = parsed.data;
@@ -262,9 +273,12 @@ export function defineListRegistry<T>(options: {
 		path: string,
 		raw: string | undefined,
 		entries: T[],
+		parsedRaw?: { parsed: true; value: unknown },
 	): Promise<void> {
 		if (raw !== undefined) {
-			const value = checkVersion(path, raw);
+			const value = parsedRaw?.parsed
+				? parsedRaw.value
+				: parseChecked(path, raw);
 			const valid = validate(value);
 			const payload = isRecord(value) ? value[key] : undefined;
 			if (
@@ -281,19 +295,15 @@ export function defineListRegistry<T>(options: {
 			}
 		}
 
-		if (entries.length > 0 && raw === serialize({ version, [key]: entries }))
-			return;
-
 		if (entries.length === 0) {
 			await rm(path, { force: true });
 			return;
 		}
 
-		await writeJsonDocument(
-			path,
-			{ version, [key]: entries },
-			{ afterWrite, mode },
-		);
+		const nextRaw = serialize({ version, [key]: entries });
+		if (raw === nextRaw) return;
+
+		await writeTextFile(path, nextRaw, { afterWrite, mode });
 	}
 
 	return {
@@ -307,8 +317,8 @@ export function defineListRegistry<T>(options: {
 			}
 			if (raw === undefined) return [];
 
-			checkVersion(path, raw);
-			const entries = parse(raw, validate);
+			const value = parseChecked(path, raw);
+			const entries = validate(value);
 			if (entries) return entries;
 
 			if (!readOptions.strict) return [];
@@ -325,11 +335,10 @@ export function defineListRegistry<T>(options: {
 		},
 		async update(path, change) {
 			const raw = await readRaw(path);
-			if (raw !== undefined) checkVersion(path, raw);
-
-			const entries = raw === undefined ? [] : (parse(raw, validate) ?? []);
+			const value = raw !== undefined ? parseChecked(path, raw) : undefined;
+			const entries = value === undefined ? [] : (validate(value) ?? []);
 			const next = await change(entries);
-			if (next) await store(path, raw, next);
+			if (next) await store(path, raw, next, { parsed: true, value });
 		},
 	};
 }

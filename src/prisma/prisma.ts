@@ -146,10 +146,7 @@ export function createPrismaRunner<
 	// whose keys are only known as strings.
 	const service = resolved.service as Extract<keyof TServices, string>;
 
-	function getDatabaseUrl(): string {
-		// `urlEnvVar` defaults to a name the config need not declare, so the lookup
-		// is by dynamic name and the closed env record has to be widened for it.
-		const envVars: Record<string, string> = env.buildEnvVars();
+	function resolveDatabaseUrl(envVars: Record<string, string>): string {
 		const url = envVars[urlEnvVar];
 		if (!url) {
 			throw new Error(
@@ -157,6 +154,12 @@ export function createPrismaRunner<
 			);
 		}
 		return url;
+	}
+
+	function getDatabaseUrl(): string {
+		// `urlEnvVar` defaults to a name the config need not declare, so the lookup
+		// is by dynamic name and the closed env record has to be widened for it.
+		return resolveDatabaseUrl(env.buildEnvVars());
 	}
 
 	async function ensureDatabase(): Promise<void> {
@@ -199,7 +202,7 @@ export function createPrismaRunner<
 	/** The variables Prisma runs with, and the database URL they target. */
 	async function prismaEnv(extraEnv: Readonly<Record<string, string>>) {
 		const envVars: Record<string, string> = env.buildEnvVars();
-		const target = extraEnv[urlEnvVar] ?? getDatabaseUrl();
+		const target = extraEnv[urlEnvVar] ?? resolveDatabaseUrl(envVars);
 		const pointed = Object.fromEntries(
 			urlEnvVars.map((name) => [name, target]),
 		);

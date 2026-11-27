@@ -28,7 +28,11 @@ function allTypeScriptFiles(): string[] {
 }
 
 /** Every module reachable from `entry` through relative, non-type imports. */
-function importGraph(entry: string): Set<string> {
+function importGraph(
+	entry: string,
+	options: { includeDynamic?: boolean } = {},
+): Set<string> {
+	const { includeDynamic = true } = options;
 	const seen = new Set<string>();
 	const pending = [resolve(ROOT, entry)];
 
@@ -37,7 +41,10 @@ function importGraph(entry: string): Set<string> {
 		if (seen.has(file)) continue;
 		seen.add(file);
 
-		for (const { path } of transpiler.scanImports(readFileSync(file, "utf8"))) {
+		for (const { path, kind } of transpiler.scanImports(
+			readFileSync(file, "utf8"),
+		)) {
+			if (!includeDynamic && kind === "dynamic-import") continue;
 			if (!path.startsWith(".")) continue;
 			const base = resolve(dirname(file), path);
 			const target = [base, `${base}.ts`, join(base, "index.ts")].find(
@@ -110,11 +117,6 @@ describe("architecture", () => {
 		const allowed: Record<string, string> = {
 			"src/core/state-paths.ts":
 				"owns home resolution; getStateDir takes the home it resolved",
-			// These three predate the rule. Remove an entry once its file
-			// relocates through HOME alone.
-			"src/core/bar-update.ts": "getBarCheckPath(home?)",
-			"src/core/checkout-files/store.ts": "storeDir(repoKey, home?)",
-			"src/core/checkout-files/sync.ts": "CheckoutFilesOptions.home",
 			"src/shopify/cli.ts": "the Shopify CLI's own home, not ~/.buncargo",
 		};
 		const offenders = sourceFiles()
@@ -330,5 +332,18 @@ describe("architecture", () => {
 		for (const [entry, allowed] of Object.entries(pinned)) {
 			expect([...importGraph(entry)].sort()).toEqual([...allowed].sort());
 		}
+	});
+
+	it("keeps buncargo/firebase free of the egress proxy and Infisical runtime on config load", () => {
+		const graph = importGraph("src/firebase/index.ts", {
+			includeDynamic: false,
+		});
+		const forbidden = [...graph].filter(
+			(file) =>
+				file === "src/core/egress-guard/proxy.ts" ||
+				/^src\/core\/secrets\/(auth|fetch|http|app-secrets)\.ts$/.test(file) ||
+				file === "src/core/file-lock.ts",
+		);
+		expect(forbidden).toEqual([]);
 	});
 });

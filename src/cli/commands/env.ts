@@ -1,5 +1,5 @@
 import { readEnvOverrides } from "../../core/env-overrides";
-import { internalsOf } from "../../environment";
+import { internalsOf } from "../../environment/internals";
 import type { ResolvedLink } from "../../types";
 import { BASE_EXITS, defineCommand, defineGroup } from "../command-spec";
 import { CliError } from "../errors";

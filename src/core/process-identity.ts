@@ -239,11 +239,13 @@ export async function processIdentityMatcherAsync(
 	entries: readonly IdentityEntry[],
 	signal?: AbortSignal,
 ): Promise<(pid: number, identity?: string) => boolean> {
-	// Only live pids are worth an identity, and asking `ps` about one that is
-	// not a pid at all makes it refuse the whole batch.
+	// Only live pids need a birth lookup, and asking `ps` about one that is
+	// not a pid at all makes it refuse the batch.
 	const alive = livePids(entries);
 	return identityMatcher(
 		alive,
-		await readProcessIdentitiesAsync([...alive], signal),
+		alive.size > 0
+			? await readProcessIdentitiesAsync([...alive], signal)
+			: new Map(),
 	);
 }

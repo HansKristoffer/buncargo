@@ -265,13 +265,22 @@ async function runCoordinator(controller: AbortController) {
 				}
 			}
 
-			await abortableSleep(500, controller.signal);
+			const now = Date.now();
+			const nextIdleCheck =
+				publications.active || visitors.connections().length
+					? nextRefresh
+					: idleSince + IDLE_TIMEOUT_MS;
+			const waitMs = Math.min(
+				5_000,
+				Math.max(250, Math.min(nextRefresh, nextIdleCheck) - now),
+			);
+			await abortableSleep(waitMs, controller.signal);
 		}
 	} finally {
 		clearInterval(heartbeat);
+		server.stop(true);
 		await publications.close();
 		await visitors.close();
-		server.stop(true);
 	}
 }
 

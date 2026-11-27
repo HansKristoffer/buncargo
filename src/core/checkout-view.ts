@@ -247,6 +247,8 @@ export interface SharedEnvSource<
 		env?: (...args: never[]) => EnvValues;
 		activeApps?: ReadonlySet<string>;
 	};
+	/** Effective active apps for this run (including any explicit `onlyApps` selection). */
+	readonly activeApps?: ReadonlySet<string>;
 	readonly projectName: string;
 	readonly workspaceId: string;
 	readonly localIp: string;
@@ -277,6 +279,7 @@ export function envOverlayContext<
 	source: SharedEnvSource<TServices, TApps>,
 	extras: SharedEnvExtras,
 ): EnvVarsContext<TServices, TApps> {
+	const activeApps = source.activeApps ?? source.config.activeApps;
 	return {
 		env: source.inputEnv.merged,
 		projectName: source.projectName,
@@ -287,9 +290,7 @@ export function envOverlayContext<
 		loopbackUrls: source.loopbackUrls,
 		captured: extras.captured,
 		links: extras.links ?? {},
-		...(source.config.activeApps !== undefined
-			? { activeApps: source.config.activeApps }
-			: {}),
+		...(activeApps !== undefined ? { activeApps } : {}),
 	};
 }
 
@@ -306,6 +307,31 @@ function namedAllowedHosts(hosts: HostsRuntime | null): string[] {
 	return [...new Set(names)];
 }
 
+function buildBaseSharedEnv<
+	TServices extends Record<string, ServiceConfig>,
+	TApps extends Record<string, AppConfig>,
+>(
+	source: SharedEnvSource<TServices, TApps>,
+	extras: SharedEnvExtras,
+	captured: Record<string, string>,
+): EnvValues {
+	const shared = buildSharedEnvValues({
+		projectName: source.projectName,
+		production: extras.production,
+		services: source.services,
+		ports: source.ports,
+		urls: source.urls,
+		loopbackUrls: source.loopbackUrls,
+		publicUrls: extras.publicUrls,
+	});
+	Object.assign(shared, captured);
+	shared.BUNCARGO_WORKSPACE_ID = source.workspaceId;
+	if (extras.hosts?.active && extras.hosts.caPath) {
+		shared.NODE_EXTRA_CA_CERTS = extras.hosts.caPath;
+	}
+	return shared;
+}
+
 /**
  * The environment every process of a run shares, and what `getEnvVar`
  * answers from: computed names, captures, the declared input beneath them,
@@ -318,25 +344,17 @@ export function sharedEnv<
 	source: SharedEnvSource<TServices, TApps>,
 	extras: SharedEnvExtras,
 ): EnvValues {
-	const { services, apps, ports, urls, loopbackUrls } = source;
-	const { hosts } = extras;
-	const shared = buildSharedEnvValues({
-		projectName: source.projectName,
-		production: extras.production,
-		services,
-		ports,
-		urls,
-		loopbackUrls,
-		publicUrls: extras.publicUrls,
-	});
-	Object.assign(shared, capturedEnv(apps, extras.captured));
-	shared.BUNCARGO_WORKSPACE_ID = source.workspaceId;
-	if (hosts?.active && hosts.caPath) shared.NODE_EXTRA_CA_CERTS = hosts.caPath;
+	const { apps, ports, urls } = source;
+	const shared = buildBaseSharedEnv(
+		source,
+		extras,
+		capturedEnv(apps, extras.captured),
+	);
 
 	// Vite answers 403 to a Host it does not know. Comma-separated: the
 	// buncargo Vite plugin splits the list.
 	const allowedHosts = [
-		...new Set([...namedAllowedHosts(hosts), urlHostOverride()]),
+		...new Set([...namedAllowedHosts(extras.hosts), urlHostOverride()]),
 	].filter(isDefined);
 	if (allowedHosts.length > 0) {
 		shared.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = allowedHosts.join(",");
@@ -370,20 +388,12 @@ export function exportableSharedEnv<
 	source: SharedEnvSource<TServices, TApps>,
 	extras: SharedEnvExtras,
 ): EnvValues {
-	const { services, apps, ports, urls, loopbackUrls } = source;
-	const { hosts } = extras;
-	const shared = buildSharedEnvValues({
-		projectName: source.projectName,
-		production: extras.production,
-		services,
-		ports,
-		urls,
-		loopbackUrls,
-		publicUrls: extras.publicUrls,
-	});
-	Object.assign(shared, publicCapturedEnv(apps, extras.captured));
-	shared.BUNCARGO_WORKSPACE_ID = source.workspaceId;
-	if (hosts?.active && hosts.caPath) shared.NODE_EXTRA_CA_CERTS = hosts.caPath;
+	const { apps, ports, urls } = source;
+	const shared = buildBaseSharedEnv(
+		source,
+		extras,
+		publicCapturedEnv(apps, extras.captured),
+	);
 
 	const merged = mergeSharedEnvWithOverlay(
 		shared,

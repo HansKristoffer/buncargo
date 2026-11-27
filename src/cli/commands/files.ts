@@ -4,6 +4,7 @@ import { getErrorMessage } from "hanzio";
 import {
 	type CheckoutFileSpec,
 	checkoutFileErrors,
+	checkoutFileProblem,
 	checkoutFileSpecs,
 	dotenvKeyDiff,
 	exportBundle,
@@ -27,14 +28,13 @@ import {
 } from "../../core/loopback-env";
 import { findMonorepoRoot } from "../../core/ports";
 import { askChoice, isInteractive } from "../../core/prompt";
-import { findConfigFile } from "../../loader";
+import { findConfigFile } from "../../loader/find-config-file";
 import {
 	BASE_EXITS,
 	commaList,
 	defineCommand,
 	defineGroup,
 } from "../command-spec";
-import { checkoutFileProblem } from "../core-checks";
 import { argumentsError, CliError } from "../errors";
 import type { FilesStatusJson } from "../json-documents";
 import * as log from "../log";

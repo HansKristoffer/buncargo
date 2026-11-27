@@ -1,20 +1,22 @@
-import { existsSync, statSync } from "node:fs";
-import { getErrorMessage, typedSwitch } from "hanzio";
-import { FileLockTimeoutError, withFileLock } from "../file-lock";
+import { getErrorMessage } from "hanzio";
+import { withFileLock } from "../file-lock";
 import { rememberCertNames } from "./cert-names";
 import {
-	type CertificateShortfall,
-	certificateShortfall,
 	certNeedsRenewal,
-	ensureMkcert,
-	mintCert,
-	parseCertificateLeaf,
-	readCertificateLeaf,
-	resolvedMkcertPath,
-} from "./mkcert";
-import { getCertPath, getKeyPath } from "./paths";
-import { certificateCovers } from "./plan";
+	hostnamesForCertificate,
+} from "./certificate-inspect";
+import { ensureMkcert, mintCert, resolvedMkcertPath } from "./mkcert";
+import { getCertPath } from "./paths";
 import { loadHostRoutes } from "./registry";
+
+export {
+	certificateFingerprint,
+	certificateServes,
+	describeCertificateGap,
+	describeCertificateShortfall,
+	hostnamesForCertificate,
+	readCertificatePair,
+} from "./certificate-inspect";
 
 /**
  * Minting the leaf certificate the :443 proxy serves.
@@ -27,21 +29,6 @@ import { loadHostRoutes } from "./registry";
  * One certificate covers every registered hostname on the machine, so whichever
  * run last changed the registry mints for the union.
  */
-
-/**
- * Always on the leaf, so the proxy can bind before any route exists.
- *
- * Not merely a placeholder for the empty case. The daemon asks for coverage of
- * whatever is registered, which becomes exactly this the moment the last
- * project stops. A leaf minted for project hostnames alone is then reported as
- * a gap on every poll, and the backoff widens to 30s, so the next project waits
- * that long for the rebind that picks up its certificate.
- */
-const ALWAYS_COVERED = ["localhost"];
-
-export function hostnamesForCertificate(hostnames: string[]): string[] {
-	return [...new Set([...ALWAYS_COVERED, ...hostnames])].sort();
-}
 
 export interface CertificateFiles {
 	certPath: string;
@@ -151,142 +138,4 @@ export async function syncCertificateForRoutes(
 
 		mkcertPath = await downloadMkcert(mkcert);
 	}
-}
-
-/**
- * How long the daemon waits on a mint before trying again on a later pass.
- * Short, because every other project's route changes queue behind it.
- */
-const PAIR_READ_LOCK_MS = 1000;
-
-/**
- * Read the pair the proxy binds, under the same lock minting takes, or
- * `undefined` while a mint holds it.
- *
- * Landing a new certificate is two renames, not one. An unlocked reader can
- * fall between them and pair a fresh certificate with the previous key, which
- * fails the TLS bind and takes every named URL down until the next reload.
- *
- * A held lock is a mint in progress, not a failure: `mkcert` runs under it,
- * and treating a slow one as a failed reload backed the daemon off. The mint
- * ends in a rename the daemon watches, which brings it straight back here.
- */
-export async function readCertificatePair(): Promise<
-	{ cert: string; key: string } | undefined
-> {
-	const certPath = getCertPath();
-	const keyPath = getKeyPath();
-	try {
-		return await withFileLock(
-			certPath,
-			async () => ({
-				cert: await Bun.file(certPath).text(),
-				key: await Bun.file(keyPath).text(),
-			}),
-			{ timeoutMs: PAIR_READ_LOCK_MS },
-		);
-	} catch (error) {
-		if (error instanceof FileLockTimeoutError) return undefined;
-		throw error;
-	}
-}
-
-/**
- * Which hostnames a bound certificate answers for, at a given moment, or
- * `undefined` when its names or expiry cannot be read.
- *
- * What the daemon reports as served. A route the listener's own leaf does not
- * cover, or any route once that leaf has expired, fails TLS in the browser
- * however complete the route map is, and a health body that listed it anyway
- * let a run advertise https URLs that could not load.
- *
- * Unreadable is not "serves nothing": `Bun.serve` accepted the certificate,
- * and answering nothing would send every run on the machine to
- * `localhost:port` without a word. The daemon falls back to the route map.
- */
-export function certificateServes(
-	certPem: string,
-): ((hostname: string, now: number) => boolean) | undefined {
-	const leaf = parseCertificateLeaf(certPem);
-	if (leaf === undefined || Number.isNaN(leaf.validTo)) return undefined;
-
-	return (hostname, now) =>
-		leaf.validTo > now && certificateCovers(leaf.names, hostname);
-}
-
-/**
- * Why the daemon cannot serve these hostnames with the certificate on disk.
- *
- * The daemon reports this instead of minting: it has no business spawning
- * `mkcert` as root, and the CLI that registered the route is the process that
- * should have refreshed the certificate.
- */
-export function describeCertificateGap(
-	hostnames: string[],
-	certPath = getCertPath(),
-): string | undefined {
-	if (!existsSync(certPath)) {
-		return `Named-hosts certificate is missing at ${certPath}. Run \`buncargo hosts install\`.`;
-	}
-
-	const leaf = readCertificateLeaf(certPath);
-	if (!leaf) {
-		return `Named-hosts certificate at ${certPath} could not be read. Run \`buncargo hosts install\`.`;
-	}
-
-	const shortfall = certificateShortfall(
-		leaf,
-		hostnamesForCertificate(hostnames),
-	);
-	return shortfall && describeCertificateShortfall(shortfall);
-}
-
-/**
- * Say which of the two reasons applies. An expiring certificate covers every
- * name, so reporting it as "does not cover" sends someone looking for a
- * hostname problem that is not there.
- */
-export function describeCertificateShortfall(
-	shortfall: CertificateShortfall,
-	now = Date.now(),
-): string {
-	return typedSwitch(shortfall, "kind", {
-		uncovered: ({ hostnames }) =>
-			`Named-hosts certificate does not cover ${hostnames.join(", ")}. Run \`buncargo hosts install\`.`,
-		expiring: ({ validTo }) => {
-			const day = Number.isFinite(validTo)
-				? new Date(validTo).toISOString().slice(0, 10)
-				: undefined;
-			const when = !day
-				? "has no readable expiry date"
-				: validTo <= now
-					? `expired on ${day}`
-					: `expires on ${day}`;
-			return `Named-hosts certificate ${when}. The next \`buncargo dev\` renews it, or run \`buncargo hosts install\`.`;
-		},
-	});
-}
-
-/**
- * A cheap identity for the certificate on disk.
- *
- * The daemon polls this to notice a certificate the CLI reminted underneath it
- * and rebind with the new leaf, without parsing the file every second. The
- * inode is part of it: a mint lands by rename, so it always changes, where two
- * mints of one size within the filesystem's mtime granularity look alike.
- */
-export function certificateFingerprint(
-	certPath = getCertPath(),
-	keyPath = getKeyPath(),
-): string {
-	return [certPath, keyPath]
-		.map((path) => {
-			try {
-				const stat = statSync(path);
-				return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
-			} catch {
-				return "missing";
-			}
-		})
-		.join("|");
 }

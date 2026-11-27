@@ -11,6 +11,7 @@ import {
 	buildNoProxyList,
 	EGRESS_GUARD_ENV_KEYS,
 	egressGuardEnv,
+	formatBlockedEgress,
 	guardsApp,
 	guardsTask,
 	startEgressGuardProxy,
@@ -211,13 +212,13 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 		return egressGuardEnv(proxyUrl, buildNoProxyList(extraNoProxy));
 	}
 
-	function buildAppEnvVars(
+	function buildAppEnvVarsWithShared(
 		appName: string,
-		production = false,
-		liveLinks: Readonly<Record<string, ResolvedLink | undefined>> = ctx.links,
+		production: boolean,
+		liveLinks: Readonly<Record<string, ResolvedLink | undefined>>,
+		shared: Record<string, string>,
 	): Record<string, string> {
 		const envExtras = extras(production, liveLinks);
-		const shared = buildEnvVars(production, liveLinks);
 		const appConfig = apps[appName];
 
 		// A resolved app's builder takes `never`: it was written for its own config's keys.
@@ -237,8 +238,8 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 						port: appPort,
 						root: ctx.root,
 						workspaceId: ctx.workspaceId,
-						...(config.activeApps !== undefined
-							? { activeApps: config.activeApps }
+						...(ctx.activeApps !== undefined
+							? { activeApps: ctx.activeApps }
 							: {}),
 					}),
 				);
@@ -298,14 +299,29 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 		return processEnv;
 	}
 
+	function buildAppEnvVars(
+		appName: string,
+		production = false,
+		liveLinks: Readonly<Record<string, ResolvedLink | undefined>> = ctx.links,
+	): Record<string, string> {
+		return buildAppEnvVarsWithShared(
+			appName,
+			production,
+			liveLinks,
+			buildEnvVars(production, liveLinks),
+		);
+	}
+
 	function buildEnvFingerprint(appName: string, production = false): string {
 		const liveLinks = ctx.links;
 		const linkedNames = Object.values(liveLinks).flatMap((link) =>
 			link ? [link.root, link.projectName] : [],
 		);
-		const egressProxyPort = ctx.egressProxyUrl
-			? Number(new URL(ctx.egressProxyUrl).port)
-			: undefined;
+		const egressProxyPort =
+			ctx.egressProxy?.port ??
+			(ctx.egressProxyUrl
+				? Number(new URL(ctx.egressProxyUrl).port)
+				: undefined);
 		return portableEnvFingerprint(
 			buildAppEnvVars(appName, production, liveLinks),
 			{
@@ -324,8 +340,9 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 		production = false,
 	): Record<string, Record<string, string>> {
 		const liveLinks = ctx.links;
+		const shared = buildEnvVars(production, liveLinks);
 		return recordFromKeys(Object.keys(targetApps), (appName) =>
-			buildAppEnvVars(appName, production, liveLinks),
+			buildAppEnvVarsWithShared(appName, production, liveLinks, shared),
 		);
 	}
 
@@ -506,14 +523,8 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 		const proxy = await startEgressGuardProxy({
 			allow: guard.allow,
 			mode: guard.mode,
-			onBlocked: (event) => {
-				const action = event.mode === "block" ? "Blocked" : "Allowed (warn)";
-				console.warn(
-					formatWarn(
-						`${action} outbound ${event.method} to ${event.host}:${event.port} (add "${event.host}" to egressGuard.allow to permit)`,
-					),
-				);
-			},
+			onBlocked: (event) =>
+				console.warn(formatWarn(formatBlockedEgress(event))),
 		});
 		try {
 			if (guard.allowHostsOf.length > 0) {
@@ -535,68 +546,75 @@ export function createEnvVarsApi(ctx: DevEnvContext): DevEnvVarsApi {
 		HookContext<AnyServices, AnyApps>
 	>();
 
+	function createHookContext(
+		signal: AbortSignal | undefined,
+		selection: StartSelection | undefined,
+	): HookContext<AnyServices, AnyApps> {
+		const execForHook: HookContext<AnyServices, AnyApps>["exec"] = signal
+			? (cmd, options) =>
+					exec(cmd, {
+						...options,
+						timeoutMs: options?.timeoutMs ?? 600000,
+						signal: anySignal(signal, options?.signal),
+					})
+			: async (cmd, opts) => exec(cmd, opts);
+		const hookActiveApps = (() => {
+			if (config.activeApps === undefined) return undefined;
+			if (!selection || selection.appNames.length === 0) return ctx.activeApps;
+			const base = ctx.activeApps ?? config.activeApps;
+			if (!selection.appNames.some((app) => !base.has(app))) return base;
+			const next = new Set(base);
+			for (const app of selection.appNames) next.add(app);
+			return next;
+		})();
+		return {
+			selectedApps: selection ? [...selection.appNames] : Object.keys(apps),
+			selectedServices: selection
+				? [...selection.requiredServiceKeys]
+				: Object.keys(services),
+			projectName: ctx.projectName,
+			ports,
+			urls,
+			loopbackUrls,
+			publicUrls,
+			root: ctx.root,
+			isCI: isCI(),
+			get portOffset() {
+				return ctx.portOffset;
+			},
+			localIp: ctx.localIp,
+			captured: ctx.captured,
+			get links() {
+				return ctx.links;
+			},
+			...(hookActiveApps !== undefined ? { activeApps: hookActiveApps } : {}),
+			...(config.secrets !== undefined ? { secrets: config.secrets } : {}),
+			...(signal ? { signal } : {}),
+			exec: execForHook,
+		};
+	}
+
 	function getHookContext(
 		signal?: AbortSignal,
 		selection: StartSelection | undefined = ctx.selection,
 	): HookContext<AnyServices, AnyApps> {
 		if (selection) {
-			return {
-				...scopedHookContext(signal),
-				selectedApps: [...selection.appNames],
-				selectedServices: [...selection.requiredServiceKeys],
-			};
+			return createHookContext(signal, selection);
 		}
-
 		return scopedHookContext(signal);
 	}
 
 	function scopedHookContext(
 		signal?: AbortSignal,
 	): HookContext<AnyServices, AnyApps> {
-		if (!hookContext) {
-			hookContext = {
-				selectedApps: Object.keys(apps),
-				selectedServices: Object.keys(services),
-				projectName: ctx.projectName,
-				ports,
-				urls,
-				loopbackUrls,
-				publicUrls,
-				root: ctx.root,
-				isCI: isCI(),
-				portOffset: ctx.portOffset,
-				localIp: ctx.localIp,
-				captured: ctx.captured,
-				get links() {
-					return ctx.links;
-				},
-				...(config.activeApps !== undefined
-					? { activeApps: config.activeApps }
-					: {}),
-				...(config.secrets !== undefined ? { secrets: config.secrets } : {}),
-				exec: async (cmd, opts) => exec(cmd, opts),
-			};
-		}
-
 		if (!signal) {
+			hookContext ??= createHookContext(undefined, undefined);
 			return hookContext;
 		}
 
 		let scoped = scopedContexts.get(signal);
 		if (!scoped) {
-			scoped = {
-				...hookContext,
-				get links() {
-					return ctx.links;
-				},
-				signal,
-				exec: (cmd, options) =>
-					exec(cmd, {
-						...options,
-						timeoutMs: options?.timeoutMs ?? 600000,
-						signal: anySignal(signal, options?.signal),
-					}),
-			};
+			scoped = createHookContext(signal, undefined);
 			scopedContexts.set(signal, scoped);
 		}
 

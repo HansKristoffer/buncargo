@@ -1,7 +1,9 @@
 import { getErrorMessage } from "hanzio";
 import { agentAwareProcessEnv } from "../core/child-env";
 import { buncargoCli, type CliInvocation } from "../core/cli-entry";
+import { EGRESS_GUARD_ENV_KEYS } from "../core/egress-guard/rules";
 import { PORT_OFFSET_ENV } from "../core/runtime-flags";
+import { shellQuote } from "../core/shell-quote";
 import type { LinkInspection, ResolvedLinkConfig } from "../types";
 import { CliError } from "./errors";
 
@@ -76,14 +78,7 @@ const LINKED_CHILD_STRIP_ENV = [
 	PORT_OFFSET_ENV,
 	"BUNCARGO_APP_NAME",
 	"BUNCARGO_APP_HOSTNAME",
-	"HTTP_PROXY",
-	"HTTPS_PROXY",
-	"http_proxy",
-	"https_proxy",
-	"grpc_proxy",
-	"NO_PROXY",
-	"no_proxy",
-	"NODE_USE_ENV_PROXY",
+	...EGRESS_GUARD_ENV_KEYS,
 ] as const;
 
 /**
@@ -169,56 +164,66 @@ export async function startLinkedCheckouts(
 	targets: readonly PlannedLinkStart[],
 	options: StartLinkedOptions = {},
 ): Promise<LinkedStartResult[]> {
+	if (targets.length === 0) return [];
+	options.signal?.throwIfAborted();
+
 	const cli = options.cli ?? buncargoCli();
 	const runSpawn = options.runSpawn ?? defaultSpawn;
 	const env = linkedStartEnv();
-	const results: LinkedStartResult[] = [];
 
-	for (const target of targets) {
-		options.signal?.throwIfAborted();
-		options.onStart?.(target);
+	// Independent linked repos boot concurrently so multi-repo startup waits
+	// for the slowest companion rather than their sum.
+	const results = await Promise.all(
+		targets.map(async (target): Promise<LinkedStartResult> => {
+			options.signal?.throwIfAborted();
+			options.onStart?.(target);
 
-		const argv = buildLinkedStartArgv(cli, target);
-		let outcome: { exitCode: number; output: string };
-		try {
-			outcome = await runSpawn(argv, {
-				cwd: target.targetRoot,
-				env,
-				signal: options.signal,
-			});
-		} catch (error) {
-			if (options.signal?.aborted) throw error;
-			outcome = { exitCode: 1, output: getErrorMessage(error) };
-		}
+			const argv = buildLinkedStartArgv(cli, target);
+			let outcome: { exitCode: number; output: string };
+			try {
+				outcome = await runSpawn(argv, {
+					cwd: target.targetRoot,
+					env,
+					signal: options.signal,
+				});
+			} catch (error) {
+				if (options.signal?.aborted) throw error;
+				outcome = { exitCode: 1, output: getErrorMessage(error) };
+			}
 
-		results.push({
-			target,
-			exitCode: outcome.exitCode,
-			output: outcome.output,
-		});
+			if (outcome.exitCode === 0) {
+				options.onDone?.(target);
+			}
 
-		if (outcome.exitCode === 0) {
-			options.onDone?.(target);
-			continue;
-		}
+			return {
+				target,
+				exitCode: outcome.exitCode,
+				output: outcome.output,
+			};
+		}),
+	);
 
+	for (const { target, exitCode, output } of results) {
+		if (exitCode === 0) continue;
+
+		const quotedRoot = shellQuote(target.targetRoot);
 		const manualCmd = target.profile
-			? `cd ${target.targetRoot} && bunx buncargo dev --detach --profile=${target.profile}`
-			: `cd ${target.targetRoot} && bunx buncargo dev --detach`;
+			? `cd ${quotedRoot} && bunx buncargo dev --detach --profile=${shellQuote(target.profile)}`
+			: `cd ${quotedRoot} && bunx buncargo dev --detach`;
 		if (target.required) {
 			throw new CliError(
-				`Failed to start required linked repo "${target.name}" (${target.targetRoot}) with exit code ${outcome.exitCode}.`,
+				`Failed to start required linked repo "${target.name}" (${target.targetRoot}) with exit code ${exitCode}.`,
 				[
-					...outputTail(outcome.output),
+					...outputTail(output),
 					`Start it directly to inspect: \`${manualCmd}\``,
 				],
 			);
 		}
 
-		const tail = outputTail(outcome.output, 5).join("\n");
+		const tail = outputTail(output, 5).join("\n");
 		const detail = tail ? `\n${tail}` : "";
 		options.onWarning?.(
-			`Could not start optional linked repo "${target.name}" (${target.targetRoot}, exit ${outcome.exitCode}). Start it manually with \`${manualCmd}\`.${detail}`,
+			`Could not start optional linked repo "${target.name}" (${target.targetRoot}, exit ${exitCode}). Start it manually with \`${manualCmd}\`.${detail}`,
 		);
 	}
 

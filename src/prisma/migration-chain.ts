@@ -26,20 +26,26 @@ export async function listMigrationFolders(dir: string): Promise<string[]> {
 		throw error;
 	}
 
-	const folders: string[] = [];
-	for (const entry of entries) {
-		// A symlinked folder counts: `stat` below follows it.
-		if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+	const checked = await Promise.all(
+		entries
+			.filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+			.map(async (entry) => {
+				// A symlinked folder counts: `stat` follows it.
+				try {
+					const migrationSql = await stat(
+						join(dir, entry.name, "migration.sql"),
+					);
+					return migrationSql.isFile() ? entry.name : undefined;
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+						return undefined;
+					}
+					throw error;
+				}
+			}),
+	);
 
-		try {
-			const migrationSql = await stat(join(dir, entry.name, "migration.sql"));
-			if (migrationSql.isFile()) folders.push(entry.name);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-		}
-	}
-
-	return folders.sort();
+	return checked.filter((name): name is string => name !== undefined).sort();
 }
 
 function timestampOf(folder: string): string | undefined {

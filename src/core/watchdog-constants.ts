@@ -1,5 +1,26 @@
+import { stateFilePath } from "./state-paths";
+
 /** Idle backstop after a clean exit, unless the run chose another. */
 export const WATCHDOG_IDLE_TIMEOUT_MS = 3 * 60 * 1000;
+
+export function getWatchdogPidFile(): string {
+	return stateFilePath("watchdog.pid");
+}
+
+export function getWatchdogLogFile(): string {
+	return stateFilePath("watchdog.log");
+}
+
+/**
+ * The lock a running watchdog holds for its whole life.
+ *
+ * Held rather than polled, so "is one already running?" is a try-acquire
+ * rather than a pid file that a `kill -9` leaves lying. The kernel releases
+ * it on death, including a death no handler saw.
+ */
+export function getWatchdogLockFile(): string {
+	return `${getWatchdogPidFile()}.runner`;
+}
 
 /**
  * How long a crashed run's containers are kept before they are reclaimed.

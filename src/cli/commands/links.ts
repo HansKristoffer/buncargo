@@ -1,21 +1,23 @@
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { getErrorMessage, typedSwitch } from "hanzio";
+import { canonicalCheckoutPath } from "../../core/canonical-path";
 import {
-	canonicalCheckoutPath,
 	linkStartupIssues,
+	readLinkPins,
 	resolveLinksFromRuns,
 	resolveLiveLinksAsync,
 	updateLinkPins,
 } from "../../core/links";
 import { readLiveRuns } from "../../core/run-registry";
-import { internalsOf } from "../../environment";
+import { shellQuote } from "../../core/shell-quote";
+import { internalsOf } from "../../environment/internals";
 import type { LinkInspection } from "../../types";
 import { BASE_EXITS, defineCommand, defineGroup } from "../command-spec";
 import { CliError } from "../errors";
 import type { LinksJson } from "../json-documents";
 import * as log from "../log";
-import { loadEnv } from "./load-env";
+import { loadEnv, loadLiveEnv } from "./load-env";
 
 /**
  * `buncargo links`: inspect cross-repo links declared in `dev.config.ts`,
@@ -87,7 +89,7 @@ function printLinks(doc: LinksJson): void {
 				log.line(`    candidate: ${candidate.root} (${label})`);
 			}
 			const [first] = item.candidates;
-			const examplePath = first ? first.root : "<path>";
+			const examplePath = first ? shellQuote(first.root) : "<path>";
 			log.hint(
 				`Pin one: \`bunx buncargo links pin ${item.name} ${examplePath}\``,
 			);
@@ -130,7 +132,7 @@ const showLinksCommand = defineCommand({
 	},
 	json: "LinksJson (--json)",
 	run: async ({ values }) => {
-		const env = await loadEnv({ profile: values.profile });
+		const env = await loadLiveEnv({ profile: values.profile });
 		const { inspections } = await resolveLiveLinksAsync(
 			env.root,
 			internalsOf(env).linksConfig,
@@ -196,7 +198,7 @@ const pinLinkCommand = defineCommand({
 	},
 	exits: BASE_EXITS,
 	run: async ({ positionals: [name, targetPath] }) => {
-		const env = await loadEnv();
+		const env = await loadLiveEnv();
 		const configured = internalsOf(env).linksConfig;
 		const spec = configured?.[name];
 		if (!spec) {
@@ -268,7 +270,7 @@ const pinLinkCommand = defineCommand({
 			);
 		} else {
 			log.hint(
-				`No live run of "${spec.project}" found there yet. Start it with \`cd ${canonicalTarget} && bunx buncargo dev --detach\`.`,
+				`No live run of "${spec.project}" found there yet. Start it with \`cd ${shellQuote(canonicalTarget)} && bunx buncargo dev --detach\`.`,
 			);
 		}
 		log.hint(
@@ -301,6 +303,22 @@ const unpinLinkCommand = defineCommand({
 	exits: BASE_EXITS,
 	run: async ({ positionals }) => {
 		const env = await loadEnv();
+		const configured = internalsOf(env).linksConfig ?? {};
+		const existingPins = readLinkPins(env.root);
+		const unknown = positionals.filter(
+			(name) => !(name in configured) && !(name in existingPins),
+		);
+		if (unknown.length > 0) {
+			const known = [
+				...new Set([...Object.keys(configured), ...Object.keys(existingPins)]),
+			];
+			throw new CliError(
+				`Unknown link${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.`,
+				known.length > 0
+					? [`Configured or pinned links: ${known.join(", ")}`]
+					: ["No links are configured or pinned for this checkout."],
+			);
+		}
 		await updateLinkPins(env.root, { unset: [...positionals] });
 		log.done(`Unpinned ${positionals.join(", ")} for ${env.root}`);
 		log.hint(

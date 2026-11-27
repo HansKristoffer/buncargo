@@ -16,7 +16,7 @@ import {
 } from "../core/runtime-flags";
 import { buncargoPackage, findBuncargoPackage } from "../core/version";
 import { CliError } from "./errors";
-import { lockfileHash, readInstallStamp } from "./install-stamp";
+import { readInstallStamp, stampMatchesLockfile } from "./install-stamp";
 
 // Run the project's own buncargo, never whichever one is on `PATH`.
 //
@@ -100,8 +100,14 @@ function statOrUndefined(path: string): Stats | undefined {
  * checkout installed by hand is not reinstalled until the lockfile changes
  * after it. Stats only, unless a stamp exists to compare the lockfile against.
  */
-export function installNeed(dir: string): InstallNeed | undefined {
-	const found = findLockfile(dir);
+export function installNeed(
+	dir: string,
+	options: {
+		checkStale?: boolean;
+		lockfile?: { path: string; name: string };
+	} = {},
+): InstallNeed | undefined {
+	const found = options.lockfile ?? findLockfile(dir);
 	const lock = found ? statOrUndefined(found.path) : undefined;
 	if (!found || !lock) return undefined;
 
@@ -110,11 +116,13 @@ export function installNeed(dir: string): InstallNeed | undefined {
 		return { dir, missing: true, reason: "node_modules is missing" };
 	}
 
+	if (options.checkStale === false) return undefined;
+
 	const stamp = readInstallStamp(dir);
 	const stale =
 		stamp === undefined
 			? lock.mtimeMs > modules.mtimeMs
-			: stamp !== lockfileHash(dir);
+			: !stampMatchesLockfile(stamp, found.path, lock);
 	if (!stale) return undefined;
 
 	return {
@@ -166,6 +174,7 @@ export function decideInstall(
 	args: readonly string[],
 ): InstallNeed | undefined {
 	let declared = false;
+	const checkStale = refreshesStaleInstall(args);
 
 	for (let dir = cwd; ; dir = dirname(dir)) {
 		const project = readPackageJson(join(dir, "package.json"));
@@ -175,9 +184,9 @@ export function decideInstall(
 			declared = true;
 		}
 
-		if (project && findLockfile(dir)) {
-			const need = declared ? installNeed(dir) : undefined;
-			return need?.missing || refreshesStaleInstall(args) ? need : undefined;
+		const lockfile = project ? findLockfile(dir) : undefined;
+		if (lockfile) {
+			return declared ? installNeed(dir, { checkStale, lockfile }) : undefined;
 		}
 
 		if (existsSync(join(dir, ".git")) || dirname(dir) === dir) return undefined;

@@ -1,4 +1,4 @@
-import { CONTAINER_RUNTIME_SELECTIONS } from "../container-runtime";
+import { CONTAINER_RUNTIME_SELECTIONS } from "../container-runtime/names";
 import { isTimingEnabled } from "../core/runtime-flags";
 import {
 	type CommandSpec,
@@ -206,6 +206,15 @@ export const DEV_SPEC = {
 
 export type DevArgs = Parsed<typeof DEV_SPEC>;
 type DevValues = DevArgs["values"];
+
+export const DEV_EXITS = {
+	0: "success: the run ended cleanly, or (--detach) every app is up",
+	1: "failed, an app did not come up, or bad arguments",
+	2: "--detach: apps still starting at the timeout; the run keeps going",
+	130: "interrupted (Ctrl-C); 143 for SIGTERM",
+} as const;
+
+export const DEV_JSON = "DetachedResultJson (--detach --json)";
 
 /**
  * The flags only the `dev --detach` in front reads: its background run gets

@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { defineDevConfig } from "../config";
 import { useTempHome } from "../core/test-env.testing";
 import { getEnvVar } from "../core/utils";
-import { createDevEnvironment } from "../environment";
+import { createDevEnvironment, internalsOf } from "../environment";
 import type {
 	AnyDevEnvironment,
 	CheckContext,
@@ -219,6 +219,7 @@ describe("firebase()", () => {
 		expect(vars).toMatchObject({
 			FIREBASE_PROJECT_ID: "demo-myapp",
 			GCLOUD_PROJECT: "demo-myapp",
+			GOOGLE_CLOUD_PROJECT: "demo-myapp",
 			FIRESTORE_EMULATOR_HOST: "127.0.0.1:8180",
 			FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9199",
 			FIREBASE_STORAGE_EMULATOR_HOST: "127.0.0.1:9299",
@@ -1262,13 +1263,136 @@ describe("firebase checks", () => {
 				root: psRoot,
 				workspaceId: freshEnv.workspaceId,
 			});
-			expect(created).toEqual([
-				"/v1/projects/demo-pubsub/topics/orders.created",
+			expect(created.sort()).toEqual([
 				"/v1/projects/demo-pubsub/topics/emails.send",
+				"/v1/projects/demo-pubsub/topics/orders.created",
 			]);
 		} finally {
 			server.stop(true);
 			rmSync(psRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("activates firebase hooks and env when selected via onlyApps even if profiles.default omits it", () => {
+		const env = createDevEnvironment(
+			{
+				projectPrefix: "fbprof",
+				services: {},
+				integrations: [firebase({ webConfigEnv: "FIREBASE_WEB_CONFIG" })],
+				apps: {
+					web: { port: 3000, devCommand: "echo web" },
+				},
+				profiles: {
+					default: { apps: ["web"] },
+					full: { apps: ["web", "firebase"] },
+				},
+			} as DevConfig,
+			{ root, onlyApps: ["firebase"] },
+		);
+		const vars = env.buildEnvVars() as Record<string, string>;
+		expect(vars.GOOGLE_CLOUD_PROJECT).toBe("demo-fbprof");
+		expect(vars.FIREBASE_WEB_CONFIG).toBeDefined();
+		expect(vars.FIRESTORE_EMULATOR_HOST).toBeDefined();
+	});
+
+	it("normalizes -Xmx prefix in javaHeap and includes webConfigEnv in exportEnv", () => {
+		const env = createDevEnvironment(
+			{
+				projectPrefix: "fbheap",
+				services: {},
+				integrations: [
+					firebase({
+						javaHeap: "-Xmx4g",
+						webConfigEnv: "FIREBASE_WEB_CONFIG",
+					}),
+				],
+				apps: {},
+			} as DevConfig,
+			{ root },
+		);
+		const exported = internalsOf(env).exportedEnv({
+			apps: ["firebase"],
+			services: [],
+		});
+		expect(exported.GOOGLE_CLOUD_PROJECT).toBe("demo-fbheap");
+		expect(exported.FIREBASE_WEB_CONFIG).toBeDefined();
+		expect(exported.FIREBASE_DATABASE_EMULATOR_HOST).toBe("127.0.0.1:9");
+	});
+
+	it("keeps emulator download check a warning under egressGuard warn mode and clears onlyApps on withProfile", async () => {
+		const warnRoot = mkdtempSync(join(tmpdir(), "buncargo-fb-warn-"));
+		const emptyCache = join(warnRoot, "cache");
+		const prevEmulatorsPath = process.env.FIREBASE_EMULATORS_PATH;
+		process.env.FIREBASE_EMULATORS_PATH = emptyCache;
+		try {
+			writeFileSync(
+				join(warnRoot, "firebase.json"),
+				JSON.stringify({
+					emulators: {
+						ui: { enabled: true, port: 4000 },
+						firestore: { port: 8080 },
+					},
+				}),
+			);
+			const config = {
+				projectPrefix: "fbwarn",
+				services: {},
+				integrations: [firebase({ projectId: "demo-fbwarn" })],
+				profiles: {
+					default: { apps: ["web"] },
+					cloud: { apps: ["web"] },
+				},
+				apps: {
+					web: { port: 3000, devCommand: "echo web" },
+				},
+			} as DevConfig;
+
+			const withOnly = createDevEnvironment(config, {
+				root: warnRoot,
+				onlyApps: ["firebase"],
+			});
+			expect(internalsOf(withOnly).activeApps?.has("firebase")).toBe(true);
+			const switched = internalsOf(withOnly).withProfile("cloud");
+			expect(internalsOf(switched).activeApps?.has("firebase")).toBe(false);
+
+			const dlCheck = internalsOf(withOnly).setupChecks?.find((c) =>
+				c.name.includes("downloads"),
+			);
+			const warnResult = await dlCheck?.check({
+				root: warnRoot,
+				env: withOnly as AnyDevEnvironment,
+				egressGuard: {
+					enabled: true,
+					mode: "warn",
+					allow: [],
+					allowHostsOf: [],
+				},
+			} as CheckContext);
+			expect(warnResult).toMatchObject({ ok: false, severity: "warning" });
+
+			const blockResult = await dlCheck?.check({
+				root: warnRoot,
+				env: withOnly as AnyDevEnvironment,
+				egressGuard: {
+					enabled: true,
+					mode: "block",
+					allow: [],
+					allowHostsOf: [],
+				},
+			} as CheckContext);
+			expect(blockResult).toMatchObject({ ok: false });
+			expect(
+				typeof blockResult === "object" && "severity" in blockResult
+					? blockResult.severity
+					: undefined,
+			).toBeUndefined();
+		} finally {
+			if (prevEmulatorsPath === undefined) {
+				delete process.env.FIREBASE_EMULATORS_PATH;
+			} else {
+				process.env.FIREBASE_EMULATORS_PATH = prevEmulatorsPath;
+			}
+			rmSync(warnRoot, { recursive: true, force: true });
 		}
 	});
 });

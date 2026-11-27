@@ -15,8 +15,16 @@ function loadXterm(): typeof import("@xterm/headless") {
 	return xterm;
 }
 
-/** Scrollback each app's virtual screen keeps. */
-const SCREEN_SCROLLBACK = 10_000;
+/**
+ * Scrollback each app's virtual screen keeps in interactive TUI mode.
+ * Full logs rotate on disk (`.buncargo/logs/<run>/<app>.log`, opened with `l`),
+ * so 3,000 rows (~100 screens per app) bounds multi-app TUI heap without
+ * losing recent context.
+ */
+const SCREEN_SCROLLBACK = 3_000;
+
+/** Smaller scrollback when the screen only converts PTY output to plain lines (stream mode). */
+export const HEADLESS_SCREEN_SCROLLBACK = 200;
 
 /**
  * Output written but not yet parsed past which an app's chunks are dropped.
@@ -77,6 +85,7 @@ export class AppScreen {
 	private pending = 0;
 	/** Chunks are being dropped; reset once the backlog drains. */
 	private dropping = false;
+	private readonly scrollback: number;
 
 	constructor(
 		cols: number,
@@ -84,11 +93,13 @@ export class AppScreen {
 		private readonly onLine: (text: string) => void,
 		/** Once each time output starts being dropped. */
 		private readonly onDropped: () => void,
+		options: { scrollback?: number } = {},
 	) {
+		this.scrollback = options.scrollback ?? SCREEN_SCROLLBACK;
 		this.term = new (loadXterm().Terminal)({
 			cols,
 			rows,
-			scrollback: SCREEN_SCROLLBACK,
+			scrollback: this.scrollback,
 			allowProposedApi: true,
 		});
 		// Answers to the app's own queries (cursor position, device attributes).
@@ -174,6 +185,37 @@ export class AppScreen {
 		this.pty?.resize(cols, rows);
 	}
 
+	/**
+	 * Clear visible screen and scrollback while keeping line emission aligned.
+	 * Returns `false` when the app is using the alternate screen (full-screen
+	 * TUIs own their screen and cannot be wiped behind their back).
+	 */
+	clear(): Promise<boolean> {
+		if (this.term.buffer.active.type !== "normal") {
+			return Promise.resolve(false);
+		}
+		return new Promise((resolve) =>
+			this.term.write("\u001b[2J\u001b[3J\u001b[H", () => {
+				if (this.term.buffer.active.type !== "normal") {
+					resolve(false);
+					return;
+				}
+				// Explicit user clear must not be misread as an Ink footer redraw (`\x1b[H`).
+				this.emitted = 0;
+				this.low = Number.POSITIVE_INFINITY;
+				this.reach = 0;
+				this.live = 0;
+				this.calm = 0;
+				this.cleared = 0;
+				this.sent.clear();
+				this.anchor?.marker.dispose();
+				this.anchor = undefined;
+				this.commit(false);
+				resolve(true);
+			}),
+		);
+	}
+
 	/** Emit what is left on screen; the app is gone and will not redraw it. */
 	flush(): Promise<void> {
 		return new Promise((resolve) =>
@@ -192,10 +234,7 @@ export class AppScreen {
 		if (this.anchor && !this.anchor.marker.isDisposed)
 			shift = this.anchor.line - this.anchor.marker.line;
 		else if (this.cleared > 0) shift = this.cleared;
-		else if (
-			this.anchor &&
-			normal.length >= this.term.rows + SCREEN_SCROLLBACK
-		) {
+		else if (this.anchor && normal.length >= this.term.rows + this.scrollback) {
 			// Trimmed away: a burst longer than the scrollback since the last
 			// commit. Every row still in the buffer arrived after it.
 			this.emitted = 0;

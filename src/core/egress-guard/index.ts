@@ -1,6 +1,7 @@
 export {
 	type BlockedEgressEvent,
 	type EgressGuardProxy,
+	formatBlockedEgress,
 	parseConnectAuthority,
 	startEgressGuardProxy,
 } from "./proxy";

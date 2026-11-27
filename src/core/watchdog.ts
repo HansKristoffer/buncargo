@@ -20,21 +20,20 @@ import {
 	checkProcessIdentityAsync,
 	matchesProcessIdentityAsync,
 } from "./process-identity";
-import { getStateDir, stateFilePath } from "./state-paths";
+import { getStateDir } from "./state-paths";
 import { formatWarn } from "./style";
 import { buncargoVersion, compareVersions } from "./version";
+import {
+	getWatchdogLockFile,
+	getWatchdogLogFile,
+	getWatchdogPidFile,
+} from "./watchdog-constants";
 import { getWatchdogSpawnLockFile } from "./watchdog-loop";
+
+export { getWatchdogLockFile, getWatchdogLogFile, getWatchdogPidFile };
 
 /** How long an outdated watchdog gets to exit after each signal. */
 const WATCHDOG_REPLACE_TIMEOUT_MS = 5000;
-
-export function getWatchdogPidFile(): string {
-	return stateFilePath("watchdog.pid");
-}
-
-export function getWatchdogLogFile(): string {
-	return stateFilePath("watchdog.log");
-}
 
 /** Past this a starting watchdog moves the log to `watchdog.log.1`. */
 const WATCHDOG_LOG_MAX_BYTES = 1024 * 1024;
@@ -51,17 +50,6 @@ function capWatchdogLog(logFile: string): void {
 	} catch {
 		// No log yet: the runner creates it.
 	}
-}
-
-/**
- * The lock a running watchdog holds for its whole life.
- *
- * Held rather than polled, so "is one already running?" is a try-acquire
- * rather than a pid file that a `kill -9` leaves lying. The kernel releases
- * it on death, including a death no handler saw.
- */
-export function getWatchdogLockFile(): string {
-	return `${getWatchdogPidFile()}.runner`;
 }
 
 /** The running watchdog as its pid file records it. */

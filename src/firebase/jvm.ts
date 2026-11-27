@@ -53,7 +53,7 @@ export function resolveJavaHeap(
 		);
 	}
 
-	return trimmed;
+	return trimmed.replace(/^-Xmx/, "");
 }
 
 /**

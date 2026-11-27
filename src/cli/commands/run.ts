@@ -1,6 +1,6 @@
 import { ensureSecretsSession } from "../../core/secrets/index";
 import { WATCHDOG_IDLE_TIMEOUT_MS } from "../../core/watchdog-constants";
-import { internalsOf } from "../../environment";
+import { internalsOf } from "../../environment/internals";
 import type { AnyDevEnvironment, TaskConfig } from "../../types";
 import { BASE_EXITS, defineCommand } from "../command-spec";
 import { CliError } from "../errors";

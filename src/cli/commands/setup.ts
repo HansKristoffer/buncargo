@@ -2,25 +2,20 @@ import { getErrorMessage } from "hanzio";
 import { findMonorepoRoot } from "../../core/ports";
 import { askChoice, isInteractive } from "../../core/prompt";
 import { isCI } from "../../core/runtime-flags";
-import { internalsOf } from "../../environment";
-import { loadDevEnv } from "../../loader";
+import { internalsOf } from "../../environment/internals";
 import type { AnyDevEnvironment, CheckContext, SetupCheck } from "../../types";
-import { writeAgentsBlock } from "../agents-guide";
-import {
-	type CheckResult,
-	describeCheckFailures,
-	isWarning,
-	runChecks,
-} from "../checks";
+import type { CheckResult } from "../checks";
 import { BASE_EXITS, defineCommand } from "../command-spec";
-import { allChecks } from "../core-checks";
 import { CliError } from "../errors";
 import * as log from "../log";
 
-function printResult(result: CheckResult): void {
+function printResult(
+	result: CheckResult,
+	isWarningCheck: (r: CheckResult) => boolean,
+): void {
 	const detail = result.detail ? ` (${result.detail})` : "";
 	if (result.ok) log.done(result.check.name);
-	else if (isWarning(result)) log.warn(`${result.check.name}${detail}`);
+	else if (isWarningCheck(result)) log.warn(`${result.check.name}${detail}`);
 	else log.error(`${result.check.name}${detail}`);
 }
 
@@ -60,22 +55,25 @@ async function setup(values: {
 	agents: boolean;
 }): Promise<number> {
 	if (values.agents) {
+		const { writeAgentsBlock } = await import("../agents-guide");
 		const { path, changed } = writeAgentsBlock(findMonorepoRoot());
 		if (changed) log.done(`Updated the buncargo block in ${path}`);
 		else log.done(`${path} is up to date`);
 		return 0;
 	}
 
+	const [
+		{ loadDevEnv },
+		{ buildCheckContext, describeCheckFailures, isWarning, runChecks },
+		{ allChecks },
+	] = await Promise.all([
+		import("../../loader"),
+		import("../checks"),
+		import("../core-checks"),
+	]);
 	const env = (await loadDevEnv()) as AnyDevEnvironment;
 	const internals = internalsOf(env);
-	const ctx: CheckContext = {
-		root: env.root,
-		env,
-		...(internals.activeApps !== undefined
-			? { activeApps: internals.activeApps }
-			: {}),
-		...(internals.egressGuard ? { egressGuard: internals.egressGuard } : {}),
-	};
+	const ctx = buildCheckContext(env, internals);
 	const checks = allChecks(env, internals.setupChecks, {
 		egressGuardEnabled: internals.egressGuard?.enabled,
 	});
@@ -83,7 +81,7 @@ async function setup(values: {
 	const canAsk = !autoFix && isInteractive();
 
 	const results = await runChecks(checks, ctx);
-	for (const result of results) printResult(result);
+	for (const result of results) printResult(result, isWarning);
 
 	let skipped = 0;
 	for (const result of results) {

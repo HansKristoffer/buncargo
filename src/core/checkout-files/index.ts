@@ -1,5 +1,6 @@
 export { exportBundle, importBundle, parseBundle } from "./bundle";
 export type { MergeSide } from "./dotenv-merge";
+export { checkoutFileProblem } from "./problem";
 export { resolveRepoKey } from "./repo-key";
 export {
 	type CheckoutFileSpec,
@@ -8,7 +9,6 @@ export {
 } from "./spec";
 export { storeDir, writeStoreEntries } from "./store";
 export {
-	type CheckoutFileStatus,
 	dotenvKeyDiff,
 	gitignoreRefusals,
 	inspectCheckoutFiles,

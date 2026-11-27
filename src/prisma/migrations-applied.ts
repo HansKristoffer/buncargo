@@ -92,10 +92,11 @@ export async function missingAppliedMigrations(
 	readRows = readMigrationRows,
 ): Promise<string[] | undefined> {
 	try {
-		return appliedButMissing(
-			await readRows(url),
-			await listMigrationFolders(dir),
-		);
+		const [rows, local] = await Promise.all([
+			readRows(url),
+			listMigrationFolders(dir),
+		]);
+		return appliedButMissing(rows, local);
 	} catch {
 		return undefined;
 	}

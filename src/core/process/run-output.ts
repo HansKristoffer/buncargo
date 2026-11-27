@@ -6,7 +6,7 @@ import {
 	isBlankLogLine,
 } from "../style";
 import type { AppLogs } from "./app-logs";
-import { AppScreen } from "./app-screen";
+import { AppScreen, HEADLESS_SCREEN_SCROLLBACK } from "./app-screen";
 import { forEachLine } from "./line-splitter";
 import { type CapturedValue, stripTerminalOutput } from "./output-capture";
 
@@ -54,6 +54,7 @@ export interface RunOutputListener {
 	line?(line: OutputLine): void;
 	state?(app: string, state: AppStateDetail): void;
 	capture?(app: string, captured: CapturedValue): void;
+	screen?(app: string, screen: AppScreen): void;
 }
 
 const TAIL_LINES = 50;
@@ -148,17 +149,24 @@ function bracketBalance(text: string): number {
 	return balance;
 }
 
+/** Indented stack frame or chained cause following an error/warning line. */
+const STACK_CONTINUATION = /^(?:\s+at\s|\s*Caused by:)/i;
+
 /**
- * A filter for one app's lines, in order, that keeps its errors. A line that
- * opens a structured block (`[ERROR] job.completed {`) keeps the block with
- * it, and the block's lines take the level of the line that opened it:
- * `error_type: "Error",` alone is a fragment, and inside an INFO block it is
- * no error at all.
+ * A filter for one app's lines, in order, that keeps its errors (and warnings
+ * when `includeWarnings` is set). A line that opens a structured block
+ * (`[ERROR] job.completed {`) keeps the block with it, and stack frames right
+ * after an error stay attached: `error_type: "Error",` alone is a fragment,
+ * and inside an INFO block it is no error at all.
  */
-export function createErrorFilter(): (text: string) => boolean {
+export function createErrorFilter(
+	options: { includeWarnings?: boolean } = {},
+): (text: string) => boolean {
+	const includeWarnings = options.includeWarnings === true;
 	let depth = 0;
 	let blockLines = 0;
 	let keepBlock = false;
+	let inStack = false;
 
 	return (text) => {
 		if (depth > 0 && blockLines < MAX_BLOCK_LINES) {
@@ -168,15 +176,21 @@ export function createErrorFilter(): (text: string) => boolean {
 		}
 
 		depth = 0;
-		const keep = lineLevel(text) === "error";
+		const level = lineLevel(text);
+		const isMatch = level === "error" || (includeWarnings && level === "warn");
+		if (!isMatch && inStack && STACK_CONTINUATION.test(text)) {
+			return true;
+		}
+		inStack = isMatch;
+
 		const opensBlock = /[{[]$/.test(text.trimEnd());
 		if (opensBlock) {
 			depth = Math.max(bracketBalance(text), 1);
 			blockLines = 0;
-			keepBlock = keep;
+			keepBlock = isMatch;
 		}
 
-		return keep;
+		return isMatch;
 	};
 }
 
@@ -199,10 +213,14 @@ export class RunOutput {
 	screenSize: () => { cols: number; rows: number } = defaultScreenSize;
 	/**
 	 * Bound by the spawner: what a view may ask of the run. `restart`
-	 * resolves to whether the app's process was replaced, and rejects when
-	 * the replacement failed.
+	 * resolves to whether the app's process was replaced (or task triggered),
+	 * and rejects when the replacement failed. `stop` stops one app or cancels
+	 * an active reactive task without ending the run.
 	 */
-	controls?: { restart(name: string): Promise<boolean> };
+	controls?: {
+		restart(name: string): Promise<boolean>;
+		stop(name: string): Promise<boolean>;
+	};
 	/**
 	 * Bound by the run once its startup has settled: start `name`, an app it
 	 * left out, with the apps it requires. Resolves once the start has begun
@@ -265,9 +283,10 @@ export class RunOutput {
 		this.states.set(app, state);
 
 		if (state.state !== "starting") {
-			const text = state.detail
-				? `${state.state} (${state.detail})`
-				: state.state;
+			const text =
+				state.detail && state.detail !== state.state
+					? `${state.state} (${state.detail})`
+					: state.state;
 			this.event(app, text, state.state === "failed" ? "error" : undefined);
 		}
 
@@ -290,6 +309,11 @@ export class RunOutput {
 		return this.tails.get(app) ?? [];
 	}
 
+	/** Drop buffered tail lines for `app` (used when clearing a non-PTY pane). */
+	clearTail(app: string): void {
+		this.tails.delete(app);
+	}
+
 	/** The virtual screen of an app run under a pseudo-terminal. */
 	screen(app: string): AppScreen {
 		let screen = this.screens.get(app);
@@ -300,8 +324,12 @@ export class RunOutput {
 				rows,
 				(text) => this.line(app, text),
 				() => this.event(app, SCREEN_DROPPED, "warn"),
+				this.terminals === "pipe"
+					? { scrollback: HEADLESS_SCREEN_SCROLLBACK }
+					: undefined,
 			);
 			this.screens.set(app, screen);
+			for (const listener of this.listeners) listener.screen?.(app, screen);
 		}
 		return screen;
 	}
@@ -388,7 +416,7 @@ export function printStream(
 			if (state !== "stopped" && state !== "failed") return;
 			if (!restartable) return;
 
-			const detailSuffix = detail ? ` (${detail})` : "";
+			const detailSuffix = detail && detail !== state ? ` (${detail})` : "";
 			const hintLabel = rerunCommand ? "Run it again:" : "Restart it:";
 			const hintCommand = rerunCommand ?? `buncargo restart ${app}`;
 			const lines = [

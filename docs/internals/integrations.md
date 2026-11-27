@@ -144,19 +144,22 @@ held between runs. What it depends on in `firebase-tools` (checked against 15.34
   app, sibling apps, and `exportEnv` so developer `gcloud`/ADC sessions cannot leak into local
   demo emulators. All emulator env vars, credential isolation and setup checks are automatically
   skipped when the active profile omits `"firebase"` from `activeApps`.
-- `pubsubTopics`: created idempotently against the Pub/Sub emulator (`src/firebase/pubsub.ts`) in
-  `onAppReady` as soon as `firebase` reports ready, before downstream `startAfter` apps or
-  `seed.afterApps` run.
+- `pubsubTopics`: created idempotently in parallel (bounded concurrency) against the Pub/Sub emulator
+  (`src/firebase/pubsub.ts`) in `onAppReady` as soon as `firebase` reports ready, before downstream
+  `startAfter` apps or `seed.afterApps` run.
 - `functionsEnv`: rendered atomically with `0o600` permissions beside `functions.source` before
-  servers start (`src/firebase/functions-env.ts`), combining optional Infisical scopes (declared
-  via `secretScopes` so `secrets check` / `prefetch-secrets` include them) and explicit `values`,
-  stripping Firebase reserved keys and credentials, and backing up/restoring any pre-existing
-  `.env` on `hooks.afterServersStop`.
-- `checks.ts` parses `java -version` (handling legacy `1.8.x` -> `8` and modern `17.x`/`21.x`) and
-  validates against the installed `firebase-tools` major version for all JVM emulators
-  (`firestore`, `database`, `storage`, `pubsub`): Java `< 11` always fails; Java `11..20` warns
-  on `firebase-tools` 13.x (or unknown) and fails on 14+; Java `>= 21` passes. CLI install hints
-  use the checkout's detected package manager (`detectPackageManager`).
+  servers start (`src/firebase/functions-env.ts`), combining optional Infisical scopes (fetched via
+  `fetchScopeSecrets` with shell `process.env` overrides layered on top so local overrides reach
+  `functions/.env`, and declared via `secretScopes` so `secrets check` / `prefetch-secrets` include
+  them) and explicit `values`, stripping Firebase reserved keys and credentials, and backing
+  up/restoring any pre-existing `.env` on `hooks.afterServersStop`.
+- `checks.ts` respects a valid `JAVA_HOME`, reads the JDK `release` file before spawning `java
+  -version` asynchronously (handling legacy `1.8.x` -> `8` and modern `17.x`/`21.x`), and validates
+  against the installed `firebase-tools` major version (read from `package.json` before spawning
+  `firebase --version`) for all JVM emulators (`firestore`, `database`, `storage`, `pubsub`): Java
+  `< 11` always fails; Java `11..20` warns on `firebase-tools` 13.x (or unknown) and fails on 14+;
+  Java `>= 21` passes. CLI install hints use the checkout's detected package manager
+  (`detectPackageManager`).
 - The emulators' jars and zips live in the CLI's cache (`FIREBASE_EMULATORS_PATH`, else
   `~/.cache/firebase/emulators`) and are downloaded on first start, which a guarded `firebase` app
   cannot do: the egress guard refuses the download. `missingEmulatorDownloads` (pure) matches the
@@ -177,7 +180,8 @@ held between runs. What it depends on in `firebase-tools` (checked against 15.34
   pids are the CLI's own and recorded nowhere, so nothing here can end them.
 - The data directory defaults to `.firebase-emulator-data` beside `firebase.json`, not under the
   per-checkout `.buncargo/`, which is disposable state; nothing in buncargo removes it.
-- `exportEnv(ctx)` publishes the active emulator host vars, project IDs, and `publicEnvPrefix`
-  copies to `runs.json` `exports` for cross-repo links, and only when `firebase` is in
-  `ctx.selectedApps`, so a run that did not start the emulators leaves no dead emulator endpoints
-  in the registry.
+- `exportEnv(ctx)` shares `buildEmulatorEnv` with `env()`, publishing active emulator host vars,
+  `FIREBASE_PROJECT_ID`/`GCLOUD_PROJECT`/`GOOGLE_CLOUD_PROJECT`, `unselectedEmulatorEnv`,
+  `webConfigEnv`, and `publicEnvPrefix` copies to `runs.json` `exports` for cross-repo links, and
+  only when `firebase` is in `ctx.selectedApps`, so a run that did not start the emulators leaves no
+  dead emulator endpoints in the registry.

@@ -10,7 +10,7 @@
 
 import { type OffsetClaim, readAllOffsetClaims } from "../core/offset-claims";
 import { type RunEntry, readAllRuns } from "../core/run-registry";
-import type { ContainerRuntimeName } from "../types";
+import type { BuncargoContainer, ContainerRuntimeName } from "../types";
 import { buncargoContainersOn } from "./containers";
 import { claimedCheckouts, orphanedVolumes, planVolumePrune } from "./prune";
 import { containerRuntimeCandidates } from "./resolve";
@@ -53,6 +53,10 @@ export function orphanVolumeReporter(deps: OrphanVolumeReportDeps) {
 
 	return async function report(
 		answered: readonly ContainerRuntimeName[],
+		snapshot?: {
+			containers?: readonly BuncargoContainer[];
+			runs?: readonly RunEntry[];
+		},
 	): Promise<void> {
 		const startedAt = now();
 		if (startedAt < nextAt) return;
@@ -68,19 +72,24 @@ export function orphanVolumeReporter(deps: OrphanVolumeReportDeps) {
 		nextAt = startedAt + ORPHAN_VOLUME_REPORT_RETRY_MS;
 
 		try {
-			const containers = (
-				await Promise.all(
-					active.map((runtime) => buncargoContainersOn(runtime)),
-				)
-			).flat();
-			const volumes = (
-				await Promise.all(active.map((runtime) => runtime.listVolumes()))
-			).flat();
+			const [containers, volumes, runs] = await Promise.all([
+				snapshot?.containers !== undefined
+					? Promise.resolve([...snapshot.containers])
+					: Promise.all(
+							active.map((runtime) => buncargoContainersOn(runtime)),
+						).then((groups) => groups.flat()),
+				Promise.all(active.map((runtime) => runtime.listVolumes())).then(
+					(groups) => groups.flat(),
+				),
+				snapshot?.runs !== undefined
+					? Promise.resolve([...snapshot.runs])
+					: readRuns(),
+			]);
 			const names = orphanedVolumes(
 				planVolumePrune({
 					volumes,
 					containers,
-					runs: await readRuns(),
+					runs,
 					checkouts: claimedCheckouts(claims()),
 				}),
 			).map((volume) => volume.name);

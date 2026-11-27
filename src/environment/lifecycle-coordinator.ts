@@ -6,7 +6,6 @@ export class LifecycleCoordinator {
 	private startupController?: AbortController;
 	private transitions = 0;
 	private tail: Promise<unknown> = Promise.resolve();
-	private restarting?: { controller: AbortController; promise: Promise<void> };
 	private sessions = new Set<{ controller: AbortController; detach(): void }>();
 
 	start<T>(
@@ -104,10 +103,6 @@ export class LifecycleCoordinator {
 	stop(work: () => Promise<void>, signal?: AbortSignal): Promise<void> {
 		if (signal?.aborted) return Promise.reject(abortError(signal));
 
-		// Cancelled, it is no restart for a later request to join.
-		this.restarting?.controller.abort(new Error("Restart cancelled by stop"));
-		this.restarting = undefined;
-
 		const startup = this.cancelStartup();
 		return this.schedule(async () => {
 			await startup;
@@ -115,30 +110,5 @@ export class LifecycleCoordinator {
 			await work();
 			this.releaseSessions();
 		});
-	}
-
-	/** Concurrent restarts share one teardown/start; stop supersedes it. */
-	restart(
-		stop: (signal: AbortSignal) => Promise<void>,
-		start: (signal: AbortSignal) => Promise<unknown>,
-	): Promise<void> {
-		if (this.restarting) return this.restarting.promise;
-
-		const controller = new AbortController();
-		const startup = this.cancelStartup();
-		const promise = this.schedule(async () => {
-			await startup;
-			controller.signal.throwIfAborted();
-			await stop(controller.signal);
-			this.releaseSessions();
-			controller.signal.throwIfAborted();
-			await this.runStart(start, controller.signal, () => false);
-		}).finally(() => {
-			if (this.restarting === restarting) this.restarting = undefined;
-		});
-
-		const restarting = { controller, promise };
-		this.restarting = restarting;
-		return promise;
 	}
 }

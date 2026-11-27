@@ -10,23 +10,20 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { appendFileSync, readFileSync, unlinkSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
 import { getErrorMessage, promiseTimeout } from "hanzio";
 import { orphanVolumeReporter } from "../container-runtime/orphan-report";
 import { sweepOrphanedContainers } from "../container-runtime/sweep";
 import { checkoutDeleted, checkoutPresence } from "./checkout-presence";
 import { FileLockTimeoutError, withFileLock } from "./file-lock";
+import { getTailscaleServePath } from "./hosts/paths";
 import { readProxyActivity } from "./hosts/proxy-activity";
-import {
-	sweepTailscaleServe,
-	tailscaleServeDeps,
-} from "./hosts/tailscale-serve";
 import {
 	matchesProcessIdentity,
 	readCurrentProcessIdentityAsync,
 } from "./process-identity";
 import { writeJsonDocumentSync } from "./registry-file";
-import { recordEvents, removalActor } from "./removal-log";
+import { type RemovalActor, recordEvents, removalActor } from "./removal-log";
 import { lastCheckoutCommandAt } from "./run-activity";
 import {
 	createRunLimiter,
@@ -36,13 +33,13 @@ import {
 import { readAllRuns, runLivenessAsync } from "./run-registry";
 import { tailnetDirectoryEnabled, watchdogParent } from "./runtime-flags";
 import { getStateDir } from "./state-paths";
-import { serveTailnetDirectory } from "./tailnet-directory";
+import { buncargoVersion } from "./version";
 import {
 	getWatchdogLockFile,
 	getWatchdogLogFile,
 	getWatchdogPidFile,
-} from "./watchdog";
-import { WATCHDOG_POLL_INTERVAL_MS } from "./watchdog-constants";
+	WATCHDOG_POLL_INTERVAL_MS,
+} from "./watchdog-constants";
 import {
 	claimedSincePass,
 	exitUnlessClaimed,
@@ -54,7 +51,12 @@ import {
 const pidFile = getWatchdogPidFile();
 const logFile = getWatchdogLogFile();
 const ownerId = randomUUID();
-const actor = removalActor("buncargo watchdog");
+const version = buncargoVersion();
+let cachedActor: RemovalActor | undefined;
+function getActor(): RemovalActor {
+	cachedActor ??= removalActor("buncargo watchdog");
+	return cachedActor;
+}
 const reportOrphanVolumes = orphanVolumeReporter({ log });
 const stopRuns = createRunLimiter({
 	readRuns: readAllRuns,
@@ -70,7 +72,7 @@ const stopRuns = createRunLimiter({
 
 function log(message: string): void {
 	const line = formatWatchdogLine(
-		{ pid: process.pid, version: actor.version },
+		{ pid: process.pid, version },
 		new Date(),
 		message,
 	);
@@ -118,11 +120,21 @@ function watch(owner: object): Promise<void> {
 	return runWatchdogLoop({
 		stopRuns,
 		sweep: async () => {
-			const result = await sweepOrphanedContainers({ actor });
-			await reportOrphanVolumes(result.answered);
+			const result = await sweepOrphanedContainers({ actor: getActor() });
+			await reportOrphanVolumes(result.answered, {
+				containers: result.remaining.flatMap((group) => group.containers),
+				runs: result.runs,
+			});
 			return result;
 		},
-		sweepServeEntries: () => sweepTailscaleServe(tailscaleServeDeps()),
+		sweepServeEntries: async () => {
+			if (!existsSync(getTailscaleServePath())) {
+				return { removed: [], failures: [] };
+			}
+			const { sweepTailscaleServe, tailscaleServeDeps } =
+				await import("./hosts/tailscale-serve");
+			return sweepTailscaleServe(tailscaleServeDeps());
+		},
 		sleep: (ms) => promiseTimeout(ms),
 		log,
 		intervalMs: WATCHDOG_POLL_INTERVAL_MS,
@@ -151,13 +163,16 @@ withFileLock(
 			ownerId,
 			processIdentity: await readCurrentProcessIdentityAsync(),
 			// What `ensureWatchdog` compares to replace a runner of older code.
-			version: actor.version,
+			version,
 		};
 		writeJsonDocumentSync(pidFile, owner);
 		log(`Started from ${process.argv[1] ?? "an unknown path"}`);
 
 		const stopDirectory = tailnetDirectoryEnabled()
-			? serveTailnetDirectory({ log, intervalMs: WATCHDOG_POLL_INTERVAL_MS })
+			? (await import("./tailnet-directory")).serveTailnetDirectory({
+					log,
+					intervalMs: WATCHDOG_POLL_INTERVAL_MS,
+				})
 			: () => {};
 		try {
 			await watch(owner);

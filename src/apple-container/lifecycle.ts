@@ -233,15 +233,14 @@ async function up(
 		);
 	}
 
-	for (const volume of plan.volumes) {
-		await ensureVolume(run, volume);
-	}
-
-	// Read the inventory once so every service in this run decides reuse against
-	// the same snapshot rather than re-listing per service.
+	// Create volumes and read the container inventory together so neither waits
+	// on the other; every service still decides reuse against one snapshot.
 	// Output that is not JSON is no inventory: read as empty, every `run`
 	// below would collide with a container that is there.
-	const inventory = await run(LIST_ARGS);
+	const [inventory] = await Promise.all([
+		run(LIST_ARGS),
+		...plan.volumes.map((volume) => ensureVolume(run, volume)),
+	]);
 	const listing = readContainerListing(inventory);
 	if (!listing.listed) failed(inventory, "read container inventory");
 	const existing = new Map(

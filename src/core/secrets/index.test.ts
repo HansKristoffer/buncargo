@@ -284,17 +284,14 @@ describe("loadAppSecrets", () => {
 			"GET /api/v4/secrets",
 		]);
 
-		// The project's next scope goes to org-c straight away.
+		// The project's next scope goes to org-c straight away, reusing its exchanged token.
 		infisical.requests.length = 0;
 		expect(
 			await loadScopeSecrets(scopeOf("p2", { path: "/other" }), {
 				env: noIdentity(),
 			}),
 		).toEqual({ B: "2" });
-		expect(infisical.requests).toEqual([
-			"POST /api/v3/auth/select-organization",
-			"GET /api/v4/secrets",
-		]);
+		expect(infisical.requests).toEqual(["GET /api/v4/secrets"]);
 	});
 
 	it("names the fix when no organization of the login can read the project", async () => {

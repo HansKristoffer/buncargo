@@ -484,22 +484,41 @@ export function matchesSecretPattern(key: string, pattern: string): boolean {
 	return new RegExp(`^${escaped}$`).test(key);
 }
 
+function compileSecretMatcher(
+	patterns: readonly string[],
+): (key: string) => boolean {
+	const exact = new Set<string>();
+	const globs: RegExp[] = [];
+	for (const pattern of patterns) {
+		if (!pattern.includes("*") && !pattern.includes("?")) {
+			exact.add(pattern);
+		} else {
+			const escaped = pattern
+				.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+				.replace(/\*/g, ".*")
+				.replace(/\?/g, ".");
+			globs.push(new RegExp(`^${escaped}$`));
+		}
+	}
+	if (globs.length === 0) return (key) => exact.has(key);
+	if (exact.size === 0) return (key) => globs.some((re) => re.test(key));
+	return (key) => exact.has(key) || globs.some((re) => re.test(key));
+}
+
 /** The keys of `values` the scope lets through (`only`, then `exclude`). */
 export function filterScopeKeys(
 	scope: InfisicalScope,
 	values: Record<string, string>,
 ): Record<string, string> {
 	if (!scope.only && !scope.exclude) return values;
-	const only = scope.only;
-	const exclude = scope.exclude;
+	const matchesOnly = scope.only ? compileSecretMatcher(scope.only) : undefined;
+	const matchesExclude = scope.exclude
+		? compileSecretMatcher(scope.exclude)
+		: undefined;
 	return Object.fromEntries(
 		Object.entries(values).filter(([key]) => {
-			if (only && !only.some((pattern) => matchesSecretPattern(key, pattern))) {
-				return false;
-			}
-			if (exclude?.some((pattern) => matchesSecretPattern(key, pattern))) {
-				return false;
-			}
+			if (matchesOnly && !matchesOnly(key)) return false;
+			if (matchesExclude?.(key)) return false;
 			return true;
 		}),
 	);

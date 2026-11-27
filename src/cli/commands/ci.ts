@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { typedSwitch, typedSwitchGroup } from "hanzio";
-import { CONTAINER_RUNTIME_SELECTIONS } from "../../container-runtime";
+import { CONTAINER_RUNTIME_SELECTIONS } from "../../container-runtime/names";
 import {
 	formatCheckSlotWait,
 	processCheckSlot,

@@ -137,6 +137,12 @@ describe("minio and job helpers", () => {
 		const [binding] = model.services.storage?.ports ?? [];
 
 		expect(interpolate(String(binding), env)).toBe("127.0.0.1:9110:9000");
+		expect(model.services.storage?.command).toEqual([
+			"server",
+			"/data",
+			"--console-address",
+			":9001",
+		]);
 		expect(env.MINIO_URL).toBe("http://localhost:9110");
 	});
 

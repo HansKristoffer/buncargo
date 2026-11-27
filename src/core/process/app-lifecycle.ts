@@ -61,6 +61,8 @@ export type AppEvent =
 	| { type: "reused"; probation: boolean }
 	| { type: "ready" }
 	| { type: "restarting"; reason: string }
+	/** Stopped intentionally while the run stays up; `r` / `s` starts it again. */
+	| { type: "stopped"; detail?: string }
 	/** `runEnding`: the run was already stopping, so the exit was asked for. */
 	| { type: "exited"; exit: AppExit; runEnding: boolean }
 	/** It never came up, or a restart could not replace it. `park` spares it. */
@@ -89,6 +91,13 @@ export class AppFailure extends Error {
 }
 
 export class RunInterrupted extends Error {}
+
+/** Sentinel abort reason for an intentional per-app stop (`AppSupervision.stopApp`). */
+export class AppStopped extends Error {
+	constructor(readonly app: string) {
+		super(`App "${app}" stopped`);
+	}
+}
 
 export function initialLife(app: {
 	optional: boolean;
@@ -192,6 +201,12 @@ export function transition(life: AppLife, event: AppEvent): AppLife {
 			phase: "restarting",
 			generation: life.generation + 1,
 			end: undefined,
+		}),
+		stopped: ({ detail }) => ({
+			...life,
+			phase: "down",
+			standing: life.standing === "optional" ? "optional" : "parked",
+			end: { verdict: "stopped", detail: detail ?? "stopped" },
 		}),
 		exited: ({ exit, runEnding }) => {
 			// Already down (stopped for never coming up): the reason stays.

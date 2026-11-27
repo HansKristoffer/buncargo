@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { isBoolean, isOneOf, isRecord, isString } from "hanzio";
 import {
 	arrayOf,
@@ -302,6 +303,43 @@ export function getRunsPath(): string {
 	return stateFilePath(RUNS_FILENAME);
 }
 
+let cachedRunsRead:
+	| {
+			path: string;
+			ino: number;
+			mtimeMs: number;
+			size: number;
+			entries: RunEntry[];
+	  }
+	| undefined;
+
+function readParsedRunsCached(path: string): RunEntry[] {
+	try {
+		const stat = statSync(path);
+		if (
+			cachedRunsRead &&
+			cachedRunsRead.path === path &&
+			cachedRunsRead.ino === stat.ino &&
+			cachedRunsRead.mtimeMs === stat.mtimeMs &&
+			cachedRunsRead.size === stat.size
+		) {
+			return cachedRunsRead.entries;
+		}
+		const entries = runsRegistry.readSync(path);
+		cachedRunsRead = {
+			path,
+			ino: stat.ino,
+			mtimeMs: stat.mtimeMs,
+			size: stat.size,
+			entries,
+		};
+		return entries;
+	} catch {
+		cachedRunsRead = undefined;
+		return [];
+	}
+}
+
 /**
  * Every live run on this machine, read synchronously and leniently (an
  * unreadable registry reads as none), for `getEnvVar`, cross-repo link
@@ -309,9 +347,9 @@ export function getRunsPath(): string {
  * is read once per process for the runs it has not seen.
  */
 export function readLiveRunsSync(): RunEntry[] {
-	const runs = runsRegistry
-		.readSync(getRunsPath())
-		.filter((run) => runPhase(run, isProcessAlive(run.pid)) === "live");
+	const runs = readParsedRunsCached(getRunsPath()).filter(
+		(run) => runPhase(run, isProcessAlive(run.pid)) === "live",
+	);
 	const identities = readProcessIdentitiesCached(
 		runs.flatMap((run) => (run.processIdentity ? [run.pid] : [])),
 	);

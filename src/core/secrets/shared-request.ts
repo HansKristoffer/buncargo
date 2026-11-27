@@ -80,6 +80,12 @@ export class SharedRequestCache<T> {
 		});
 	}
 
+	/** Return the already-settled cached value without creating signals or timers. */
+	peek(key: string): T | undefined {
+		const entry = this.entries.get(key);
+		return entry?.settled ? entry.value : undefined;
+	}
+
 	/**
 	 * Drop `key`'s cached `value`, which turned out to be no good, so the next
 	 * `get` loads again. A newer load another caller already started is kept.

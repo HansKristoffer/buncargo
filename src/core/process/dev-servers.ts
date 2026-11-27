@@ -18,6 +18,7 @@ import {
 	type AppEvent,
 	AppFailure,
 	type AppLife,
+	AppStopped,
 	appState,
 	RunInterrupted,
 } from "./app-lifecycle";
@@ -204,7 +205,10 @@ export interface SessionControls {
 	 * it took on once they are supervised, before they spawn; throws, taking
 	 * on none, when their secrets cannot be loaded or the run is ending.
 	 */
-	start(apps: Record<string, ResolvedApp>): Promise<readonly string[]>;
+	start(
+		apps: Record<string, ResolvedApp>,
+		options?: { initialPortOwners?: PortOwnerSnapshot },
+	): Promise<readonly string[]>;
 }
 
 function resolveAppEnv(
@@ -598,7 +602,8 @@ export async function startDevServers(
 
 		// After the app's last screen, so its final words precede the verdict.
 		const screen = output.screens.get(name);
-		if (event.type === "exited" && screen) void screen.flush().then(show);
+		if ((event.type === "exited" || event.type === "stopped") && screen)
+			void screen.flush().then(show);
 		else show();
 	}
 
@@ -627,12 +632,31 @@ export async function startDevServers(
 		return replaced;
 	};
 
+	// Automatic restarts (`watch`, `restartOn`, reactive links) leave an app
+	// alone when the user explicitly stopped it with `s`; manual `r`/`s`/CLI
+	// restarts still bring it back up.
+	const autoRestartApp = (name: string, reason?: string): Promise<boolean> => {
+		const life = supervisor.life(name);
+		const intentionallyStopped =
+			life.phase === "down" &&
+			life.end?.verdict === "stopped" &&
+			life.end.exit === undefined;
+		if (intentionallyStopped) return Promise.resolve(false);
+		return restartApp(name, reason);
+	};
+
 	output.controls = {
 		restart: (name) => {
 			if (reactiveTasks?.has(name)) {
 				return Promise.resolve(reactiveTasks.trigger(name, "requested"));
 			}
 			return restartApp(name, "requested");
+		},
+		stop: (name) => {
+			if (reactiveTasks?.has(name)) {
+				return reactiveTasks.cancel(name);
+			}
+			return supervisor.stopApp(name);
 		},
 	};
 
@@ -643,7 +667,7 @@ export async function startDevServers(
 			return onCapture?.(app, captured) ?? [];
 		},
 		restart: async (name) => {
-			await restartApp(name);
+			await autoRestartApp(name);
 		},
 	});
 
@@ -655,14 +679,15 @@ export async function startDevServers(
 	async function spawnWave(
 		wave: Record<string, ResolvedApp>,
 		probation: (name: string) => boolean,
+		preloadedOwners?: PortOwnerSnapshot,
 	): Promise<void> {
 		// Per wave, not per run: a later wave spawns after tunnels have opened
 		// and earlier servers have bound their ports, so a snapshot taken before
 		// the first wave would be describing a machine that has since changed.
 		supervisor.signal.throwIfAborted();
 
-		const suppliedOwners = pendingWave1Owners;
-		pendingWave1Owners = undefined;
+		const suppliedOwners = preloadedOwners ?? pendingWave1Owners;
+		if (!preloadedOwners) pendingWave1Owners = undefined;
 		const portOwners =
 			suppliedOwners ??
 			(await createPortOwnerSnapshotAsync({
@@ -847,6 +872,12 @@ export async function startDevServers(
 			},
 			(error) => {
 				if (supervisor.signal.aborted) throw abortError(supervisor.signal);
+				if (
+					processSignal.aborted &&
+					processSignal.reason instanceof AppStopped
+				) {
+					return;
+				}
 				throw toAppFailure(
 					name,
 					processSignal.aborted ? processSignal.reason : error,
@@ -952,7 +983,7 @@ export async function startDevServers(
 			config: config.watch,
 			signal: supervisor.signal,
 			onChange: (reason) => {
-				void restartApp(name, reason).catch(() => {});
+				void autoRestartApp(name, reason).catch(() => {});
 			},
 		});
 	}
@@ -970,6 +1001,7 @@ export async function startDevServers(
 	/** See {@link SessionControls.start}. */
 	async function startLate(
 		apps: Record<string, ResolvedApp>,
+		lateOptions?: { initialPortOwners?: PortOwnerSnapshot },
 	): Promise<readonly string[]> {
 		supervisor.signal.throwIfAborted();
 		const fresh = Object.fromEntries(
@@ -999,13 +1031,15 @@ export async function startDevServers(
 		}
 
 		// The run went on without them: whatever goes wrong fails them, not it.
-		void spawnLate(pick(fresh, names)).catch(async (error) => {
-			if (supervisor.signal.aborted) return;
-			const pending = names.filter(
-				(name) => supervisor.life(name).phase !== "down",
-			);
-			await supervisor.fail(pending.map((name) => toAppFailure(name, error)));
-		});
+		void spawnLate(pick(fresh, names), lateOptions?.initialPortOwners).catch(
+			async (error) => {
+				if (supervisor.signal.aborted) return;
+				const pending = names.filter(
+					(name) => supervisor.life(name).phase !== "down",
+				);
+				await supervisor.fail(pending.map((name) => toAppFailure(name, error)));
+			},
+		);
 		return names;
 	}
 
@@ -1014,7 +1048,10 @@ export async function startDevServers(
 	 * that does not come up is parked like any spared app, and what was still
 	 * to spawn after it is failed, naming it.
 	 */
-	async function spawnLate(apps: Record<string, ResolvedApp>): Promise<void> {
+	async function spawnLate(
+		apps: Record<string, ResolvedApp>,
+		initialPortOwners?: PortOwnerSnapshot,
+	): Promise<void> {
 		const order = planSpawnOrder(apps, false);
 		const layers = [
 			...order.beforeBarrier,
@@ -1037,7 +1074,11 @@ export async function startDevServers(
 
 		for (const [index, names] of layers.entries()) {
 			try {
-				await spawnWave(pick(apps, names), () => false);
+				await spawnWave(
+					pick(apps, names),
+					() => false,
+					index === 0 ? initialPortOwners : undefined,
+				);
 			} catch (error) {
 				if (supervisor.signal.aborted) return;
 
@@ -1186,7 +1227,7 @@ export async function startDevServers(
 		// started by `--with-links`) never miss a fast companion transition.
 		options.onReadyWatch?.(
 			{
-				restart: restartApp,
+				restart: autoRestartApp,
 				announce: (target, text) =>
 					output.announce(target, text, { raw: formatStep(text) }),
 				ownedApps: () =>

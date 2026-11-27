@@ -255,6 +255,40 @@ it("lists the apps a run left out, with what each brings and the command that st
 		"  metro   off    buncargo restart metro",
 		"  search  off    needs redis: buncargo dev --apps=api,search",
 	]);
+
+	// Two runs where only the first has redis: prefer the run that can start
+	// `search` directly over the second run that is missing `redis`.
+	expect(
+		appStatusLines([
+			{
+				apps: [{ name: "worker", status: "ready" as const }],
+				startable: [
+					{
+						name: "search",
+						apps: ["search"],
+						missingServices: [],
+						command: "buncargo restart search --run=s1",
+					},
+				],
+			},
+			{
+				apps: [{ name: "api", status: "ready" as const }],
+				startable: [
+					{
+						name: "search",
+						apps: ["search"],
+						missingServices: ["redis"],
+						command: "buncargo dev --apps=api,search",
+					},
+				],
+			},
+		]),
+	).toEqual([
+		"apps:",
+		"  worker  ready",
+		"  api     ready",
+		"  search  off    buncargo restart search --run=s1",
+	]);
 });
 
 /**
@@ -343,7 +377,7 @@ it("reads six ports with at most one lsof and one docker ps, and reports the che
 			holders: [],
 		});
 		expect(dockerCommands).toEqual(["ps"]);
-		expect(lsofCalls).toBe(expectedLsofCalls);
+		expect(lsofCalls).toBeLessThanOrEqual(expectedLsofCalls);
 	} finally {
 		docker.remove();
 	}
@@ -356,7 +390,7 @@ it("plans an unclaimed hash block from the same reading, without a probe of its 
 
 		expect(result.portOffsetProvenance).toBe("hash");
 		expect(dockerCommands).toEqual(["ps"]);
-		expect(lsofCalls).toBe(expectedLsofCalls);
+		expect(lsofCalls).toBeLessThanOrEqual(expectedLsofCalls);
 	} finally {
 		docker.remove();
 	}

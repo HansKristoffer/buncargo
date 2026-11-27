@@ -7,7 +7,7 @@ import type {
 	ComposeProjectResourceKind,
 	ComposeProjectResources,
 } from "../container-runtime/types";
-import { runDocker, runDockerAsync } from "./binary";
+import { runDockerAsync } from "./binary";
 
 /**
  * Listing and removing Compose projects' resources, for
@@ -21,8 +21,8 @@ import { runDocker, runDockerAsync } from "./binary";
 const PROJECT = '{{.Label "com.docker.compose.project"}}';
 const FILTER = ["--filter", "label=com.docker.compose.project"];
 
-function rows(args: string[], binary?: string): string[][] {
-	const result = runDocker(binary, args, { timeoutMs: 30_000 });
+async function rowsAsync(args: string[], binary?: string): Promise<string[][]> {
+	const result = await runDockerAsync(binary, args, { timeoutMs: 30_000 });
 	if (!result.ok) {
 		const reason = result.stderr.trim() || `exit ${result.exitCode}`;
 		throw new Error(`docker ${args[0]} failed: ${reason}`);
@@ -35,21 +35,23 @@ function rows(args: string[], binary?: string): string[][] {
 		.map((line) => line.split("\t"));
 }
 
-function resources(
+async function resourcesAsync(
 	command: "volume" | "network",
 	binary?: string,
-): ComposeProjectResource[] {
-	return rows(
-		[command, "ls", ...FILTER, "--format", `{{.Name}}\t${PROJECT}`],
-		binary,
+): Promise<ComposeProjectResource[]> {
+	return (
+		await rowsAsync(
+			[command, "ls", ...FILTER, "--format", `{{.Name}}\t${PROJECT}`],
+			binary,
+		)
 	).flatMap(([name, project]) => (name && project ? [{ name, project }] : []));
 }
 
-export function listDockerComposeProjectResources(
+export async function listDockerComposeProjectResources(
 	binary?: string,
-): ComposeProjectResources {
-	return {
-		containers: rows(
+): Promise<ComposeProjectResources> {
+	const [containerRows, volumes, networks] = await Promise.all([
+		rowsAsync(
 			[
 				"ps",
 				"-a",
@@ -58,7 +60,12 @@ export function listDockerComposeProjectResources(
 				`{{.ID}}\t${PROJECT}\t{{.State}}\t{{.Label "buncargo.root"}}`,
 			],
 			binary,
-		).flatMap(([id, project, state = "", root = ""]) =>
+		),
+		resourcesAsync("volume", binary),
+		resourcesAsync("network", binary),
+	]);
+	return {
+		containers: containerRows.flatMap(([id, project, state = "", root = ""]) =>
 			id && project
 				? [
 						{
@@ -70,8 +77,8 @@ export function listDockerComposeProjectResources(
 					]
 				: [],
 		),
-		volumes: resources("volume", binary),
-		networks: resources("network", binary),
+		volumes,
+		networks,
 	};
 }
 

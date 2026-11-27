@@ -288,6 +288,7 @@ export function emulatorEnv(
 	return {
 		FIREBASE_PROJECT_ID: projectId,
 		GCLOUD_PROJECT: projectId,
+		GOOGLE_CLOUD_PROJECT: projectId,
 		FIREBASE_EMULATOR_HUB: `127.0.0.1:${ports.hub}`,
 		...(has("firestore")
 			? {

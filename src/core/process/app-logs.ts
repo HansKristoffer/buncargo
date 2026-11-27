@@ -32,6 +32,8 @@ const OWNER_FILE = "owner.pid";
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 /** How long a write waits for company before the buffer goes to disk. */
 const FLUSH_MS = 200;
+/** Flush early once buffered lines reach this size so noisy bursts stay bounded in memory. */
+const MAX_PENDING_BYTES = 256 * 1024;
 
 export function logsRoot(root: string): string {
 	return join(getProjectStateDir(root), "logs");
@@ -76,6 +78,7 @@ function ownerAlive(dir: string): boolean {
 export class AppLogs {
 	readonly dir: string;
 	private pending = new Map<string, string[]>();
+	private pendingBytes = 0;
 	private sizes = new Map<string, number>();
 	private timer?: ReturnType<typeof setTimeout>;
 
@@ -96,9 +99,16 @@ export class AppLogs {
 
 	/** One plain line. Buffered briefly: a chatty app should not cost a write per line. */
 	write(app: string, text: string, time = new Date()): void {
+		const entry = `${time.toISOString()} ${text}\n`;
 		const lines = this.pending.get(app) ?? [];
-		lines.push(`${time.toISOString()} ${text}\n`);
+		lines.push(entry);
 		this.pending.set(app, lines);
+		this.pendingBytes += Buffer.byteLength(entry);
+
+		if (this.pendingBytes >= MAX_PENDING_BYTES) {
+			this.flush();
+			return;
+		}
 
 		this.timer ??= setTimeout(() => this.flush(), FLUSH_MS);
 		this.timer.unref?.();
@@ -111,23 +121,25 @@ export class AppLogs {
 		for (const [app, lines] of this.pending) {
 			const file = this.file(app);
 			const text = lines.join("");
+			const bytes = Buffer.byteLength(text);
 
 			try {
-				const size =
+				let size =
 					this.sizes.get(app) ?? (existsSync(file) ? statSync(file).size : 0);
 
-				if (size + text.length > MAX_FILE_BYTES && size > 0) {
+				if (size + bytes > MAX_FILE_BYTES && size > 0) {
 					renameSync(file, `${file}.1`);
-					this.sizes.set(app, 0);
+					size = 0;
 				}
 
 				appendFileSync(file, text);
-				this.sizes.set(app, (this.sizes.get(app) ?? 0) + text.length);
+				this.sizes.set(app, size + bytes);
 			} catch {
 				// A log that cannot be written is lost output, never a failed run.
 			}
 		}
 
 		this.pending.clear();
+		this.pendingBytes = 0;
 	}
 }

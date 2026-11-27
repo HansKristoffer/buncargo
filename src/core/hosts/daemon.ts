@@ -10,11 +10,11 @@ import {
 	certificateServes,
 	describeCertificateGap,
 	readCertificatePair,
-} from "./certificates";
+} from "./certificate-inspect";
 import { readDaemonPid, releaseDaemonPid, writeDaemonPid } from "./daemon-pid";
 import { createThrottledFailureLog } from "./failure-log";
 import { cleanHostsFile, syncHostsFile } from "./hosts-file";
-import { getCertPath, getRoutesPath } from "./paths";
+import { getCertPath, getRoutesPath, HOSTS_SERVICE_LOG } from "./paths";
 import { isDnsHostname } from "./plan";
 import { HOSTS_HTTP_PORT, HOSTS_HTTPS_PORT } from "./protocol";
 import {
@@ -29,7 +29,6 @@ import {
 	writeProxyActivity,
 } from "./proxy-activity";
 import { type HostsRoute, pruneHostRoutes } from "./registry";
-import { HOSTS_SERVICE_LOG } from "./service-files";
 
 const IDLE_EXIT_MS = 30_000;
 const RELOAD_INTERVAL_MS = 1000;
@@ -190,9 +189,14 @@ export type HostsReloadReason =
 export interface HostsReloaderDeps {
 	/** Optional diagnostics; never printed on the ordinary reload path. */
 	onReload?: (event: { reason: HostsReloadReason; count: number }) => void;
+	/**
+	 * Read and prune the route table. Returning the same array reference as the
+	 * previous call signals the route list is unchanged (callers must return a
+	 * new array whenever routes change, never mutate a previously returned array).
+	 */
 	pruneRoutes: (
 		reason?: HostsReloadReason,
-	) => Promise<Array<{ hostname: string; port: number; root: string }>>;
+	) => Promise<readonly { hostname: string; port: number; root: string }[]>;
 	/**
 	 * A request was proxied to a route of this checkout: what a detached
 	 * run's idle limit counts (`proxy-activity.ts`).
@@ -265,6 +269,9 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	let lastHostsFileFailure: string | undefined;
 	let lastCertificateGap: string | undefined;
 	let lastInvalidHostnames = "";
+	let lastLoadedRoutes:
+		Awaited<ReturnType<HostsReloaderDeps["pruneRoutes"]>> | undefined;
+	let lastHostnames: string[] = [];
 	let lastRedirectError: string | undefined;
 	let lastGapCheckAt = Number.NEGATIVE_INFINITY;
 	// What the listener actually serves. Nothing until the first bind, and
@@ -334,11 +341,13 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 	function servableRoutes(
 		loaded: Awaited<ReturnType<HostsReloaderDeps["pruneRoutes"]>>,
 	): typeof loaded {
-		const servable = loaded.filter((route) => isDnsHostname(route.hostname));
-		const invalid = loaded
-			.filter((route) => !servable.includes(route))
-			.map((route) => JSON.stringify(route.hostname))
-			.join(", ");
+		const servable: Array<(typeof loaded)[number]> = [];
+		const invalidNames: string[] = [];
+		for (const route of loaded) {
+			if (isDnsHostname(route.hostname)) servable.push(route);
+			else invalidNames.push(JSON.stringify(route.hostname));
+		}
+		const invalid = invalidNames.join(", ");
 
 		if (invalid !== "" && invalid !== lastInvalidHostnames) {
 			deps.log(
@@ -357,15 +366,22 @@ export function createHostsReloader(deps: HostsReloaderDeps): HostsReloader {
 		// Load before clearing, so a registry that could not be read leaves the
 		// previous map serving. An unreadable file is not a file with no routes,
 		// and clearing first would 404 every named URL on the machine.
-		const loaded = servableRoutes(await deps.pruneRoutes(reason));
+		const rawLoaded = await deps.pruneRoutes(reason);
 		if (stopped) return;
 
-		routeMap.clear();
-		for (const route of loaded) {
-			routeMap.set(route.hostname, { port: route.port, root: route.root });
+		let hostnames: string[];
+		if (rawLoaded === lastLoadedRoutes) {
+			hostnames = lastHostnames;
+		} else {
+			lastLoadedRoutes = rawLoaded;
+			const loaded = servableRoutes(rawLoaded);
+			routeMap.clear();
+			for (const route of loaded) {
+				routeMap.set(route.hostname, { port: route.port, root: route.root });
+			}
+			hostnames = [...routeMap.keys()].sort();
+			lastHostnames = hostnames;
 		}
-
-		const hostnames = [...routeMap.keys()].sort();
 		const hostKey = hostnames.join(",");
 
 		if (hostnames.length === 0) {
@@ -567,9 +583,9 @@ export function createCachedRoutePruner(deps: {
 	prune: () => Promise<HostsRoute[]>;
 	isAlive: (pid: number) => boolean;
 	now: () => number;
-}): (reason?: HostsReloadReason) => Promise<HostsRoute[]> {
+}): (reason?: HostsReloadReason) => Promise<readonly HostsRoute[]> {
 	let lastStamp: string | undefined;
-	let cached: HostsRoute[] | undefined;
+	let cached: readonly HostsRoute[] | undefined;
 	let lastServiceCheckAt = Number.NEGATIVE_INFINITY;
 
 	return async (reason) => {
@@ -593,7 +609,7 @@ export function createCachedRoutePruner(deps: {
 		}
 
 		const beforeStamp = deps.stamp();
-		const routes = await deps.prune();
+		const routes = Object.freeze(await deps.prune());
 		const afterStamp = deps.stamp();
 		cached = routes;
 		// Only cache this stamp when the file stayed untouched across `prune()`.

@@ -1,10 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { typedSwitch, typedSwitchGroup } from "hanzio";
 import { containerRuntimeForEnv, isRuntimeUp } from "../container-runtime";
 import {
-	type CheckoutFileStatus,
 	checkoutFileErrors,
+	checkoutFileProblem,
 	checkoutFileSpecs,
 	gitignoreRefusals,
 	inspectCheckoutFiles,
@@ -92,28 +91,6 @@ function declaredCheckoutFiles(env: AnyDevEnvironment) {
 }
 
 /**
- * What a checkout file needs and the command that fixes it, after its path
- * ("has local edits (…)"); undefined when nothing.
- */
-export function checkoutFileProblem(
-	file: CheckoutFileStatus,
-): string | undefined {
-	if (file.refusal) return `${file.refusal}, so it is not synced`;
-
-	return typedSwitch(file.state, {
-		...typedSwitchGroup(file.state, ["in-sync", "missing"], () => undefined),
-		"local-edits": () =>
-			`has local edits (\`buncargo files save ${file.path}\` shares them)`,
-		"store-newer": () =>
-			`is behind the file store (\`buncargo files pull ${file.path}\`)`,
-		conflict: () =>
-			file.mergeable
-				? `and the file store both changed (\`buncargo files merge ${file.path}\` keeps both, or \`files save\` keeps yours, \`files pull --force\` the store's)`
-				: `and the file store both changed (\`buncargo files save ${file.path}\` keeps yours, \`files pull --force\` the store's)`,
-	});
-}
-
-/**
  * Loopback URLs in this checkout's overrides, dotenv checkout files and
  * computed environment that point outside its port block: at a port nothing
  * serves, or at another checkout's.
@@ -186,6 +163,13 @@ function coreChecks(
 	const checks: SetupCheck[] = [];
 	const pinned = pinnedBunVersion(env.root);
 	const pinnedNode = readPinnedNodeVersion(env.root);
+	let detectedNode: string | null | undefined;
+	const getNodeVersion = (): string | undefined => {
+		if (detectedNode === undefined) {
+			detectedNode = detectNodeVersion() ?? null;
+		}
+		return detectedNode ?? undefined;
+	};
 
 	// A fresh worktree has none, and every app then fails on its first import
 	// (`tsgo: command not found`) after the containers were already started.
@@ -255,7 +239,7 @@ function coreChecks(
 			severity: "warning",
 			fast: false,
 			check: () => {
-				const actual = detectNodeVersion();
+				const actual = getNodeVersion();
 				if (!actual) {
 					return {
 						ok: false,
@@ -278,7 +262,7 @@ function coreChecks(
 			severity: "warning",
 			fast: false,
 			check: () => {
-				const actual = detectNodeVersion();
+				const actual = getNodeVersion();
 				if (!actual) return true;
 				return (
 					supportsNodeEnvProxy(actual) || {

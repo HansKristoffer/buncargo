@@ -231,3 +231,30 @@ it("plans a late start: the apps it brings that the run lacks, and the services 
 	).toEqual(["postgres"]);
 	expect(leftOutNotice({ ...run(), apps: { web: apps.web } })).toBeUndefined();
 });
+
+it("forwards portOwners to spawnLate only when late preflight ran no steps", async () => {
+	const received: unknown[] = [];
+	const snapshot = { owner: () => null, isBusy: () => false };
+	const withSnapshot: LateStartRun["servedElsewhere"] = async () => ({
+		reused: [],
+		portOwners: snapshot,
+	});
+	const recordStart: LateStartRun["start"] = async (toStart, options) => {
+		received.push(options.initialPortOwners);
+		return { status: "started", apps: Object.keys(toStart) };
+	};
+
+	const noPreflight = run(recordStart, async () => false, withSnapshot);
+	expect(await startLeftOutApp(noPreflight, "mobile")).toEqual({
+		status: "started",
+		apps: ["metroProxy", "mobile"],
+	});
+
+	const ranPreflight = run(recordStart, async () => true, withSnapshot);
+	expect(await startLeftOutApp(ranPreflight, "mobile")).toEqual({
+		status: "started",
+		apps: ["metroProxy", "mobile"],
+	});
+
+	expect(received).toEqual([snapshot, undefined]);
+});

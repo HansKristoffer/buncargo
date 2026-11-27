@@ -16,13 +16,12 @@ import {
 	resolveToolBinary,
 	toolCachePath,
 } from "../tool-binary";
+import { certNeedsRenewal } from "./certificate-inspect";
 import { getCertPath, getKeyPath } from "./paths";
-import { certificateCovers } from "./plan";
+
+export { certificateShortfall } from "./certificate-inspect";
 
 const MKCERT_RELEASE_BASE = "https://github.com/FiloSottile/mkcert/releases/";
-
-/** A leaf with less than this left is reminted on the next `buncargo dev`. */
-const RENEW_BEFORE_MS = 1000 * 60 * 60 * 24 * 30;
 
 function cachedMkcertBinPath(version = mkcertVersion()): string {
 	return toolCachePath(`mkcert.${version}.${process.platform}-${process.arch}`);
@@ -259,78 +258,6 @@ function readCaTrust(caPath: string): CaTrust {
 export function isCaTrusted(mkcertPath?: string): boolean {
 	const caPath = getCaPath(mkcertPath);
 	return caPath !== undefined && readCaTrust(caPath) !== "untrusted";
-}
-
-/** The parts of a leaf certificate renewal depends on. */
-export interface CertificateLeaf {
-	names: Set<string>;
-	/** Expiry in epoch milliseconds; `NaN` when the certificate has none. */
-	validTo: number;
-}
-
-/** The leaf in a PEM, or `undefined` when it is not one. */
-export function parseCertificateLeaf(
-	pem: string | Buffer,
-): CertificateLeaf | undefined {
-	try {
-		const cert = new X509Certificate(pem);
-		const names = new Set(
-			(cert.subjectAltName ?? "")
-				.split(",")
-				.map((part) => part.trim().replace(/^DNS:/i, ""))
-				.filter(Boolean),
-		);
-		return { names, validTo: Date.parse(cert.validTo) };
-	} catch {
-		return undefined;
-	}
-}
-
-/** The leaf at `certPath`, or `undefined` when it is missing or unreadable. */
-export function readCertificateLeaf(
-	certPath: string,
-): CertificateLeaf | undefined {
-	try {
-		return parseCertificateLeaf(readFileSync(certPath));
-	} catch {
-		return undefined;
-	}
-}
-
-/** Why a leaf needs reminting for `hostnames`, or `undefined` when it does not. */
-export type CertificateShortfall =
-	| { kind: "uncovered"; hostnames: string[] }
-	| { kind: "expiring"; validTo: number };
-
-export function certificateShortfall(
-	leaf: CertificateLeaf,
-	hostnames: string[],
-	now = Date.now(),
-): CertificateShortfall | undefined {
-	// Wildcard-aware: a leaf carrying `*.myapp.localhost` already serves a
-	// new worktree's hostname, and treating that as a gap would remint on
-	// every fresh checkout, the churn wildcards exist to avoid.
-	const uncovered = hostnames.filter(
-		(hostname) => !certificateCovers(leaf.names, hostname),
-	);
-	if (uncovered.length > 0) return { kind: "uncovered", hostnames: uncovered };
-
-	if (!Number.isFinite(leaf.validTo) || leaf.validTo - now < RENEW_BEFORE_MS) {
-		return { kind: "expiring", validTo: leaf.validTo };
-	}
-
-	return undefined;
-}
-
-export function certNeedsRenewal(
-	certPath: string,
-	hostnames: string[],
-	now = Date.now(),
-): boolean {
-	if (hostnames.length === 0) return true;
-
-	const leaf = readCertificateLeaf(certPath);
-	return !leaf || certificateShortfall(leaf, hostnames, now) !== undefined;
 }
 
 /**
