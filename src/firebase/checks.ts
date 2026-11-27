@@ -121,44 +121,22 @@ export function evaluateJavaVersion(
 	};
 }
 
-/** Resolve the `java` binary Firebase emulators will use, respecting a valid `JAVA_HOME`. */
-function resolveJavaBinary(env: NodeJS.ProcessEnv): string | undefined {
-	const javaHome = env.JAVA_HOME?.trim();
-	if (javaHome) {
-		const binary = process.platform === "win32" ? "java.exe" : "java";
-		const candidate = join(javaHome, "bin", binary);
-		if (existsSync(candidate)) return candidate;
-	}
-	return lookupOnPath("java", env);
-}
-
 /**
  * Read `JAVA_VERSION="..."` from the JDK's `release` file beside `javaBin`
  * without spawning a JVM. Returns `undefined` for shims or JDKs without one.
  */
-function readJdkReleaseMajor(
-	javaBin: string,
-	javaHome?: string,
-): number | undefined {
-	const candidates: string[] = [];
-	if (javaHome?.trim()) {
-		candidates.push(join(javaHome.trim(), "release"));
-	}
+function readJdkReleaseMajor(javaBin: string): number | undefined {
 	try {
-		candidates.push(join(dirname(dirname(realpathSync(javaBin))), "release"));
+		const releasePath = join(
+			dirname(dirname(realpathSync(javaBin))),
+			"release",
+		);
+		if (!existsSync(releasePath)) return undefined;
+		return parseJavaMajorVersion(readFileSync(releasePath, "utf8"));
 	} catch {
-		// Unresolvable symlink; fall through to `java -version`.
+		// Unresolvable symlink or unreadable release file; fall through to `java -version`.
+		return undefined;
 	}
-	for (const releasePath of candidates) {
-		try {
-			if (!existsSync(releasePath)) continue;
-			const major = parseJavaMajorVersion(readFileSync(releasePath, "utf8"));
-			if (major !== undefined) return major;
-		} catch {
-			// Try the next candidate.
-		}
-	}
-	return undefined;
 }
 
 /** Determine the Java major version, preferring the JDK `release` file over spawning `java -version`. */
@@ -166,7 +144,7 @@ async function detectJavaMajorVersion(
 	javaBin: string,
 	env: NodeJS.ProcessEnv,
 ): Promise<number | undefined> {
-	const fromRelease = readJdkReleaseMajor(javaBin, env.JAVA_HOME);
+	const fromRelease = readJdkReleaseMajor(javaBin);
 	if (fromRelease !== undefined) return fromRelease;
 
 	try {
@@ -334,7 +312,7 @@ export function firebaseChecks(state: {
 				if (!needsJava) return true;
 
 				const env = childProcessEnv();
-				const javaBin = resolveJavaBinary(env);
+				const javaBin = lookupOnPath("java", env);
 				if (!javaBin) {
 					return {
 						ok: false,

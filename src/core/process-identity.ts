@@ -1,5 +1,5 @@
-import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { execAsync } from "./process/exec";
 import { isProcessAlive } from "./process/lifecycle";
 import {
 	createProcessIdentityCache,
@@ -50,29 +50,22 @@ async function psBirthsAsync(
 	pids: readonly number[],
 	signal?: AbortSignal,
 ): Promise<Map<number, string>> {
-	signal?.throwIfAborted();
-	recordStartupMetric("subprocesses");
 	recordStartupMetric("processIdentityReads");
-	const stdout = await new Promise<string>((resolve, reject) => {
-		execFile(
-			"ps",
-			["-o", "pid=,lstart=", "-p", pids.join(",")],
-			{
-				encoding: "utf8",
-				timeout: 1000,
-				killSignal: "SIGKILL",
-				maxBuffer: 1024 * 1024,
-				env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
-				signal,
-			},
-			(_error, output) => {
-				if (signal?.aborted) reject(signal.reason);
-				else resolve(output ?? "");
-			},
-		);
-	});
+	const result = await execAsync(
+		["ps", "-o", "pid=,lstart=", "-p", pids.join(",")],
+		process.cwd(),
+		{},
+		{
+			env: { LC_ALL: "C", TZ: "UTC" },
+			timeoutMs: 1000,
+			killGraceMs: 0,
+			maxBufferBytes: 1024 * 1024,
+			throwOnError: false,
+			signal,
+		},
+	);
 	signal?.throwIfAborted();
-	return parsePsBirths(stdout);
+	return parsePsBirths(result.stdout);
 }
 
 /** Async counterpart: inspection failures are unknown; cancellation still rejects. */
