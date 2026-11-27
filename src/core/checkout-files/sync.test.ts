@@ -53,10 +53,11 @@ function git(cwd: string, ...args: string[]): string {
 interface Repo {
 	dir: string;
 	root: string;
-	home: string;
 	store: string;
 	lines: string[];
 }
+
+useTempHome();
 
 const temps: string[] = [];
 afterEach(() => {
@@ -64,7 +65,7 @@ afterEach(() => {
 		rmSync(dir, { recursive: true, force: true });
 });
 
-function makeRepo(home?: string): Repo {
+function makeRepo(): Repo {
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), "buncargo-files-")));
 	temps.push(dir);
 	const root = join(dir, "app");
@@ -75,8 +76,7 @@ function makeRepo(home?: string): Repo {
 		join(root, ".gitignore"),
 		".env*\n!.env.example\n.buncargo/\napps/*/.env\n",
 	);
-	home ??= join(dir, "home");
-	return { dir, root, home, store: storeDir(KEY, home), lines: [] };
+	return { dir, root, store: storeDir(KEY), lines: [] };
 }
 
 const spec = (path = ENV, extra: Partial<CheckoutFileSpec> = {}) => [
@@ -89,7 +89,6 @@ function sync(
 	options: Parameters<typeof syncCheckoutFiles>[2] = {},
 ) {
 	return syncCheckoutFiles(repo.root, specs, {
-		home: repo.home,
 		log: (line) => repo.lines.push(line),
 		...options,
 	});
@@ -470,13 +469,10 @@ describe("refusals", () => {
 
 	it("reports every refusal when inspecting", () => {
 		const repo = makeRepo();
-		const report = inspectCheckoutFiles(
-			repo.root,
-			[...spec(), ...spec("config.env")],
-			{
-				home: repo.home,
-			},
-		);
+		const report = inspectCheckoutFiles(repo.root, [
+			...spec(),
+			...spec("config.env"),
+		]);
 		expect(report.files.map((file) => file.refusal)).toEqual([
 			undefined,
 			"is not gitignored",
@@ -491,7 +487,6 @@ describe("saveCheckoutFiles", () => {
 		await sync(repo);
 		writeLocal(repo, "A=2\n");
 		const { failed } = await saveCheckoutFiles(repo.root, spec(), {
-			home: repo.home,
 			log: () => {},
 		});
 		expect(failed).toEqual([]);
@@ -502,7 +497,6 @@ describe("saveCheckoutFiles", () => {
 	it("fails for a file the checkout does not have", async () => {
 		const repo = makeRepo();
 		const { failed } = await saveCheckoutFiles(repo.root, spec(), {
-			home: repo.home,
 			log: () => {},
 		});
 		expect(failed).toEqual([ENV]);
@@ -512,7 +506,6 @@ describe("saveCheckoutFiles", () => {
 describe("mergeCheckoutFile", () => {
 	const merge = (repo: Repo, take = new Map<string, "checkout" | "store">()) =>
 		mergeCheckoutFile(repo.root, spec(), ENV, {
-			home: repo.home,
 			log: (line) => repo.lines.push(line),
 			take,
 		});
@@ -529,7 +522,6 @@ describe("mergeCheckoutFile", () => {
 
 	const answer = (repo: Repo, inputs: string, side: "checkout" | "store") =>
 		mergeCheckoutFile(repo.root, spec(), ENV, {
-			home: repo.home,
 			log: (line) => repo.lines.push(line),
 			answered: { take: new Map([["A", side]]), inputs },
 		});
@@ -644,7 +636,6 @@ describe("dotenvKeyDiff", () => {
 
 describe("syncConfiguredCheckoutFiles", () => {
 	// The store is read from HOME, on a developer's machine rather than CI's.
-	const home = useTempHome();
 	const savedCi = new Map<string, string | undefined>();
 	beforeEach(() => {
 		for (const name of CI_ENV_VARS) {
@@ -660,7 +651,7 @@ describe("syncConfiguredCheckoutFiles", () => {
 	});
 
 	it("copies a required envFiles entry before it is read", async () => {
-		const repo = makeRepo(home());
+		const repo = makeRepo();
 		seedStore(repo, "A=1\n");
 		await syncConfiguredCheckoutFiles(repo.root, {
 			options: { envFiles: [ENV], checkoutFiles: [ENV] },
@@ -669,7 +660,7 @@ describe("syncConfiguredCheckoutFiles", () => {
 	});
 
 	it("names the fix when a required envFiles entry is still missing", async () => {
-		const repo = makeRepo(home());
+		const repo = makeRepo();
 		await expect(
 			syncConfiguredCheckoutFiles(repo.root, {
 				options: { envFiles: [ENV], checkoutFiles: [ENV] },
@@ -678,7 +669,7 @@ describe("syncConfiguredCheckoutFiles", () => {
 	});
 
 	it("lets an optional envFiles entry stay missing", async () => {
-		const repo = makeRepo(home());
+		const repo = makeRepo();
 		await syncConfiguredCheckoutFiles(repo.root, {
 			options: {
 				envFiles: [{ path: ENV, optional: true }],

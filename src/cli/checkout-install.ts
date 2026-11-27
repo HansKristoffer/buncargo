@@ -6,7 +6,7 @@ import { detectPackageManager } from "../core/package-manager";
 import { INSTALLING_ENV } from "../core/runtime-flags";
 import { projectStateFilePath } from "../core/state-paths";
 import { CliError } from "./errors";
-import { lockfileHash, writeInstallStamp } from "./install-stamp";
+import { lockfileStamp, writeInstallStamp } from "./install-stamp";
 import { type InstallNeed, installNeed } from "./version-guard";
 
 /** A cold install of a large monorepo, postinstall scripts included. */
@@ -35,7 +35,7 @@ export function installCheckout(
 			if (!stillNeeded()) return;
 
 			const manager = detectPackageManager(need.dir);
-			const hash = lockfileHash(need.dir);
+			const stamp = lockfileStamp(need.dir);
 			const where = relative(process.cwd(), need.dir) || ".";
 			writeSync(
 				2,
@@ -70,7 +70,7 @@ export function installCheckout(
 			}
 
 			// A frozen install leaves the lockfile as it was.
-			if (hash !== undefined) writeInstallStamp(need.dir, hash);
+			if (stamp !== undefined) writeInstallStamp(need.dir, stamp);
 		},
 		{ timeoutMs: INSTALL_LOCK_TIMEOUT_MS },
 	);

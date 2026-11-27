@@ -76,6 +76,8 @@ interface LoadDevEnvOptions {
 	containerRuntime?: string;
 	/** `--profile`, applying the named profile's `env` and `secrets` overrides. */
 	profile?: string;
+	/** Explicit app selection (`buncargo dev <app>...`), activating those apps even if `profiles.default.apps` omits them. */
+	onlyApps?: readonly string[];
 	/**
 	 * Bring `options.checkoutFiles` up to date before `envFiles` are read.
 	 * Default true; false for commands that only inspect (`doctor`).
@@ -114,16 +116,19 @@ export async function loadDevEnv<TConfig extends DevConfigLike = AnyDevConfig>(
 	}
 
 	const root = realpathSync(findMonorepoRoot(dirname(configPath)));
-	const variables: EnvironmentVariables = { ...process.env };
+	const shared =
+		!options?.reload && !options?.fresh && isConfigCacheable(configPath);
+	const variables: EnvironmentVariables | undefined = options?.fresh
+		? undefined
+		: { ...process.env };
 	const identity = JSON.stringify([
 		configPath,
 		root,
 		requested ?? null,
 		options?.profile ?? null,
+		options?.onlyApps ?? null,
 	]);
-	const shared =
-		!options?.reload && !options?.fresh && isConfigCacheable(configPath);
-	if (shared) {
+	if (shared && variables) {
 		const cached = cachedFor(identity, variables);
 		if (cached) return cached as DevEnvironmentFor<TConfig>;
 		// A load of this identity already under way builds the one environment
@@ -140,7 +145,8 @@ export async function loadDevEnv<TConfig extends DevConfigLike = AnyDevConfig>(
 		variables,
 		options,
 	);
-	if (!shared) return (await loading) as DevEnvironmentFor<TConfig>;
+	if (!shared || !variables)
+		return (await loading) as DevEnvironmentFor<TConfig>;
 	inflight.set(identity, { loading, variables });
 	try {
 		return (await loading) as DevEnvironmentFor<TConfig>;
@@ -153,7 +159,7 @@ async function importAndBuild(
 	configPath: string,
 	root: string,
 	identity: string,
-	variables: EnvironmentVariables,
+	variables: EnvironmentVariables | undefined,
 	options: LoadDevEnvOptions | undefined,
 ): Promise<AnyDevEnvironment> {
 	const requested = options?.containerRuntime;
@@ -188,14 +194,20 @@ async function importAndBuild(
 
 	// Concurrent consumers can finish the same import together. The first one
 	// resolves the environment; subsequent consumers reuse that exact object.
-	if (!options?.reload && !options?.fresh && isConfigCacheable(configPath)) {
+	if (
+		!options?.reload &&
+		!options?.fresh &&
+		variables &&
+		isConfigCacheable(configPath)
+	) {
 		const cached = cachedFor(identity, variables);
 		if (cached) return cached;
 	}
 
 	const loaded: unknown = mod.default;
-	if (isCurrentRevision)
-		setConfigCacheable(configPath, !mod.default?.options?.envFiles);
+	const envFiles = mod.default?.options?.envFiles;
+	const cacheable = !Array.isArray(envFiles) || envFiles.length === 0;
+	if (isCurrentRevision) setConfigCacheable(configPath, cacheable);
 
 	// Before the environment is built: it reads required `envFiles`, which a
 	// fresh checkout only has once they are copied in.
@@ -213,9 +225,16 @@ async function importAndBuild(
 			Record<string, ServiceConfig>,
 			Record<string, AppConfig>
 		>,
-		{ containerRuntime: requested, root, profile: options?.profile },
+		{
+			containerRuntime: requested,
+			root,
+			profile: options?.profile,
+			onlyApps: options?.onlyApps,
+		},
 	);
-	builtUnder.set(env, variables);
-	if (isCurrentRevision && !options?.fresh) setCachedDevEnv(env, identity);
+	if (variables) builtUnder.set(env, variables);
+	if (isCurrentRevision && !options?.fresh && cacheable) {
+		setCachedDevEnv(env, identity);
+	}
 	return env;
 }

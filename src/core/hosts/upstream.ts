@@ -8,7 +8,7 @@
  * alternative, retrying the forward itself, cannot replay a consumed body.
  */
 
-import { isTcpPortOpen } from "../network";
+import { isTcpPortOpen } from "../tcp-probe";
 
 export interface UpstreamFamily {
 	/** Host to hand a socket API. */

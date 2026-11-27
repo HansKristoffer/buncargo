@@ -1,14 +1,8 @@
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { getErrorMessage } from "hanzio";
 import { toPortMap, toUrlMap } from "../core/ports";
+import { writeTextFileSync } from "../core/registry-file";
 import type { GeneratedFileContext } from "../types";
 import type { DevEnvContext } from "./context";
 import type { DevEnvVarsApi } from "./env-vars";
@@ -23,17 +17,7 @@ import type { DevEnvVarsApi } from "./env-vars";
 export function writeIfChanged(path: string, content: string): boolean {
 	if (existsSync(path) && readFileSync(path, "utf8") === content) return false;
 
-	mkdirSync(dirname(path), { recursive: true });
-
-	const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
-	try {
-		writeFileSync(temp, content);
-		renameSync(temp, path);
-	} catch (error) {
-		rmSync(temp, { force: true });
-		throw error;
-	}
-
+	writeTextFileSync(path, content);
 	return true;
 }
 

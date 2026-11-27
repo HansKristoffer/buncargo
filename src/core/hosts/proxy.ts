@@ -535,7 +535,8 @@ export async function startLocalProxy(options: {
 		try {
 			httpServers = serveOnEach(hostnames, {
 				port: options.httpPort,
-				idleTimeout: 0,
+				// Redirect-only listener: never carries long-lived SSE or WebSockets.
+				idleTimeout: 10,
 				// So a reload can bind the replacement before stopping this one.
 				// Without it the daemon has to drop the listener first, and every
 				// certificate remint opens a window where :443 refuses connections.

@@ -1,6 +1,5 @@
 import { resolve } from "node:path";
 import { typedSwitch } from "hanzio";
-import { splitCommandLine } from "../../apple-container/run-plan";
 import { containerRuntimeForEnv } from "../../container-runtime";
 import { CommandSignalError } from "../../core/process";
 import { isInteractive } from "../../core/prompt";
@@ -8,6 +7,7 @@ import {
 	type Credentials,
 	postgresCredentials,
 } from "../../core/service-identity";
+import { splitCommandLine } from "../../core/shell-quote";
 import { loadDevEnv } from "../../loader";
 import type {
 	AnyDevEnvironment,
@@ -16,7 +16,6 @@ import type {
 } from "../../types";
 import {
 	BASE_EXITS,
-	type Command,
 	type CommandSpec,
 	defineCommand,
 	formatCommandHelp,
@@ -749,7 +748,7 @@ const PRODUCTION_SQL_DEPS: SqlDeps = {
 	warn: (line) => console.error(line),
 };
 
-export const sqlCommand: Command<typeof SQL_SPEC> = defineCommand({
+export const sqlCommand = defineCommand({
 	spec: SQL_SPEC,
 	exits: {
 		...BASE_EXITS,

@@ -47,8 +47,8 @@ export function sha256(data: Uint8Array): string {
 	return createHash("sha256").update(data).digest("hex");
 }
 
-export function storeDir(repoKey: string, home?: string): string {
-	return join(getStateDir(home), "files", ...repoKey.split("/"));
+export function storeDir(repoKey: string): string {
+	return join(getStateDir(), "files", ...repoKey.split("/"));
 }
 
 function dataPath(dir: string, path: string): string {

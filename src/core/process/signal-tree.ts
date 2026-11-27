@@ -11,23 +11,53 @@ function parsePids(output: string): number[] {
 /** Direct child pids of `pid` from Linux `/proc`, or `undefined` when unavailable. */
 function linuxChildPids(pid: number): number[] | undefined {
 	if (process.platform !== "linux") return undefined;
+	let tasks: string[];
 	try {
-		const tasks = readdirSync(`/proc/${pid}/task`);
-		const children: number[] = [];
-		let readAny = false;
-		for (const tid of tasks) {
-			try {
-				const raw = readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8");
-				readAny = true;
-				for (const token of raw.trim().split(/\s+/)) {
-					const child = Number.parseInt(token, 10);
-					if (Number.isInteger(child) && child > 0) children.push(child);
-				}
-			} catch {
-				// Task exited mid-read, or kernel lacks CONFIG_PROC_CHILDREN.
+		tasks = readdirSync(`/proc/${pid}/task`);
+	} catch (error) {
+		// Process already exited: no children to find, and no need to fork `pgrep`.
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		return undefined;
+	}
+	const children: number[] = [];
+	let readAny = false;
+	for (const tid of tasks) {
+		try {
+			const raw = readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8");
+			readAny = true;
+			for (const token of raw.trim().split(/\s+/)) {
+				const child = Number.parseInt(token, 10);
+				if (Number.isInteger(child) && child > 0) children.push(child);
 			}
+		} catch {
+			// Task exited mid-read, or kernel lacks CONFIG_PROC_CHILDREN.
 		}
-		return readAny ? children : undefined;
+	}
+	return readAny ? children : undefined;
+}
+
+/** Build `ppid -> direct child pids` with one `ps` call instead of recursive `pgrep` forks. */
+function psChildrenMap(): Map<number, number[]> | undefined {
+	try {
+		const output = execFileSync("ps", ["-eo", "pid=,ppid="], {
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		const byParent = new Map<number, number[]>();
+		for (const line of output.split(/\r?\n/)) {
+			const trimmed = line.trim();
+			if (!trimmed) continue;
+			const parts = trimmed.split(/\s+/);
+			const pid = Number.parseInt(parts[0] ?? "", 10);
+			const ppid = Number.parseInt(parts[1] ?? "", 10);
+			if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(ppid)) {
+				continue;
+			}
+			const list = byParent.get(ppid);
+			if (list) list.push(pid);
+			else byParent.set(ppid, [pid]);
+		}
+		return byParent;
 	} catch {
 		return undefined;
 	}
@@ -36,6 +66,7 @@ function linuxChildPids(pid: number): number[] | undefined {
 export function collectProcessTree(pid: number): number[] {
 	const seen = new Set<number>();
 	const stack = [pid];
+	let psChildren: Map<number, number[]> | null | undefined;
 
 	while (stack.length > 0) {
 		const current = stack.pop();
@@ -45,6 +76,16 @@ export function collectProcessTree(pid: number): number[] {
 		const linuxChildren = linuxChildPids(current);
 		if (linuxChildren !== undefined) {
 			for (const child of linuxChildren) stack.push(child);
+			continue;
+		}
+
+		if (psChildren === undefined) {
+			psChildren = psChildrenMap() ?? null;
+		}
+		if (psChildren !== null) {
+			for (const child of psChildren.get(current) ?? []) {
+				stack.push(child);
+			}
 			continue;
 		}
 

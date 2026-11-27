@@ -74,17 +74,21 @@ async function readStatus(): Promise<StatusJson> {
 	const runtime = containerRuntimeForEnv(env);
 
 	// One listing of the runtime answers both who holds each port and which
-	// containers this checkout has, where each used to be a `docker ps` of
-	// its own per port.
-	const listing = await readContainerListing(runtime);
+	// containers this checkout has, overlapped with the run registry read.
+	const [listing, allLiveRuns] = await Promise.all([
+		readContainerListing(runtime),
+		readLiveRuns().catch(() => []),
+	]);
 	// `planPortOffset` probes shifted blocks beyond `env.ports` when the offset
 	// is still an unprobed hash, so only pass `ports` as exhaustive otherwise.
+	// When `readContainerListing` already failed, pass an empty container map so
+	// the port snapshot does not spawn the same failing container listing again.
 	const envPorts = Object.values(env.ports as Record<string, number>);
 	const snapshot = await createPortOwnerSnapshotAsync({
 		runtime,
 		ports: env.portOffsetProvenance === "hash" ? undefined : envPorts,
 		cwdPorts: envPorts,
-		containers: "inventory" in listing ? listing.portOwners : undefined,
+		containers: "inventory" in listing ? listing.portOwners : new Map(),
 	});
 	const ownerOf = withBindProbe((port) => snapshot.owner(port));
 
@@ -127,7 +131,6 @@ async function readStatus(): Promise<StatusJson> {
 					}))
 			: { error: listing.error };
 
-	const allLiveRuns = await readLiveRuns().catch(() => []);
 	const runs = allLiveRuns.filter((run) => run.root === env.root);
 	const canStart = new Set(runsThatCanStart(runs));
 
@@ -192,11 +195,13 @@ async function readStatus(): Promise<StatusJson> {
 		portOffsetProvenance: env.portOffsetProvenance,
 		plannedOffset,
 		composeFile: env.composeFile,
-		// A runtime that listed its containers is running; only one that did
-		// not is asked again.
+		// A runtime that listed its containers is running; an unreachable daemon
+		// error already proves it is down without spawning a second probe.
 		runtime: {
 			name: runtime.name,
-			running: "inventory" in listing || isRuntimeUp(runtime),
+			running:
+				"inventory" in listing ||
+				(!isUnreachableRuntimeError(listing.error) && isRuntimeUp(runtime)),
 		},
 		checkSlots: checkSlotStatus(process.env),
 		ports,
@@ -231,6 +236,12 @@ async function readStatus(): Promise<StatusJson> {
 			resolvedLinks,
 		).map((stray) => ({ ...stray, message: describeStrayLoopbackUrl(stray) })),
 	} satisfies StatusJson;
+}
+
+function isUnreachableRuntimeError(error: string): boolean {
+	return /cannot connect|connection refused|is the docker daemon running|no such file|enoent|not running|stopped|failed to connect|unable to connect/i.test(
+		error,
+	);
 }
 
 /**
@@ -328,9 +339,16 @@ export function appStatusLines(
 		return ["apps: no live run (start one with `buncargo dev --detach`)"];
 	}
 
-	const off = new Map(
-		runs.flatMap((run) => run.startable).map((app) => [app.name, app]),
-	);
+	const off = new Map<string, StartableAppJson>();
+	for (const app of runs.flatMap((run) => run.startable)) {
+		const existing = off.get(app.name);
+		if (
+			!existing ||
+			(existing.missingServices.length > 0 && app.missingServices.length === 0)
+		) {
+			off.set(app.name, app);
+		}
+	}
 	const apps = [
 		...listed,
 		...[...off.values()].map((app) => ({

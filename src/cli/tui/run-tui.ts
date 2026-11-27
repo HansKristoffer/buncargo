@@ -1,25 +1,39 @@
-import { writeSync } from "node:fs";
+import {
+	existsSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+	writeSync,
+} from "node:fs";
+import { join } from "node:path";
 import { format } from "node:util";
 import type { IMarker } from "@xterm/headless";
-import { clamp, getErrorMessage } from "hanzio";
+import { clamp, getErrorMessage, typedSwitch } from "hanzio";
 import pc from "picocolors";
 import { openUrl } from "../../core/open-url";
+import type { AppScreen } from "../../core/process/app-screen";
 import {
+	createErrorFilter,
 	defaultScreenSize,
 	type OutputLine,
 	type RunOutput,
 } from "../../core/process/run-output";
+import { splitCommandLine } from "../../core/shell-quote";
 import { colorizeName } from "../../core/style";
 import { copyToClipboard } from "./clipboard";
 import {
 	fit,
 	highlightColumns,
+	highlightMatches,
 	joinRows,
+	layoutOverview,
+	layoutSidebar,
+	type OverviewRowMap,
 	overviewPlainLine,
 	renderFooter,
-	renderOverview,
+	renderInfo,
 	renderScreenRow,
-	renderSidebar,
 	wrapJoint,
 } from "./render";
 
@@ -49,11 +63,15 @@ interface RunTuiOptions {
 	/** Subset of `apps` entries that are finite reactive tasks (shown with `r run` and no interact mode). */
 	taskNames?: ReadonlySet<string>;
 	/**
-	 * Subset of `apps` the run left out: listed as not started until `r`
+	 * Subset of `apps` the run left out: listed as not started until `r` or `s`
 	 * starts one (`RunOutput.startApp`), then shown like any other app.
 	 */
 	leftOut?: ReadonlySet<string>;
-	/** The URL `o` opens for an app (what BuncargoBar's open does). */
+	/** Active profile name, shown subtly in the top-left header when set. */
+	profile?: string;
+	/** Live environment summary lines shown by the `i` / `?` info overlay. */
+	info?(): readonly string[];
+	/** The URL `o` opens and `y` copies for an app (what BuncargoBar's open does). */
 	urlFor(app: string): string | undefined;
 	actions?: readonly TuiAction[];
 	/** The log file of an app, or the run's log directory for the Overview. */
@@ -62,13 +80,15 @@ interface RunTuiOptions {
 	quit(): void;
 	stdin?: NodeJS.ReadStream;
 	stdout?: NodeJS.WriteStream;
-	/** Where a selection goes. Default: the system clipboard. */
+	/** Where a selection or URL copy goes. Default: the system clipboard. */
 	copy?(text: string): "clipboard" | "terminal";
 }
 
 const SIDEBAR_MIN = 18;
 const SIDEBAR_MAX = 32;
 const FRAME_MS = 33;
+const RESIZE_DEBOUNCE_MS = 60;
+const MESSAGE_TTL_MS = 3_000;
 const OVERVIEW_LINES = 10_000;
 /** Slack before trimming Overview lines, avoiding O(N) `shift()` per line. */
 const OVERVIEW_TRIM_SLACK = 500;
@@ -94,6 +114,9 @@ const MOUSE_ON = "\u001b[?1000h\u001b[?1002h\u001b[?1006h";
 const MOUSE_OFF = "\u001b[?1000l\u001b[?1002l\u001b[?1006l";
 const ENTER_SCREEN = `\u001b[?1049h\u001b[?25l\u001b[H\u001b[2J${MOUSE_ON}`;
 const LEAVE_SCREEN = `${MOUSE_OFF}\u001b[0m\u001b[?25h\u001b[?1049l`;
+/** DEC Mode 2026 synchronized output: prevents flicker during fast scroll/resize. */
+const SYNC_START = "\u001b[?2026h";
+const SYNC_END = "\u001b[?2026l";
 /** Lines one wheel notch scrolls. */
 const WHEEL_LINES = 3;
 
@@ -190,17 +213,46 @@ function holdInterrupts(onInterrupt: () => void): () => void {
 
 /**
  * Where keys go: buncargo's own bindings, the selected app (interact mode),
- * or the "open which app?" list. One value, so no two can be on at once.
+ * the "open/copy which app?" list, live search input, or the info overlay.
+ * One value, so no two can be on at once.
  */
 type InputMode =
 	| { kind: "navigate" }
 	| { kind: "interact" }
-	| { kind: "picker"; index: number };
+	| { kind: "picker"; index: number; intent: "open" | "copy" }
+	| { kind: "search"; previousScroll: number }
+	| { kind: "info"; scroll: number };
+
+const DEFAULT_KEYBINDING_INFO: readonly string[] = [
+	"",
+	pc.bold(" Keybindings"),
+	`  ${pc.bold("↑↓ / j k")}      Select Overview, app, or task`,
+	`  ${pc.bold("0..9")}          Jump directly to Overview (0) or pane 1..9`,
+	`  ${pc.bold("Enter")}         Interact with selected app (${pc.bold("Esc")} / ${pc.bold("Ctrl-]")} to leave)`,
+	`  ${pc.bold("/")}             Search logs (${pc.bold("n")}/${pc.bold("N")} next/prev match, ${pc.bold("Esc")} clear)`,
+	`  ${pc.bold("e")}             Overview: toggle errors & warnings (with full blocks)`,
+	`  ${pc.bold("w")}             Overview: toggle line wrapping`,
+	`  ${pc.bold("r")}             Restart selected app (start off app, or run reactive task)`,
+	`  ${pc.bold("s")}             Stop / start selected app (or cancel running task)`,
+	`  ${pc.bold("c")}             Clear current pane`,
+	`  ${pc.bold("o / y")}         Open / copy app URL (picker in Overview)`,
+	`  ${pc.bold("l")}             Open log in $PAGER (merged log in Overview)`,
+	`  ${pc.bold("b / [")}         Collapse or expand the sidebar`,
+	`  ${pc.bold("Ctrl-U / D")}    Scroll half-page up / down (${pc.bold("g")}/${pc.bold("G")}, ${pc.bold("Home")}/${pc.bold("End")})`,
+	`  ${pc.bold("i / ?")}         Toggle this environment info overlay`,
+	`  ${pc.bold("q / Ctrl-C")}    Quit the run`,
+];
 
 export class RunTui {
 	private selected = 0;
 	private mode: InputMode = { kind: "navigate" };
 	private errorsOnly = false;
+	private wrapOverview = false;
+	private sidebarHidden = false;
+	private sidebarOffset = 0;
+	private searchQuery = "";
+	private searchMatchRows: number[] = [];
+	private searchMatchCursor = -1;
 	/** Text selected in a pane, in display columns. */
 	private selection?: {
 		pane: string;
@@ -216,6 +268,8 @@ export class RunTui {
 	private pending = "";
 	private escTimer?: ReturnType<typeof setTimeout>;
 	private message: string | undefined;
+	private messageTimer?: ReturnType<typeof setTimeout>;
+	private resizeTimer?: ReturnType<typeof setTimeout>;
 	/** How far each pane is scrolled back: the Overview's ("") in lines. */
 	private scroll = new Map<string, number>();
 	/**
@@ -225,6 +279,12 @@ export class RunTui {
 	private anchors = new Map<string, IMarker>();
 	private unread = new Set<string>();
 	private lines: OutputLine[] = [];
+	/** Per-app stateful block/stack filters so `e` keeps structured error blocks whole. */
+	private errorFilters = new Map<string, (text: string) => boolean>();
+	private errorMatched = new WeakSet<OutputLine>();
+	private filteredOverviewCache?: OutputLine[];
+	/** Cached snapshot of `i`/`?` info lines so log chatter never runs sync disk I/O. */
+	private cachedInfoLines?: readonly string[];
 	private frame: string[] = [];
 	private dirty = true;
 	private timer?: ReturnType<typeof setTimeout>;
@@ -232,9 +292,11 @@ export class RunTui {
 	private active = false;
 	private suspended = false;
 	private pager?: Bun.Subprocess;
+	private pagerTempPath?: string;
 	/** Gives the run its own SIGINT listeners back once the pager is closed. */
 	private releaseInterrupts?: () => void;
 	private hooked = new WeakSet<object>();
+	private writeDisposables: Array<{ dispose(): void }> = [];
 	private unsubscribe?: () => void;
 	private restoreOutput?: () => void;
 	private readonly stdin: NodeJS.ReadStream;
@@ -273,44 +335,64 @@ export class RunTui {
 		);
 	}
 
-	/** A footer message that arrives after the key that asked for it. */
-	private say(text: string): void {
-		this.message = text;
-		this.invalidate();
-	}
-
 	private startLeftOut(app: string): void {
 		const start = this.options.output.startApp;
 		if (!start) {
-			this.message = `${app} can start once the run's own apps are up`;
+			this.flash(`${app} can start once the run's own apps are up`);
 			return;
 		}
 
-		this.message = `Starting ${app}…`;
+		this.flash(`Starting ${app}…`);
 		void start(app).then(
 			(reply) => {
+				if (!this.active) return;
 				// The rest of a refusal is in the Overview.
 				if (reply.status === "refused") {
 					const [firstLine] = reply.reason.split("\n", 1);
-					this.say(firstLine ?? "");
+					this.flash(firstLine ?? "");
 				} else if (reply.apps.length === 0) {
-					this.say(`${app} is already starting`);
+					this.flash(`${app} is already starting`);
 				} else if (reply.apps.length > 1) {
-					this.say(`Starting ${reply.apps.join(", ")}…`);
+					this.flash(`Starting ${reply.apps.join(", ")}…`);
 				}
 			},
-			(error: unknown) =>
-				this.say(`${app} could not start: ${getErrorMessage(error)}`),
+			(error: unknown) => {
+				if (!this.active) return;
+				this.flash(`${app} could not start: ${getErrorMessage(error)}`);
+			},
 		);
 	}
 
-	/** Pane size every app's terminal gets. */
+	/** Pane size every app's terminal gets (clamped to a usable PTY minimum). */
 	paneSize(): { cols: number; rows: number } {
-		const { cols, rows } = this.size();
+		const render = this.renderPaneSize();
 		return {
-			cols: Math.max(20, cols - this.sidebarWidth() - 1),
-			rows: Math.max(4, rows - 2),
+			cols: Math.max(20, render.cols),
+			rows: Math.max(4, render.rows),
 		};
+	}
+
+	/** Exact available main-pane area inside the current terminal frame. */
+	private renderPaneSize(): { cols: number; rows: number } {
+		const { cols, rows } = this.size();
+		const side = this.effectiveSidebarWidth();
+		const gutter = side > 0 ? 1 : 0;
+		return {
+			cols: Math.max(1, cols - side - gutter),
+			rows: Math.max(0, rows - 2),
+		};
+	}
+
+	private hookScreen(name: string, screen: AppScreen): void {
+		if (this.hooked.has(screen)) return;
+		this.hooked.add(screen);
+		this.writeDisposables.push(
+			screen.term.onWriteParsed(() => {
+				if (this.selectedApp() === name && this.mode.kind !== "info") {
+					this.invalidate();
+				}
+			}),
+		);
 	}
 
 	start(): void {
@@ -320,30 +402,79 @@ export class RunTui {
 
 		const { output } = this.options;
 		output.screenSize = () => this.paneSize();
+		for (const [name, screen] of output.screens) this.hookScreen(name, screen);
 
 		this.unsubscribe = output.subscribe({
 			line: (line) => {
-				this.lines.push(line);
+				// Overview renders `line.text`, never `line.raw`; dropping `raw` cuts
+				// retained string memory roughly in half across 10k buffered lines.
+				const stored = line.raw ? { ...line, raw: "" } : line;
+				const isErrorOrWarn = this.classifyOverviewError(stored);
+				if (isErrorOrWarn) this.errorMatched.add(stored);
+
+				this.lines.push(stored);
 				if (this.lines.length >= OVERVIEW_LINES + OVERVIEW_TRIM_SLACK) {
 					this.lines = this.lines.slice(-OVERVIEW_LINES);
+					this.filteredOverviewCache = undefined;
+					const maxOverview = this.maxScrollFor(undefined);
+					const currentOverview = this.scroll.get("") ?? 0;
+					if (currentOverview > maxOverview) {
+						this.scroll.set("", maxOverview);
+					}
+				} else if (
+					this.filteredOverviewCache &&
+					this.matchesOverviewFilter(stored)
+				) {
+					this.filteredOverviewCache.push(stored);
 				}
 
 				// Only an app has a sidebar row to mark; buncargo's own lines do not.
+				const selected = this.selectedApp();
 				const unread =
 					line.level === "error" &&
-					this.selectedApp() !== line.app &&
+					selected !== line.app &&
 					this.appSet.has(line.app);
-				if (unread) this.unread.add(line.app);
+				const unreadChanged = unread && !this.unread.has(line.app);
+				if (unreadChanged) this.unread.add(line.app);
 
-				// Keep a scrolled-back view where it is.
+				// Keep a scrolled-back Overview where it is.
 				const overview = this.scroll.get("") ?? 0;
-				const isShown = !this.errorsOnly || line.level !== undefined;
+				const isShown = this.matchesOverviewFilter(stored);
 				if (overview > 0 && isShown) this.scroll.set("", overview + 1);
 
+				if (this.mode.kind === "info") {
+					if (unreadChanged && this.effectiveSidebarWidth() > 0) {
+						this.invalidate();
+					}
+					return;
+				}
+
+				// Avoid redrawing an unrelated app's xterm pane when a background app prints.
+				const viewingOverview = selected === undefined;
+				const selectedScreen = selected
+					? output.screens.get(selected)
+					: undefined;
+				const viewingSelectedNeedsDraw =
+					selected === line.app &&
+					(!selectedScreen || !this.hooked.has(selectedScreen));
+				if (viewingOverview || viewingSelectedNeedsDraw || unreadChanged) {
+					this.invalidate();
+				}
+			},
+			state: () => {
+				if (this.mode.kind === "info") this.refreshInfoCache();
 				this.invalidate();
 			},
-			state: () => this.invalidate(),
-			capture: () => this.invalidate(),
+			capture: () => {
+				if (this.mode.kind === "info") this.refreshInfoCache();
+				this.invalidate();
+			},
+			screen: (name, screen) => {
+				this.hookScreen(name, screen);
+				if (this.selectedApp() === name && this.mode.kind !== "info") {
+					this.invalidate();
+				}
+			},
 		});
 		this.captureOutput();
 		this.active = true;
@@ -366,15 +497,26 @@ export class RunTui {
 
 		// An open pager would hold the terminal past the run.
 		this.pager?.kill();
+		this.cleanupPagerTemp();
 		this.releaseInterrupts?.();
 		clearTimeout(this.timer);
 		clearTimeout(this.escTimer);
+		clearTimeout(this.messageTimer);
+		clearTimeout(this.resizeTimer);
 		this.unsubscribe?.();
 
 		// Apps restarted from here on have no pane to be sized to.
 		this.options.output.screenSize = defaultScreenSize;
 		for (const anchor of this.anchors.values()) anchor.dispose();
 		this.anchors.clear();
+		for (const disposable of this.writeDisposables) disposable.dispose();
+		this.writeDisposables = [];
+		this.clearSelection();
+		this.lines = [];
+		this.errorFilters.clear();
+		this.filteredOverviewCache = undefined;
+		this.cachedInfoLines = undefined;
+		this.frame = [];
 
 		this.stdin.off("data", this.onInput);
 		this.stdout.off("resize", this.onResize);
@@ -385,6 +527,49 @@ export class RunTui {
 		this.restoreTerminal();
 		this.restoreOutput?.();
 		this.stdin.pause();
+	}
+
+	private classifyOverviewError(line: OutputLine): boolean {
+		if (line.event) return line.level !== undefined;
+		let filter = this.errorFilters.get(line.app);
+		if (!filter) {
+			filter = createErrorFilter({ includeWarnings: true });
+			this.errorFilters.set(line.app, filter);
+		}
+		return filter(line.text);
+	}
+
+	private matchesOverviewFilter(line: OutputLine): boolean {
+		if (this.errorsOnly && !this.errorMatched.has(line)) return false;
+		if (!this.searchQuery) return true;
+		const needle = this.searchQuery.toLowerCase();
+		return (
+			line.text.toLowerCase().includes(needle) ||
+			line.app.toLowerCase().includes(needle)
+		);
+	}
+
+	private flash(text: string, autoClear = true): void {
+		clearTimeout(this.messageTimer);
+		this.messageTimer = undefined;
+		this.message = text;
+		if (autoClear) {
+			this.messageTimer = setTimeout(() => {
+				this.messageTimer = undefined;
+				if (this.message === text) {
+					this.message = undefined;
+					this.invalidate();
+				}
+			}, MESSAGE_TTL_MS);
+			this.messageTimer.unref?.();
+		}
+		this.invalidate();
+	}
+
+	private clearMessage(): void {
+		clearTimeout(this.messageTimer);
+		this.messageTimer = undefined;
+		this.message = undefined;
 	}
 
 	/** Sync, so it also works from a process `exit` handler. */
@@ -471,6 +656,15 @@ export class RunTui {
 		return clamp(longest + 14, SIDEBAR_MIN, SIDEBAR_MAX);
 	}
 
+	private effectiveSidebarWidth(): number {
+		if (this.sidebarHidden) return 0;
+		const desired = this.sidebarWidth();
+		const { cols } = this.size();
+		// Auto-hide sidebar on very narrow terminals so body rows never wrap/overflow.
+		if (cols < SIDEBAR_MIN + 21) return 0;
+		return Math.min(desired, cols - 21);
+	}
+
 	private selectedApp(): string | undefined {
 		return this.selected === 0
 			? undefined
@@ -488,10 +682,27 @@ export class RunTui {
 		}, wait);
 	}
 
-	private layout(full: boolean): void {
+	private resizeScreens(): void {
 		const pane = this.paneSize();
 		for (const screen of this.options.output.screens.values()) {
 			screen.resize(pane.cols, pane.rows);
+		}
+	}
+
+	private layout(full: boolean, immediate = false): void {
+		clearTimeout(this.resizeTimer);
+		if (immediate) {
+			this.resizeScreens();
+		} else {
+			// Debounce xterm buffer reflows and child SIGWINCH storms during window drags.
+			this.resizeTimer = setTimeout(() => {
+				this.resizeTimer = undefined;
+				if (!this.active) return;
+				this.resizeScreens();
+				this.frame = [];
+				this.invalidate();
+			}, RESIZE_DEBOUNCE_MS);
+			this.resizeTimer.unref?.();
 		}
 
 		if (full) this.frame = [];
@@ -531,6 +742,7 @@ export class RunTui {
 			typed = "";
 		};
 		for (const key of keys) {
+			if (this.suspended) break;
 			const mouse = MOUSE.exec(key);
 			// Mouse reports are ours (the wheel scrolls the pane): an app that
 			// never asked for them must not receive them as typed input.
@@ -539,10 +751,11 @@ export class RunTui {
 				continue;
 			}
 			// Any key, in any mode, ends what the last one left on screen.
-			this.message = undefined;
+			this.clearMessage();
 			this.clearSelection();
 			if (this.mode.kind !== "interact") {
 				this.key(key);
+				if (this.suspended) break;
 			} else if (key === ESC || key === LEAVE) {
 				send();
 				this.mode = { kind: "navigate" };
@@ -555,28 +768,115 @@ export class RunTui {
 		this.invalidate();
 	}
 
+	private openInfo(): void {
+		this.refreshInfoCache();
+		this.mode = { kind: "info", scroll: 0 };
+	}
+
+	private closeInfo(): void {
+		this.cachedInfoLines = undefined;
+		this.mode = { kind: "navigate" };
+	}
+
+	private refreshInfoCache(): void {
+		const envLines = this.options.info?.() ?? [];
+		this.cachedInfoLines = [...envLines, ...DEFAULT_KEYBINDING_INFO];
+	}
+
 	private key(key: string): void {
 		const app = this.selectedApp();
 		const count = this.options.apps.length + 1;
 
-		if (this.mode.kind === "picker") {
-			const targets = this.urlTargets();
-			const { index } = this.mode;
-			if (key === "\u001b[A" || key === "k") {
-				this.mode = { kind: "picker", index: Math.max(0, index - 1) };
-			} else if (key === "\u001b[B" || key === "j") {
-				this.mode = {
-					kind: "picker",
-					index: Math.min(targets.length - 1, index + 1),
-				};
-			} else {
-				// Enter opens the highlighted app; any other key closes the list.
-				const target = key === "\r" ? targets[index] : undefined;
-				this.mode = { kind: "navigate" };
-				if (target) this.open(target[1]);
-			}
-			return;
-		}
+		const handled = typedSwitch(this.mode, "kind", {
+			interact: () => true,
+			picker: ({ index, intent }) => {
+				const targets = this.urlTargets();
+				if (key === "\u001b[A" || key === "k") {
+					this.mode = {
+						kind: "picker",
+						index: Math.max(0, index - 1),
+						intent,
+					};
+				} else if (key === "\u001b[B" || key === "j") {
+					this.mode = {
+						kind: "picker",
+						index: Math.min(targets.length - 1, index + 1),
+						intent,
+					};
+				} else {
+					// Enter acts on the highlighted app; any other key closes the list.
+					const target = key === "\r" ? targets[index] : undefined;
+					this.mode = { kind: "navigate" };
+					if (target) {
+						if (intent === "copy") this.copyUrl(target[0], target[1]);
+						else this.open(target[1]);
+					}
+				}
+				return true;
+			},
+			search: ({ previousScroll }) => {
+				if (key === "\r") {
+					this.mode = { kind: "navigate" };
+				} else if (key === ESC || key === "\u0003") {
+					this.mode = { kind: "navigate" };
+					this.clearSearch();
+					const max = this.maxScrollFor(app);
+					this.scrollTo(app ?? "", clamp(previousScroll, 0, max));
+				} else if (key === "\u007f" || key === "\b") {
+					this.updateSearch(this.searchQuery.slice(0, -1), app);
+				} else if (key === "\u0015") {
+					this.updateSearch("", app);
+				} else if (key.length === 1 && key >= " " && key !== "\u007f") {
+					// Ignore escape sequences and control characters in search input.
+					this.updateSearch(this.searchQuery + key, app);
+				}
+				return true;
+			},
+			info: ({ scroll }) => {
+				const paneRows = Math.max(1, this.renderPaneSize().rows);
+				const maxScroll = Math.max(0, this.infoLines().length - paneRows);
+				const half = Math.max(1, Math.floor(paneRows / 2));
+				if (key === ESC || key === "i" || key === "?" || key === "q") {
+					this.closeInfo();
+				} else if (key === "\u0003") {
+					this.options.quit();
+				} else if (key === "\u001b[A" || key === "k") {
+					this.mode = { kind: "info", scroll: Math.max(0, scroll - 1) };
+				} else if (key === "\u001b[B" || key === "j") {
+					this.mode = {
+						kind: "info",
+						scroll: Math.min(maxScroll, scroll + 1),
+					};
+				} else if (key === "\u001b[5~" || key === "\u0015") {
+					this.mode = { kind: "info", scroll: Math.max(0, scroll - half) };
+				} else if (key === "\u001b[6~" || key === "\u0004") {
+					this.mode = {
+						kind: "info",
+						scroll: Math.min(maxScroll, scroll + half),
+					};
+				} else if (
+					key === "\u001b[H" ||
+					key === "\u001bOH" ||
+					key === "\u001b[1~" ||
+					key === "g"
+				) {
+					this.mode = { kind: "info", scroll: 0 };
+				} else if (
+					key === "\u001b[F" ||
+					key === "\u001bOF" ||
+					key === "\u001b[4~" ||
+					key === "G"
+				) {
+					this.mode = { kind: "info", scroll: maxScroll };
+				}
+				return true;
+			},
+			navigate: () => false,
+		});
+		if (handled) return;
+
+		const visibleRows = Math.max(1, this.renderPaneSize().rows);
+		const halfPage = Math.max(1, Math.floor(visibleRows / 2));
 
 		switch (key) {
 			case "\u001b[A":
@@ -588,21 +888,31 @@ export class RunTui {
 				this.select((this.selected + 1) % count);
 				return;
 			case "\u001b":
-				this.select(0);
+				if (this.searchQuery) {
+					this.clearSearch();
+				} else {
+					this.select(0);
+				}
 				return;
-			case "\r":
-				if (
-					app &&
+			case "\r": {
+				const canInteract =
+					app !== undefined &&
 					!this.taskSet.has(app) &&
-					this.options.output.screens.has(app)
-				)
-					this.mode = { kind: "interact" };
+					this.options.output.screens.has(app);
+				if (canInteract) this.mode = { kind: "interact" };
 				return;
+			}
 			case "\u001b[5~":
-				this.scrollBy(this.paneSize().rows - 1);
+				this.scrollBy(Math.max(1, visibleRows - 1));
 				return;
 			case "\u001b[6~":
-				this.scrollBy(-(this.paneSize().rows - 1));
+				this.scrollBy(-Math.max(1, visibleRows - 1));
+				return;
+			case "\u0015": // Ctrl-U: half-page up
+				this.scrollBy(halfPage);
+				return;
+			case "\u0004": // Ctrl-D: half-page down
+				this.scrollBy(-halfPage);
 				return;
 			// End: back to the live bottom. Home: the oldest line kept.
 			case "\u001b[F":
@@ -615,39 +925,33 @@ export class RunTui {
 			case "\u001b[1~":
 				this.scrollBy(Number.MAX_SAFE_INTEGER);
 				return;
+			case "/":
+				this.mode = {
+					kind: "search",
+					previousScroll: this.scrollOf(app ?? ""),
+				};
+				return;
+			case "?":
+				this.openInfo();
+				return;
+			case "[":
+				this.toggleSidebar();
+				return;
 			case "e":
 				if (!app) {
 					this.errorsOnly = !this.errorsOnly;
+					this.filteredOverviewCache = undefined;
 					this.scroll.set("", 0);
 				}
 				return;
 			case "o":
-				if (this.notStarted(app)) {
-					this.message = `${app} is not started; r starts it`;
-				} else if (app) {
-					const url = this.taskSet.has(app)
-						? undefined
-						: this.options.urlFor(app);
-					if (url) this.open(url);
-					else this.message = `${app} has no URL`;
-				} else if (this.urlTargets().length > 0) {
-					this.mode = { kind: "picker", index: 0 };
-				} else {
-					this.message = "No app has a URL yet";
-				}
+				this.openOrPickUrl(app, "open");
 				return;
 			case "r":
 				if (app && this.notStarted(app)) {
 					this.startLeftOut(app);
 				} else if (app) {
-					const restart = this.options.output.controls?.restart;
-					if (restart) void restart(app).catch(() => {});
-					const isTask = this.taskSet.has(app);
-					const verb = isTask ? "Running" : "Restarting";
-					const action = isTask ? "run" : "restart";
-					this.message = restart
-						? `${verb} ${app}…`
-						: `${app} cannot ${action} until the run has started its apps`;
+					this.triggerRestart(app);
 				}
 				return;
 			case "l":
@@ -661,8 +965,311 @@ export class RunTui {
 				this.options.quit();
 				return;
 		}
+
+		// App-declared actions (e.g. Shopify `p` preview, `g` GraphiQL) win over
+		// convenience keys so user configs never break.
 		const action = this.liveActions().find((entry) => entry.key === key);
-		if (action) this.open(action.url);
+		if (action) {
+			this.open(action.url);
+			return;
+		}
+
+		if (key >= "0" && key <= "9") {
+			const idx = Number(key);
+			if (idx < count) this.select(idx);
+			return;
+		}
+
+		switch (key) {
+			case "s":
+				if (app) this.toggleStopStart(app);
+				return;
+			case "c":
+				this.clearPane(app);
+				return;
+			case "y":
+				this.openOrPickUrl(app, "copy");
+				return;
+			case "w":
+				if (!app) {
+					this.wrapOverview = !this.wrapOverview;
+					this.flash(this.wrapOverview ? "Line wrap on" : "Line wrap off");
+				}
+				return;
+			case "b":
+				this.toggleSidebar();
+				return;
+			case "i":
+				this.openInfo();
+				return;
+			case "g":
+				this.scrollBy(Number.MAX_SAFE_INTEGER);
+				return;
+			case "G":
+				this.scrollTo(app ?? "", 0);
+				return;
+			case "n":
+				if (app && this.searchQuery) this.stepAppSearch(app, -1);
+				return;
+			case "N":
+				if (app && this.searchQuery) this.stepAppSearch(app, 1);
+				return;
+		}
+	}
+
+	private toggleSidebar(): void {
+		this.sidebarHidden = !this.sidebarHidden;
+		this.clearSelection();
+		this.layout(true, true);
+	}
+
+	private openOrPickUrl(
+		app: string | undefined,
+		intent: "open" | "copy",
+	): void {
+		if (app) {
+			if (this.notStarted(app)) {
+				this.flash(`${app} is not started; r or s starts it`);
+				return;
+			}
+			const url = this.taskSet.has(app) ? undefined : this.options.urlFor(app);
+			if (!url) {
+				this.flash(`${app} has no URL`);
+				return;
+			}
+			if (intent === "copy") this.copyUrl(app, url);
+			else this.open(url);
+			return;
+		}
+
+		const targets = this.urlTargets();
+		if (targets.length === 0) {
+			this.flash("No app has a URL yet");
+			return;
+		}
+		const [onlyTarget] = targets;
+		if (intent === "copy" && targets.length === 1 && onlyTarget) {
+			this.copyUrl(onlyTarget[0], onlyTarget[1]);
+			return;
+		}
+		this.mode = { kind: "picker", index: 0, intent };
+	}
+
+	private copyUrl(app: string, url: string): void {
+		const where = this.options.copy
+			? this.options.copy(url)
+			: copyToClipboard(url, (sequence) => this.write(sequence));
+		const route = where === "terminal" ? " (through the terminal)" : "";
+		this.flash(`Copied ${app} URL: ${url}${route}`);
+	}
+
+	private triggerRestart(app: string, verbOverride?: string): void {
+		const restart = this.options.output.controls?.restart;
+		const isTask = this.taskSet.has(app);
+		const verb = verbOverride ?? (isTask ? "Running" : "Restarting");
+		const action = isTask ? "run" : "restart";
+		if (!restart) {
+			this.flash(`${app} cannot ${action} until the run has started its apps`);
+			return;
+		}
+
+		this.flash(`${verb} ${app}…`);
+		void restart(app).then(
+			(replaced) => {
+				if (!this.active) return;
+				if (!replaced) {
+					this.flash(
+						isTask
+							? `${app} cannot run right now`
+							: `${app} cannot ${action} (reused from another terminal)`,
+					);
+				}
+			},
+			(error: unknown) => {
+				if (!this.active) return;
+				this.flash(`${app} failed to ${action}: ${getErrorMessage(error)}`);
+			},
+		);
+	}
+
+	private toggleStopStart(app: string): void {
+		if (this.notStarted(app)) {
+			this.startLeftOut(app);
+			return;
+		}
+
+		const state = this.options.output.states.get(app);
+		const isTask = this.taskSet.has(app);
+		const isStopped = isTask
+			? state?.detail !== "running"
+			: state?.state === "stopped" || state?.state === "failed";
+
+		if (isStopped) {
+			this.triggerRestart(app, isTask ? "Running" : "Starting");
+			return;
+		}
+
+		const stop = this.options.output.controls?.stop;
+		if (!stop) {
+			this.flash(`${app} cannot stop until the run has started its apps`);
+			return;
+		}
+
+		this.flash(`Stopping ${app}…`, false);
+		void stop(app).then(
+			(stopped) => {
+				if (!this.active) return;
+				if (stopped) {
+					this.flash(`Stopped ${app}`);
+					return;
+				}
+				const latest = this.options.output.states.get(app)?.state;
+				if (isTask) {
+					this.flash(`${app} is not running`);
+				} else if (latest === "starting") {
+					this.flash(`${app} cannot stop while starting`);
+				} else if (latest === "stopped") {
+					this.flash(`${app} is already stopped`);
+				} else {
+					this.flash(`${app} cannot stop (reused from another terminal)`);
+				}
+			},
+			(error: unknown) => {
+				if (!this.active) return;
+				this.flash(`Could not stop ${app}: ${getErrorMessage(error)}`);
+			},
+		);
+	}
+
+	private clearPane(app: string | undefined): void {
+		this.clearSelection();
+		if (!app) {
+			this.lines = [];
+			this.errorFilters.clear();
+			this.filteredOverviewCache = undefined;
+			this.scroll.set("", 0);
+			this.flash("Cleared Overview");
+			return;
+		}
+		if (this.notStarted(app)) {
+			this.flash(`${app} is not started`);
+			return;
+		}
+
+		const screen = this.options.output.screens.get(app);
+		if (screen && screen.term.buffer.active.type !== "normal") {
+			this.flash(`${app} uses full-screen mode and cannot be cleared`);
+			return;
+		}
+		this.scrollTo(app, 0);
+		if (screen) {
+			void screen.clear().then((cleared) => {
+				if (!this.active) return;
+				if (!cleared) {
+					this.flash(`${app} uses full-screen mode and cannot be cleared`);
+				} else {
+					this.invalidate();
+				}
+			});
+		} else {
+			this.options.output.clearTail(app);
+		}
+		this.searchMatchRows = [];
+		this.searchMatchCursor = -1;
+		this.flash(`Cleared ${app}`);
+	}
+
+	private clearSearch(): void {
+		this.searchQuery = "";
+		this.searchMatchRows = [];
+		this.searchMatchCursor = -1;
+		this.filteredOverviewCache = undefined;
+	}
+
+	private updateSearch(query: string, app: string | undefined): void {
+		this.searchQuery = query;
+		this.filteredOverviewCache = undefined;
+		if (!app) {
+			this.scroll.set("", 0);
+			return;
+		}
+		this.refreshAppSearch(app, true);
+	}
+
+	private refreshAppSearch(app: string, jumpToLatest: boolean): void {
+		if (!this.searchQuery) {
+			this.searchMatchRows = [];
+			this.searchMatchCursor = -1;
+			return;
+		}
+		const screen = this.options.output.screens.get(app);
+		const needle = this.searchQuery.toLowerCase();
+		const matches: number[] = [];
+		if (screen) {
+			const buffer = screen.term.buffer.active;
+			for (let row = 0; row < buffer.length; row++) {
+				const text = buffer.getLine(row)?.translateToString(true) ?? "";
+				if (text.toLowerCase().includes(needle)) matches.push(row);
+			}
+		} else {
+			const tail = this.options.output.tail(app);
+			for (const [row, line] of tail.entries()) {
+				if (line.toLowerCase().includes(needle)) matches.push(row);
+			}
+		}
+		this.searchMatchRows = matches;
+		if (matches.length === 0) {
+			this.searchMatchCursor = -1;
+			return;
+		}
+		if (jumpToLatest || this.searchMatchCursor >= matches.length) {
+			this.searchMatchCursor = matches.length - 1;
+			const targetRow = matches[this.searchMatchCursor];
+			if (targetRow !== undefined) this.scrollToAppRow(app, targetRow);
+		}
+	}
+
+	private stepAppSearch(app: string, delta: number): void {
+		this.refreshAppSearch(app, false);
+		const total = this.searchMatchRows.length;
+		if (total === 0) {
+			this.flash(`No matches for "${this.searchQuery}"`);
+			return;
+		}
+		this.searchMatchCursor =
+			this.searchMatchCursor < 0
+				? total - 1
+				: (this.searchMatchCursor + delta + total) % total;
+		const targetRow = this.searchMatchRows[this.searchMatchCursor];
+		if (targetRow !== undefined) this.scrollToAppRow(app, targetRow);
+	}
+
+	private scrollToAppRow(app: string, row: number): void {
+		const screen = this.options.output.screens.get(app);
+		const paneRows = Math.max(1, this.renderPaneSize().rows);
+		if (!screen) {
+			const tailLen = this.options.output.tail(app).length;
+			const maxScroll = Math.max(0, tailLen - paneRows);
+			if (maxScroll === 0) {
+				this.scrollTo(app, 0);
+				return;
+			}
+			const desiredEnd = clamp(
+				row + Math.ceil(paneRows / 2),
+				paneRows,
+				tailLen,
+			);
+			this.scrollTo(app, clamp(tailLen - desiredEnd, 0, maxScroll));
+			return;
+		}
+		const buffer = screen.term.buffer.active;
+		const desiredTop = clamp(row - Math.floor(paneRows / 2), 0, buffer.baseY);
+		this.scrollTo(app, Math.max(0, buffer.baseY - desiredTop));
+	}
+
+	private infoLines(): readonly string[] {
+		if (!this.cachedInfoLines) this.refreshInfoCache();
+		return this.cachedInfoLines ?? DEFAULT_KEYBINDING_INFO;
 	}
 
 	/**
@@ -676,23 +1283,50 @@ export class RunTui {
 		const pressed = match[4] === "M";
 
 		if (button === 64) {
-			this.scrollBy(WHEEL_LINES);
+			if (this.mode.kind === "info") {
+				this.mode = {
+					kind: "info",
+					scroll: Math.max(0, this.mode.scroll - WHEEL_LINES),
+				};
+			} else {
+				this.scrollBy(WHEEL_LINES);
+			}
 		} else if (button === 65) {
-			this.scrollBy(-WHEEL_LINES);
+			if (this.mode.kind === "info") {
+				const maxScroll = Math.max(
+					0,
+					this.infoLines().length - Math.max(1, this.renderPaneSize().rows),
+				);
+				this.mode = {
+					kind: "info",
+					scroll: Math.min(maxScroll, this.mode.scroll + WHEEL_LINES),
+				};
+			} else {
+				this.scrollBy(-WHEEL_LINES);
+			}
 		} else if (button === 0 && pressed) {
 			this.clearSelection();
 
-			if (column <= this.sidebarWidth()) {
+			const side = this.effectiveSidebarWidth();
+			if (side > 0 && column <= side) {
 				if (this.mode.kind === "interact") return;
-
-				// Row 1 is the header; then Overview, the rule, and the apps.
-				const entry = row - 2;
-				if (entry === 0) this.select(0);
-				else if (entry >= 2 && entry - 1 <= this.options.apps.length) {
-					this.select(entry - 1);
+				const hit = layoutSidebar(
+					this.sidebarEntries(),
+					this.selected,
+					side,
+					this.renderPaneSize().rows,
+					this.sidebarOffset,
+				).hitAt(row - 2);
+				if (hit !== undefined) {
+					if (this.mode.kind === "info") this.closeInfo();
+					else if (this.mode.kind === "search")
+						this.mode = { kind: "navigate" };
+					this.select(hit);
 				}
 				return;
 			}
+
+			if (this.mode.kind === "info") return;
 
 			const end = this.endAt(column, row);
 			const app = this.selectedApp();
@@ -779,30 +1413,47 @@ export class RunTui {
 		column: number,
 		row: number,
 	): { row: number; col: number } | undefined {
-		const pane = this.paneSize();
-		const x = clamp(column - this.sidebarWidth() - 2, 0, pane.cols - 1);
+		const pane = this.renderPaneSize();
+		if (pane.rows === 0) return undefined;
+		const side = this.effectiveSidebarWidth();
+		const paneStartCol = side > 0 ? side + 2 : 1;
+		const x = clamp(column - paneStartCol, 0, pane.cols - 1);
 		const y = clamp(row - 2, 0, pane.rows - 1);
-		const content = this.contentRow(y, true);
+		if (!this.selectedApp()) {
+			const rowMap = this.overviewLayout(pane).rowMap;
+			const mapped = rowMap[y] ?? rowMap.find((entry) => entry !== undefined);
+			if (!mapped) return undefined;
+			const plainCol = mapped.plainStart + Math.max(0, x - mapped.visualIndent);
+			return {
+				row: mapped.lineIndex,
+				col:
+					mapped.plainEnd < Number.MAX_SAFE_INTEGER
+						? Math.min(
+								plainCol,
+								Math.max(mapped.plainStart, mapped.plainEnd - 1),
+							)
+						: plainCol,
+			};
+		}
+		const content = this.contentRow(y);
 		return content === undefined ? undefined : { row: content, col: x };
 	}
 
-	/**
-	 * The content row on screen row `y` of the pane: an index into the
-	 * Overview's lines, or an absolute row of the app's buffer. `clamp` maps
-	 * the Overview's blank top rows onto its first line instead of nothing.
-	 */
-	private contentRow(y: number, clamp = false): number | undefined {
+	private overviewLayout(pane: { cols: number; rows: number }) {
+		return layoutOverview(this.overviewLines(), {
+			width: pane.cols,
+			height: pane.rows,
+			scroll: this.scroll.get("") ?? 0,
+			nameWidth: this.overviewNameWidth(),
+			wrap: this.wrapOverview,
+			query: this.searchQuery || undefined,
+		});
+	}
+
+	/** Absolute buffer row on screen row `y` of the selected app pane. */
+	private contentRow(y: number): number | undefined {
 		const app = this.selectedApp();
-		const pane = this.paneSize();
-		if (!app) {
-			const count = this.overviewLines().length;
-			if (count === 0) return undefined;
-			const end = Math.max(0, count - (this.scroll.get("") ?? 0));
-			const first = Math.max(0, end - pane.rows);
-			const index = first + y - (pane.rows - (end - first));
-			if (index >= first) return Math.min(index, count - 1);
-			return clamp ? first : undefined;
-		}
+		if (!app) return undefined;
 		const screen = this.options.output.screens.get(app);
 		if (!screen) return undefined;
 		const buffer = screen.term.buffer.active;
@@ -870,8 +1521,9 @@ export class RunTui {
 
 			const from = row === range.start.row ? range.start.col : 0;
 			// Ending at the pane's edge (where a cut-off line shows "…") means
-			// the rest of the line too.
-			const toEdge = range.end.col >= cols - 1;
+			// the rest of the line too; when Overview wrap is on, every column is visible.
+			const toEdge =
+				!app && this.wrapOverview ? false : range.end.col >= cols - 1;
 			const piece =
 				row === range.end.row && !toEdge
 					? Bun.sliceAnsi(full, from, range.end.col + 1)
@@ -900,23 +1552,36 @@ export class RunTui {
 		const count = text.split("\n").length;
 		const size = count === 1 ? `${text.length} characters` : `${count} lines`;
 		const route = where === "terminal" ? " (through the terminal)" : "";
-		this.message = `Copied ${size}${route}`;
+		this.flash(`Copied ${size}${route}`);
 	}
 
 	private select(index: number): void {
-		if (index !== this.selected) this.clearSelection();
+		if (index !== this.selected) {
+			this.clearSelection();
+			this.clearSearch();
+		}
 		this.selected = index;
 		const app = this.selectedApp();
 		if (app) this.unread.delete(app);
 	}
 
+	private maxScrollFor(app: string | undefined): number {
+		const visibleRows = Math.max(1, this.renderPaneSize().rows);
+		if (!app) {
+			const count = this.overviewLines().length;
+			return this.wrapOverview
+				? Math.max(0, count - 1)
+				: Math.max(0, count - visibleRows);
+		}
+		const screen = this.options.output.screens.get(app);
+		if (screen) return screen.term.buffer.active.baseY;
+		return Math.max(0, this.options.output.tail(app).length - visibleRows);
+	}
+
 	private scrollBy(lines: number): void {
 		const app = this.selectedApp();
 		const key = app ?? "";
-
-		const max = app
-			? (this.options.output.screens.get(app)?.term.buffer.active.baseY ?? 0)
-			: Math.max(0, this.overviewLines().length - this.paneSize().rows);
+		const max = this.maxScrollFor(app);
 		this.scrollTo(key, clamp(this.scrollOf(key) + lines, 0, max));
 	}
 
@@ -951,20 +1616,87 @@ export class RunTui {
 	}
 
 	private open(url: string): void {
-		this.message = openUrl(url) ? `Opened ${url}` : `Could not open ${url}`;
+		this.flash(openUrl(url) ? `Opened ${url}` : `Could not open ${url}`);
+	}
+
+	private buildMergedOverviewLog(dir: string): string | undefined {
+		if (!existsSync(dir)) return undefined;
+		let files: string[];
+		try {
+			files = readdirSync(dir)
+				.filter((name) => name.endsWith(".log"))
+				.sort();
+		} catch {
+			return undefined;
+		}
+		if (files.length === 0) return undefined;
+
+		const entries: Array<{ time: string; line: string }> = [];
+		const nameWidth = this.overviewNameWidth();
+		for (const file of files) {
+			const appName = file.slice(0, -".log".length);
+			let content: string;
+			try {
+				content = readFileSync(join(dir, file), "utf8");
+			} catch {
+				continue;
+			}
+			for (const raw of content.split("\n")) {
+				if (!raw) continue;
+				const space = raw.indexOf(" ");
+				if (space <= 0) continue;
+				const iso = raw.slice(0, space);
+				const text = raw.slice(space + 1);
+				entries.push({
+					time: iso,
+					line: `${iso.slice(11, 19)} ${appName.padEnd(nameWidth)}  ${text}`,
+				});
+			}
+		}
+		if (entries.length === 0) return undefined;
+
+		entries.sort((a, b) => a.time.localeCompare(b.time));
+		const tmpPath = join(dir, `.overview-${process.pid}.tmp`);
+		try {
+			writeFileSync(
+				tmpPath,
+				`${entries.map((entry) => entry.line).join("\n")}\n`,
+			);
+			return tmpPath;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private cleanupPagerTemp(): void {
+		const path = this.pagerTempPath;
+		if (!path) return;
+		this.pagerTempPath = undefined;
+		try {
+			rmSync(path, { force: true });
+		} catch {
+			// Best-effort temp cleanup.
+		}
 	}
 
 	private async openLog(app: string | undefined): Promise<void> {
+		if (this.suspended) return;
 		const path = this.options.logPath?.(app);
 		if (!path) {
-			this.message = "No log file";
+			this.flash("No log file");
 			return;
 		}
 
 		this.options.output.logs?.flush();
+		let pagerPath = path;
 		if (!app) {
-			this.open(path);
-			return;
+			const merged = this.buildMergedOverviewLog(path);
+			if (!merged) {
+				this.open(path);
+				return;
+			}
+			pagerPath = merged;
+			this.pagerTempPath = merged;
 		}
 
 		// Hand the terminal to the pager, then take it back. The pager reads
@@ -976,16 +1708,18 @@ export class RunTui {
 		this.stdin.pause();
 		this.restoreTerminal();
 
-		const pager = (process.env.PAGER || "less +G").split(" ");
+		const pager = splitCommandLine(process.env.PAGER || "less +G");
+		if (pager.length === 0) pager.push("less", "+G");
 		try {
-			this.pager = Bun.spawn([...pager, path], {
+			this.pager = Bun.spawn([...pager, pagerPath], {
 				stdio: ["inherit", "inherit", "inherit"],
 			});
 			this.releaseInterrupts = holdInterrupts(() => this.pager?.kill());
 			await this.pager.exited;
 		} catch {
-			this.message = `Could not run ${pager[0]}`;
+			this.flash(`Could not run ${pager[0]}`);
 		} finally {
+			this.cleanupPagerTemp();
 			this.releaseInterrupts?.();
 			this.pager = undefined;
 			this.suspended = false;
@@ -1025,9 +1759,24 @@ export class RunTui {
 	}
 
 	private overviewLines(): OutputLine[] {
-		return this.errorsOnly
-			? this.lines.filter((line) => line.level !== undefined)
-			: this.lines;
+		if (!this.errorsOnly && !this.searchQuery) return this.lines;
+		this.filteredOverviewCache ??= this.lines.filter((line) =>
+			this.matchesOverviewFilter(line),
+		);
+		return this.filteredOverviewCache;
+	}
+
+	private sidebarEntries() {
+		return this.options.apps.map((name) => {
+			const state = this.options.output.states.get(name);
+			return {
+				name,
+				state: this.notStarted(name) ? ("off" as const) : state?.state,
+				detail: state?.detail,
+				unread: this.unread.has(name),
+				kind: this.taskSet.has(name) ? ("task" as const) : ("app" as const),
+			};
+		});
 	}
 
 	private render(): void {
@@ -1037,43 +1786,37 @@ export class RunTui {
 		this.lastRender = performance.now();
 
 		const { cols, rows } = this.size();
-		const side = this.sidebarWidth();
-		const pane = this.paneSize();
+		const side = this.effectiveSidebarWidth();
+		const pane = this.renderPaneSize();
 		const app = this.selectedApp();
 		const { output } = this.options;
 
-		for (const [name, screen] of output.screens) {
-			if (this.hooked.has(screen)) continue;
+		for (const [name, screen] of output.screens) this.hookScreen(name, screen);
 
-			this.hooked.add(screen);
-			screen.term.onWriteParsed(() => {
-				if (this.selectedApp() === name) this.invalidate();
-			});
+		let body: string[];
+		if (pane.rows === 0) {
+			body = [];
+		} else if (side > 0) {
+			const sidebar = layoutSidebar(
+				this.sidebarEntries(),
+				this.selected,
+				side,
+				pane.rows,
+				this.sidebarOffset,
+			);
+			this.sidebarOffset = sidebar.nextOffset;
+			const main = this.renderMain(app, pane);
+			body = sidebar.rows.map(
+				(left, index) => `${left}${pc.dim("│")}${main[index] ?? ""}`,
+			);
+		} else {
+			body = this.renderMain(app, pane);
 		}
 
-		const sidebar = renderSidebar(
-			this.options.apps.map((name) => {
-				const state = output.states.get(name);
-				return {
-					name,
-					state: this.notStarted(name) ? "off" : state?.state,
-					detail: state?.detail,
-					unread: this.unread.has(name),
-				};
-			}),
-			this.selected,
-			side,
-			pane.rows,
-		);
-
-		const main = this.renderMain(app, pane);
-		const next = [
-			this.header(app, side, cols),
-			...sidebar.map(
-				(left, index) => `${left}${pc.dim("│")}${main[index] ?? ""}`,
-			),
-			this.footer(app, cols),
-		].slice(0, rows);
+		const next =
+			rows <= 1
+				? [this.header(app, side, cols)]
+				: [this.header(app, side, cols), ...body, this.footer(app, cols)];
 
 		// Only the rows that changed since the last frame are written.
 		let out = "";
@@ -1084,18 +1827,22 @@ export class RunTui {
 
 		// The app's own cursor, where it is, while keys go to it.
 		const screen = app ? output.screens.get(app) : undefined;
-		if (
+		const showAppCursor =
 			this.mode.kind === "interact" &&
 			screen?.cursorVisible &&
-			this.scrollOf(app ?? "") === 0
-		) {
+			this.scrollOf(app ?? "") === 0 &&
+			pane.rows > 0;
+		if (showAppCursor && screen) {
 			const buffer = screen.term.buffer.active;
-			out += `\u001b[${buffer.cursorY + 2};${side + 2 + buffer.cursorX}H\u001b[?25h`;
+			const paneStartCol = side > 0 ? side + 2 : 1;
+			const cursorRow = Math.min(buffer.cursorY + 2, rows - 1);
+			const cursorCol = Math.min(paneStartCol + buffer.cursorX, cols);
+			out += `\u001b[${cursorRow};${cursorCol}H\u001b[?25h`;
 		} else {
 			out += "\u001b[?25l";
 		}
 
-		this.write(out);
+		this.write(`${SYNC_START}${out}${SYNC_END}`);
 	}
 
 	private renderMain(
@@ -1104,49 +1851,61 @@ export class RunTui {
 	): string[] {
 		const { output } = this.options;
 
-		if (this.mode.kind === "picker") {
-			const targets = this.urlTargets();
-			const picked = this.mode.index;
-			const rows = [
-				fit(pc.bold(" Open which app?"), pane.cols),
-				...targets.map(([name, url], index) => {
-					const label =
-						index === picked
-							? pc.inverse(` ${name} `)
-							: ` ${colorizeName(name)} `;
-					return fit(`${label} ${pc.dim(url)}`, pane.cols);
-				}),
-			];
-			while (rows.length < pane.rows) rows.push(" ".repeat(pane.cols));
-			return rows;
-		}
+		const overlay = typedSwitch(this.mode, "kind", {
+			info: ({ scroll }) =>
+				renderInfo(this.infoLines(), pane.cols, pane.rows, scroll),
+			picker: ({ index: picked, intent }) => {
+				const targets = this.urlTargets();
+				const prompt =
+					intent === "copy" ? " Copy which app URL?" : " Open which app?";
+				const rows = [
+					fit(pc.bold(prompt), pane.cols),
+					...targets.map(([name, url], index) => {
+						const label =
+							index === picked
+								? pc.inverse(` ${name} `)
+								: ` ${colorizeName(name)} `;
+						return fit(`${label} ${pc.dim(url)}`, pane.cols);
+					}),
+				];
+				while (rows.length < pane.rows) rows.push(" ".repeat(pane.cols));
+				return rows.slice(0, pane.rows);
+			},
+			navigate: () => undefined,
+			interact: () => undefined,
+			search: () => undefined,
+		});
+		if (overlay) return overlay;
 
 		if (!app) {
-			return this.highlight(
-				renderOverview(this.overviewLines(), {
-					width: pane.cols,
-					height: pane.rows,
-					scroll: this.scroll.get("") ?? 0,
-					nameWidth: this.overviewNameWidth(),
-				}),
-				pane.cols,
-			);
+			const overview = this.overviewLayout(pane);
+			return this.highlight(overview.rows, pane.cols, overview.rowMap);
 		}
 
 		if (this.notStarted(app)) {
 			const rows = [
 				fit(` ${colorizeName(app)} is not part of this run yet.`, pane.cols),
-				fit(pc.dim(` Press ${pc.bold("r")} to start it.`), pane.cols),
+				fit(
+					pc.dim(` Press ${pc.bold("r")} or ${pc.bold("s")} to start it.`),
+					pane.cols,
+				),
 			];
 			while (rows.length < pane.rows) rows.push(" ".repeat(pane.cols));
-			return rows;
+			return rows.slice(0, pane.rows);
 		}
 
 		// No terminal for this app: show the lines it printed.
 		const screen = output.screens.get(app);
 		if (!screen) {
-			const tail = output.tail(app).slice(-pane.rows);
-			const rows = tail.map((line) => fit(line, pane.cols));
+			const tail = output.tail(app);
+			const end = Math.max(0, tail.length - (this.scroll.get(app) ?? 0));
+			const visible = tail.slice(Math.max(0, end - pane.rows), end);
+			const rows = visible.map((line) => {
+				const rendered = fit(line, pane.cols);
+				return this.searchQuery
+					? highlightMatches(rendered, this.searchQuery, pane.cols)
+					: rendered;
+			});
 			while (rows.length < pane.rows) rows.unshift(" ".repeat(pane.cols));
 			return rows;
 		}
@@ -1156,21 +1915,57 @@ export class RunTui {
 		const cell = buffer.getNullCell();
 
 		return this.highlight(
-			Array.from({ length: pane.rows }, (_, y) =>
-				renderScreenRow(buffer.getLine(start + y), pane.cols, cell),
-			),
+			Array.from({ length: pane.rows }, (_, y) => {
+				const rendered = renderScreenRow(
+					buffer.getLine(start + y),
+					pane.cols,
+					cell,
+				);
+				return this.searchQuery
+					? highlightMatches(rendered, this.searchQuery, pane.cols)
+					: rendered;
+			}),
 			pane.cols,
 		);
 	}
 
 	/** The pane's rows with the selection, if it is in this pane, reversed. */
-	private highlight(rows: string[], width: number): string[] {
+	private highlight(
+		rows: string[],
+		width: number,
+		overviewRowMap?: readonly (OverviewRowMap | undefined)[],
+	): string[] {
 		if (this.selection?.pane !== (this.selectedApp() ?? "")) return rows;
 
 		const range = this.orderedSelection();
 		if (!range) return rows;
 
 		return rows.map((row, y) => {
+			if (overviewRowMap) {
+				const mapped = overviewRowMap[y];
+				const inRange =
+					mapped !== undefined &&
+					mapped.lineIndex >= range.start.row &&
+					mapped.lineIndex <= range.end.row;
+				if (!inRange) return row;
+
+				const selStart =
+					mapped.lineIndex === range.start.row ? range.start.col : 0;
+				const selEnd =
+					mapped.lineIndex === range.end.row
+						? range.end.col + 1
+						: Number.MAX_SAFE_INTEGER;
+				if (selEnd <= mapped.plainStart || selStart >= mapped.plainEnd) {
+					return row;
+				}
+				const from =
+					mapped.visualIndent + Math.max(0, selStart - mapped.plainStart);
+				const spanCap = Math.min(mapped.plainEnd, selEnd) - mapped.plainStart;
+				const to = Math.min(width, mapped.visualIndent + spanCap);
+				if (to <= from) return row;
+				return highlightColumns(row, Math.min(from, width), to, width);
+			}
+
 			const content = this.contentRow(y);
 			const isSelected =
 				content !== undefined &&
@@ -1185,47 +1980,104 @@ export class RunTui {
 	}
 
 	private header(app: string | undefined, side: number, cols: number): string {
-		const left = fit(pc.inverse(pc.bold(" buncargo ")), side);
-
 		const scrolledBack = (lines: number) =>
 			lines > 0 ? pc.yellow(`  ↑ ${lines} lines · End to follow`) : "";
 
-		let title: string;
-		if (!app) {
-			const filter = this.errorsOnly
-				? pc.yellow("  errors and warnings only")
-				: "";
-			title = ` Overview${filter}${scrolledBack(this.scroll.get("") ?? 0)}`;
-		} else {
+		const paneTitle = (): string => {
+			if (!app) {
+				const filter = this.errorsOnly
+					? pc.yellow("  errors and warnings only")
+					: "";
+				const wrap = this.wrapOverview ? pc.dim("  wrap") : "";
+				const search = this.searchQuery
+					? pc.cyan(
+							`  /${this.searchQuery} (${this.overviewLines().length} matches)`,
+						)
+					: "";
+				return ` Overview${filter}${wrap}${search}${scrolledBack(this.scroll.get("") ?? 0)}`;
+			}
 			const url =
 				this.taskSet.has(app) || this.notStarted(app)
 					? undefined
 					: this.options.urlFor(app);
 			const address = url ? `  ${pc.cyan(url)}` : "";
+			let search = "";
+			if (this.searchQuery) {
+				const matchLabel =
+					this.searchMatchRows.length === 0
+						? "0 matches"
+						: `${this.searchMatchCursor + 1}/${this.searchMatchRows.length}`;
+				search = pc.cyan(`  /${this.searchQuery} (${matchLabel})`);
+			}
 			const interacting =
 				this.mode.kind === "interact"
 					? pc.green("  keys go to the app · Esc to leave")
 					: "";
-			title = ` ${colorizeName(app)}${address}${scrolledBack(this.scrollOf(app))}${interacting}`;
+			return ` ${colorizeName(app)}${address}${search}${scrolledBack(this.scrollOf(app))}${interacting}`;
+		};
+
+		const title = typedSwitch(this.mode, "kind", {
+			info: () =>
+				` ${pc.bold("Environment & Keys")}  ${pc.dim("↑↓ scroll · Esc close")}`,
+			navigate: paneTitle,
+			interact: paneTitle,
+			picker: paneTitle,
+			search: paneTitle,
+		});
+
+		if (side === 0) {
+			const badge = pc.inverse(pc.bold(" buncargo "));
+			return fit(`${badge}${title}`, cols);
 		}
 
-		return `${left}${pc.dim("│")}${fit(title, cols - side - 1)}`;
+		const profileTag = this.options.profile
+			? ` ${pc.dim(this.options.profile)}`
+			: "";
+		const left = fit(`${pc.inverse(pc.bold(" buncargo "))}${profileTag}`, side);
+		return `${left}${pc.dim("│")}${fit(title, Math.max(0, cols - side - 1))}`;
 	}
 
 	private footer(app: string | undefined, cols: number): string {
-		if (this.message) return fit(` ${this.message}`, cols);
-
-		if (this.mode.kind === "interact") {
-			return fit(
-				` ${pc.green("●")} interacting with ${app} · ${pc.bold("Esc")} back to buncargo`,
-				cols,
-			);
-		}
+		const modeFooter = typedSwitch(this.mode, "kind", {
+			search: () => {
+				const status = app
+					? `${this.searchMatchRows.length} matches`
+					: `${this.overviewLines().length} matches`;
+				const hint = pc.dim(`${status} · Enter apply · Esc cancel`);
+				return fit(
+					` ${pc.cyan("/")}${this.searchQuery}${pc.inverse(" ")}  ${hint}`,
+					cols,
+				);
+			},
+			info: () =>
+				fit(
+					` ${pc.bold("↑↓ / Ctrl-U D")} scroll · ${pc.bold("i / Esc")} close`,
+					cols,
+				),
+			picker: ({ intent }) => {
+				const verb = intent === "copy" ? "copy" : "open";
+				return fit(
+					` ${pc.bold("↑↓")} choose · ${pc.bold("Enter")} ${verb} · ${pc.bold("Esc")} cancel`,
+					cols,
+				);
+			},
+			interact: () =>
+				this.message
+					? fit(` ${this.message}`, cols)
+					: fit(
+							` ${pc.green("●")} interacting with ${app} · ${pc.bold("Esc")} back to buncargo`,
+							cols,
+						),
+			navigate: () =>
+				this.message ? fit(` ${this.message}`, cols) : undefined,
+		});
+		if (modeFooter !== undefined) return modeFooter;
 
 		return renderFooter(
 			this.hints(app).map((hint) => {
-				const [key, ...rest] = hint.split(" ");
-				return `${pc.bold(key ?? "")} ${rest.join(" ")}`;
+				const space = hint.indexOf(" ");
+				if (space < 0) return pc.bold(hint);
+				return `${pc.bold(hint.slice(0, space))} ${hint.slice(space + 1)}`;
 			}),
 			this.liveActions(),
 			cols,
@@ -1234,19 +2086,43 @@ export class RunTui {
 
 	/** The footer's keys for the selected app, or the Overview's. */
 	private hints(app: string | undefined): string[] {
-		if (!app) return ["↑↓ select", "e errors", "o open", "l logs", "q quit"];
+		if (!app) {
+			return [
+				"↑↓ select",
+				"/ find",
+				"e errors",
+				"o open",
+				"y copy",
+				"l logs",
+				"i info",
+				"q quit",
+			];
+		}
 		if (this.notStarted(app)) {
-			return ["↑↓ select", "r start", "esc overview", "q quit"];
+			return ["↑↓ select", "r start", "i info", "esc overview", "q quit"];
 		}
 
 		const isTask = this.taskSet.has(app);
+		const state = this.options.output.states.get(app);
+		const isStopped = isTask
+			? state?.detail !== "running"
+			: state?.state === "stopped" || state?.state === "failed";
+		const stopHint = isTask
+			? isStopped
+				? []
+				: ["s stop"]
+			: [isStopped ? "s start" : "s stop"];
+
 		return [
 			"↑↓ select",
 			...(isTask ? [] : ["enter interact"]),
 			...(!isTask && this.options.urlFor(app) ? ["o open"] : []),
 			isTask ? "r run" : "r restart",
+			...stopHint,
+			"/ find",
+			...(this.searchQuery ? ["n/N match"] : []),
 			"l log",
-			"esc overview",
+			"i info",
 			"q quit",
 		];
 	}

@@ -1,5 +1,4 @@
 import { anySignal } from "hanzio";
-import { ReactiveTaskRunner } from "../core/process";
 import {
 	type AfterAppsTask,
 	loadStartSecrets,
@@ -8,6 +7,7 @@ import {
 	startDevServers,
 } from "../core/process/dev-servers";
 import type { CapturedValue } from "../core/process/output-capture";
+import { ReactiveTaskRunner } from "../core/process/reactive-tasks";
 import { printStream, RunOutput } from "../core/process/run-output";
 import { prefixWidth } from "../core/style";
 import type { ResolvedApp, SeedOutcome } from "../types";
@@ -127,6 +127,7 @@ export async function startServerSession(
 				taskOutput.controls = {
 					restart: (name) =>
 						Promise.resolve(reactive.trigger(name, "requested")),
+					stop: (name) => reactive.cancel(name),
 				};
 				reactive.arm();
 			}

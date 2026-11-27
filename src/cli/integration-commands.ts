@@ -1,7 +1,6 @@
 import { dirname } from "node:path";
 import { applyIntegrations } from "../config/integrations";
 import { findMonorepoRoot } from "../core/ports";
-import { loadDevEnv } from "../loader";
 import { findConfigFile } from "../loader/find-config-file";
 import type {
 	AnyDevEnvironment,
@@ -95,6 +94,7 @@ export async function runIntegrationCommand(
 	return command.run({
 		args: rest,
 		root: findMonorepoRoot(),
-		loadEnv: async () => (await loadDevEnv()) as AnyDevEnvironment,
+		loadEnv: async () =>
+			(await (await import("../loader")).loadDevEnv()) as AnyDevEnvironment,
 	});
 }

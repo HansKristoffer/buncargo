@@ -1,8 +1,8 @@
 import { hostname } from "node:os";
 import { clamp, exponentialBackoff } from "hanzio";
-import { isTcpPortOpen } from "../network";
 import { matchesProcessIdentity } from "../process-identity";
 import type { RunEntry } from "../run-registry";
+import { isTcpPortOpen } from "../tcp-probe";
 import { request } from "./client";
 import { type Frpc, runningProxies, startFrpc } from "./frpc";
 import { createGate } from "./gate";

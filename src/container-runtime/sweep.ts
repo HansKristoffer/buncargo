@@ -383,26 +383,44 @@ export async function sweepOrphanedContainers(
 	const runtimes = options.runtimes ?? containerRuntimeCandidates();
 	const answered: ContainerRuntimeName[] = [];
 	const containers: BuncargoContainer[] = [];
-	for (const runtime of runtimes) {
-		try {
-			containers.push(...(await buncargoContainersOn(runtime)));
-			answered.push(runtime.name);
-		} catch {
-			// Not up, or not installed: it has nothing for us this pass.
-		}
+	const listings = await Promise.all(
+		runtimes.map(async (runtime) => {
+			try {
+				return {
+					name: runtime.name,
+					containers: await buncargoContainersOn(runtime),
+				};
+			} catch {
+				// Not up, or not installed: it has nothing for us this pass.
+				return undefined;
+			}
+		}),
+	);
+	for (const listing of listings) {
+		if (!listing) continue;
+		containers.push(...listing.containers);
+		answered.push(listing.name);
 	}
 
 	const runs = await readAllRuns();
 	const claims = readAllOffsetClaims();
 	const alive = await runLivenessAsync(runs);
 	const now = options.now ?? Date.now();
-	const proxyActivity = readProxyActivity(now);
 	const unownedIdleLimitMs =
 		options.unownedIdleLimitMs ?? DETACHED_IDLE_LIMIT_MS;
 	const groups = groupBuncargoContainers(containers);
 	const owners = new Map(
 		groups.map((group) => [group, runFor(group, runs, alive)]),
 	);
+	let proxyActivityRead = false;
+	let cachedProxyActivity: ProxyActivity | undefined;
+	const getProxyActivity = (): ProxyActivity | undefined => {
+		if (!proxyActivityRead) {
+			proxyActivityRead = true;
+			cachedProxyActivity = readProxyActivity(now);
+		}
+		return cachedProxyActivity;
+	};
 	const stackRuns = runs.filter(hasRecordedStacks);
 	await stampLostOwners([...owners.values(), ...stackRuns], runs, alive, now);
 
@@ -447,7 +465,7 @@ export async function sweepOrphanedContainers(
 				claims,
 				alive,
 				now,
-				proxyActivity,
+				getProxyActivity,
 				unownedIdleLimitMs,
 				runtimes,
 				result,
@@ -469,6 +487,7 @@ export async function sweepOrphanedContainers(
 			runtimes: runtimes.filter((runtime) => answered.includes(runtime.name)),
 			runs,
 			stacks: result.remaining,
+			containers: result.remaining.flatMap((group) => group.containers),
 			result,
 			now,
 			swept,
@@ -732,7 +751,7 @@ async function sweepGroup(
 	claims: Record<string, OffsetClaim>,
 	alive: (run: RunEntry) => boolean,
 	now: number,
-	proxyActivity: ProxyActivity | undefined,
+	getProxyActivity: () => ProxyActivity | undefined,
 	unownedIdleLimitMs: number,
 	runtimes: ContainerRuntimeAdapter[],
 	result: SweepResult,
@@ -758,7 +777,7 @@ async function sweepGroup(
 						? stackLastActivityAt(
 								group,
 								claims,
-								proxyActivity,
+								getProxyActivity(),
 								lastCheckoutCommandAt(group.root),
 							)
 						: undefined,
@@ -787,7 +806,7 @@ async function sweepGroup(
 				const freshClaims = readAllOffsetClaims();
 				const verdict = decide(owner, freshAlive, freshClaims);
 				if (verdict.kind !== "down") return false;
-				await adapterFor(group, runtimes, run).down({
+				await adapterFor(group, runtimes, owner).down({
 					root: group.root,
 					projectName: group.projectName,
 					verbose: false,
@@ -849,6 +868,8 @@ export async function settleDeletedCheckouts(input: {
 	runtimes: ContainerRuntimeAdapter[];
 	runs: RunEntry[];
 	stacks: readonly Pick<ContainerGroup, "projectName" | "root">[];
+	/** Surviving containers already listed this pass; avoids a second `docker ps`. */
+	containers?: readonly BuncargoContainer[];
 	result: Pick<SweepResult, "failed">;
 	now: number;
 	swept: NoteSwept;
@@ -885,16 +906,27 @@ export async function settleDeletedCheckouts(input: {
 	});
 	if (deleted.length === 0) return;
 
-	const containers: BuncargoContainer[] = [];
-	const listings: {
+	let containers: readonly BuncargoContainer[];
+	let listings: {
 		runtime: ContainerRuntimeAdapter;
 		volumes: BuncargoVolume[];
-	}[] = [];
+	}[];
 	try {
-		for (const runtime of runtimes) {
-			containers.push(...(await buncargoContainersOn(runtime)));
-			listings.push({ runtime, volumes: await runtime.listVolumes() });
-		}
+		const [listedContainers, listedVolumes] = await Promise.all([
+			input.containers !== undefined
+				? Promise.resolve(input.containers)
+				: Promise.all(
+						runtimes.map((runtime) => buncargoContainersOn(runtime)),
+					).then((groups) => groups.flat()),
+			Promise.all(
+				runtimes.map(async (runtime) => ({
+					runtime,
+					volumes: await runtime.listVolumes(),
+				})),
+			),
+		]);
+		containers = listedContainers;
+		listings = listedVolumes;
 	} catch {
 		// A runtime that cannot answer could hold the project's containers.
 		return;

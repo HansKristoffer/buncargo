@@ -4,11 +4,18 @@ import type { Duplex } from "node:stream";
 export class ForwardSockets {
 	private readonly sockets = new Set<Duplex>();
 
-	track<T extends Duplex>(socket: T): T {
+	get size(): number {
+		return this.sockets.size;
+	}
+
+	track<T extends Duplex>(socket: T, onClose?: () => void): T {
 		this.sockets.add(socket);
 		// Connection failures are handled by closing the pair, not process-wide errors.
 		socket.on("error", () => socket.destroy());
-		socket.once("close", () => this.sockets.delete(socket));
+		socket.once("close", () => {
+			this.sockets.delete(socket);
+			onClose?.();
+		});
 		return socket;
 	}
 

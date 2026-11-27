@@ -6,16 +6,14 @@ import { publicEnvCopies } from "../core/integration-cli";
 import { findMonorepoRoot } from "../core/ports";
 import { isProcessAlive } from "../core/process/lifecycle";
 import {
-	describeSecretsError,
-	isScopeList,
-	loadScopeSecrets,
-	missingKeys,
+	fillScopeProjectId,
 	readInfisicalProjectId,
+} from "../core/secrets/project-config";
+import {
+	missingKeys,
 	requiredSecretKeys,
 	resolveScopes,
-	stopsTheRun,
-	warnSecretsOnce,
-} from "../core/secrets/index";
+} from "../core/secrets/scope";
 import { shellQuote } from "../core/shell-quote";
 import { projectStateFilePath } from "../core/state-paths";
 import { formatWarn } from "../core/style";
@@ -283,18 +281,7 @@ interface FirebaseRootState {
 	readonly selected: FirebaseEmulator[];
 	readonly resolvedProjectId: string;
 	readonly configSecrets: SecretsScopeInput | false | undefined;
-}
-
-function attachProjectIdIfMissing(
-	input: SecretsScopeInput,
-	projectId: string,
-): SecretsScopeInput {
-	if (isScopeList(input)) {
-		const [first, ...rest] = input;
-		if (!first || first.projectId) return input;
-		return [{ ...first, projectId }, ...rest];
-	}
-	return input.projectId ? input : { ...input, projectId };
+	readonly tmpDir: string;
 }
 
 export function firebase(
@@ -349,32 +336,63 @@ export function firebase(
 	const isActiveForProfile = (activeApps: ReadonlySet<string> | undefined) =>
 		activeApps === undefined || activeApps.has(FIREBASE_APP);
 
-	const functionsEnvRelPath = (root: string): string | undefined => {
+	const functionsEnvTargetRel = (root: string): string | undefined => {
 		const fnEnv = options.functionsEnv;
 		if (!fnEnv) return undefined;
 		const currentProject = projectOf(root);
-		const targetRel =
+		return (
 			fnEnv.path ??
 			join(
 				dirname(configFile),
 				resolveFunctionsSourceDir(currentProject.raw),
 				".env",
-			);
-		return normalize(join(workdirOption ?? ".", targetRel));
+			)
+		);
+	};
+
+	const functionsEnvRelPath = (root: string): string | undefined => {
+		const targetRel = functionsEnvTargetRel(root);
+		return targetRel
+			? normalize(join(workdirOption ?? ".", targetRel))
+			: undefined;
 	};
 
 	const functionsEnvAbsPath = (root: string): string | undefined => {
-		const fnEnv = options.functionsEnv;
-		if (!fnEnv) return undefined;
-		const currentProject = projectOf(root);
-		const targetRel =
-			fnEnv.path ??
-			join(
-				dirname(configFile),
-				resolveFunctionsSourceDir(currentProject.raw),
-				".env",
-			);
-		return resolve(workdirOf(root), targetRel);
+		const targetRel = functionsEnvTargetRel(root);
+		return targetRel ? resolve(workdirOf(root), targetRel) : undefined;
+	};
+
+	const tmpDirOf = (root: string): string =>
+		stateByRoot.get(root)?.tmpDir ?? emulatorTmpDir(root);
+
+	const buildEmulatorEnv = (
+		raw: Record<string, unknown>,
+		selected: readonly FirebaseEmulator[],
+		projectId: string,
+		offset: number,
+	): Record<string, string> => {
+		const unreachable =
+			(options.unselectedEmulators ??
+				(projectId.startsWith("demo-") ? "unreachable" : "unset")) ===
+			"unreachable"
+				? unselectedEmulatorEnv(selected)
+				: {};
+		const env = {
+			...unreachable,
+			...emulatorEnv(selected, emulatorPorts(raw, selected, offset), projectId),
+		};
+		return {
+			...env,
+			...(options.webConfigEnv
+				? { [options.webConfigEnv]: firebaseWebConfig(projectId) }
+				: {}),
+			...publicEnvCopies(
+				Object.fromEntries(
+					FIREBASE_PUBLIC_ENV.map((name) => [name, env[name]]),
+				),
+				options.publicEnvPrefix,
+			),
+		};
 	};
 
 	const cleanupFunctionsEnv = (root?: string) => {
@@ -429,6 +447,7 @@ export function firebase(
 				selected,
 				resolvedProjectId: projectId,
 				configSecrets: config.secrets,
+				tmpDir: emulatorTmpDir(root),
 			});
 			const base = anchorPort(raw);
 
@@ -500,35 +519,12 @@ export function firebase(
 					if (!isActiveForProfile(envCtx.activeApps)) {
 						return userEnv?.(ports, urls, envCtx) ?? {};
 					}
-					const unreachable =
-						(options.unselectedEmulators ??
-							(projectId.startsWith("demo-") ? "unreachable" : "unset")) ===
-						"unreachable"
-							? unselectedEmulatorEnv(selected)
-							: {};
-					const env = {
-						...unreachable,
-						...emulatorEnv(
-							selected,
-							emulatorPorts(
-								raw,
-								selected,
-								offsetOf(ports as Record<string, number>),
-							),
-							projectId,
-						),
-					};
-
 					return {
-						...env,
-						...(options.webConfigEnv
-							? { [options.webConfigEnv]: firebaseWebConfig(projectId) }
-							: {}),
-						...publicEnvCopies(
-							Object.fromEntries(
-								FIREBASE_PUBLIC_ENV.map((name) => [name, env[name]]),
-							),
-							options.publicEnvPrefix,
+						...buildEmulatorEnv(
+							raw,
+							selected,
+							projectId,
+							offsetOf(ports as Record<string, number>),
 						),
 						...userEnv?.(ports, urls, envCtx),
 					};
@@ -544,7 +540,7 @@ export function firebase(
 		appEnv: (app) => {
 			if (!isActiveForProfile(app.activeApps)) return undefined;
 
-			const tmpDir = emulatorTmpDir(app.root);
+			const tmpDir = tmpDirOf(app.root);
 			const isolate = shouldIsolateCredentials(app.root);
 
 			if (app.name !== FIREBASE_APP) {
@@ -599,7 +595,10 @@ export function firebase(
 				: undefined;
 			const scope =
 				fromFile && defaults === undefined
-					? attachProjectIdIfMissing(options.functionsEnv.secrets, fromFile)
+					? (fillScopeProjectId(
+							options.functionsEnv.secrets,
+							fromFile,
+						) as SecretsScopeInput)
 					: options.functionsEnv.secrets;
 			return [scope];
 		},
@@ -636,7 +635,7 @@ export function firebase(
 				if (ctx.selectedApps && !ctx.selectedApps.includes(FIREBASE_APP)) {
 					return;
 				}
-				const dir = emulatorTmpDir(ctx.root);
+				const dir = tmpDirOf(ctx.root);
 				mkdirSync(dir, { recursive: true });
 				if (shouldIsolateCredentials(ctx.root)) {
 					mkdirSync(emulatorCloudSdkDir(dir), { recursive: true });
@@ -658,13 +657,27 @@ export function firebase(
 					ctx.root,
 					ctx.secrets,
 				);
+				const required =
+					fnEnv.secrets && secretDefaults !== false
+						? requiredSecretKeys(fnEnv.secrets)
+						: [];
 				if (fnEnv.secrets && secretDefaults !== false) {
+					const {
+						describeSecretsError,
+						fetchScopeSecrets,
+						stopsTheRun,
+						warnSecretsOnce,
+					} = await import("../core/secrets/index");
 					const scopes = resolveScopes(fnEnv.secrets, secretDefaults);
 					const layers = await Promise.all(
 						scopes.map(async (scope) => {
 							try {
-								return await loadScopeSecrets(scope, { signal: ctx.signal });
+								// Use `fetchScopeSecrets` instead of `loadScopeSecrets` so keys
+								// overridden in the developer's shell are kept in `functions/.env`
+								// with the shell's value rather than dropped.
+								return await fetchScopeSecrets(scope, { signal: ctx.signal });
 							} catch (error) {
+								ctx.signal?.throwIfAborted();
 								if (stopsTheRun(error)) throw error;
 								warnSecretsOnce(scope, describeSecretsError(error));
 								return {};
@@ -673,19 +686,14 @@ export function firebase(
 					);
 					const fetchedSecrets: Record<string, string> = {};
 					for (const layer of layers) Object.assign(fetchedSecrets, layer);
-					Object.assign(mergedValues, fetchedSecrets);
-
-					const required = requiredSecretKeys(fnEnv.secrets);
-					if (required.length > 0) {
-						const missing = missingKeys(required, {
-							...process.env,
-							...fetchedSecrets,
-						});
-						if (missing.length > 0) {
-							throw new Error(
-								`Required Firebase functionsEnv secrets are missing: ${missing.join(", ")}. Add them to Infisical or export them in your shell.`,
-							);
-						}
+					for (const key of Object.keys(fetchedSecrets)) {
+						const shellValue = process.env[key];
+						mergedValues[key] =
+							shellValue !== undefined ? shellValue : fetchedSecrets[key];
+					}
+					for (const key of required) {
+						const shellValue = process.env[key];
+						if (shellValue !== undefined) mergedValues[key] = shellValue;
 					}
 				}
 				if (fnEnv.values) {
@@ -694,6 +702,21 @@ export function firebase(
 							? fnEnv.values(ctx)
 							: fnEnv.values;
 					Object.assign(mergedValues, extra);
+				}
+				if (required.length > 0) {
+					const missing = missingKeys(
+						required,
+						Object.fromEntries(
+							Object.entries(mergedValues)
+								.filter(([, value]) => value !== undefined)
+								.map(([key, value]) => [key, String(value)]),
+						),
+					);
+					if (missing.length > 0) {
+						throw new Error(
+							`Required Firebase functionsEnv secrets are missing: ${missing.join(", ")}. Add them to Infisical or export them in your shell.`,
+						);
+					}
 				}
 
 				const rendered = renderFunctionsEnvFile(mergedValues, {
@@ -711,10 +734,6 @@ export function firebase(
 			},
 
 			async afterServersStop(ctx) {
-				cleanupFunctionsEnv(ctx?.root);
-			},
-
-			async beforeStop(ctx) {
 				cleanupFunctionsEnv(ctx?.root);
 			},
 
@@ -742,6 +761,7 @@ export function firebase(
 				project: projectOf,
 				workdir: workdirOf,
 				emulators: (root) =>
+					stateByRoot.get(root)?.selected ??
 					selectEmulators(projectOf(root).raw, options.emulators),
 				dataDir: () =>
 					dataDir && normalize(join(workdirOption ?? ".", dataDir)),
@@ -776,26 +796,20 @@ export function firebase(
 			const base = anchorPort(state.project.raw);
 			const ports = ctx.ports as Record<string, number>;
 			const offset = (ports[FIREBASE_APP] ?? base) - base;
-			const env = emulatorEnv(
-				state.selected,
-				emulatorPorts(state.project.raw, state.selected, offset),
-				state.resolvedProjectId,
-			);
 			const isolation: Record<string, string> = shouldIsolateCredentials(
 				ctx.root,
 			)
 				? {
 						GOOGLE_APPLICATION_CREDENTIALS: "",
-						CLOUDSDK_CONFIG: emulatorCloudSdkDir(emulatorTmpDir(ctx.root)),
+						CLOUDSDK_CONFIG: emulatorCloudSdkDir(tmpDirOf(ctx.root)),
 					}
 				: {};
 			return {
-				...env,
-				...publicEnvCopies(
-					Object.fromEntries(
-						FIREBASE_PUBLIC_ENV.map((name) => [name, env[name]]),
-					),
-					options.publicEnvPrefix,
+				...buildEmulatorEnv(
+					state.project.raw,
+					state.selected,
+					state.resolvedProjectId,
+					offset,
 				),
 				...isolation,
 			};

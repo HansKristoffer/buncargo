@@ -1,4 +1,4 @@
-import { internalsOf } from "../../environment";
+import { internalsOf } from "../../environment/internals";
 import { BASE_EXITS, defineCommand } from "../command-spec";
 import * as log from "../log";
 import { loadCommandEnv } from "./load-env";

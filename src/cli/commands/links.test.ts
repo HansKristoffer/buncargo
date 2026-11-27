@@ -229,7 +229,16 @@ describe("buncargo links CLI", () => {
 				});
 			}
 
-			// 5. Unpin returns to ambiguous state
+			// 5. Unpin rejects unknown link names to catch typos
+			const typoUnpin = runCliCommand(consumerRoot, [
+				"links",
+				"unpin",
+				"backnd",
+			]);
+			expect(typoUnpin.exitCode).toBe(1);
+			expect(typoUnpin.stderr + typoUnpin.stdout).toContain("Unknown link");
+
+			// 6. Unpin returns to ambiguous state
 			const unpinned = runCliCommand(consumerRoot, [
 				"links",
 				"unpin",

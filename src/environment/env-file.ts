@@ -12,7 +12,7 @@
  * staging service, survives untouched.
  */
 
-import { copyFile, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { buildSharedEnvValues } from "../core/env";
 import type { PortMap, UrlMap } from "../core/ports";
@@ -88,12 +88,11 @@ export function rewriteEnvValues(
  * Built from the *loopback* URLs, never the named `https://` hosts: the whole
  * reason to write this file is tooling that cannot use the local CA.
  */
-export function buildEnvFileUpdates(input: {
+function buildBaseEnvFileUpdates(input: {
 	projectName: string;
 	services: Record<string, ResolvedService>;
 	ports: PortMap;
 	loopbackUrls: UrlMap;
-	values?: EnvFileOptions["values"];
 }): Record<string, string> {
 	const shared = buildSharedEnvValues({
 		projectName: input.projectName,
@@ -110,6 +109,17 @@ export function buildEnvFileUpdates(input: {
 	for (const [key, value] of Object.entries(shared)) {
 		if (value !== undefined) updates[key] = String(value);
 	}
+	return updates;
+}
+
+export function buildEnvFileUpdates(input: {
+	projectName: string;
+	services: Record<string, ResolvedService>;
+	ports: PortMap;
+	loopbackUrls: UrlMap;
+	values?: EnvFileOptions["values"];
+}): Record<string, string> {
+	const updates = buildBaseEnvFileUpdates(input);
 
 	// Last, so a repo can correct a computed value rather than only add to it.
 	for (const [key, value] of Object.entries(
@@ -160,10 +170,9 @@ async function syncOneEnvFile(
 	options: NormalizedEnvFileOptions,
 	input: {
 		root: string;
-		projectName: string;
-		services: Record<string, ResolvedService>;
 		ports: PortMap;
 		loopbackUrls: UrlMap;
+		baseUpdates: Record<string, string>;
 	},
 ): Promise<EnvFileSyncResult> {
 	const path = isAbsolute(options.path)
@@ -186,8 +195,7 @@ async function syncOneEnvFile(
 			: resolve(input.root, options.createFrom);
 
 		try {
-			await copyFile(template, path);
-			contents = await readFile(path, "utf-8");
+			contents = await readFile(template, "utf-8");
 			created = true;
 		} catch (error) {
 			if (!isMissing(error)) throw error;
@@ -195,16 +203,17 @@ async function syncOneEnvFile(
 		}
 	}
 
-	const { contents: next, changed } = rewriteEnvValues(
-		contents,
-		buildEnvFileUpdates({
-			projectName: input.projectName,
-			services: input.services,
-			ports: input.ports,
-			loopbackUrls: input.loopbackUrls,
-			values: options.values,
-		}),
-	);
+	let updates = input.baseUpdates;
+	if (options.values) {
+		updates = { ...input.baseUpdates };
+		for (const [key, value] of Object.entries(
+			options.values(input.ports, input.loopbackUrls) ?? {},
+		)) {
+			if (value !== undefined) updates[key] = String(value);
+		}
+	}
+
+	const { contents: next, changed } = rewriteEnvValues(contents, updates);
 
 	if (changed.length === 0 && !created) {
 		return { path, changed, created };
@@ -231,9 +240,16 @@ export async function syncEnvFiles(input: {
 	loopbackUrls: UrlMap;
 }): Promise<EnvFileSyncResult[]> {
 	const entries = resolveEnvFileList(input.envFile);
-	const results: EnvFileSyncResult[] = [];
-	for (const entry of entries) {
-		results.push(await syncOneEnvFile(entry, input));
-	}
-	return results;
+	if (entries.length === 0) return [];
+	const baseUpdates = buildBaseEnvFileUpdates(input);
+	return Promise.all(
+		entries.map((entry) =>
+			syncOneEnvFile(entry, {
+				root: input.root,
+				ports: input.ports,
+				loopbackUrls: input.loopbackUrls,
+				baseUpdates,
+			}),
+		),
+	);
 }

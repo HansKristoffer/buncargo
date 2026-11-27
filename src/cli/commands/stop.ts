@@ -1,15 +1,5 @@
 import { getErrorMessage } from "hanzio";
-import {
-	buncargoContainersOn,
-	type ContainerRuntimeAdapter,
-	getContainerRuntimeAdapter,
-	stopBuncargoContainers,
-	withProjectLifecycleLock,
-} from "../../container-runtime";
-import {
-	runStackDowns,
-	withdrawStoppedRoutes,
-} from "../../container-runtime/sweep";
+import type { ContainerRuntimeAdapter } from "../../container-runtime";
 import {
 	readAllOffsetClaims,
 	releaseSuffixedClaimsOf,
@@ -395,6 +385,7 @@ export async function stopService(
 		);
 		return STOP_EXIT.refused;
 	}
+	const { withProjectLifecycleLock } = await import("../../container-runtime");
 	return withProjectLifecycleLock(run.projectName, run.root, () =>
 		stopServiceUnlocked(run, service),
 	);
@@ -415,6 +406,11 @@ async function stopServiceUnlocked(
 		return STOP_EXIT.refused;
 	}
 
+	const {
+		buncargoContainersOn,
+		getContainerRuntimeAdapter,
+		stopBuncargoContainers,
+	} = await import("../../container-runtime");
 	const runtimes = [
 		getContainerRuntimeAdapter(service.container.runtime, {
 			binary: service.container.binary,
@@ -530,6 +526,7 @@ async function stopWholeRun(run: RunEntry, force: boolean): Promise<number> {
 		return STOP_EXIT.refused;
 	}
 
+	const { withProjectLifecycleLock } = await import("../../container-runtime");
 	return withProjectLifecycleLock(run.projectName, run.root, async () => {
 		// A second session in this checkout keeps the containers, as it does
 		// for a library `stop()`.
@@ -585,6 +582,7 @@ async function stopHeldProject(
 	projectName: string,
 	held: readonly RunEntry[],
 ): Promise<number> {
+	const { withProjectLifecycleLock } = await import("../../container-runtime");
 	return withProjectLifecycleLock(projectName, root, async () => {
 		// Read again under the lock: a run may have claimed these since.
 		const fresh = await findCheckoutRuns(root);
@@ -622,8 +620,15 @@ async function tearDown(
 	// Before the teardown: a claim a new job writes meanwhile is its own.
 	const claims = readAllOffsetClaims();
 	const removed: string[] = [];
+	const [
+		{ getContainerRuntimeAdapter },
+		{ runStackDowns, withdrawStoppedRoutes },
+	] = await Promise.all([
+		import("../../container-runtime"),
+		import("../../container-runtime/sweep"),
+	]);
 	try {
-		for (const runtime of recordedRuntimes(runs)) {
+		for (const runtime of recordedRuntimes(runs, getContainerRuntimeAdapter)) {
 			await runtime.down({ root, projectName, verbose: false });
 			removed.push(runtime.name);
 		}
@@ -683,10 +688,11 @@ async function tearDown(
 /** One adapter per runtime and binary the entries' containers were started through. */
 function recordedRuntimes(
 	runs: readonly RunEntry[],
+	getAdapter: (typeof import("../../container-runtime"))["getContainerRuntimeAdapter"],
 ): ContainerRuntimeAdapter[] {
 	const services = runs.flatMap((run) => run.services);
 	return recordedContainerRuntimes({ services }).map((container) =>
-		getContainerRuntimeAdapter(container.runtime, {
+		getAdapter(container.runtime, {
 			binary: container.binary,
 		}),
 	);

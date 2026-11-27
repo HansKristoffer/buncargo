@@ -126,6 +126,11 @@ export interface DevEnvContext {
 	 * are told about; undefined before any preparation.
 	 */
 	readonly selection: StartSelection | undefined;
+	/**
+	 * Effective active apps for integration hooks and env builders: the
+	 * profile's active apps unioned with any explicitly selected `selection.appNames`.
+	 */
+	readonly activeApps: ReadonlySet<string> | undefined;
 	readonly ownedServerPids: Record<string, number>;
 	/** Values apps printed (`captures`), shared by hooks, env and generated files. */
 	readonly captured: Record<string, string>;
@@ -453,6 +458,19 @@ export function createDevEnvContext(
 		},
 		get selection() {
 			return startSelection;
+		},
+		get activeApps() {
+			if (config.activeApps === undefined) return undefined;
+			if (!startSelection || startSelection.appNames.length === 0) {
+				return config.activeApps;
+			}
+			const missing = startSelection.appNames.some(
+				(app) => !config.activeApps?.has(app),
+			);
+			if (!missing) return config.activeApps;
+			const next = new Set(config.activeApps);
+			for (const app of startSelection.appNames) next.add(app);
+			return next;
 		},
 		getStartPlan,
 		prepareStart,

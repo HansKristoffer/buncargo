@@ -380,3 +380,53 @@ it("stops a detached server whose launcher a restart retires mid-adoption", asyn
 		await rm(root, { recursive: true, force: true });
 	}
 }, 15000);
+
+it("stops one essential app via stopApp() without ending the session and restarts it cleanly", async () => {
+	const session = new AppSupervision({ web: workerApp });
+	try {
+		await session.register("web", child(), { probation: false });
+		session.setSpawner("web", async () => child());
+		const firstPid = session.pids.web;
+		if (firstPid === undefined) throw new Error("App did not have a pid");
+
+		let settled = false;
+		void session.wait().then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+
+		expect(await session.stopApp("web")).toBe(true);
+		expect(isProcessAlive(firstPid)).toBe(false);
+		expect(session.life("web").phase).toBe("down");
+		expect(session.life("web").end?.verdict).toBe("stopped");
+		expect(session.life("web").standing).toBe("parked");
+		expect(await session.stopApp("web")).toBe(false);
+		// Session stays alive waiting for restart rather than terminating the run.
+		await Bun.sleep(20);
+		expect(settled).toBe(false);
+
+		expect(await session.restart("web", "requested")).toBe(true);
+		const secondPid = session.pids.web;
+		expect(secondPid).toBeDefined();
+		expect(secondPid).not.toBe(firstPid);
+		expect(session.life("web").phase).toBe("starting");
+	} finally {
+		await session.stop();
+	}
+});
+
+it("refuses stopApp() for an essential app still booting an initial startup wave", async () => {
+	const session = new AppSupervision({ web: workerApp });
+	try {
+		await session.register("web", child(), { probation: true });
+		expect(session.life("web").phase).toBe("starting");
+		expect(await session.stopApp("web")).toBe(false);
+		expect(session.life("web").phase).toBe("starting");
+	} finally {
+		await session.stop();
+	}
+});

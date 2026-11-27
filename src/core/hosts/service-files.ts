@@ -1,4 +1,7 @@
 import type { InvokingUser } from "../state-paths";
+import { HOSTS_SERVICE_LOG } from "./paths";
+
+export { HOSTS_SERVICE_LOG };
 
 /**
  * The launchd plist and systemd unit that run the named-hosts proxy as root.
@@ -12,7 +15,6 @@ export const LAUNCHD_LABEL = "dev.buncargo.hosts";
 export const LAUNCHD_PLIST = `/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist`;
 export const SYSTEMD_UNIT = "buncargo-hosts.service";
 export const SYSTEMD_PATH = `/etc/systemd/system/${SYSTEMD_UNIT}`;
-export const HOSTS_SERVICE_LOG = "/var/log/buncargo-hosts.log";
 
 /**
  * The daemon spawns nothing, so this only has to cover the interpreter and the

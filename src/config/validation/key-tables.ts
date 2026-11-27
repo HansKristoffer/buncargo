@@ -266,14 +266,45 @@ export const RENAMED_KEYS: Readonly<Record<string, Record<string, string>>> = {
 	},
 };
 
+const checkedCache = new WeakMap<
+	object,
+	Partial<Record<Exclude<FieldCheck, "shape">, string[]>>
+>();
+
 /** The keys of a table whose values `fields()` checks with `typeof check`. */
 export function keysChecked<TTable extends Record<string, FieldCheck>>(
 	table: TTable,
 	check: Exclude<FieldCheck, "shape">,
 ): string[] {
-	return Object.entries(table)
+	let byCheck = checkedCache.get(table);
+	if (!byCheck) {
+		byCheck = {};
+		checkedCache.set(table, byCheck);
+	}
+	const cached = byCheck[check];
+	if (cached) return cached;
+	const keys = Object.entries(table)
 		.filter(([, value]) => value === check)
 		.map(([key]) => key);
+	byCheck[check] = keys;
+	return keys;
+}
+
+const knownCache = new WeakMap<
+	object,
+	{ set: ReadonlySet<string>; list: string }
+>();
+
+function knownKeysOf(table: Record<string, FieldCheck> | readonly string[]): {
+	set: ReadonlySet<string>;
+	list: string;
+} {
+	const cached = knownCache.get(table);
+	if (cached) return cached;
+	const keys = Array.isArray(table) ? table : Object.keys(table);
+	const entry = { set: new Set<string>(keys), list: keys.join(", ") };
+	knownCache.set(table, entry);
+	return entry;
 }
 
 /**
@@ -286,14 +317,17 @@ export function unknownKeyErrors(
 	table: Record<string, FieldCheck> | readonly string[],
 	renamed: Readonly<Record<string, string>> = {},
 ): string[] {
-	const known = Array.isArray(table) ? table : Object.keys(table);
+	const known = knownKeysOf(table);
+	const errors: string[] = [];
 	const prefix = path === "config" ? "" : `${path}.`;
-	return Object.keys(value)
-		.filter((key) => !known.includes(key))
-		.map((key) => {
-			const replacement = renamed[key];
-			return replacement
+	for (const key of Object.keys(value)) {
+		if (known.set.has(key)) continue;
+		const replacement = renamed[key];
+		errors.push(
+			replacement
 				? `${prefix}${key} was renamed: use ${replacement}`
-				: `${prefix}${key} is not an option (${known.join(", ")})`;
-		});
+				: `${prefix}${key} is not an option (${known.list})`,
+		);
+	}
+	return errors;
 }

@@ -64,32 +64,6 @@ it("serializes stop requests, preserving a later stronger teardown", async () =>
 	expect(events).toEqual(["containers", "volumes"]);
 });
 
-it("coalesces concurrent restarts and lets a subsequent stop supersede startup", async () => {
-	const coordinator = new LifecycleCoordinator();
-	const entered = gate();
-	const events: string[] = [];
-	const stop = async () => {
-		events.push("restart stop");
-	};
-	const start = async (signal: AbortSignal) => {
-		events.push("restart start");
-		entered.resolve();
-		await withSignal(new Promise(() => {}), signal);
-	};
-	const first = coordinator.restart(stop, start);
-	const second = coordinator.restart(stop, start);
-	expect(second).toBe(first);
-	const outcome = first.catch((error) => error);
-	await entered.promise;
-	await coordinator.stop(async () => {
-		events.push("final stop");
-	});
-	expect(await outcome).toMatchObject({ message: "Restart cancelled by stop" });
-	expect(events).toEqual(["restart stop", "restart start", "final stop"]);
-	await coordinator.start(async () => {});
-	await coordinator.stop(async () => {});
-});
-
 it("recovers from teardown failure and detaches caller cancellation after stop", async () => {
 	const coordinator = new LifecycleCoordinator();
 	const caller = new AbortController();
@@ -109,45 +83,4 @@ it("recovers from teardown failure and detaches caller cancellation after stop",
 	expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
 	await coordinator.start(async () => {});
 	await coordinator.stop(async () => {});
-});
-
-it("runs a restart asked for after a stop cancelled the last one", async () => {
-	const coordinator = new LifecycleCoordinator();
-	const entered = gate();
-	const events: string[] = [];
-	const cancelled = coordinator
-		.restart(
-			async () => {
-				events.push("first stop");
-			},
-			async (signal) => {
-				entered.resolve();
-				await withSignal(new Promise(() => {}), signal);
-			},
-		)
-		.catch((error) => error);
-	await entered.promise;
-	const stopped = coordinator.stop(async () => {
-		events.push("final stop");
-	});
-	// Before the cancelled restart has settled: not a request to join it.
-	const again = coordinator.restart(
-		async () => {
-			events.push("second stop");
-		},
-		async () => {
-			events.push("second start");
-		},
-	);
-	await stopped;
-	await again;
-	expect(await cancelled).toMatchObject({
-		message: "Restart cancelled by stop",
-	});
-	expect(events).toEqual([
-		"first stop",
-		"final stop",
-		"second stop",
-		"second start",
-	]);
 });

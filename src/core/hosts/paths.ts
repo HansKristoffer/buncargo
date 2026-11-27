@@ -17,6 +17,7 @@ const CERTS_DIRNAME = "certs";
 const CERT_FILENAME = "hosts.pem";
 const KEY_FILENAME = "hosts-key.pem";
 const TAILSCALE_SERVE_FILENAME = "tailscale-serve.json";
+export const HOSTS_SERVICE_LOG = "/var/log/buncargo-hosts.log";
 
 export function getRoutesPath(): string {
 	return stateFilePath(ROUTES_FILENAME);

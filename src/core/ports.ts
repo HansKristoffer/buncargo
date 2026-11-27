@@ -273,9 +273,12 @@ export function computeDevIdentity(options: DevIdentityOptions): DevIdentity {
 		worktreeIsolation = true,
 	} = options;
 	const root = providedRoot ?? findMonorepoRoot();
-	const worktree = isWorktree(root);
+	const worktreeName = getWorktreeName(root);
+	const worktree = worktreeName !== null;
 	const worktreeSuffix =
-		worktree && worktreeIsolation ? getWorktreeProjectSuffix(root) : null;
+		worktreeName !== null && worktreeIsolation
+			? worktreeProjectSuffix(worktreeName)
+			: null;
 	return {
 		worktree,
 		worktreeSuffix,
@@ -402,12 +405,27 @@ export function computeLoopbackUrls(
 	apps: Readonly<Record<string, { port?: number; host?: string }>>,
 	ports: PortMap,
 ): UrlMap {
-	// The LAN IP only feeds the aliases this then drops.
-	const all = computeUrls(services, apps, ports, "127.0.0.1");
-	const lanAliases = new Set(Object.keys(apps).map((name) => `${name}Local`));
 	const loopback: UrlMap = {};
-	for (const [key, value] of Object.entries(all)) {
-		if (!lanAliases.has(key)) loopback[key] = value;
+	const host = "localhost";
+
+	for (const [name, service] of Object.entries(services)) {
+		const port = ports[name];
+		if (port === undefined || service.port === undefined) continue;
+		const secondaryPort = ports[`${name}Secondary`];
+		loopback[name] = service.url({
+			port,
+			secondaryPort,
+			host,
+			localIp: "127.0.0.1",
+		});
 	}
+
+	for (const [name, app] of Object.entries(apps)) {
+		const port = ports[name];
+		if (port === undefined || app.port === undefined) continue;
+		const bound = appDialAuthority(app.host);
+		loopback[name] = `http://${bound ?? host}:${port}`;
+	}
+
 	return loopback;
 }

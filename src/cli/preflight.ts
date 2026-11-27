@@ -38,14 +38,14 @@ export async function runPreflight(
 /**
  * The steps that apps a running `dev` starts late bring and its own start
  * did not run, without a terminal: the TUI owns it. A step that needs one (a
- * login) throws with what to run instead.
+ * login) throws with what to run instead. Returns whether any step ran.
  */
 export async function runLatePreflight(
 	env: AnyDevEnvironment,
 	configured: readonly PreflightStep[] | undefined,
 	lateApps: readonly string[],
 	startedApps: readonly string[],
-): Promise<void> {
+): Promise<boolean> {
 	const steps = (configured ?? []).filter(
 		(step) => runsFor(step, lateApps) && !runsFor(step, startedApps),
 	);
@@ -56,4 +56,5 @@ export async function runLatePreflight(
 			throw new CliError(`${step.name}: ${getErrorMessage(error)}`);
 		}
 	}
+	return steps.length > 0;
 }

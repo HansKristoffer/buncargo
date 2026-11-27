@@ -2,7 +2,7 @@ import {
 	parseEnvAssignment,
 	updateEnvOverrides,
 } from "../../core/env-overrides";
-import { findCheckoutRoot } from "../../loader";
+import { findCheckoutRoot } from "../../loader/find-config-file";
 import { BASE_EXITS, defineCommand } from "../command-spec";
 import { argumentsError, CliError } from "../errors";
 import * as log from "../log";

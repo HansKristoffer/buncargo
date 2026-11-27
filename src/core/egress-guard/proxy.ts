@@ -16,7 +16,7 @@ import {
 } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { connect as netConnect, type Socket } from "node:net";
-import { isHostAllowed, isLoopbackHost, normalizeHost } from "./rules";
+import { compileAllowRules, isLoopbackHost, normalizeHost } from "./rules";
 
 export interface BlockedEgressEvent {
 	readonly method: string;
@@ -76,6 +76,12 @@ function blockedBody(host: string, port: number): string {
 	return `Blocked by buncargo egressGuard: outbound connection to ${host}:${port} is not allowlisted. Add "${host}" to egressGuard.allow in dev.config.ts to permit it.\n`;
 }
 
+/** One-line summary of a blocked or warn-mode egress event for logs and warnings. */
+export function formatBlockedEgress(event: BlockedEgressEvent): string {
+	const action = event.mode === "block" ? "Blocked" : "Allowed (warn)";
+	return `${action} outbound ${event.method} to ${event.host}:${event.port} (add "${event.host}" to egressGuard.allow to permit)`;
+}
+
 /** Start the loopback egress proxy on `127.0.0.1:0`. */
 export async function startEgressGuardProxy(
 	options: StartEgressGuardProxyOptions,
@@ -84,9 +90,9 @@ export async function startEgressGuardProxy(
 	// Hosts learned once the guarded processes' env is final (`allowHostsOf`):
 	// exact names, kept out of `allow` so none is ever read as a pattern or port.
 	const learned = new Set<string>();
+	const matchesAllow = compileAllowRules(options.allow);
 	const isAllowed = (host: string, port: number) =>
-		learned.has(normalizeHost(host)) ||
-		isHostAllowed(host, port, options.allow);
+		learned.has(normalizeHost(host)) || matchesAllow(host, port);
 	let boundPort = 0;
 	const trackSocket = (socket: Socket) => {
 		sockets.add(socket);
@@ -121,7 +127,7 @@ export async function startEgressGuardProxy(
 				return;
 			}
 
-			const host = target.hostname;
+			const host = normalizeHost(target.hostname);
 			const port = target.port
 				? parseStrictPort(target.port)
 				: target.protocol === "https:"
@@ -164,17 +170,20 @@ export async function startEgressGuardProxy(
 				target.protocol === "https:" ? httpsRequest : httpRequest;
 			const upstream = makeRequest(
 				{
-					host,
+					hostname: host,
 					port,
 					method: req.method,
 					path: `${target.pathname}${target.search}`,
 					headers,
 				},
 				(upstreamRes) => {
-					if (res.destroyed) {
+					if (res.destroyed || res.writableEnded) {
 						upstreamRes.resume();
 						return;
 					}
+					upstreamRes.on("error", () => {
+						if (!res.destroyed) res.destroy();
+					});
 					res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
 					upstreamRes.pipe(res);
 				},
@@ -183,8 +192,10 @@ export async function startEgressGuardProxy(
 				if (!res.writableEnded) upstream.destroy();
 			};
 			req.on("aborted", abortUpstream);
+			req.on("error", abortUpstream);
 			res.on("close", abortUpstream);
 			upstream.on("error", (error) => {
+				if (res.destroyed || res.writableEnded) return;
 				if (res.headersSent) {
 					res.destroy(error);
 					return;
@@ -197,9 +208,13 @@ export async function startEgressGuardProxy(
 	);
 
 	server.on("connection", trackSocket);
+	server.on("clientError", (_error, socket) => {
+		if (!socket.destroyed) {
+			socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+		}
+	});
 
 	server.on("connect", (req: IncomingMessage, clientSocket: Socket, head) => {
-		trackSocket(clientSocket);
 		const target = parseConnectAuthority(req.url ?? "");
 		if (!target) {
 			clientSocket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
@@ -228,16 +243,20 @@ export async function startEgressGuardProxy(
 		}
 
 		let established = false;
-		const upstream = netConnect(target.port, target.host, () => {
+		const upstream = netConnect(target.port, normalizeHost(target.host), () => {
 			if (clientSocket.destroyed) {
 				upstream.destroy();
 				return;
 			}
+			upstream.setTimeout(0);
 			established = true;
 			clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 			if (head.length > 0) upstream.write(head);
 			upstream.pipe(clientSocket);
 			clientSocket.pipe(upstream);
+		});
+		upstream.setTimeout(30_000, () => {
+			if (!established) upstream.destroy(new Error("Upstream connect timeout"));
 		});
 		trackSocket(upstream);
 
@@ -248,6 +267,9 @@ export async function startEgressGuardProxy(
 			} else {
 				clientSocket.destroy();
 			}
+		});
+		upstream.once("close", () => {
+			if (!clientSocket.destroyed) clientSocket.destroy();
 		});
 		const closeUpstream = () => upstream.destroy();
 		clientSocket.on("error", closeUpstream);
@@ -261,6 +283,8 @@ export async function startEgressGuardProxy(
 			resolve();
 		});
 	});
+	// Absorb post-listen socket/server errors so one broken client never crashes the run.
+	server.on("error", () => {});
 
 	const address = server.address();
 	if (!address || typeof address === "string") {
@@ -275,7 +299,10 @@ export async function startEgressGuardProxy(
 		port: boundPort,
 		url: `http://127.0.0.1:${boundPort}`,
 		allowHosts: (hosts) => {
-			for (const host of hosts) learned.add(normalizeHost(host));
+			for (const host of hosts) {
+				const normalized = normalizeHost(host);
+				if (normalized) learned.add(normalized);
+			}
 		},
 		close: async () => {
 			if (closed) return;

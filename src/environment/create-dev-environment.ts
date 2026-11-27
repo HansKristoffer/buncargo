@@ -4,11 +4,15 @@ import {
 	applyProfileIntegrations,
 } from "../config/integrations";
 import { resolveConfig } from "../config/resolve";
+import { validateProfileAppRefs } from "../config/validation/references";
 import { labelledCaptures } from "../core/captured-values";
 import { waitForDevServers, waitForServer } from "../core/network";
 import { findMonorepoRoot } from "../core/ports";
 import { resolvePrimaryApp } from "../core/primary-app";
-import { applyInfisicalProjectConfig } from "../core/secrets/index";
+import {
+	applyInfisicalProjectConfig,
+	readInfisicalProjectId,
+} from "../core/secrets/index";
 import { createPrismaRunner } from "../prisma";
 import type {
 	AppConfig,
@@ -42,6 +46,8 @@ type EnvironmentOptions = {
 	root?: string;
 	/** Active profile name (`profiles.<name>`), applying its `env` and `secrets` overrides. */
 	profile?: string;
+	/** Explicit app selection (`buncargo dev <app>...`), overriding `profiles.default.apps` for `activeApps`. */
+	onlyApps?: readonly string[];
 } & SuffixedEnvironmentOptions;
 
 /**
@@ -81,67 +87,105 @@ export function createDevEnvironment<
 	) as unknown as DevEnvironment<TServices, TApps, TEnv, TLinks>;
 }
 
+interface PreparedConfig {
+	root: string;
+	projectId: string | null;
+	withProjectSecrets: DevConfig<AnyServices, AnyApps>;
+	baseApplied: DevConfig<AnyServices, AnyApps>;
+}
+
+function prepareBaseConfig(
+	config: DevConfig<AnyServices, AnyApps>,
+	root: string,
+): PreparedConfig {
+	// Read `.infisical.json` at most once per checkout, and only when the config
+	// or its integrations actually declare secrets.
+	let projectId: string | null | undefined;
+	const getProjectId = (): string | null => {
+		if (projectId === undefined) {
+			projectId = readInfisicalProjectId(root) ?? null;
+		}
+		return projectId;
+	};
+	const applyProjectSecrets = (target: DevConfig<AnyServices, AnyApps>) => {
+		const hasSecrets =
+			Boolean(target.secrets) ||
+			Boolean(target.seed?.secrets) ||
+			Boolean(target.migrations?.some((m) => Boolean(m.secrets))) ||
+			Boolean(
+				target.apps &&
+				Object.values(target.apps).some((a) => Boolean(a.secrets)),
+			) ||
+			Boolean(
+				target.profiles &&
+				Object.values(target.profiles).some((p) => Boolean(p.secrets)),
+			);
+		return hasSecrets
+			? applyInfisicalProjectConfig(target, root, getProjectId())
+			: target;
+	};
+	const withProjectSecrets = applyProjectSecrets(config);
+	const integrated = applyIntegrations(withProjectSecrets, { root });
+	const baseApplied =
+		integrated === withProjectSecrets
+			? withProjectSecrets
+			: applyProjectSecrets(integrated);
+	assertValidConfig(baseApplied);
+	return {
+		root,
+		projectId: projectId ?? null,
+		withProjectSecrets,
+		baseApplied,
+	};
+}
+
 function createEnvironment(
 	config: DevConfig<AnyServices, AnyApps>,
 	options: EnvironmentOptions,
+	preparedBase?: PreparedConfig,
+	preResolved?: { profile?: string; resolved: ResolvedDevConfig },
 ): DevEnvironment<AnyServices, AnyApps> {
-	// Integrations transform the config before anything reads it; `withSuffix`
-	// re-applies them to the original, which is pure and gives the same result.
-	// They read project files from the checkout, wherever this process runs.
-	const root = options.root ?? findMonorepoRoot();
-	const withProjectSecrets = applyInfisicalProjectConfig(config, root);
-	const baseApplied = applyInfisicalProjectConfig(
-		applyIntegrations(withProjectSecrets, { root }),
-		root,
-	);
-	assertValidConfig(baseApplied);
-
+	const root = preparedBase?.root ?? options.root ?? findMonorepoRoot();
+	const prepared = preparedBase ?? prepareBaseConfig(config, root);
 	const profileName =
 		options.profile ?? (config.profiles?.default ? "default" : undefined);
-	const profileOverride = profileName
-		? config.profiles?.[profileName]
-		: undefined;
-	let applied = baseApplied;
-	if (profileOverride?.integrations !== undefined) {
-		applied = applyInfisicalProjectConfig(
-			applyProfileIntegrations(withProjectSecrets, {
+
+	let resolved: ResolvedDevConfig;
+	if (preResolved && preResolved.profile === profileName) {
+		resolved = preResolved.resolved;
+	} else {
+		const profileOverride = profileName
+			? config.profiles?.[profileName]
+			: undefined;
+		let applied = prepared.baseApplied;
+		if (profileOverride?.integrations !== undefined && profileName) {
+			const integrated = applyProfileIntegrations(prepared.withProjectSecrets, {
 				root,
 				profile: profileName,
-			}),
-			root,
-		);
-		assertValidConfig(applied);
-		const profileErrors: string[] = [];
-		for (const appName of profileOverride.apps ?? []) {
-			if (!applied.apps?.[appName]) {
-				profileErrors.push(
-					`profiles.${profileName} includes unknown app "${appName}"`,
+			});
+			const projectId =
+				prepared.projectId ?? readInfisicalProjectId(root) ?? null;
+			applied = applyInfisicalProjectConfig(integrated, root, projectId);
+			assertValidConfig(applied);
+			const profileErrors: string[] = [];
+			validateProfileAppRefs(
+				profileName,
+				profileOverride,
+				applied.apps,
+				profileErrors,
+			);
+			if (profileErrors.length > 0) {
+				throw new Error(
+					`Invalid dev config:\n${profileErrors.map((e) => `  - ${e}`).join("\n")}`,
 				);
 			}
 		}
-		if (
-			profileOverride.egressGuard &&
-			typeof profileOverride.egressGuard === "object" &&
-			profileOverride.egressGuard.apps
-		) {
-			for (const appName of profileOverride.egressGuard.apps) {
-				if (!applied.apps?.[appName]) {
-					profileErrors.push(
-						`profiles.${profileName}.egressGuard.apps includes unknown app "${appName}"`,
-					);
-				}
-			}
-		}
-		if (profileErrors.length > 0) {
-			throw new Error(
-				`Invalid dev config:\n${profileErrors.map((e) => `  - ${e}`).join("\n")}`,
-			);
-		}
-	}
 
-	const resolved: ResolvedDevConfig = resolveConfig(applied, {
-		profile: options.profile,
-	});
+		resolved = resolveConfig(applied, {
+			profile: options.profile,
+			onlyApps: options.onlyApps,
+		});
+	}
 
 	const ctx = createDevEnvContext(resolved, { ...options, root });
 	const envVars = createEnvVarsApi(ctx);
@@ -233,8 +277,8 @@ function createEnvironment(
 					loopbackUrls: ctx.loopbackUrls,
 					root: ctx.root,
 					workspaceId: ctx.workspaceId,
-					...(resolved.activeApps !== undefined
-						? { activeApps: resolved.activeApps }
+					...(ctx.activeApps !== undefined
+						? { activeApps: ctx.activeApps }
 						: {}),
 					signal,
 				});
@@ -386,12 +430,17 @@ function createEnvironment(
 
 		// Advanced
 		withSuffix: (newSuffix, suffixed) =>
-			createEnvironment(config, {
-				...options,
-				suffix: newSuffix,
-				data: suffixed?.data,
-				ports: suffixed?.ports,
-			}),
+			createEnvironment(
+				config,
+				{
+					...options,
+					suffix: newSuffix,
+					data: suffixed?.data,
+					ports: suffixed?.ports,
+				},
+				prepared,
+				{ profile: profileName, resolved },
+			),
 	};
 
 	registerInternals(env, {
@@ -416,14 +465,22 @@ function createEnvironment(
 			: undefined,
 		activeProfile: profileName,
 		withProfile: (profile) =>
-			createEnvironment(config, { ...options, profile }),
+			createEnvironment(
+				config,
+				{ ...options, profile, onlyApps: undefined },
+				prepared,
+			),
+		withOnlyApps: (onlyApps) =>
+			createEnvironment(config, { ...options, onlyApps }, prepared),
 		setupChecks: resolved.setupChecks,
 		preflight: resolved.preflight,
 		tasks: resolved.tasks,
 		linksConfig: resolved.links,
 		egressGuard: resolved.egressGuard,
 		startTaskEgressGuard: envVars.startTaskEgressGuard,
-		activeApps: resolved.activeApps,
+		get activeApps() {
+			return ctx.activeApps;
+		},
 		inspectLinks: ctx.inspectLinks,
 		exportedEnv: (selection) => envVars.exportedEnv(selection),
 		setNamedHostsActive: ctx.setNamedHostsActive,

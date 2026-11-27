@@ -94,24 +94,44 @@ export type PortOwner =
 	| { kind: "container"; container: PortContainerOwner }
 	| { kind: "unidentified" };
 
-const BIND_PROBE_HOSTS = ["127.0.0.1", "0.0.0.0", "::"] as const;
+const BIND_PROBE_HOSTS = ["127.0.0.1", "::1", "0.0.0.0", "::"] as const;
+
+type BindProbeResult = "free" | "in-use" | "unprobeable";
+
+/**
+ * Probe whether `port` can be bound locally across loopback and wildcard
+ * addresses.
+ *
+ * Returns `"in-use"` on `EADDRINUSE`, `"unprobeable"` when binding is denied
+ * (`EACCES`/`EPERM`, e.g. privileged ports `< 1024` as a non-root user) or no
+ * address bound, and `"free"` only when at least one address bound cleanly and
+ * none reported `"in-use"` or `"unprobeable"`.
+ */
+function probePortBind(port: number): BindProbeResult {
+	let bound = false;
+	for (const hostname of BIND_PROBE_HOSTS) {
+		try {
+			Bun.listen({ hostname, port, socket: { data() {} } }).stop(true);
+			bound = true;
+		} catch (error) {
+			const code = (error as { code?: string }).code;
+			if (code === "EADDRINUSE") return "in-use";
+			if (code === "EACCES" || code === "EPERM") return "unprobeable";
+		}
+	}
+	return bound ? "free" : "unprobeable";
+}
 
 /**
  * Whether this process could listen on `port` right now.
  *
  * Every address is tried because they do not block each other: a listener on
  * `0.0.0.0` still lets `127.0.0.1` bind, and the reverse. Only `EADDRINUSE`
- * counts; an address the machine lacks (IPv6 turned off) says nothing.
+ * counts as busy; an address the machine lacks (IPv6 turned off) or a
+ * privileged port this user cannot bind (`EACCES`) says nothing.
  */
 export function canBindPort(port: number): boolean {
-	for (const hostname of BIND_PROBE_HOSTS) {
-		try {
-			Bun.listen({ hostname, port, socket: { data() {} } }).stop(true);
-		} catch (error) {
-			if ((error as { code?: string }).code === "EADDRINUSE") return false;
-		}
-	}
-	return true;
+	return probePortBind(port) !== "in-use";
 }
 
 /**
@@ -254,6 +274,8 @@ interface SnapshotOptions {
 	 * `/proc/<pid>/fd` is scanned only if a queried port actually listens.
 	 */
 	linuxInodes?: ListeningInodesByPort;
+	/** Optional bind probe override (for deterministic tests of unprobeable ports). */
+	bindProbe?: (port: number) => BindProbeResult;
 }
 
 /** Ports in `ports` not already explained by `containers`. */
@@ -264,6 +286,23 @@ function uncoveredPorts(
 	if (!ports) return undefined;
 	if (!containers || containers.size === 0) return [...ports];
 	return ports.filter((port) => !containers.has(port));
+}
+
+/**
+ * Subset of `ports` that did not prove free via local bind probe.
+ *
+ * A quick bind probe (~0.1ms per port) avoids reading `/proc/net/tcp{,6}`
+ * (~25ms on Linux) or forking `lsof` (~30ms on macOS) when every asked port
+ * binds cleanly. Privileged or otherwise `"unprobeable"` ports stay in the
+ * subset so host listener lookup still runs for them (e.g. `:443` squatters).
+ * Undefined means the caller may query arbitrary ports later.
+ */
+function busySubset(
+	ports: readonly number[] | undefined,
+	probe: (port: number) => BindProbeResult = probePortBind,
+): number[] | undefined {
+	if (!ports) return undefined;
+	return ports.filter((port) => probe(port) !== "free");
 }
 
 /**
@@ -281,18 +320,22 @@ export function createPortOwnerSnapshot(
 		options.containers ??
 		(options.skipContainers ? new Map() : dockerContainerPortOwners());
 	const neededPorts = uncoveredPorts(options.ports, containers);
+	const ignore =
+		options.ignorePids && options.ignorePids.length > 0
+			? new Set(options.ignorePids)
+			: undefined;
 
 	let linuxInodes = options.linuxInodes;
 	const listeners: ListenerSnapshot = (() => {
 		if (options.listeners) return options.listeners;
 		if (neededPorts?.length === 0) return emptyListenerSnapshot();
 		if (linuxInodes !== undefined) return emptyListenerSnapshot();
-		// Read `/proc/net/tcp{,6}` unfiltered (<0.1ms) so probing any port
-		// works accurately; `/proc/<pid>/fd` stays lazy until a busy port hits.
-		linuxInodes = readLinuxListeningInodes();
+		const probedPorts = busySubset(neededPorts, options.bindProbe);
+		if (probedPorts?.length === 0) return emptyListenerSnapshot();
+		linuxInodes = readLinuxListeningInodes(probedPorts);
 		return linuxInodes !== undefined
 			? emptyListenerSnapshot()
-			: readListenerSnapshot(neededPorts);
+			: readListenerSnapshot(probedPorts);
 	})();
 
 	const resolvedPorts = new Set<number>();
@@ -301,9 +344,18 @@ export function createPortOwnerSnapshot(
 		resolvedPorts.add(port);
 		const inodes = linuxInodes.get(port);
 		if (!inodes || inodes.length === 0) return;
-		// Resolve every listening inode on the first busy hit so multiple busy
-		// ports across the snapshot still cost at most one `/proc/<pid>/fd` scan.
-		const resolved = resolveLinuxInodeOwners(linuxInodes);
+		// Resolve only the relevant inodes on the first busy hit so multiple
+		// busy ports still cost at most one `/proc/<pid>/fd` scan.
+		const scopedInodes =
+			options.ports !== undefined
+				? new Map(
+						options.ports.flatMap((p) => {
+							const list = linuxInodes?.get(p);
+							return list ? [[p, list] as const] : [];
+						}),
+					)
+				: linuxInodes;
+		const resolved = resolveLinuxInodeOwners(scopedInodes);
 		for (const [p, pids] of resolved.pidsByPort) {
 			listeners.pidsByPort.set(p, pids);
 		}
@@ -313,16 +365,18 @@ export function createPortOwnerSnapshot(
 		linuxInodes = undefined;
 	}
 
+	function pidsFor(port: number): number[] {
+		const raw = listeners.pidsByPort.get(port);
+		if (!raw || raw.length === 0) return [];
+		return ignore ? raw.filter((pid) => !ignore.has(pid)) : raw;
+	}
+
 	const cwds = options.cwds ?? new Map<number, string | undefined>();
 	const batchSource = options.cwdPorts ?? options.ports;
 
 	let pendingBatch: number[] | undefined =
 		batchSource && !linuxInodes
-			? [
-					...new Set(
-						batchSource.flatMap((port) => listeners.pidsByPort.get(port) ?? []),
-					),
-				]
+			? [...new Set(batchSource.flatMap((port) => pidsFor(port)))]
 			: undefined;
 
 	function cwdFor(pid: number): string | undefined {
@@ -345,7 +399,7 @@ export function createPortOwnerSnapshot(
 		if (container) return { kind: "container", container };
 
 		ensurePortResolved(port);
-		const pids = listeners.pidsByPort.get(port) ?? [];
+		const pids = pidsFor(port);
 
 		const primaryPid = pids[0];
 		if (primaryPid === undefined) return null;
@@ -363,7 +417,7 @@ export function createPortOwnerSnapshot(
 		isBusy: (port) => {
 			if (containers.has(port)) return true;
 			ensurePortResolved(port);
-			return (listeners.pidsByPort.get(port)?.length ?? 0) > 0;
+			return pidsFor(port).length > 0;
 		},
 	};
 }
@@ -400,29 +454,35 @@ export async function createPortOwnerSnapshotAsync(
 		);
 	};
 
-	// When the caller already listed containers and every asked port is owned
-	// by one, no host-listener reading is needed at all.
+	// When every asked port is already covered by `containers` or binds freely
+	// locally, skip `/proc/net/tcp{,6}` and `lsof` completely.
 	const neededPorts = uncoveredPorts(options.ports, options.containers);
+	const probedPorts =
+		options.listeners === undefined && options.linuxInodes === undefined
+			? busySubset(neededPorts, options.bindProbe)
+			: neededPorts;
 	const skipListeners =
 		options.listeners === undefined &&
-		options.containers !== undefined &&
-		neededPorts?.length === 0;
+		options.linuxInodes === undefined &&
+		probedPorts?.length === 0;
 
 	if (skipListeners) {
+		const containers = await readContainers();
 		return createPortOwnerSnapshot({
 			...options,
 			listeners: emptyListenerSnapshot(),
-			containers: options.containers,
+			containers,
 			cwds: options.cwds ?? new Map(),
 		});
 	}
 
-	// On Linux, read `/proc/net/tcp{,6}` unfiltered in parallel with containers
-	// and keep `/proc/<pid>/fd` scanning lazy so free ports pay 0 fd scans and
-	// 0 forks while any probed port stays accurate.
+	// On Linux, read `/proc/net/tcp{,6}` in parallel with containers and keep
+	// `/proc/<pid>/fd` scanning lazy so free ports pay 0 fd scans and 0 forks.
 	if (!options.listeners && process.platform === "linux") {
 		const [linuxInodes, containers] = await Promise.all([
-			readLinuxListeningInodesAsync(options.signal),
+			options.linuxInodes !== undefined
+				? Promise.resolve(options.linuxInodes)
+				: readLinuxListeningInodesAsync(options.signal, probedPorts),
 			readContainers(),
 		]);
 		if (linuxInodes !== undefined) {
@@ -435,13 +495,13 @@ export async function createPortOwnerSnapshotAsync(
 		// `/proc/net` unavailable: fall back to `lsof`.
 		const listeners = await readListenerSnapshotAsync(
 			options.signal,
-			neededPorts,
+			probedPorts,
 		);
 		return finishAsyncSnapshot(options, listeners, containers);
 	}
 
 	const [listeners, containers] = await Promise.all([
-		options.listeners ?? readListenerSnapshotAsync(options.signal, neededPorts),
+		options.listeners ?? readListenerSnapshotAsync(options.signal, probedPorts),
 		readContainers(),
 	]);
 
@@ -473,23 +533,6 @@ async function finishAsyncSnapshot(
 	return createPortOwnerSnapshot({ ...options, listeners, containers, cwds });
 }
 
-/** `listeners` narrowed to `port`, without the pids a caller asked to ignore. */
-function listenersOfPort(
-	listeners: ListenerSnapshot,
-	port: number,
-	ignorePids: number[] = [],
-): ListenerSnapshot {
-	const ignore = new Set(ignorePids);
-	const pids = (listeners.pidsByPort.get(port) ?? []).filter(
-		(pid) => !ignore.has(pid),
-	);
-
-	return {
-		pidsByPort: new Map(pids.length > 0 ? [[port, pids]] : []),
-		commandByPid: listeners.commandByPid,
-	};
-}
-
 /**
  * Who holds one port, read fresh: for the paths that change ownership on
  * purpose (a kill, a takeover) and must not act on an older reading. Asking
@@ -499,11 +542,9 @@ export async function getPortOwnerAsync(
 	port: number,
 	options: PortOwnerLookupOptions & { signal?: AbortSignal } = {},
 ): Promise<PortOwner | null> {
-	const listeners = await readListenerSnapshotAsync(options.signal, [port]);
 	const snapshot = await createPortOwnerSnapshotAsync({
 		...options,
 		ports: [port],
-		listeners: listenersOfPort(listeners, port, options.ignorePids),
 	});
 
 	return snapshot.owner(port);
@@ -514,12 +555,9 @@ export function getPortOwner(
 	port: number,
 	options: SyncPortOwnerOptions = {},
 ): PortOwner | null {
-	const listeners = readListenerSnapshot([port]);
-
 	return createPortOwnerSnapshot({
 		...options,
 		ports: [port],
-		listeners: listenersOfPort(listeners, port, options.ignorePids),
 	}).owner(port);
 }
 
@@ -595,15 +633,21 @@ export async function killPortOwnerFoundBy(
 		signalProcessTree(pid, "SIGTERM");
 	}
 
+	const isReleased = () => {
+		const probe = probePortBind(port);
+		if (probe === "free") return true;
+		if (probe === "in-use") return false;
+		return getListeningPids(port).length === 0;
+	};
 	const waitReleased = async (budgetMs: number): Promise<boolean> => {
-		if (budgetMs <= 0) return getListeningPids(port).length === 0;
+		if (budgetMs <= 0) return isReleased();
 		const deadline = Date.now() + budgetMs;
 		let delayMs = 10;
 		for (;;) {
 			const remaining = deadline - Date.now();
-			if (remaining <= 0) return getListeningPids(port).length === 0;
+			if (remaining <= 0) return isReleased();
 			await promiseTimeout(Math.min(delayMs, remaining));
-			if (getListeningPids(port).length === 0) return true;
+			if (isReleased()) return true;
 			delayMs = Math.min(100, delayMs * 2);
 		}
 	};

@@ -28,9 +28,11 @@ export function validateConfig(value: unknown): string[] {
 	} catch (error) {
 		return [getErrorMessage(error)];
 	}
-	errors = validateConfigShape(applied);
-	if (errors.length > 0) {
-		return errors;
+	if (applied !== value) {
+		errors = validateConfigShape(applied);
+		if (errors.length > 0) {
+			return errors;
+		}
 	}
 
 	// Required only once applied: an integration may contribute the services.

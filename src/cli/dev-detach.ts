@@ -1,5 +1,6 @@
 import {
 	closeSync,
+	type FSWatcher,
 	mkdirSync,
 	openSync,
 	readdirSync,
@@ -8,9 +9,11 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	watch,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { isBoolean, isRecord, isString, promiseTimeout } from "hanzio";
+import { isBoolean, isRecord, isString } from "hanzio";
+import { canonicalCheckoutPath } from "../core/canonical-path";
 import { arrayOf, object, optional } from "../core/json-shape";
 import { logsRoot } from "../core/process/app-logs";
 import { isProcessAlive } from "../core/process/lifecycle";
@@ -21,11 +24,12 @@ import {
 } from "../core/registry-file";
 import { formatDuration } from "../core/run-limits";
 import {
-	findRunsByRoot,
 	type RunAppEntry,
 	type RunEntry,
+	readAllRuns,
 } from "../core/run-registry";
 import { DETACHED_ENV, detachedRunEnv } from "../core/runtime-flags";
+import { getStateDir } from "../core/state-paths";
 import { DETACH_ONLY_FLAGS } from "./dev-flags";
 import type { DetachedResultJson } from "./json-documents";
 import * as log from "./log";
@@ -416,10 +420,56 @@ async function startAndWait(input: {
 
 	let exited: number | undefined;
 	let settledAt: number | undefined;
+	let wake: (() => void) | undefined;
+	let woken = false;
+	const triggerWake = () => {
+		const resolve = wake;
+		wake = undefined;
+		if (resolve) {
+			resolve();
+		} else {
+			woken = true;
+		}
+	};
 	void child.exited.then((code) => {
 		exited = code;
+		triggerWake();
 	});
 
+	let runsWatcher: FSWatcher | undefined;
+	try {
+		const stateDir = getStateDir();
+		mkdirSync(stateDir, { recursive: true });
+		runsWatcher = watch(stateDir, { persistent: false }, (_event, filename) => {
+			if (!filename || String(filename) === "runs.json") triggerWake();
+		});
+		runsWatcher.on("error", () => {
+			runsWatcher?.close();
+			runsWatcher = undefined;
+		});
+	} catch {
+		// Unwatchable filesystem: the poll timer below still wakes the loop.
+	}
+
+	const waitTick = (ms: number) => {
+		if (woken) {
+			woken = false;
+			return Promise.resolve();
+		}
+		return new Promise<void>((resolve) => {
+			const timer = setTimeout(() => {
+				if (wake === finish) wake = undefined;
+				resolve();
+			}, ms);
+			const finish = () => {
+				clearTimeout(timer);
+				resolve();
+			};
+			wake = finish;
+		});
+	};
+
+	const canonicalRoot = canonicalCheckoutPath(root);
 	const base = {
 		pid: child.pid,
 		log: logPath,
@@ -428,84 +478,94 @@ async function startAndWait(input: {
 	};
 
 	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		// First: an entry can outlive its run, released for the idle hold.
-		if (exited !== undefined) {
+	try {
+		for (;;) {
+			// First: an entry can outlive its run, released for the idle hold.
+			if (exited !== undefined) {
+				const report = readDetachedReport(root, child.pid);
+				// The cause last, where `| tail` reads it.
+				const failure = report?.failures.at(-1);
+				return {
+					...base,
+					outcome: exited === 0 ? "finished" : "failed",
+					hostsWarnings: report?.hostsWarnings ?? [],
+					linkWarnings: report?.linkWarnings ?? [],
+					failures: exited === 0 || !failure ? [] : [failure],
+					exited,
+					output: tail(logPath),
+				};
+			}
+
+			// The child is our own direct process and still running (`exited === undefined`),
+			// so matching its pid + live lifecycle avoids forking `ps` on every tick.
+			const run = (await readAllRuns().catch(() => [])).find(
+				(entry) =>
+					entry.pid === child.pid &&
+					entry.lifecycle.state === "live" &&
+					canonicalCheckoutPath(entry.root) === canonicalRoot,
+			);
 			const report = readDetachedReport(root, child.pid);
-			// The cause last, where `| tail` reads it.
-			const failure = report?.failures.at(-1);
-			return {
-				...base,
-				outcome: exited === 0 ? "finished" : "failed",
-				hostsWarnings: report?.hostsWarnings ?? [],
-				linkWarnings: report?.linkWarnings ?? [],
-				failures: exited === 0 || !failure ? [] : [failure],
-				exited,
-				output: tail(logPath),
-			};
+			const expectApps = report?.expectApps;
+			const settled =
+				run !== undefined &&
+				expectApps !== undefined &&
+				settledRun(run, expectApps);
+			const down = (run?.apps ?? []).filter(
+				(app) => app.status === "failed" || app.status === "stopped",
+			);
+
+			if (settled) settledAt ??= Date.now();
+			else settledAt = undefined;
+
+			const awaitingReport =
+				settledAt !== undefined &&
+				unreportedApps(down, report).length > 0 &&
+				Date.now() - settledAt < REPORT_GRACE_MS;
+			const apps = (run?.apps ?? []).map((app) => ({
+				name: app.name,
+				status: app.status,
+				url: app.openUrl ?? null,
+			}));
+
+			if (run && settled && !awaitingReport) {
+				return {
+					...base,
+					apps,
+					// What the run recorded: Tailscale mode records no limit, whatever
+					// `--keep` said.
+					idleLimitMs: run.idleLimitMs ?? null,
+					outcome: down.length === 0 ? "up" : "failed",
+					hostsWarnings: report?.hostsWarnings ?? [],
+					linkWarnings: report?.linkWarnings ?? [],
+					failures: down.map(
+						(app) =>
+							report?.failures.find((failure) => failure.step === app.name) ??
+							describeAppFailure({
+								app: app.name,
+								reason: app.status,
+								tail: [],
+								setupHints: report?.setupHints ?? [],
+							}),
+					),
+				};
+			}
+
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) {
+				return {
+					...base,
+					apps,
+					outcome: "timeout",
+					hostsWarnings: report?.hostsWarnings ?? [],
+					linkWarnings: report?.linkWarnings ?? [],
+					failures: [],
+				};
+			}
+
+			await waitTick(Math.min(POLL_MS, remaining));
 		}
-
-		const run = (await findRunsByRoot(root).catch(() => [])).find(
-			(entry) => entry.pid === child.pid,
-		);
-		const report = readDetachedReport(root, child.pid);
-		const expectApps = report?.expectApps;
-		const settled =
-			run !== undefined &&
-			expectApps !== undefined &&
-			settledRun(run, expectApps);
-		const down = (run?.apps ?? []).filter(
-			(app) => app.status === "failed" || app.status === "stopped",
-		);
-
-		if (settled) settledAt ??= Date.now();
-		else settledAt = undefined;
-
-		const awaitingReport =
-			settledAt !== undefined &&
-			unreportedApps(down, report).length > 0 &&
-			Date.now() - settledAt < REPORT_GRACE_MS;
-		const apps = (run?.apps ?? []).map((app) => ({
-			name: app.name,
-			status: app.status,
-			url: app.openUrl ?? null,
-		}));
-
-		if (run && settled && !awaitingReport) {
-			return {
-				...base,
-				apps,
-				// What the run recorded: Tailscale mode records no limit, whatever
-				// `--keep` said.
-				idleLimitMs: run.idleLimitMs ?? null,
-				outcome: down.length === 0 ? "up" : "failed",
-				hostsWarnings: report?.hostsWarnings ?? [],
-				linkWarnings: report?.linkWarnings ?? [],
-				failures: down.map(
-					(app) =>
-						report?.failures.find((failure) => failure.step === app.name) ??
-						describeAppFailure({
-							app: app.name,
-							reason: app.status,
-							tail: [],
-							setupHints: report?.setupHints ?? [],
-						}),
-				),
-			};
-		}
-
-		if (Date.now() >= deadline) {
-			return {
-				...base,
-				apps,
-				outcome: "timeout",
-				hostsWarnings: report?.hostsWarnings ?? [],
-				linkWarnings: report?.linkWarnings ?? [],
-				failures: [],
-			};
-		}
-
-		await promiseTimeout(POLL_MS);
+	} finally {
+		runsWatcher?.close();
 	}
 }
 

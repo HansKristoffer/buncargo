@@ -87,8 +87,11 @@ interface TaskRuntime {
 	readonly task: TaskConfig;
 	readonly cwd: string;
 	running: boolean;
+	cancelled: boolean;
 	pendingReason?: string;
+	runController?: AbortController;
 	activeChild?: ChildProcess;
+	activeTermination?: Promise<unknown>;
 	activePromise?: Promise<void>;
 	/** Prevents `arm()` from double-triggering tasks already fired by wave readiness. */
 	triggeredInitialReady: boolean;
@@ -118,6 +121,7 @@ export class ReactiveTaskRunner {
 				task,
 				cwd,
 				running: false,
+				cancelled: false,
 				triggeredInitialReady: false,
 			});
 
@@ -215,19 +219,38 @@ export class ReactiveTaskRunner {
 		return true;
 	}
 
+	/**
+	 * Cancel one running task (and drop any queued follow-up run) without
+	 * stopping the rest of the session. Returns `true` when an active run was
+	 * cancelled.
+	 */
+	async cancel(name: string): Promise<boolean> {
+		const entry = this.entries.get(name);
+		if (!entry || !entry.running || !entry.runController) return false;
+
+		entry.pendingReason = undefined;
+		entry.cancelled = true;
+		entry.runController.abort();
+		await Promise.allSettled([
+			...(entry.activeTermination ? [entry.activeTermination] : []),
+			...(entry.activePromise ? [entry.activePromise] : []),
+		]);
+		return true;
+	}
+
 	/** Stop watchers, cancel pending env/spawns, terminate active children, and await settlement. */
 	async stop(): Promise<void> {
+		for (const entry of this.entries.values()) {
+			entry.pendingReason = undefined;
+		}
+		// Aborting triggers each active child's `onAbort` listener once, avoiding
+		// a duplicate SIGTERM that races with graceful shutdown.
 		this.stopController.abort();
 
-		const children = [...this.entries.values()].flatMap((entry) => {
-			entry.pendingReason = undefined;
-			return entry.activeChild ? [entry.activeChild] : [];
-		});
-		await Promise.allSettled(
-			children.map((child) =>
-				terminateOwnedProcess(child, this.options.shutdownGraceMs),
-			),
+		const terminations = [...this.entries.values()].flatMap((entry) =>
+			entry.activeTermination ? [entry.activeTermination] : [],
 		);
+		await Promise.allSettled(terminations);
 
 		const inflight = [...this.entries.values()].flatMap((entry) =>
 			entry.activePromise ? [entry.activePromise] : [],
@@ -260,6 +283,10 @@ export class ReactiveTaskRunner {
 			nextReason = undefined;
 			await this.executeOnce(entry, reason);
 
+			if (entry.cancelled) {
+				entry.pendingReason = undefined;
+				break;
+			}
 			if (entry.pendingReason !== undefined && !this.signal.aborted) {
 				nextReason = entry.pendingReason;
 				entry.pendingReason = undefined;
@@ -270,127 +297,192 @@ export class ReactiveTaskRunner {
 	private async executeOnce(entry: TaskRuntime, reason: string): Promise<void> {
 		const { name, task, cwd } = entry;
 		const { output, unsetEnv, shutdownGraceMs } = this.options;
-		const signal = this.signal;
+		const runController = new AbortController();
+		entry.runController = runController;
+		entry.cancelled = false;
+		const signal = anySignal(this.signal, runController.signal);
 		const elapsed = startTimer();
 
-		this.setState(name, "starting", "running");
+		try {
+			this.setState(name, "starting", "running");
 
-		const screen = output.terminals === "pty" ? output.screen(name) : undefined;
-		if (screen) {
-			// AppScreen feeds committed rows to Overview and `<task>.log`; stream
-			// mode has no screen and uses `announce` instead to avoid duplicates.
-			screen.write(pc.dim(`── running ${name} (${reason}) ──\r\n`));
-		} else {
-			output.announce(name, `running (${reason})`, {
-				raw: formatStep(`⚙️  Running ${name} (${reason})`),
-			});
-		}
-
-		const reportError = async (message: string, detail: string) => {
+			const screen =
+				output.terminals === "pty" ? output.screen(name) : undefined;
 			if (screen) {
-				screen.write(`${pc.red(message)}\r\n`);
-				await screen.flush();
+				// AppScreen feeds committed rows to Overview and `<task>.log`; stream
+				// mode has no screen and uses `announce` instead to avoid duplicates.
+				screen.write(pc.dim(`── running ${name} (${reason}) ──\r\n`));
 			} else {
-				output.event(name, message, "error");
+				output.announce(name, `running (${reason})`, {
+					raw: formatStep(`⚙️  Running ${name} (${reason})`),
+				});
+			}
+
+			const reportCancelled = async () => {
+				if (this.signal.aborted) return;
+				if (screen) {
+					screen.write(pc.dim(`── stopped ${name} ──\r\n`));
+					await screen.flush();
+				}
+				this.setState(name, "stopped", "stopped");
+			};
+
+			const reportError = async (message: string, detail: string) => {
+				if (screen) {
+					screen.write(`${pc.red(message)}\r\n`);
+					await screen.flush();
+				} else {
+					output.event(name, message, "error");
+				}
+				this.setState(name, "failed", detail);
+			};
+
+			let envVars: Record<string, string>;
+			try {
+				envVars = await this.options.buildEnv(task, signal);
+			} catch (error) {
+				if (entry.cancelled) {
+					await reportCancelled();
+					return;
+				}
+				if (this.signal.aborted) return;
+				await reportError(getErrorMessage(error), "env error");
+				return;
+			}
+			if (entry.cancelled) {
+				await reportCancelled();
+				return;
+			}
+			if (this.signal.aborted) return;
+
+			let child: ChildProcess;
+			try {
+				child = spawnAppCommand(task.command, {
+					cwd,
+					env: childProcessEnv({ ...process.env, ...envVars }, unsetEnv),
+					detached: true,
+					stdio: ["ignore", "pipe", "pipe"],
+				});
+			} catch (error) {
+				if (entry.cancelled) {
+					await reportCancelled();
+					return;
+				}
+				if (this.signal.aborted) return;
+				await reportError(getErrorMessage(error), "spawn error");
+				return;
+			}
+
+			entry.activeChild = child;
+
+			const pipeToScreen = (stream: NodeJS.ReadableStream | null) => {
+				if (!stream || !screen) return;
+				const decoder = new TextDecoder("utf-8");
+				let pendingCr = false;
+				const writeChunk = (text: string) => {
+					if (!text) return;
+					const combined = pendingCr ? `\r${text}` : text;
+					pendingCr = combined.endsWith("\r");
+					const body = pendingCr ? combined.slice(0, -1) : combined;
+					if (body) {
+						// Normalize bare LF to CRLF for xterm.js without doubling existing CRLF.
+						screen.write(body.replace(/\r?\n/g, "\r\n"));
+					}
+				};
+				stream.on("data", (chunk: Buffer | string) => {
+					const text =
+						typeof chunk === "string"
+							? chunk
+							: decoder.decode(chunk, { stream: true });
+					writeChunk(text);
+				});
+				stream.once("end", () => {
+					writeChunk(decoder.decode());
+					if (pendingCr) {
+						pendingCr = false;
+						screen.write("\r");
+					}
+				});
+			};
+
+			if (screen) {
+				pipeToScreen(child.stdout);
+				pipeToScreen(child.stderr);
+			} else {
+				output.pipe(name, child.stdout);
+				output.pipe(name, child.stderr);
+			}
+
+			const onAbort = () => {
+				const termination = terminateOwnedProcess(child, shutdownGraceMs);
+				entry.activeTermination = termination;
+				registerAbortCleanup(signal, termination);
+			};
+			signal.addEventListener("abort", onAbort, { once: true });
+
+			let exitCode: number | null = null;
+			let exitSignal: NodeJS.Signals | null = null;
+			let spawnError: Error | undefined;
+			try {
+				await new Promise<void>((resolveExit) => {
+					child.once("error", (error) => {
+						spawnError = error;
+						resolveExit();
+					});
+					child.once("close", (code, sig) => {
+						exitCode = code;
+						exitSignal = sig;
+						resolveExit();
+					});
+				});
+			} finally {
+				signal.removeEventListener("abort", onAbort);
+				if (entry.activeChild === child) {
+					entry.activeChild = undefined;
+					entry.activeTermination = undefined;
+				}
+			}
+
+			if (screen) await screen.flush();
+			if (entry.cancelled) {
+				await reportCancelled();
+				return;
+			}
+			if (this.signal.aborted) return;
+
+			const durationMs = Math.round(elapsed());
+			if (spawnError) {
+				await reportError(spawnError.message, "error");
+				return;
+			}
+
+			if (exitCode === 0) {
+				this.setState(name, "ready", "ok");
+				if (screen) {
+					screen.write(pc.green(`✓ ${name} finished (${durationMs}ms)\r\n`));
+					await screen.flush();
+				} else {
+					output.announce(name, `finished (${durationMs}ms)`, {
+						raw: formatDone(`${name} finished (${durationMs}ms)`),
+					});
+				}
+				return;
+			}
+
+			const detail = exitSignal
+				? `signal ${exitSignal}`
+				: `exit ${exitCode ?? 1}`;
+			if (screen) {
+				screen.write(
+					pc.red(`✗ ${name} failed (${detail}, ${durationMs}ms)\r\n`),
+				);
+				await screen.flush();
 			}
 			this.setState(name, "failed", detail);
-		};
-
-		let envVars: Record<string, string>;
-		try {
-			envVars = await this.options.buildEnv(task, signal);
-		} catch (error) {
-			if (signal.aborted) return;
-			await reportError(getErrorMessage(error), "env error");
-			return;
-		}
-		if (signal.aborted) return;
-
-		let child: ChildProcess;
-		try {
-			child = spawnAppCommand(task.command, {
-				cwd,
-				env: childProcessEnv({ ...process.env, ...envVars }, unsetEnv),
-				detached: true,
-				stdio: ["ignore", "pipe", "pipe"],
-			});
-		} catch (error) {
-			if (signal.aborted) return;
-			await reportError(getErrorMessage(error), "spawn error");
-			return;
-		}
-
-		entry.activeChild = child;
-
-		const pipeToScreen = (stream: NodeJS.ReadableStream | null) => {
-			if (!stream || !screen) return;
-			stream.on("data", (chunk: Buffer | string) => {
-				const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-				// Normalize bare LF to CRLF for xterm.js without doubling existing CRLF.
-				screen.write(text.replace(/\r?\n/g, "\r\n"));
-			});
-		};
-
-		if (screen) {
-			pipeToScreen(child.stdout);
-			pipeToScreen(child.stderr);
-		} else {
-			output.pipe(name, child.stdout);
-			output.pipe(name, child.stderr);
-		}
-
-		const onAbort = () =>
-			registerAbortCleanup(
-				signal,
-				terminateOwnedProcess(child, shutdownGraceMs),
-			);
-		signal.addEventListener("abort", onAbort, { once: true });
-
-		let exitCode: number | null = null;
-		let exitSignal: NodeJS.Signals | null = null;
-		let spawnError: Error | undefined;
-		try {
-			await new Promise<void>((resolveExit) => {
-				child.once("error", (error) => {
-					spawnError = error;
-					resolveExit();
-				});
-				child.once("close", (code, sig) => {
-					exitCode = code;
-					exitSignal = sig;
-					resolveExit();
-				});
-			});
 		} finally {
-			signal.removeEventListener("abort", onAbort);
-			if (entry.activeChild === child) entry.activeChild = undefined;
-		}
-
-		if (screen) await screen.flush();
-		if (signal.aborted) return;
-
-		const durationMs = Math.round(elapsed());
-		if (spawnError) {
-			await reportError(spawnError.message, "error");
-			return;
-		}
-
-		if (exitCode === 0) {
-			this.setState(name, "ready", "ok");
-			if (screen) {
-				screen.write(pc.green(`✓ ${name} finished (${durationMs}ms)\r\n`));
-				await screen.flush();
-			} else {
-				output.announce(name, `finished (${durationMs}ms)`, {
-					raw: formatDone(`${name} finished (${durationMs}ms)`),
-				});
+			if (entry.runController === runController) {
+				entry.runController = undefined;
 			}
-			return;
 		}
-
-		const detail = exitSignal
-			? `signal ${exitSignal}`
-			: `exit ${exitCode ?? 1}`;
-		this.setState(name, "failed", detail);
 	}
 }

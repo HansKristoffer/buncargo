@@ -1,5 +1,8 @@
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
-import { getPortOwnerAsync, killPortOwner } from "../core/process";
+import {
+	createPortOwnerSnapshotAsync,
+	killPortOwnerFoundBy,
+} from "../core/process";
 import { stopWorker } from "../core/process/worker-ownership";
 import { askConfirm } from "../core/prompt";
 import { joinColoredNames } from "../core/style";
@@ -85,42 +88,75 @@ export async function stopRunningApps(
 		apps?: Record<string, ResolvedApp>;
 	} = {},
 ): Promise<string[]> {
-	const stopped: string[] = [];
+	const workerNames: string[] = [];
+	const portTargets: { name: string; port: number; stopGraceMs?: number }[] =
+		[];
 
 	for (const name of names) {
 		const app = options.apps?.[name];
-
 		// A worker has no port: it is stopped through the worker registry, not by its port.
 		if (app && app.port === undefined && options.root) {
-			if (await stopWorker(options.root, name)) stopped.push(name);
+			workerNames.push(name);
 			continue;
 		}
-
 		const port = ports[name];
-		if (port === undefined) continue;
+		if (port !== undefined) {
+			portTargets.push({ name, port, stopGraceMs: app?.stopGraceMs });
+		}
+	}
 
-		const owner = await getPortOwnerAsync(port, options);
-		// Already gone: the other run exited between classification and here.
-		if (!owner) continue;
-		if (owner.kind === "container") {
+	// Take one port-owner snapshot across every port target, then stop them
+	// concurrently so multi-app takeover does not pay N serial grace waits.
+	const snapshot =
+		portTargets.length > 0
+			? await createPortOwnerSnapshotAsync({
+					runtime: options.runtime,
+					skipContainers: options.skipContainers,
+					ports: portTargets.map((t) => t.port),
+					includeCwd: false,
+				})
+			: undefined;
+
+	for (const { name, port } of portTargets) {
+		const owner = snapshot?.owner(port);
+		if (owner?.kind === "container") {
 			throw new Error(
 				`App "${name}" on port ${port} is served by container ${owner.container.name}, not by a dev server this run can take over.`,
 			);
 		}
-
-		const released = await killPortOwner(port, {
-			runtime: options.runtime,
-			skipContainers: options.skipContainers,
-			verbose: false,
-			timeout: app?.stopGraceMs,
-		});
-		if (!released) {
-			throw new Error(
-				`Could not free port ${port} for "${name}". Stop the process holding it and try again.`,
-			);
-		}
-		stopped.push(name);
 	}
+
+	const root = options.root;
+	const [workerResults, portResults] = await Promise.all([
+		Promise.all(
+			workerNames.map(async (name) =>
+				root && (await stopWorker(root, name)) ? name : undefined,
+			),
+		),
+		Promise.all(
+			portTargets.map(async ({ name, port, stopGraceMs }) => {
+				const owner = snapshot?.owner(port) ?? null;
+				// Already gone: the other run exited between classification and here.
+				if (!owner) return undefined;
+				const released = await killPortOwnerFoundBy(async () => owner, port, {
+					runtime: options.runtime,
+					skipContainers: options.skipContainers,
+					verbose: false,
+					timeout: stopGraceMs,
+				});
+				if (!released) {
+					throw new Error(
+						`Could not free port ${port} for "${name}". Stop the process holding it and try again.`,
+					);
+				}
+				return name;
+			}),
+		),
+	]);
+
+	const stopped = [...workerResults, ...portResults].filter(
+		(name): name is string => name !== undefined,
+	);
 
 	if (stopped.length > 0) {
 		log.info(`🛑 Stopped: ${joinColoredNames(stopped)}`);

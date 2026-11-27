@@ -5,6 +5,33 @@ import { resolvePrismaConfig } from "../../prisma/config";
 import type { AnyDevConfig } from "../../types";
 import type { ValidationContext } from "./context";
 
+/** Validate app names referenced by one profile's `apps` and `egressGuard.apps`. */
+export function validateProfileAppRefs(
+	name: string,
+	profile: NonNullable<AnyDevConfig["profiles"]>[string],
+	apps: AnyDevConfig["apps"],
+	errors: string[],
+): void {
+	for (const appName of profile.apps ?? []) {
+		if (!apps?.[appName]) {
+			errors.push(`profiles.${name} includes unknown app "${appName}"`);
+		}
+	}
+	if (
+		profile.egressGuard &&
+		typeof profile.egressGuard === "object" &&
+		profile.egressGuard.apps
+	) {
+		for (const appName of profile.egressGuard.apps) {
+			if (!apps?.[appName]) {
+				errors.push(
+					`profiles.${name}.egressGuard.apps includes unknown app "${appName}"`,
+				);
+			}
+		}
+	}
+}
+
 export function validateReferences(
 	config: AnyDevConfig,
 	context: ValidationContext,
@@ -224,24 +251,7 @@ export function validateReferences(
 		// Profiles that override `integrations` change which integration-added apps
 		// exist; their app lists are validated after those integrations are applied.
 		if (profile.integrations === undefined) {
-			for (const appName of profile.apps ?? []) {
-				if (!config.apps?.[appName]) {
-					errors.push(`profiles.${name} includes unknown app "${appName}"`);
-				}
-			}
-			if (
-				profile.egressGuard &&
-				typeof profile.egressGuard === "object" &&
-				profile.egressGuard.apps
-			) {
-				for (const appName of profile.egressGuard.apps) {
-					if (!config.apps?.[appName]) {
-						errors.push(
-							`profiles.${name}.egressGuard.apps includes unknown app "${appName}"`,
-						);
-					}
-				}
-			}
+			validateProfileAppRefs(name, profile, config.apps, errors);
 		}
 		for (const linkName of Object.keys(profile.links ?? {})) {
 			if (!config.links?.[linkName]) {

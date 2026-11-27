@@ -1,5 +1,5 @@
 import { abortableSleep } from "../deadline";
-import { isTcpPortOpen } from "../network";
+import { isTcpPortOpen } from "../tcp-probe";
 import { request } from "./client";
 import { type Frpc, freePort, startFrpc } from "./frpc";
 import {
@@ -27,20 +27,34 @@ export function createVisitors() {
 	const entries = new Map<string, Visitor>();
 	const pending = new Map<string, Promise<TCPConnection>>();
 
+	let timer: ReturnType<typeof setInterval> | undefined;
+	const stopTimerIfEmpty = () => {
+		if (entries.size === 0 && timer) {
+			clearInterval(timer);
+			timer = undefined;
+		}
+	};
+	const ensureTimer = () => {
+		if (timer) return;
+		// Independently enforce leases even when network renewal or directory polling stalls.
+		// Runs only while at least one visitor is active so idle daemons wake zero timers.
+		timer = setInterval(() => {
+			for (const [id, entry] of entries) {
+				if (performance.now() >= entry.deadline) {
+					void disconnect(id);
+				}
+			}
+			stopTimerIfEmpty();
+		}, 250);
+		timer.unref();
+	};
+
 	const disconnect = async (id: string) => {
 		const entry = entries.get(id);
 		entries.delete(id);
+		stopTimerIfEmpty();
 		await entry?.client.close();
 	};
-	// Independently enforce leases even when network renewal or directory polling stalls.
-	const timer = setInterval(() => {
-		for (const [id, entry] of entries) {
-			if (performance.now() >= entry.deadline) {
-				void disconnect(id);
-			}
-		}
-	}, 250);
-	timer.unref();
 
 	const ensure = async (
 		receiver: Receiver,
@@ -125,6 +139,7 @@ export function createVisitors() {
 				deadline: started + Math.min(LEASE_MS, lease.remainingMs),
 				connection,
 			});
+			ensureTimer();
 			return connection;
 		}
 		throw new Error(
@@ -169,7 +184,10 @@ export function createVisitors() {
 			);
 		},
 		async close() {
-			clearInterval(timer);
+			if (timer) {
+				clearInterval(timer);
+				timer = undefined;
+			}
 			await Promise.allSettled(pending.values());
 			await Promise.all([...entries.keys()].map(disconnect));
 		},

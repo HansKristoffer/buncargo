@@ -65,6 +65,7 @@ it("answers a restart request with what the supervisor made of it", async () => 
 	];
 	output.controls = {
 		restart: () => (outcomes.shift() ?? (async () => true))(),
+		stop: async () => false,
 	};
 	expect(await restartReply(output, "api", none)).toEqual({ status: "began" });
 	expect(await restartReply(output, "api", none)).toMatchObject({
@@ -81,7 +82,10 @@ it("answers a restart request with what the supervisor made of it", async () => 
 
 it("answers a restart request for an app the run left out by starting it", async () => {
 	const output = new RunOutput({ terminals: "pipe" });
-	output.controls = { restart: async () => true };
+	output.controls = {
+		restart: async () => true,
+		stop: async () => false,
+	};
 	const leftOut = new Set(["mobile"]);
 
 	// Not until the run's own apps are up and it binds the start: worth
@@ -126,4 +130,93 @@ it("answers a restart request for an app the run left out by starting it", async
 	expect(await restartReply(output, "web", leftOut)).toMatchObject({
 		status: "not-ours",
 	});
+});
+
+it("keeps left-out apps above tasks, wires their actions, and graduates them from pendingLeftOut", async () => {
+	const root = mkdtempSync(join(tmpdir(), "buncargo-dev-output-"));
+	const interactive = spyOn(prompt, "isInteractive").mockReturnValue(true);
+	let capturedTuiOptions:
+		| {
+				apps: readonly string[];
+				actions?: readonly {
+					app: string;
+					key: string;
+					label: string;
+					open: string;
+				}[];
+		  }
+		| undefined;
+	const start = spyOn(RunTui.prototype, "start").mockImplementation(function (
+		this: RunTui,
+	) {
+		capturedTuiOptions = (
+			this as unknown as { options: typeof capturedTuiOptions }
+		).options;
+	});
+	const stop = spyOn(RunTui.prototype, "stop").mockImplementation(() => {});
+	const allApps = resolveApps({
+		api: { port: 3000, devCommand: "bun run api" },
+		shop: {
+			port: 3001,
+			devCommand: "bun run shop",
+			actions: [{ key: "p", label: "Preview", open: "previewUrl" }],
+		},
+	});
+	try {
+		const view = await openDevOutput(
+			{
+				root,
+				sessionId: "dev-output-late-test",
+				urls: {},
+				loopbackUrls: {},
+				publicUrls: {},
+			},
+			{ api: allApps.api },
+			{
+				tui: "on",
+				leftOut: ["shop"],
+				tasks: ["codegen"],
+				allApps,
+			},
+		);
+		view.start();
+		expect(capturedTuiOptions?.apps).toEqual(["api", "shop", "codegen"]);
+		expect(capturedTuiOptions?.actions).toEqual([
+			{ app: "shop", key: "p", label: "Preview", open: "previewUrl" },
+		]);
+
+		const startRestartCalls: string[] = [];
+		view.output.controls = {
+			restart: async (name) => {
+				startRestartCalls.push(name);
+				return true;
+			},
+			stop: async () => false,
+		};
+		// While starting for the first time, it is still pending left-out; once
+		// it reaches `ready`, it graduates so later restarts during `starting`
+		// route to `controls.restart` instead of "already starting".
+		const { requestRestart, awaitRestartReply } =
+			await import("./restart-requests");
+		view.output.state("shop", { state: "starting" });
+		const firstId = requestRestart(root, "dev-output-late-test", "shop");
+		expect(
+			await awaitRestartReply(root, "dev-output-late-test", firstId, 2_000),
+		).toEqual({ status: "started", apps: [] });
+
+		view.output.state("shop", { state: "ready" });
+		view.output.state("shop", { state: "starting" });
+		const secondId = requestRestart(root, "dev-output-late-test", "shop");
+		expect(
+			await awaitRestartReply(root, "dev-output-late-test", secondId, 2_000),
+		).toEqual({ status: "began" });
+		expect(startRestartCalls).toEqual(["shop"]);
+
+		await view.stop();
+	} finally {
+		interactive.mockRestore();
+		start.mockRestore();
+		stop.mockRestore();
+		rmSync(root, { recursive: true, force: true });
+	}
 });

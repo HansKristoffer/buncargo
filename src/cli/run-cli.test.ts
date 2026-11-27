@@ -298,6 +298,7 @@ function registerStubInternals(
 		composeModel: () => ({ services: {} }),
 		planPortOffset: () => ({ offset: 0, provenance: "hash" }),
 		withProfile: () => env,
+		withOnlyApps: () => env,
 	});
 }
 

@@ -54,6 +54,8 @@ export interface EnvironmentInternals extends AppPipeline {
 	readonly activeProfile?: string;
 	/** Rebuild this environment with a named profile's `env`/`secrets` applied. */
 	withProfile(profile: string): AnyDevEnvironment;
+	/** Rebuild this environment with an explicit app selection overriding profile `activeApps`. */
+	withOnlyApps(onlyApps: readonly string[]): AnyDevEnvironment;
 	/** `setupChecks` from config and its integrations, run by `buncargo dev` before it starts anything. */
 	readonly setupChecks?: readonly SetupCheck[];
 	/** `preflight` from config and its integrations, run by `buncargo dev` with the terminal. */

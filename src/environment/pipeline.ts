@@ -4,19 +4,21 @@ import type { SkippedLeaseApp } from "../core/app-leases";
 import {
 	allowedHostsOf,
 	type EgressGuardProxy,
+	formatBlockedEgress,
 	guardsApp,
 	guardsTask,
 	startEgressGuardProxy,
 } from "../core/egress-guard";
 import { watchLinks } from "../core/link-watch";
 import { appsToRestartForLinks, hasReactiveLinks } from "../core/links";
-import { selectReactiveTasks } from "../core/process";
+import type { PortOwnerSnapshot } from "../core/process";
 import { buildApps } from "../core/process/build";
 import type {
 	SessionControls,
 	StartDevServersOptions,
 } from "../core/process/dev-servers";
 import type { CapturedValue } from "../core/process/output-capture";
+import { selectReactiveTasks } from "../core/process/reactive-tasks";
 import { loadAppSecrets } from "../core/secrets/index";
 import { formatDone, formatWarn } from "../core/style";
 import type {
@@ -127,7 +129,11 @@ type SpawnOptions = Omit<
  */
 export type LateStart = (
 	apps: Record<string, ResolvedApp>,
-	options: { leasePolicy: LeasePolicy; signal?: AbortSignal },
+	options: {
+		leasePolicy: LeasePolicy;
+		signal?: AbortSignal;
+		initialPortOwners?: PortOwnerSnapshot;
+	},
 ) => Promise<
 	| { status: "started"; apps: readonly string[] }
 	| { status: "refused"; skipped: SkippedLeaseApp }
@@ -312,12 +318,7 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 			startedProxy = await startEgressGuardProxy({
 				allow: guard.allow,
 				mode: guard.mode,
-				onBlocked: (event) => {
-					const action = event.mode === "block" ? "Blocked" : "Allowed (warn)";
-					announceEgress(
-						`${action} outbound ${event.method} to ${event.host}:${event.port} (add "${event.host}" to egressGuard.allow to permit)`,
-					);
-				},
+				onBlocked: (event) => announceEgress(formatBlockedEgress(event)),
 			});
 			await deps.setEgressProxy(startedProxy);
 		};
@@ -360,7 +361,9 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 
 				try {
 					await ensureEgressProxy(Object.keys(late.apps), []);
-					const started = await controls.start(late.apps);
+					const started = await controls.start(late.apps, {
+						initialPortOwners: options.initialPortOwners,
+					});
 					// The link watcher, if startup armed it, restarts the apps it finds here.
 					Object.assign(apps, late.apps);
 					return { status: "started", apps: started };
@@ -547,10 +550,14 @@ export function createAppPipeline(deps: AppPipelineDeps): AppPipeline {
 				signal,
 				onWait: (ms) => onPhase?.("secrets", ms),
 			});
-			const buildEnv = mapValues(apps, (_app, name) => ({
-				...secrets[name],
-				...deps.appEnv(name, true),
-			}));
+			const buildEnv = mapValues(apps, (_app, name) => {
+				const env = {
+					...secrets[name],
+					...deps.appEnv(name, true),
+				};
+				learnEgressHosts(name, env);
+				return env;
+			});
 			await buildApps(apps, deps.root, buildEnv, {
 				verbose,
 				signal,

@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { basename } from "node:path";
 import { isRecord, typedSwitch } from "hanzio";
 import { buncargoCli } from "./cli-entry";
@@ -177,7 +178,10 @@ export async function runLivenessAsync(
 	runs: readonly RunEntry[],
 	signal?: AbortSignal,
 ): Promise<(run: RunEntry) => boolean> {
-	const matches = await processIdentityMatcherAsync(runs, signal);
+	// Released entries are never live, so skip kill(0) and ps lookups for them.
+	const checkable = runs.filter((run) => run.lifecycle.state !== "released");
+	if (checkable.length === 0) return () => false;
+	const matches = await processIdentityMatcherAsync(checkable, signal);
 	return (run) =>
 		runPhase(run, matches(run.pid, run.processIdentity)) === "live";
 }
@@ -898,8 +902,10 @@ export async function patchRunBatch(
 		const index = runs.findIndex((entry) => entry.sessionId === sessionId);
 		const current = runs[index];
 		if (!current) return undefined;
+		const patched = patches.reduce(applyRunPatch, current);
+		if (JSON.stringify(patched) === JSON.stringify(current)) return undefined;
 		const next = [...runs];
-		next[index] = patches.reduce(applyRunPatch, current);
+		next[index] = { ...patched, updatedAt: new Date().toISOString() };
 		return next;
 	});
 }
@@ -918,7 +924,6 @@ function applyRunPatch(current: RunEntry, patch: RunPatch): RunEntry {
 			: {};
 	return {
 		...base,
-		updatedAt: new Date().toISOString(),
 		...(patch.hosts !== undefined ? { hosts: patch.hosts } : {}),
 		...(patch.primaryApp !== undefined ? { primaryApp: patch.primaryApp } : {}),
 		...(patch.captures
@@ -953,9 +958,34 @@ export function groupRunsByProject(runs: RunEntry[]): Map<string, RunEntry[]> {
 	return groups;
 }
 
+function canonicalRoot(root: string): string {
+	try {
+		return realpathSync(root);
+	} catch {
+		return root;
+	}
+}
+
+function matchesRoot(
+	runRoot: string,
+	root: string,
+	canonical: string,
+): boolean {
+	return (
+		runRoot === root ||
+		runRoot === canonical ||
+		canonicalRoot(runRoot) === canonical
+	);
+}
+
 /** Every independent live session using this checkout. */
 export async function findRunsByRoot(root: string): Promise<RunEntry[]> {
-	return (await readLiveRuns()).filter((run) => run.root === root);
+	const canonical = canonicalRoot(root);
+	const candidates = (await loadRuns({ strict: true })).filter((run) =>
+		matchesRoot(run.root, root, canonical),
+	);
+	if (candidates.length === 0) return [];
+	return candidates.filter(await runLivenessAsync(candidates));
 }
 
 /**
@@ -966,7 +996,8 @@ export async function findRunsByRoot(root: string): Promise<RunEntry[]> {
 export async function findCheckoutRuns(
 	root: string,
 ): Promise<{ live: RunEntry[]; held: RunEntry[] }> {
-	return readCheckoutRuns((run) => run.root === root);
+	const canonical = canonicalRoot(root);
+	return readCheckoutRuns((run) => matchesRoot(run.root, root, canonical));
 }
 
 /**

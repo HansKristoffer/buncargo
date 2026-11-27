@@ -5,6 +5,7 @@ import type { ResolvedLinkConfig } from "../types";
 import {
 	applyProfileLinkOverrides,
 	linkedPortsOf,
+	linkReadyFingerprint,
 	linkStartupIssues,
 	pickExportedEnv,
 	readLinkPins,
@@ -296,6 +297,13 @@ describe("resolveLinks", () => {
 		expect(result.inspections[0]?.status).toBe("missing-endpoints");
 		expect(result.inspections[0]?.missingApps).toEqual(["core", "emails"]);
 		expect(result.inspections[0]?.missingServices).toEqual(["postgres"]);
+		expect(
+			linkReadyFingerprint(result.links.backend, {
+				project: "kanpla-backend",
+				required: true,
+				services: ["postgres"],
+			}),
+		).toBe("incomplete");
 		const issues = linkStartupIssues(result.inspections);
 		expect(issues.errors[0]).toContain("apps: core, emails");
 		expect(issues.errors[0]).toContain("services: postgres");

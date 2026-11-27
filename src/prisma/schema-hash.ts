@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { type Dirent, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isRecord } from "hanzio";
 import {
@@ -18,14 +18,39 @@ import { projectStateFilePath } from "../core/state-paths";
 
 const FILENAME = "prisma-generate.json";
 
+const SKIP_DIRS = new Set(["node_modules", ".git"]);
+
+function collectPrismaFiles(
+	root: string,
+	prefix = "",
+	out: string[] = [],
+): string[] {
+	const dir = prefix ? join(root, prefix) : root;
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return out;
+	}
+	for (const entry of entries) {
+		if (entry.isDirectory()) {
+			if (SKIP_DIRS.has(entry.name)) continue;
+			collectPrismaFiles(
+				root,
+				prefix ? `${prefix}/${entry.name}` : entry.name,
+				out,
+			);
+		} else if (entry.isFile() && entry.name.endsWith(".prisma")) {
+			out.push(prefix ? `${prefix}/${entry.name}` : entry.name);
+		}
+	}
+	return out;
+}
+
 /** Hash of every `.prisma` file under the Prisma directory, in path order. */
 export function prismaSchemaHash(dir: string): string | undefined {
 	if (!existsSync(dir)) return undefined;
-	const files = [
-		...new Bun.Glob("**/*.prisma").scanSync({ cwd: dir, onlyFiles: true }),
-	]
-		.filter((path) => !path.includes("node_modules"))
-		.sort();
+	const files = collectPrismaFiles(dir).sort();
 	if (files.length === 0) return undefined;
 
 	const hash = createHash("sha256");

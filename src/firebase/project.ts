@@ -30,11 +30,15 @@ function record(value: unknown): Record<string, unknown> {
 	return isRecord(value) ? value : {};
 }
 
+function parseJsonc(text: string): unknown {
+	return typeof Bun !== "undefined" ? Bun.JSONC.parse(text) : JSON.parse(text);
+}
+
 function readDefaultProject(dirs: readonly string[]): string | undefined {
 	for (const dir of dirs) {
 		try {
 			const rc = record(
-				Bun.JSONC.parse(readFileSync(join(dir, ".firebaserc"), "utf8")),
+				parseJsonc(readFileSync(join(dir, ".firebaserc"), "utf8")),
 			);
 			const project = record(rc.projects).default;
 			if (typeof project === "string" && project) return project;
@@ -68,7 +72,7 @@ export function readFirebaseProject(
 		return {
 			path,
 			exists: true,
-			raw: record(Bun.JSONC.parse(readFileSync(path, "utf8"))),
+			raw: record(parseJsonc(readFileSync(path, "utf8"))),
 			defaultProject,
 		};
 	} catch (error) {

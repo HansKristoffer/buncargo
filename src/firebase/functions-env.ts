@@ -6,7 +6,7 @@
  * pre-existing user `.env` backup on disk so it survives a crash or SIGKILL.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -19,7 +19,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { isRecord } from "hanzio";
-import { matchesSecretPattern } from "../core/secrets/index";
+import { matchesSecretPattern } from "../core/secrets/scope";
 
 /** Marker line identifying a `.env` file managed by buncargo. */
 export const BUNCARGO_FUNCTIONS_ENV_HEADER =
@@ -71,11 +71,6 @@ export function serializeFunctionsEnvEntry(key: string, value: string): string {
 	// backslashes verbatim without un-escaping.
 	if (!value.includes("'")) {
 		return `${key}='${value}'`;
-	}
-
-	if (!/["\\]/.test(value)) {
-		const escaped = value.replace(/\n/g, "\\n").replace(/\r/g, "\\r");
-		return `${key}="${escaped}"`;
 	}
 
 	const escaped = value
@@ -175,9 +170,9 @@ function writeAtomicFile(
 	mode: number,
 ): void {
 	mkdirSync(dirname(path), { recursive: true });
-	const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+	const tempPath = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
 	try {
-		writeFileSync(tempPath, content, { mode });
+		writeFileSync(tempPath, content, { mode, flag: "wx" });
 		chmodSync(tempPath, mode);
 		renameSync(tempPath, path);
 	} catch (error) {

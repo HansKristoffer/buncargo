@@ -222,6 +222,13 @@ interface Match {
 	matchEnd: number;
 }
 
+function compileCaptureRegex(pattern: RegExp): RegExp {
+	let flags = pattern.flags;
+	if (!flags.includes("g")) flags += "g";
+	if (!flags.includes("d")) flags += "d";
+	return new RegExp(pattern.source, flags);
+}
+
 /**
  * The last match worth reporting.
  *
@@ -230,13 +237,12 @@ interface Match {
  * than being reported cut off. A public URL is only ever taken whole: a cut
  * one would render files and restart apps with a host that does not exist.
  */
-function lastMatch(capture: CaptureConfig, text: string): Match | undefined {
-	// A fresh global copy with indices: the caller's regex may be sticky,
-	// global or neither, and its `lastIndex` is theirs.
-	let flags = capture.pattern.flags;
-	if (!flags.includes("g")) flags += "g";
-	if (!flags.includes("d")) flags += "d";
-	const global = new RegExp(capture.pattern.source, flags);
+function lastMatch(
+	capture: CaptureConfig,
+	global: RegExp,
+	text: string,
+): Match | undefined {
+	global.lastIndex = 0;
 	let found: Match | undefined;
 
 	for (const match of text.matchAll(global)) {
@@ -262,6 +268,11 @@ function lastMatch(capture: CaptureConfig, text: string): Match | undefined {
 export function createOutputCaptureScanner(
 	captures: Readonly<Record<string, CaptureConfig>>,
 ): OutputCaptureScanner {
+	const compiled = Object.entries(captures).map(([name, capture]) => ({
+		name,
+		capture,
+		regex: compileCaptureRegex(capture.pattern),
+	}));
 	const reported = new Map<string, string>();
 	let tail = "";
 	// Only whole lines are matched: a URL cut off mid-chunk is still a valid
@@ -285,13 +296,21 @@ export function createOutputCaptureScanner(
 			const end = text.lastIndexOf("\n") + 1;
 			partial = text.slice(end).slice(-TAIL_BYTES);
 			if (end === 0) return [];
-			// Kept joined: a row continuing a URL is joined once, and the rest
-			// of the tail is already in that form when the next row arrives.
-			tail = joinWrappedUrls(`${tail}${text.slice(0, end)}`).slice(-TAIL_BYTES);
+			// Only the tail's last line can wrap into `added`: every earlier line in
+			// `tail` was already joined on a previous push.
+			const added = text.slice(0, end);
+			const prevNl = tail.endsWith("\n")
+				? tail.lastIndexOf("\n", tail.length - 2)
+				: tail.lastIndexOf("\n");
+			const prefix = prevNl === -1 ? "" : tail.slice(0, prevNl + 1);
+			const lastLine = prevNl === -1 ? tail : tail.slice(prevNl + 1);
+			tail = `${prefix}${joinWrappedUrls(`${lastLine}${added}`)}`.slice(
+				-TAIL_BYTES,
+			);
 			const found: CapturedValue[] = [];
 			let consumed = 0;
-			for (const [name, capture] of Object.entries(captures)) {
-				const match = lastMatch(capture, tail);
+			for (const { name, capture, regex } of compiled) {
+				const match = lastMatch(capture, regex, tail);
 				if (match === undefined) continue;
 				const value =
 					capture.as === "publicUrl"

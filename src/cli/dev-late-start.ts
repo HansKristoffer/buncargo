@@ -1,5 +1,6 @@
 import { getErrorMessage, mapValues } from "hanzio";
 import { describeLeaseRefusal } from "../core/app-leases";
+import type { PortOwnerSnapshot } from "../core/process";
 import { startableApps } from "../core/process/dev-servers";
 import type { RunOutput, StartReply } from "../core/process/run-output";
 import type { RunEntry } from "../core/run-registry";
@@ -94,13 +95,23 @@ export interface LateStartRun {
 	 * Which of these apps already answer on their port outside this run
 	 * (another run, another terminal), as startup reuses them; throws when a
 	 * port is held by something it cannot reuse. Never stops a process that
-	 * serves.
+	 * serves. May also return the port snapshot taken so `spawnLate` does not
+	 * run a second container/port listing milliseconds later.
 	 */
-	servedElsewhere(
-		apps: Record<string, ResolvedApp>,
-	): Promise<readonly string[]>;
-	/** The `preflight` steps these apps bring, without a terminal; throws why not. */
-	preflight(names: readonly string[]): Promise<void>;
+	servedElsewhere(apps: Record<string, ResolvedApp>): Promise<
+		| readonly string[]
+		| {
+				reused: readonly string[];
+				portOwners?: PortOwnerSnapshot;
+		  }
+	>;
+	/**
+	 * The `preflight` steps these apps bring, without a terminal; throws why
+	 * not. Returns `true` when at least one step ran (invalidating `portOwners`).
+	 */
+	preflight(
+		names: readonly string[],
+	): Promise<boolean | undefined> | Promise<void>;
 	start: LateStart;
 	leasePolicy: LeasePolicy;
 	signal?: AbortSignal;
@@ -134,8 +145,15 @@ export async function startLeftOutApp(
 	// Its own port answering elsewhere: starting it here would kill that one.
 	// A required app served elsewhere is used there, as at startup.
 	let elsewhere: readonly string[];
+	let portOwners: PortOwnerSnapshot | undefined;
 	try {
-		elsewhere = await run.servedElsewhere(plan.apps);
+		const checked = await run.servedElsewhere(plan.apps);
+		if ("reused" in checked) {
+			elsewhere = checked.reused;
+			portOwners = checked.portOwners;
+		} else {
+			elsewhere = checked;
+		}
 	} catch (error) {
 		return { status: "refused", reason: getErrorMessage(error) };
 	}
@@ -154,8 +172,9 @@ export async function startLeftOutApp(
 		),
 		(config) => ({ ...config, essential: false }),
 	);
+	let preflightRan = false;
 	try {
-		await run.preflight(Object.keys(toStart));
+		preflightRan = (await run.preflight(Object.keys(toStart))) === true;
 	} catch (error) {
 		return { status: "refused", reason: getErrorMessage(error) };
 	}
@@ -163,6 +182,7 @@ export async function startLeftOutApp(
 	const outcome = await run.start(toStart, {
 		leasePolicy: run.leasePolicy,
 		signal: run.signal,
+		initialPortOwners: preflightRan ? undefined : portOwners,
 	});
 	if (outcome.status === "refused") {
 		const { skipped } = outcome;

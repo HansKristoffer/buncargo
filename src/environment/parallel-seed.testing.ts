@@ -20,6 +20,7 @@ export async function parallelSeedFixture(
 import {appendFileSync} from "node:fs";
 appendFileSync("events", "app\\n");
 await Bun.write("app-started", String(process.pid));
+${options.failApp && options.beforeApps === false ? 'while (!(await Bun.file("seed-started").exists())) await Bun.sleep(10);' : ""}
 ${options.failApp ? "process.exit(7);" : 'Bun.serve({port: Number(process.env.PORT), fetch: () => new Response("ok")});'}
 `,
 	);

@@ -154,10 +154,20 @@ export async function runSeedIfNeeded(
 					resolvePrismaConfig(ctx.config.prisma).service,
 					ctx.output.log,
 				);
-				return seedCheck({
-					...envVars.getHookContext(signal, selection),
-					checkTable,
-				});
+				const baseCtx = envVars.getHookContext(signal, selection);
+				const seedCtx = Object.defineProperties(
+					{},
+					{
+						...Object.getOwnPropertyDescriptors(baseCtx),
+						checkTable: {
+							value: checkTable,
+							enumerable: true,
+							configurable: true,
+							writable: true,
+						},
+					},
+				) as Parameters<typeof seedCheck>[0];
+				return seedCheck(seedCtx);
 			},
 			SEED_TIMEOUT_MS,
 			options.signal,

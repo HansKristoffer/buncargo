@@ -1,16 +1,18 @@
 import { mapValues } from "hanzio";
 import type { ContainerRuntimeAdapter } from "../container-runtime/types";
 import type { ContainerRuntimeName, PortOffsetProvenance } from "../types";
+import { checkoutDeleted } from "./checkout-presence";
 import { simpleHash } from "./hash";
 import {
 	claimOffset,
 	heldOffsetClaims,
+	indexOffsetClaims,
 	type OffsetClaim,
 	offsetClaimConflict,
-	offsetClaimConflicts,
 	offsetClaimHoldsBlock,
 	offsetClaimKey,
 	projectNameClaimant,
+	readAllOffsetClaims,
 	readOffsetClaims,
 	withOffsetClaimsLock,
 } from "./offset-claims";
@@ -219,10 +221,10 @@ function findForeignConflict(
  * lookup; a shifted block that turns out to be occupied costs one extra call.
  */
 function snapshotOwnerLookup(
-	basePorts: Record<string, number>,
+	cwdPorts: Record<string, number>,
 ): (port: number) => PortOwner | null {
 	const snapshot = createPortOwnerSnapshot({
-		cwdPorts: Object.values(basePorts),
+		cwdPorts: Object.values(cwdPorts),
 	});
 	return (port) => snapshot.owner(port);
 }
@@ -294,6 +296,7 @@ export function chooseBlock(
 	claims: Record<string, OffsetClaim>,
 	busy: (offset: number) => string | undefined,
 ): { offset: number } | { blocked: BlockedOffset[] } {
+	const claimIndex = indexOffsetClaims(claims);
 	const blocked: BlockedOffset[] = [];
 	for (const { offset, ports } of candidates) {
 		if (ports.some((port) => port > 65535)) {
@@ -305,7 +308,7 @@ export function chooseBlock(
 			});
 			continue;
 		}
-		const claimed = offsetClaimConflicts(claims, { offset, ports });
+		const claimed = claimIndex.conflicts({ offset, ports });
 		const [first] = claimed;
 		if (first) {
 			blocked.push({
@@ -488,7 +491,7 @@ export function allocatePortBlock(input: AllocatePortBlockInput): PortPlan {
 		portOffsetOverride() !== undefined
 			? () => null
 			: (input.getOwner ??
-				withBindProbe(snapshotOwnerLookup(layout.basePorts)));
+				withBindProbe(snapshotOwnerLookup(layout.at(layout.hashed))));
 	const allocate = () => allocateBlock(input, layout, getOwner);
 	return input.claim ? withOffsetClaimsLock(allocate) : allocate();
 }
@@ -501,10 +504,16 @@ function allocateBlock(
 	const { projectName, root, suffix, claim, runtime } = input;
 	const runtimeName = runtime?.name;
 
-	// Claims of checkouts that still exist. A claiming run reads them before
-	// anything else, so a project name another checkout uses stops it before
-	// it writes a claim, under any offset.
-	const existingClaims = readOffsetClaims();
+	// Claims of checkouts that still exist. Under `claim`, read once strictly
+	// under the lock and reuse the map when writing the claim back.
+	const allClaims = claim
+		? readAllOffsetClaims({ strict: true })
+		: readAllOffsetClaims();
+	const existingClaims = Object.fromEntries(
+		Object.entries(allClaims).filter(
+			([key, entry]) => !checkoutDeleted(entry.root ?? key),
+		),
+	);
 	if (claim && (input.worktreeIsolation ?? true)) {
 		const refused = sharedProjectNameRefusal(existingClaims, {
 			root,
@@ -543,6 +552,7 @@ function allocateBlock(
 				projectName,
 				suffix,
 				throwaway: input.throwaway,
+				existingClaims: allClaims,
 			});
 		return { offset, ports: layout.at(offset), provenance };
 	};

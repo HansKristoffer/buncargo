@@ -4,6 +4,7 @@ import {
 	type AppEvent,
 	AppFailure,
 	type AppLife,
+	AppStopped,
 	afterExit,
 	initialLife,
 	type RequiredByTask,
@@ -373,6 +374,54 @@ export class AppSupervision {
 			throw error;
 		}
 
+		return true;
+	}
+
+	/**
+	 * Stop one supervised app without ending the run. Park it so `restart()`
+	 * can bring it back later. Serialized with `restart()` per app so a stop
+	 * and restart never race on the same child. Returns `false` when the app
+	 * is already down, reused from another terminal, or the run is ending.
+	 */
+	stopApp(name: string): Promise<boolean> {
+		const previous = this.running.get(name) ?? Promise.resolve();
+		const operation = previous
+			.catch(() => {})
+			.then(() => this.performStop(name));
+		this.running.set(name, operation);
+
+		void operation
+			.finally(() => {
+				if (this.running.get(name) === operation) this.running.delete(name);
+			})
+			.catch(() => {});
+
+		this.restarts.add(operation);
+		void operation
+			.finally(() => this.restarts.delete(operation))
+			.catch(() => {});
+
+		return operation;
+	}
+
+	private async performStop(name: string): Promise<boolean> {
+		const entry = this.apps.get(name);
+		const current = entry?.child;
+		if (!entry || !current || this.controller.signal.aborted) return false;
+		if (!this.live.has(current)) return false;
+		// An essential app still gating an initial startup wave cannot be stopped
+		// mid-boot without breaking `startAfter` dependents or failing the wave.
+		const bootingWaveEssential =
+			!this.sealed &&
+			entry.life.phase === "starting" &&
+			entry.life.standing !== "optional";
+		if (bootingWaveEssential) return false;
+
+		entry.process.abort(new AppStopped(name));
+		await this.retire(current);
+		if (!this.controller.signal.aborted) {
+			this.apply(name, { type: "stopped", detail: "stopped" });
+		}
 		return true;
 	}
 

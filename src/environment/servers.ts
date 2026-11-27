@@ -161,12 +161,7 @@ export function createServersApi(
 		// Without `expandRequired`, wait for exactly the named apps, not the apps they need.
 		const appsToWait =
 			onlyApps && !expandRequired
-				? Object.fromEntries(
-						onlyApps.flatMap((name) => {
-							const app = apps[name];
-							return app ? [[name, app]] : [];
-						}),
-					)
+				? pickApps(apps, onlyApps)
 				: resolveSelectedApps(apps, onlyApps).apps;
 
 		await waitForDevServers(appsToWait, ports, {

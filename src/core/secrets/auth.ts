@@ -123,6 +123,8 @@ export function credentialKey(
 
 const sessionTokens = new SharedRequestCache<string>();
 const machineTokens = new SharedRequestCache<string>();
+const scopedSessionTokens = new SharedRequestCache<string>();
+const loginOrgListings = new SharedRequestCache<LoginOrganization[]>();
 /** Sites the CLI could not check a session on, until when. */
 const unreachableUntil = new Map<string, number>();
 
@@ -138,6 +140,8 @@ const projectKey = (scope: InfisicalScope) =>
 export function clearAuthCache(): void {
 	sessionTokens.clear();
 	machineTokens.clear();
+	scopedSessionTokens.clear();
+	loginOrgListings.clear();
 	unreachableUntil.clear();
 	owningOrganizations.clear();
 }
@@ -166,9 +170,17 @@ export async function withScopeToken<T>(
 		credentials
 			? raw
 			: scopedSessionToken({ ...scope, organizationId }, raw, signal);
+	let lastScoped: { key: string; value: string } | undefined;
 	const attempt = async (raw: string) => {
+		const resolvedToken = await scoped(raw);
+		if (!credentials && organizationId && resolvedToken !== raw) {
+			lastScoped = {
+				key: `${scope.siteUrl}|${organizationId}|${raw}`,
+				value: resolvedToken,
+			};
+		}
 		try {
-			return await use(await scoped(raw));
+			return await use(resolvedToken);
 		} catch (error) {
 			// An identity belongs to one organization; a named one is the developer's word.
 			if (credentials || organizationId || !isRefusedProject(error))
@@ -181,6 +193,9 @@ export async function withScopeToken<T>(
 		return await attempt(first);
 	} catch (error) {
 		if (!isRefusedToken(error)) throw error;
+		if (lastScoped) {
+			scopedSessionTokens.forget(lastScoped.key, lastScoped.value);
+		}
 		if (credentials)
 			machineTokens.forget(machineKey(scope, credentials), first);
 		else sessionTokens.forget(cliSessionKey(scope), first);
@@ -204,20 +219,26 @@ async function loginOrganizations(
 	token: string,
 	signal: AbortSignal,
 ): Promise<LoginOrganization[]> {
-	const data = (await request(
-		scope,
-		"list organizations",
-		"/api/v1/organization",
-		{
-			method: "GET",
-			headers: { authorization: `Bearer ${token}` },
-			signal,
+	return loginOrgListings.get(
+		`${scope.siteUrl}|${token}`,
+		async (sharedSignal) => {
+			const data = (await request(
+				scope,
+				"list organizations",
+				"/api/v1/organization",
+				{
+					method: "GET",
+					headers: { authorization: `Bearer ${token}` },
+					signal: timeoutSignal(LOAD_TIMEOUT_MS, sharedSignal),
+				},
+			)) as { organizations?: { id?: unknown; name?: unknown }[] };
+			return (data?.organizations ?? []).flatMap(({ id, name }) =>
+				typeof id === "string" && id
+					? [{ id, name: typeof name === "string" && name ? name : id }]
+					: [],
+			);
 		},
-	)) as { organizations?: { id?: unknown; name?: unknown }[] };
-	return (data?.organizations ?? []).flatMap(({ id, name }) =>
-		typeof id === "string" && id
-			? [{ id, name: typeof name === "string" && name ? name : id }]
-			: [],
+		signal,
 	);
 }
 
@@ -556,30 +577,37 @@ async function scopedSessionToken(
 	) {
 		return token;
 	}
-	const data = (await request(
-		scope,
-		"select-organization",
-		"/api/v3/auth/select-organization",
-		{
-			method: "POST",
-			headers: { authorization: `Bearer ${token}` },
-			body: JSON.stringify({ organizationId: scope.organizationId }),
-			signal,
+	const organizationId = scope.organizationId;
+	return scopedSessionTokens.get(
+		`${scope.siteUrl}|${organizationId}|${token}`,
+		async (sharedSignal) => {
+			const data = (await request(
+				scope,
+				"select-organization",
+				"/api/v3/auth/select-organization",
+				{
+					method: "POST",
+					headers: { authorization: `Bearer ${token}` },
+					body: JSON.stringify({ organizationId }),
+					signal: timeoutSignal(LOAD_TIMEOUT_MS, sharedSignal),
+				},
+			)) as { isMfaEnabled?: unknown };
+			if (data?.isMfaEnabled) {
+				throw new MfaRequiredError(
+					"Infisical requires MFA for this organization.",
+					`${infisicalLoginCommand(scope.siteUrl)} (and pick the organization)`,
+				);
+			}
+			const scoped = tokenFrom(data, "token", "select-organization");
+			if (sessionOrganization(scoped) !== organizationId) {
+				throw new SecretsError(
+					"Infisical returned a session for a different organization.",
+				);
+			}
+			return scoped;
 		},
-	)) as { isMfaEnabled?: unknown };
-	if (data?.isMfaEnabled) {
-		throw new MfaRequiredError(
-			"Infisical requires MFA for this organization.",
-			`${infisicalLoginCommand(scope.siteUrl)} (and pick the organization)`,
-		);
-	}
-	const scoped = tokenFrom(data, "token", "select-organization");
-	if (sessionOrganization(scoped) !== scope.organizationId) {
-		throw new SecretsError(
-			"Infisical returned a session for a different organization.",
-		);
-	}
-	return scoped;
+		signal,
+	);
 }
 
 // ─── Session checks ──────────────────────────────────────────────────────────
@@ -624,8 +652,13 @@ export async function ensureSecretsSession(
 ): Promise<void> {
 	const env = options.env ?? process.env;
 	const sites = new Map<string, InfisicalScope>();
-	for (const scope of scopes)
+	const checkedSites = new Set<string>();
+	for (const scope of scopes) {
+		if (checkedSites.has(scope.siteUrl)) continue;
+		checkedSites.add(scope.siteUrl);
 		if (signsInWithCli(env, scope.siteUrl)) sites.set(scope.siteUrl, scope);
+	}
+	if (sites.size === 0) return;
 
 	const wait = anySignal(options.signal, AbortSignal.timeout(LOAD_TIMEOUT_MS));
 	await Promise.all(

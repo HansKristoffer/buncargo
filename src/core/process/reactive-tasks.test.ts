@@ -607,4 +607,38 @@ writeFileSync(${JSON.stringify(generatedFile)}, yaml + "|" + process.env.MODE);
 		stayCtrl.abort();
 		await running.catch(() => {});
 	});
+
+	it("cancels a running reactive task via cancel() without failing or stopping the runner", async () => {
+		const root = mkdtempSync(join(tmpdir(), "buncargo-reactive-cancel-"));
+		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+		const startedFile = join(root, "started");
+		const output = new RunOutput({ terminals: "pipe" });
+		const controller = new AbortController();
+		const runner = new ReactiveTaskRunner({
+			root,
+			apps: {},
+			tasks: {
+				slow: {
+					command: `${JSON.stringify(process.execPath)} -e 'require("node:fs").writeFileSync(${JSON.stringify(startedFile)}, String(process.pid)); setInterval(() => {}, 1000)'`,
+					onAppReady: ["api"],
+				},
+			},
+			buildEnv: () => ({}),
+			output,
+			signal: controller.signal,
+			shutdownGraceMs: 200,
+		});
+		cleanups.push(async () => {
+			controller.abort();
+			await runner.stop();
+		});
+
+		expect(await runner.cancel("slow")).toBe(false);
+		expect(runner.trigger("slow", "requested")).toBe(true);
+		await until(() => existsSync(startedFile), 5_000, "slow task started");
+
+		expect(await runner.cancel("slow")).toBe(true);
+		expect(output.states.get("slow")?.state).toBe("stopped");
+		expect(output.states.get("slow")?.detail).toBe("stopped");
+	});
 });

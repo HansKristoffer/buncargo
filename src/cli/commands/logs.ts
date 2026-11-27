@@ -1,4 +1,12 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	fstatSync,
+	openSync,
+	readdirSync,
+	readSync,
+	statSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 import { promiseTimeout } from "hanzio";
 import { findMonorepoRoot } from "../../core/ports";
@@ -7,6 +15,7 @@ import { createErrorFilter } from "../../core/process/run-output";
 import { findRunsByRoot, type RunEntry } from "../../core/run-registry";
 import { colorizeName } from "../../core/style";
 import { BASE_EXITS, defineCommand } from "../command-spec";
+import { parseSinceDuration } from "../duration";
 import { CliError } from "../errors";
 
 const FOLLOW_POLL_MS = 300;
@@ -14,32 +23,49 @@ const FOLLOW_POLL_MS = 300;
 /** How often `-f` asks the registry whether the run is still going. */
 const RUN_CHECK_MS = 1_000;
 
-function parseDuration(value: string): number | undefined {
-	const match = /^(\d+)(s|m|h)$/.exec(value.trim());
-	if (!match) return undefined;
-
-	const unit = { s: 1000, m: 60_000, h: 3_600_000 }[
-		match[2] as "s" | "m" | "h"
-	];
-	return Number(match[1]) * unit;
-}
-
 interface LogLine {
 	app: string;
 	time: string;
 	text: string;
 }
 
-/** A log file's lines from `offset` on: `<ISO time> <text>` each. */
-function readLines(file: string, app: string, offset = 0): LogLine[] {
-	const content = readFileSync(file).subarray(offset).toString("utf8");
-	return content
-		.split("\n")
-		.filter(Boolean)
-		.map((line) => {
-			const space = line.indexOf(" ");
-			return { app, time: line.slice(0, space), text: line.slice(space + 1) };
-		});
+/** A log file's lines from `offset` on: `<ISO time> <text>` each, reading only `[offset, size)`. */
+function readLines(
+	file: string,
+	app: string,
+	offset = 0,
+): { lines: LogLine[]; size: number } {
+	const fd = openSync(file, "r");
+	try {
+		const total = fstatSync(fd).size;
+		const from = total < offset ? 0 : offset;
+		if (total <= from) return { lines: [], size: total };
+		const expected = total - from;
+		const buf = Buffer.allocUnsafe(expected);
+		let bytesRead = 0;
+		while (bytesRead < expected) {
+			const n = readSync(
+				fd,
+				buf,
+				bytesRead,
+				expected - bytesRead,
+				from + bytesRead,
+			);
+			if (n === 0) break;
+			bytesRead += n;
+		}
+		const content = buf.subarray(0, bytesRead).toString("utf8");
+		const lines = content
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => {
+				const space = line.indexOf(" ");
+				return { app, time: line.slice(0, space), text: line.slice(space + 1) };
+			});
+		return { lines, size: from + bytesRead };
+	} finally {
+		closeSync(fd);
+	}
 }
 
 /**
@@ -76,7 +102,7 @@ async function readLogs(input: {
 	const after =
 		since === undefined
 			? undefined
-			: new Date(Date.now() - (parseDuration(since) ?? 0)).toISOString();
+			: new Date(Date.now() - (parseSinceDuration(since) ?? 0)).toISOString();
 
 	// One filter per app: an error's structured block follows it in its own
 	// file, and the apps' lines are merged only after.
@@ -107,8 +133,9 @@ async function readLogs(input: {
 	const lines: LogLine[] = [];
 	for (const name of selected) {
 		const file = join(dir, `${name}.log`);
-		lines.push(...readLines(file, name));
-		offsets.set(name, statSync(file).size);
+		const read = readLines(file, name);
+		lines.push(...read.lines);
+		offsets.set(name, read.size);
 	}
 
 	const printable = lines
@@ -130,14 +157,21 @@ async function readLogs(input: {
 		for (const name of app === undefined ? readdirApps(dir) : selected) {
 			const file = join(dir, `${name}.log`);
 			if (!existsSync(file)) continue;
-			const size = statSync(file).size;
-			const offset = offsets.get(name) ?? 0;
-			// Rotated: the file starts over.
-			const from = size < offset ? 0 : offset;
-			if (size === from) continue;
+			try {
+				const size = statSync(file).size;
+				const offset = offsets.get(name) ?? 0;
+				// Rotated: the file starts over.
+				const from = size < offset ? 0 : offset;
+				if (size === from) continue;
 
-			for (const line of readLines(file, name, from).filter(keep)) print(line);
-			offsets.set(name, size);
+				const read = readLines(file, name, from);
+				for (const line of read.lines.filter(keep)) print(line);
+				offsets.set(name, read.size);
+			} catch (error) {
+				// File rotated between `existsSync` and `statSync`/`openSync`: retry next tick.
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+				throw error;
+			}
 		}
 
 		if (ended) return 0;
@@ -201,7 +235,7 @@ export const logsCommand = defineCommand({
 				value: "<5m>",
 				description: "Only lines newer than this (s, m, h)",
 				validate: (value: string) =>
-					parseDuration(value) === undefined
+					parseSinceDuration(value) === undefined
 						? `--since expects a duration like 30s, 5m or 2h, got "${value}".`
 						: undefined,
 			},

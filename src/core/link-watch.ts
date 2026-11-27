@@ -76,7 +76,7 @@ export function watchLinks(options: WatchLinksOptions): void {
 			}
 			if (!existsSync(dir)) return;
 
-			const watcher = watch(dir, (_event, filename) => {
+			const watcher = watch(dir, { persistent: false }, (_event, filename) => {
 				if (signal.aborted) return;
 				if (filename && String(filename) !== targetFile) return;
 				fire();

@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { childProcessEnv } from "../core/child-env";
-import { guardsApp } from "../core/egress-guard";
+import { guardsApp } from "../core/egress-guard/rules";
 import { appendToGitignore, isGitIgnored } from "../core/gitignore";
 import { detectPackageManager, findLockfile } from "../core/package-manager";
 import { lookupOnPath } from "../core/tool-binary";
@@ -121,39 +121,70 @@ export function evaluateJavaVersion(
 	};
 }
 
+/** Resolve the `java` binary Firebase emulators will use, respecting a valid `JAVA_HOME`. */
+function resolveJavaBinary(env: NodeJS.ProcessEnv): string | undefined {
+	const javaHome = env.JAVA_HOME?.trim();
+	if (javaHome) {
+		const binary = process.platform === "win32" ? "java.exe" : "java";
+		const candidate = join(javaHome, "bin", binary);
+		if (existsSync(candidate)) return candidate;
+	}
+	return lookupOnPath("java", env);
+}
+
 /**
  * Read `JAVA_VERSION="..."` from the JDK's `release` file beside `javaBin`
  * without spawning a JVM. Returns `undefined` for shims or JDKs without one.
  */
-function readJdkReleaseMajor(javaBin: string): number | undefined {
-	try {
-		const releasePath = join(
-			dirname(dirname(realpathSync(javaBin))),
-			"release",
-		);
-		if (!existsSync(releasePath)) return undefined;
-		return parseJavaMajorVersion(readFileSync(releasePath, "utf8"));
-	} catch {
-		return undefined;
+function readJdkReleaseMajor(
+	javaBin: string,
+	javaHome?: string,
+): number | undefined {
+	const candidates: string[] = [];
+	if (javaHome?.trim()) {
+		candidates.push(join(javaHome.trim(), "release"));
 	}
+	try {
+		candidates.push(join(dirname(dirname(realpathSync(javaBin))), "release"));
+	} catch {
+		// Unresolvable symlink; fall through to `java -version`.
+	}
+	for (const releasePath of candidates) {
+		try {
+			if (!existsSync(releasePath)) continue;
+			const major = parseJavaMajorVersion(readFileSync(releasePath, "utf8"));
+			if (major !== undefined) return major;
+		} catch {
+			// Try the next candidate.
+		}
+	}
+	return undefined;
 }
 
 /** Determine the Java major version, preferring the JDK `release` file over spawning `java -version`. */
-function detectJavaMajorVersion(javaBin: string): number | undefined {
-	const fromRelease = readJdkReleaseMajor(javaBin);
+async function detectJavaMajorVersion(
+	javaBin: string,
+	env: NodeJS.ProcessEnv,
+): Promise<number | undefined> {
+	const fromRelease = readJdkReleaseMajor(javaBin, env.JAVA_HOME);
 	if (fromRelease !== undefined) return fromRelease;
 
 	try {
-		const result = Bun.spawnSync([javaBin, "-version"], {
+		const proc = Bun.spawn([javaBin, "-version"], {
 			stdin: "ignore",
 			stdout: "pipe",
 			stderr: "pipe",
-			env: childProcessEnv(),
-			timeout: JAVA_VERSION_TIMEOUT_MS,
+			env,
+			signal: AbortSignal.timeout(JAVA_VERSION_TIMEOUT_MS),
+			killSignal: "SIGKILL",
 		});
-		if (result.exitCode !== 0) return undefined;
-		const combined = `${result.stdout.toString()}\n${result.stderr.toString()}`;
-		return parseJavaMajorVersion(combined);
+		const [exitCode, stdout, stderr] = await Promise.all([
+			proc.exited,
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+		]);
+		if (exitCode !== 0) return undefined;
+		return parseJavaMajorVersion(`${stdout}\n${stderr}`);
 	} catch {
 		return undefined;
 	}
@@ -247,24 +278,30 @@ export function firebaseChecks(state: {
 			emulatorCacheEntries(process.env),
 		);
 	const setupArgs = (name: string) => [`setup:emulators:${name}`];
-	const skippedByProfile = (activeApps?: ReadonlySet<string>) =>
-		state.appName !== undefined &&
-		activeApps !== undefined &&
-		!activeApps.has(state.appName);
+	const whenActive =
+		(fn: SetupCheck["check"]): SetupCheck["check"] =>
+		(ctx) => {
+			if (
+				state.appName !== undefined &&
+				ctx.activeApps !== undefined &&
+				!ctx.activeApps.has(state.appName)
+			) {
+				return true;
+			}
+			return fn(ctx);
+		};
 
 	const checks: SetupCheck[] = [
 		{
 			name: "Firebase CLI is installed",
-			check: ({ root, activeApps }) => {
-				if (skippedByProfile(activeApps)) return true;
-				return firebaseCli.installed([state.workdir(root), root]);
-			},
+			check: whenActive(({ root }) =>
+				firebaseCli.installed([state.workdir(root), root]),
+			),
 			fix: installFix,
 		},
 		{
 			name: `${configFile} exists`,
-			check: ({ root, activeApps }) => {
-				if (skippedByProfile(activeApps)) return true;
+			check: whenActive(({ root }) => {
 				const project = state.project(root);
 				if (project.error) {
 					return {
@@ -286,18 +323,18 @@ export function firebaseChecks(state: {
 						detail: `${relative(root, project.path)} configures no emulator; run \`firebase init emulators\``,
 					}
 				);
-			},
+			}),
 		},
 		{
 			name: "Java is installed for the Firebase emulators",
-			check: ({ root, activeApps }) => {
-				if (skippedByProfile(activeApps)) return true;
+			check: whenActive(async ({ root }) => {
 				const needsJava = state
 					.emulators(root)
 					.some((name) => JAVA_EMULATORS.includes(name));
 				if (!needsJava) return true;
 
-				const javaBin = lookupOnPath("java", childProcessEnv());
+				const env = childProcessEnv();
+				const javaBin = resolveJavaBinary(env);
 				if (!javaBin) {
 					return {
 						ok: false,
@@ -306,7 +343,7 @@ export function firebaseChecks(state: {
 					};
 				}
 
-				const javaMajor = detectJavaMajorVersion(javaBin);
+				const javaMajor = await detectJavaMajorVersion(javaBin, env);
 				if (javaMajor !== undefined && (javaMajor < 11 || javaMajor >= 21)) {
 					return evaluateJavaVersion(javaMajor, undefined);
 				}
@@ -316,12 +353,11 @@ export function firebaseChecks(state: {
 						? undefined
 						: readFirebaseToolsVersion([state.workdir(root), root]);
 				return evaluateJavaVersion(javaMajor, cliVersion);
-			},
+			}),
 		},
 		{
 			name: "Firebase emulator downloads are cached",
-			check: ({ root, activeApps, egressGuard }) => {
-				if (skippedByProfile(activeApps)) return true;
+			check: whenActive(({ root, egressGuard }) => {
 				const missing = missingDownloads(root);
 				if (missing.length === 0) return true;
 
@@ -331,9 +367,10 @@ export function firebaseChecks(state: {
 						manager.execDisplay("firebase", setupArgs(download.name)),
 					)
 					.join(" && ");
-				// Behind the guard the CLI's own first download is refused.
+				// Behind a blocking guard the CLI's own first download is refused.
 				const guarded =
-					egressGuard !== undefined &&
+					egressGuard?.enabled &&
+					egressGuard.mode === "block" &&
 					state.appName !== undefined &&
 					guardsApp(egressGuard, state.appName);
 				const why = guarded
@@ -344,7 +381,7 @@ export function firebaseChecks(state: {
 					...(guarded ? {} : { severity: "warning" as const }),
 					detail: `${missing.map((download) => download.name).join(", ")} not downloaded yet (${why}); run \`${commands}\``,
 				};
-			},
+			}),
 			fix: ({ root }) => {
 				const dir = cliDir(root);
 				const manager = detectPackageManager(dir);
@@ -372,8 +409,7 @@ export function firebaseChecks(state: {
 			name: "Firebase emulator data is gitignored",
 			severity: "warning",
 			fast: false,
-			check: ({ root, activeApps }) => {
-				if (skippedByProfile(activeApps)) return true;
+			check: whenActive(({ root }) => {
 				const dir = state.dataDir(root);
 				if (!dir) return true;
 
@@ -383,7 +419,7 @@ export function firebaseChecks(state: {
 						detail: `${dir} is not gitignored`,
 					}
 				);
-			},
+			}),
 			fix: ({ root }) => {
 				const dir = state.dataDir(root);
 				if (dir) appendToGitignore(root, [`/${dir}`]);
@@ -394,12 +430,12 @@ export function firebaseChecks(state: {
 			name: "Firebase CLI version is tested",
 			fast: false,
 			severity: "warning",
-			check: ({ root, activeApps }) => {
-				if (skippedByProfile(activeApps)) return true;
-				const version = firebaseCli.version(
-					firebaseCli.resolve([state.workdir(root), root]),
-					root,
-				);
+			check: whenActive(({ root }) => {
+				const dirs = [state.workdir(root), root];
+				// Prefer package.json metadata over spawning the Node CLI (~200ms).
+				const version =
+					readFirebaseToolsVersion(dirs) ??
+					firebaseCli.version(firebaseCli.resolve(dirs), root);
 				if (!version) {
 					return { ok: false, detail: "`firebase --version` failed" };
 				}
@@ -410,7 +446,7 @@ export function firebaseChecks(state: {
 						detail: `Firebase CLI ${version} is outside the tested 13.x–15.x range`,
 					}
 				);
-			},
+			}),
 		},
 	];
 
@@ -420,8 +456,7 @@ export function firebaseChecks(state: {
 			name: "Firebase functions .env is gitignored",
 			severity: "warning",
 			fast: false,
-			check: ({ root, activeApps }) => {
-				if (skippedByProfile(activeApps)) return true;
+			check: whenActive(({ root }) => {
 				const rel = resolvePath(root);
 				if (!rel) return true;
 				return (
@@ -430,7 +465,7 @@ export function firebaseChecks(state: {
 						detail: `${rel} is not gitignored (firebase functionsEnv writes secrets there)`,
 					}
 				);
-			},
+			}),
 			fix: ({ root }) => {
 				const rel = resolvePath(root);
 				if (rel) appendToGitignore(root, [`/${rel}`]);

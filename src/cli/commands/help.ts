@@ -6,12 +6,7 @@ import {
 	type HelpRow,
 } from "../command-spec";
 import { CliError } from "../errors";
-import {
-	integrationCommandRows,
-	readAppliedConfig,
-} from "../integration-commands";
 import { loadAllCommands } from "./registry";
-import { formatTaskRows } from "./run";
 
 /** One row per command, from its own spec. */
 async function commandRows(): Promise<string[]> {
@@ -38,6 +33,8 @@ async function commandRows(): Promise<string[]> {
 
 /** The config's tasks and integration commands, which only it knows. */
 async function configSections(): Promise<string> {
+	const { integrationCommandRows, readAppliedConfig } =
+		await import("../integration-commands");
 	const config = await readAppliedConfig();
 	const tasks = config?.tasks ?? {};
 	const rows = (config?.integrations ?? []).flatMap(integrationCommandRows);
@@ -45,6 +42,7 @@ async function configSections(): Promise<string> {
 
 	let text = "";
 	if (Object.keys(tasks).length > 0) {
+		const { formatTaskRows } = await import("./run");
 		text += `\nTASKS (bunx buncargo run <task>):\n${formatTaskRows(tasks).join("\n")}\n`;
 	}
 	if (rows.length > 0) {

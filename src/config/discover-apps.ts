@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { type Dirent, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { trimTrailingSlash } from "hanzio";
 import { findMonorepoRoot } from "../core/ports";
@@ -46,6 +46,40 @@ interface WorkspaceManifest {
 	};
 }
 
+const SKIP_WALK_DIRS = new Set(["node_modules", ".git"]);
+
+function scanPackageJsonPaths(root: string, pattern: string): string[] {
+	if (!pattern.includes("**")) {
+		return [...new Bun.Glob(pattern).scanSync({ cwd: root, onlyFiles: true })];
+	}
+	const matcher = new Bun.Glob(pattern);
+	const matched: string[] = [];
+	const walk = (prefix: string) => {
+		const dir = prefix ? join(root, prefix) : root;
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const entry of entries) {
+			const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+			if (entry.isDirectory()) {
+				if (SKIP_WALK_DIRS.has(entry.name)) continue;
+				walk(rel);
+			} else if (
+				entry.isFile() &&
+				entry.name === "package.json" &&
+				matcher.match(rel)
+			) {
+				matched.push(rel);
+			}
+		}
+	};
+	walk("");
+	return matched;
+}
+
 /** Every readable `package.json` under the globs, outside `node_modules`, by directory. */
 function findWorkspaces(
 	root: string,
@@ -54,10 +88,7 @@ function findWorkspaces(
 	const found = new Map<string, WorkspaceManifest>();
 	for (const glob of globs) {
 		const pattern = `${trimTrailingSlash(glob)}/package.json`;
-		for (const path of new Bun.Glob(pattern).scanSync({
-			cwd: root,
-			onlyFiles: true,
-		})) {
+		for (const path of scanPackageJsonPaths(root, pattern)) {
 			if (path.includes("node_modules")) continue;
 			const dir = path.slice(0, -"/package.json".length);
 			try {

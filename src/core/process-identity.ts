@@ -1,5 +1,5 @@
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { execAsync } from "./process/exec";
 import { isProcessAlive } from "./process/lifecycle";
 import {
 	createProcessIdentityCache,
@@ -50,22 +50,29 @@ async function psBirthsAsync(
 	pids: readonly number[],
 	signal?: AbortSignal,
 ): Promise<Map<number, string>> {
-	recordStartupMetric("processIdentityReads");
-	const result = await execAsync(
-		["ps", "-o", "pid=,lstart=", "-p", pids.join(",")],
-		process.cwd(),
-		{},
-		{
-			env: { LC_ALL: "C", TZ: "UTC" },
-			timeoutMs: 1000,
-			killGraceMs: 0,
-			maxBufferBytes: 1024 * 1024,
-			throwOnError: false,
-			signal,
-		},
-	);
 	signal?.throwIfAborted();
-	return parsePsBirths(result.stdout);
+	recordStartupMetric("subprocesses");
+	recordStartupMetric("processIdentityReads");
+	const stdout = await new Promise<string>((resolve, reject) => {
+		execFile(
+			"ps",
+			["-o", "pid=,lstart=", "-p", pids.join(",")],
+			{
+				encoding: "utf8",
+				timeout: 1000,
+				killSignal: "SIGKILL",
+				maxBuffer: 1024 * 1024,
+				env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+				signal,
+			},
+			(_error, output) => {
+				if (signal?.aborted) reject(signal.reason);
+				else resolve(output ?? "");
+			},
+		);
+	});
+	signal?.throwIfAborted();
+	return parsePsBirths(stdout);
 }
 
 /** Async counterpart: inspection failures are unknown; cancellation still rejects. */
@@ -239,11 +246,13 @@ export async function processIdentityMatcherAsync(
 	entries: readonly IdentityEntry[],
 	signal?: AbortSignal,
 ): Promise<(pid: number, identity?: string) => boolean> {
-	// Only live pids are worth an identity, and asking `ps` about one that is
-	// not a pid at all makes it refuse the whole batch.
+	// Only live pids need a birth lookup, and asking `ps` about one that is
+	// not a pid at all makes it refuse the batch.
 	const alive = livePids(entries);
 	return identityMatcher(
 		alive,
-		await readProcessIdentitiesAsync([...alive], signal),
+		alive.size > 0
+			? await readProcessIdentitiesAsync([...alive], signal)
+			: new Map(),
 	);
 }

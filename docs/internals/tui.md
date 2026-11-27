@@ -18,7 +18,7 @@ last words.
 `src/cli/dev-output.ts` decides where a dev run's app output goes: the TUI (a terminal, unless
 `--no-tui`) or stream mode, never both, since two writers on one screen is the garbling the TUI exists to end.
 Both write the log files and answer `buncargo restart` (`restart-requests.ts`: a request file
-watched via `fs.watch` with a 2 s safety poll, not a signal; SIGUSR2 to a run from an older
+watched via `fs.watch` with a 30 s backstop timer that drops to a 2 s poll if `fs.watch` fails, not a signal; SIGUSR2 to a run from an older
 buncargo, which has no handler, would kill it). `view.start()` runs after every prompt and the
 banner; `view.stop()` runs before teardown so its messages land on the user's own screen.
 
@@ -52,6 +52,15 @@ cursor row is not committed yet.
 `src/cli/tui/render.ts` is pure (every row exactly the width asked for, so frames diff row by row)
 and `run-tui.ts` is the controller.
 
+- Each app's virtual screen keeps 3,000 lines of scrollback (`SCREEN_SCROLLBACK` in `app-screen.ts`,
+  down from 10,000) to bound multi-app heap while full rotated logs live on disk for `$PAGER` (`l`).
+- Frames wrap non-empty row diffs in DEC Mode 2026 synchronized output (`\x1b[?2026h` / `\x1b[?2026l`)
+  to prevent flicker/tearing during scrolling and resizing. Background app lines skip redrawing an
+  unrelated active app pane unless a sidebar unread badge flips, and terminal resize reflows across
+  child screens are debounced by 60 ms.
+- `layoutSidebar` computes the sidebar's rendered rows, sticky scroll window, `Tasks` section
+  divider, and mouse hit-testing in one pass so narrow terminals never clip state/`!` badges and
+  short terminals keep the selected row clickable and in view. `b` / `[` collapses the sidebar.
 - While it owns the terminal it captures `process.stdout/stderr.write` and `console.*` into the
   Overview as `buncargo` lines. Bun's `console.log` does not go through `process.stdout.write`, so
   patching only the stream misses it. The captured `write` honors Writable callbacks, or a hook
@@ -65,24 +74,42 @@ and `run-tui.ts` is the controller.
   Esc nothing follows within 30ms is the Esc key (chunks split anywhere, so a one-byte chunk proves
   nothing). Interact mode forwards every key except Esc and `Ctrl-]`, either of which leaves it;
   `q`/`Ctrl-C` outside it sends the run SIGINT, the same shutdown path as a terminal Ctrl-C.
+  App-declared actions (`AppConfig.actions`, e.g. Shopify `p` and `g`) take precedence over
+  convenience keys (`0`-`9`, `s`, `c`, `y`, `w`, `b`, `i`, `g`, `G`, `n`, `N`).
+- Overview `e` uses one `createErrorFilter({ includeWarnings: true })` per app so structured error
+  blocks and stack frames stay attached, matching `buncargo logs --errors`. `/` runs live search
+  in both Overview (filter + highlight) and app panes (buffer scan + `n`/`N` match jumping +
+  highlight). `w` toggles O(height) backward soft-wrapping in Overview, `c` clears the current
+  pane (`AppScreen.clear()` for apps), `y` copies the app URL, and `i`/`?` opens a scrollable
+  environment-info and keybinding overlay.
+- `s` toggles stop/start on an owned app via `AppSupervision.stopApp` (retires the child and parks
+  the app without ending the run) or cancels a running reactive task via `ReactiveTaskRunner.cancel`.
+  `r` and `s` await control outcomes and report reused/failed apps instead of swallowing rejections;
+  transient footer messages auto-clear after 3 s.
 - While the pager (`l`) runs, the TUI stops reading stdin entirely and only takes the screen back
-  if it is still active; `stop()` kills an open pager. The pager has the terminal in cooked mode,
+  if it is still active; `stop()` kills an open pager. In Overview, `l` merges the run's `.log`
+  files chronologically into a temp file for `$PAGER` (falling back to opening the directory when
+  empty). The pager has the terminal in cooked mode,
   so Ctrl-C there is a SIGINT to the whole process group, run included: the run's SIGINT listeners
   are moved aside until the pager exits, and the signal closes the pager instead (Bun calls the
   listeners directly, so wrapping `process.emit` does not intercept it). Adding and removing
   SIGINT listeners is wrapped meanwhile: one added under the pager is held aside too, or the
   Ctrl-C that closes the pager would fire it, and one removed while held aside (the run ended
   under the pager) would otherwise be put back when the pager closes.
-- Reactive task panes (`taskNames` in `RunTuiOptions`) sit alongside apps in the sidebar with their
-  `detail` label (`idle`, `running`, `ok`, `exit <n>`), show `r run` in the footer, ignore `Enter`
-  (no interact mode), and route `r` through `controls.restart(name)` to trigger a run on demand.
+- Reactive task panes (`taskNames` in `RunTuiOptions`) sit in a `Tasks` section in the sidebar with
+  their `detail` label (`idle`, `running`, `ok`, `stopped`, `exit <n>`), show `r run` (and `s stop`
+  while running) in the footer, ignore `Enter` (no interact mode), and route `r`/`s` through
+  `controls.restart`/`controls.stop`.
 - Apps the run left out (`leftOut` in `RunTuiOptions`, from `leftOutApps` in `run-cli.ts`) sit
-  below the others as `off` until they have a state: no URL, no interact mode, `r start` in the
-  footer, routed through `output.startApp`, which the run binds once its startup has settled
-  (before that, `r` says so and starts nothing). The answer arrives after the key, so it is put in
-  the footer with `say()`; a refusal's first line goes there and the whole of it to the Overview.
-  `restartReply` routes `buncargo restart` for one of them the same way. Binding it announces
-  the left-out apps once (`leftOutNotice`), so the Overview says what `r` can start.
+  below active apps (above `Tasks`) as `off` until they have a state: dimmed name, no URL, no
+  interact mode, `r start` in the footer, routed through `output.startApp` on `r` or `s` once
+  startup settles (before that, starting says so and starts nothing). Async outcomes flash in the
+  footer via `flash()` (auto-clearing after 3 s); a refusal's first line goes there and the whole
+  of it to the Overview. `openDevOutput` passes `allApps` to `appActions` so late-started apps
+  still gain their declared footer actions once their captures arrive, and removes an app from
+  `pendingLeftOut` once it leaves its initial `starting` phase so subsequent `buncargo restart`
+  calls route through `controls.restart`. Binding `startApp` announces the left-out apps once
+  (`leftOutNotice`), so the Overview says what `r` can start.
 - Mouse reporting (SGR with drags, `?1000`/`?1002`/`?1006`) is part of entering and leaving the
   screen, so every restore path turns it off too. The wheel scrolls the shown pane, also in
   interact mode, where mouse reports are stripped rather than typed into an app that never asked

@@ -396,12 +396,70 @@ export function offsetClaimConflict(
 	return offsetClaimConflicts(claims, block, key)[0]?.reason;
 }
 
+export interface OffsetClaimIndex {
+	conflicts(
+		block: { offset: number; ports: readonly number[] },
+		key?: string,
+	): { key: string; reason: string }[];
+}
+
+/** Pre-indexed view of `claims` for O(ports) conflict checks across many candidate blocks. */
+export function indexOffsetClaims(
+	claims: Record<string, OffsetClaim>,
+): OffsetClaimIndex {
+	const entries = Object.entries(claims).map(([key, claim]) => ({
+		key,
+		claim,
+		holder: offsetClaimHolder(key, claim),
+	}));
+	const byOffset = new Map<number, typeof entries>();
+	const byPort = new Map<number, typeof entries>();
+	for (const entry of entries) {
+		const offsetList = byOffset.get(entry.claim.offset);
+		if (offsetList) offsetList.push(entry);
+		else byOffset.set(entry.claim.offset, [entry]);
+		for (const port of entry.claim.ports) {
+			const portList = byPort.get(port);
+			if (portList) portList.push(entry);
+			else byPort.set(port, [entry]);
+		}
+	}
+
+	return {
+		conflicts(block, key) {
+			const found = new Map<string, string>();
+			for (const entry of byOffset.get(block.offset) ?? []) {
+				if (entry.key === key) continue;
+				found.set(
+					entry.key,
+					`offset ${block.offset} is claimed by ${entry.holder}`,
+				);
+			}
+			for (const port of block.ports) {
+				for (const entry of byPort.get(port) ?? []) {
+					if (entry.key === key || found.has(entry.key)) continue;
+					found.set(
+						entry.key,
+						`port ${port} is in the block ${entry.holder} claims (offset ${entry.claim.offset})`,
+					);
+				}
+			}
+			if (found.size === 0) return [];
+			// Preserve original claims entry order for deterministic messages.
+			const ordered: { key: string; reason: string }[] = [];
+			for (const entry of entries) {
+				const reason = found.get(entry.key);
+				if (reason !== undefined) ordered.push({ key: entry.key, reason });
+			}
+			return ordered;
+		},
+	};
+}
 /**
- * Every claim that keeps `key` off the block, by its key, with the reason
- * {@link offsetClaimConflict} gives for it. A full range reclaims a block only
- * when every claim on it can go.
+ * Every other claim that shares the candidate block's offset or any of its
+ * ports, with the reason it conflicts.
  */
-export function offsetClaimConflicts(
+function offsetClaimConflicts(
 	claims: Record<string, OffsetClaim>,
 	block: { offset: number; ports: readonly number[] },
 	key?: string,
@@ -474,12 +532,14 @@ export function claimOffset(input: {
 	suffix?: string;
 	/** See {@link OffsetClaim.throwaway}. */
 	throwaway?: boolean;
+	/** Already-read strict claims map when caller already read under lock. */
+	existingClaims?: Record<string, OffsetClaim>;
 }): void {
 	const { root, offset, projectName, suffix } = input;
 	const throwaway = input.throwaway === true;
 	const ports = [...new Set(input.ports)].sort((a, b) => a - b);
 	const key = offsetClaimKey(root, suffix);
-	const claims = readAllOffsetClaims({ strict: true });
+	const claims = input.existingClaims ?? readAllOffsetClaims({ strict: true });
 	const current = claims[key];
 	const now = new Date().toISOString();
 	const unchanged =

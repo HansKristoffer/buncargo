@@ -1,3 +1,4 @@
+import { typedSwitch } from "hanzio";
 import { findMonorepoRoot } from "../../core/ports";
 import { DEFAULT_STOP_GRACE_MS } from "../../core/process/terminate";
 import { findRunsByRoot, type RunEntry } from "../../core/run-registry";
@@ -21,7 +22,7 @@ export const RESTART_EXIT = {
 } as const;
 
 export interface RestartTimeouts {
-	/** How long the run has to take the request: it polls twice a second. */
+	/** How long the run has to take the request (watched via `fs.watch`). */
 	takenMs: number;
 	/** How long it then has to answer, on top of the app's stop grace. */
 	answerMs: number;
@@ -165,42 +166,37 @@ async function restartApp(
 		);
 	}
 
-	switch (reply.status) {
-		case "began":
-			return result("restarted", `Restarted ${name}.`);
-		case "started": {
+	return typedSwitch(reply, "status", {
+		began: () => result("restarted", `Restarted ${name}.`),
+		started: ({ apps }) => {
 			const what =
-				reply.apps.length === 0
+				apps.length === 0
 					? `${name} is already starting`
-					: `Started ${reply.apps.join(", ")}`;
+					: `Started ${apps.join(", ")}`;
 			return {
 				...result("started", `${what} in the run (pid ${run.pid}).`),
-				apps: [...reply.apps],
+				apps: [...apps],
 			};
-		}
-		case "refused": {
-			const [first, ...rest] = reply.reason.split("\n");
+		},
+		refused: ({ reason }) => {
+			const [first, ...rest] = reason.split("\n");
 			return result("refused", `The run did not start ${name}: ${first}`, rest);
-		}
-		case "failed":
-			return result(
-				"failed",
-				`${name} could not be restarted: ${reply.reason}`,
-				[`Its output: buncargo logs ${name}`],
-			);
-		case "not-ours":
+		},
+		failed: ({ reason }) =>
+			result("failed", `${name} could not be restarted: ${reason}`, [
+				`Its output: buncargo logs ${name}`,
+			]),
+		"not-ours": ({ reason }) => {
 			if (starting) {
 				return result(
 					"not-found",
-					`No run of ${root} started "${name}": ${reply.reason}.`,
+					`No run of ${root} started "${name}": ${reason}.`,
 					["`buncargo runs` shows what is active."],
 				);
 			}
-			return result(
-				"refused",
-				`The run did not restart ${name}: ${reply.reason}.`,
-			);
-	}
+			return result("refused", `The run did not restart ${name}: ${reason}.`);
+		},
+	});
 }
 
 export const restartCommand = defineCommand({

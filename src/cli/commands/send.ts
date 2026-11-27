@@ -8,7 +8,7 @@ import { awaitSendReply, requestSend } from "../restart-requests";
 /** `stop`'s codes: 0 typed · 2 no run started the app · 3 it cannot take keys. */
 export const SEND_EXIT = { ok: 0, notFound: 2, refused: 3 } as const;
 
-/** The run polls for requests every 500ms; a run that is up answers well within this. */
+/** The run watches for requests via `fs.watch`; a live run answers well within this. */
 const REPLY_TIMEOUT_MS = 5_000;
 
 /**

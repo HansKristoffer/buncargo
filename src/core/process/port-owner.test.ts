@@ -6,6 +6,8 @@ import { isProcessAlive } from "./lifecycle";
 import {
 	canBindPort,
 	classifyPortOccupant,
+	createPortOwnerSnapshot,
+	createPortOwnerSnapshotAsync,
 	formatPortOwner,
 	killPortOwnerFoundBy,
 	type PortOwner,
@@ -383,5 +385,36 @@ describe("bind probe", () => {
 			},
 		);
 		expect(lookup(5432)).toBe(ours);
+	});
+
+	it("still inspects host listeners when bind probe is unprobeable (e.g. EACCES on < 1024)", async () => {
+		const held = Bun.listen({
+			hostname: "127.0.0.1",
+			port: 0,
+			socket: { data() {} },
+		});
+		try {
+			const syncSnap = createPortOwnerSnapshot({
+				ports: [held.port],
+				skipContainers: true,
+				bindProbe: () => "unprobeable",
+			});
+			expect(syncSnap.owner(held.port)).toMatchObject({
+				kind: "process",
+				pids: [process.pid],
+			});
+
+			const asyncSnap = await createPortOwnerSnapshotAsync({
+				ports: [held.port],
+				skipContainers: true,
+				bindProbe: () => "unprobeable",
+			});
+			expect(asyncSnap.owner(held.port)).toMatchObject({
+				kind: "process",
+				pids: [process.pid],
+			});
+		} finally {
+			held.stop(true);
+		}
 	});
 });

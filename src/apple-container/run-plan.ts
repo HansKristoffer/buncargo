@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { isRecord, must, toArray } from "hanzio";
+import { splitCommandLine } from "../core/shell-quote";
 import type { ComposeDocument } from "../docker-compose";
 // Compose's substitution rules and the service fingerprint live with the
 // compose model, not with one backend: `docker compose` interpolates the file
@@ -181,84 +182,7 @@ function asRecord(
 	return record;
 }
 
-/**
- * Split a command line into words the way a shell would.
- *
- * Compose splits the string form of `command` / `entrypoint` with shell word
- * rules, so quotes group and backslashes escape. Splitting on whitespace alone
- * turns `sh -c "echo hi"` into four arguments and `--flag="a b"` into two
- * broken ones, neither of which the image can parse.
- */
-export function splitCommandLine(value: string): string[] {
-	const words: string[] = [];
-	let current = "";
-	let started = false;
-	let quote: '"' | "'" | undefined;
-
-	for (let i = 0; i < value.length; i++) {
-		const char = value[i] as string;
-
-		if (quote === "'") {
-			// Single quotes are literal: even a backslash carries no meaning.
-			if (char === "'") {
-				quote = undefined;
-			} else {
-				current += char;
-			}
-			continue;
-		}
-
-		if (char === "\\") {
-			const next = value[i + 1];
-			// A trailing backslash has nothing to escape, so it stays literal.
-			if (next === undefined) {
-				current += char;
-				continue;
-			}
-			// Inside double quotes a backslash only escapes these four.
-			if (quote === '"' && !['"', "\\", "$", "`"].includes(next)) {
-				current += char;
-				continue;
-			}
-			current += next;
-			started = true;
-			i++;
-			continue;
-		}
-
-		if (quote === '"') {
-			if (char === '"') {
-				quote = undefined;
-			} else {
-				current += char;
-			}
-			continue;
-		}
-
-		if (char === '"' || char === "'") {
-			quote = char;
-			// An empty "" is still a word, so remember we opened one.
-			started = true;
-			continue;
-		}
-
-		if (/\s/.test(char)) {
-			if (started || current) {
-				words.push(current);
-				current = "";
-				started = false;
-			}
-			continue;
-		}
-
-		current += char;
-		started = true;
-	}
-
-	if (started || current) words.push(current);
-
-	return words;
-}
+export { splitCommandLine };
 
 /**
  * Compose's two `command` / `entrypoint` forms as one argv.

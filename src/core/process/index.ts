@@ -20,4 +20,3 @@ export {
 	staleStackProject,
 	withBindProbe,
 } from "./port-owner";
-export { ReactiveTaskRunner, selectReactiveTasks } from "./reactive-tasks";

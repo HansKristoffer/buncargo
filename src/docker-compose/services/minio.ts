@@ -41,9 +41,9 @@ const MINIO_IMAGE =
  */
 const MINIO_HEALTHCHECK = {
 	test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000"],
-	interval: "1s",
+	interval: "250ms",
 	timeout: "5s",
-	retries: 30,
+	retries: 120,
 };
 
 export const minioDockerService = defineDockerService<
@@ -82,7 +82,9 @@ export const minioDockerService = defineDockerService<
 		return {
 			service: {
 				image: MINIO_IMAGE,
-				command: ["server", "/data"],
+				// Fix the console address inside the container so MinIO never picks an
+				// ephemeral console port that can collide with host-mapped services.
+				command: ["server", "/data", "--console-address", ":9001"],
 				ports: getDefaultPortBindings(serviceKey, config, "minio"),
 				volumes: [`${serviceKey}_data:/data`],
 				environment: {
